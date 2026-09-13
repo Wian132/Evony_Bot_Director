@@ -172,10 +172,28 @@ const server = http.createServer(async (req, res) => {
   // What our own armies are doing right now — the direct answer to "is it
   // actually farming", which the logs only imply.
   if (url.pathname === '/api/marches') {
-    const rows = SESSION.marches();
+    const { incomingArmies } = require('./snapshot');
+    const out = SESSION.marches();
+    let inc = [];
+    try { inc = SESSION.connected ? incomingArmies(SESSION.game) : []; } catch (e) { /* reported as empty */ }
     return send(200, 'application/json', JSON.stringify({
-      count: rows.length, now: Date.now(), marches: rows,
+      now: Date.now(), serverNow: SESSION.game ? SESSION.game.now() : Date.now(),
+      outgoing: out, incoming: inc,
+      count: out.length, incomingCount: inc.length,
+      marches: out,                       // kept for anything already reading it
     }));
+  }
+  // The server's item catalogue, cached once per install. Gives real names for
+  // the ids we hold, which is what makes "useheroitem OTTO excalibur" possible.
+  if (url.pathname === '/api/itemdefs') {
+    const cached = D.settings.get('itemDefs', null);
+    if (cached && !q.get('refresh')) return send(200, 'application/json', JSON.stringify(cached));
+    try {
+      const g = await SESSION.connect();
+      const raw = await g.itemDefs();
+      D.settings.set('itemDefs', raw);
+      return send(200, 'application/json', JSON.stringify(raw));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
   if (url.pathname === '/api/city') {
     return send(200, 'application/json', JSON.stringify(SESSION.city(q.get('id')) || {}));

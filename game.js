@@ -72,6 +72,23 @@ class Game {
       if (i >= 0) c.heros[i] = data.hero; else c.heros.push(data.hero);
     });
 
+    // Items are pushed the same way. Without this the inventory we hold goes
+    // stale the moment anything is spent, so a count of 52 stays 52 forever.
+    this.c.on('cmd', (cmd, data) => {
+      if (cmd !== 'server.ItemUpdate' || !data) return;
+      const list = data.items || (data.item ? [data.item] : []);
+      if (!Array.isArray(list) || !list.length) return;
+      this.player = this.player || {};
+      this.player.items = this.player.items || [];
+      for (const it of list) {
+        if (!it || it.id === undefined) continue;
+        const i = this.player.items.findIndex((x) => x.id === it.id);
+        const count = Number(it.count || 0);
+        if (i >= 0) { if (count > 0) this.player.items[i] = { ...this.player.items[i], ...it }; else this.player.items.splice(i, 1); }
+        else if (count > 0) this.player.items.push(it);
+      }
+    });
+
     // march/load skill params (affects march time)
     try {
       this.c.send('army.getTroopParam', {});
@@ -184,6 +201,35 @@ class Game {
     this.c.send('army.newArmy', { castleId, newArmyBean: bean });
     const r = await this.c.await(['army.newArmy'], 12000);
     return r.data;
+  }
+
+  // The item catalogue, straight from the server. Item NAMES are not in the
+  // decompiled client — it fetches this XML at runtime — so this is the only
+  // authoritative answer to "which id is Excalibur".
+  // The catalogue arrives in several packages, not one frame, so collect until
+  // they stop coming rather than taking the first and assuming that is all.
+  async itemDefs({ quietMs = 2500, maxMs = 30000 } = {}) {
+    const parts = [];
+    let last = Date.now();
+    const onCmd = (cmd, data) => {
+      if (cmd !== 'common.getItemDefXml') return;
+      parts.push(data);
+      last = Date.now();
+    };
+    this.c.on('cmd', onCmd);
+    this.c.send('common.getItemDefXml', {});
+    const started = Date.now();
+    try {
+      // finished when nothing new has arrived for a while
+      while (Date.now() - started < maxMs && (parts.length === 0 || Date.now() - last < quietMs)) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } finally { this.c.off('cmd', onCmd); }
+    return {
+      packages: parts.length,
+      itemXml: parts.sort((a, b) => Number(a.packageId || 0) - Number(b.packageId || 0))
+        .map((p) => String(p.itemXml || '')).join(''),
+    };
   }
 
   // ---- building ----

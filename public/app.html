@@ -155,6 +155,23 @@
                    border-radius:6px; padding:6px 11px; font:13.5px inherit; }
   .sendbar input:focus { border-color:var(--blue); outline:none; }
 
+  /* Numbers line up under a centred header only if they are centred too. */
+  td.n, th.n { text-align:center; }
+  td.l, th.l { text-align:left; }
+
+  /* One colour per mission, used everywhere an army is shown. */
+  .m-attack    { color:var(--bad); }
+  .m-scout     { color:var(--amber); }
+  .m-transport { color:var(--blue); }
+  .m-reinforce { color:var(--ok); }
+  .m-construct { color:#a78bfa; }
+  .mtag { display:inline-flex; align-items:center; gap:5px; font-weight:600; white-space:nowrap; }
+  .mbar { display:inline-block; width:3px; height:13px; border-radius:2px; background:currentColor; }
+  .ico { display:inline-block; width:1.15em; text-align:center; margin-right:6px; opacity:.95; }
+  .eta { font-variant-numeric:tabular-nums; }
+  .soon { color:var(--bad); font-weight:700; }
+  tr.army:hover td { background:var(--panel2); cursor:help; }
+
   @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
@@ -224,6 +241,8 @@
       <div class="t" data-k="troops">Troops</div>
       <div class="t" data-k="buildings">Buildings</div>
       <div class="t" data-k="walls">Walls</div>
+      <div class="t" data-k="armies">⚔ Armies</div>
+      <div class="t" data-k="incoming">🛡 Incoming</div>
       <div class="t" data-k="heroes">Heroes</div>
       <div class="t" data-k="market">Market</div>
       <div class="t" data-k="map">Map</div>
@@ -530,14 +549,103 @@ function showInLog(text) {
 }
 
 // ---------- monitors ----------
+// Header and cell get the SAME alignment class, so a centred header always sits
+// over centred values. They used to be set independently, which is why the
+// Amount column read as centred at the top and right-aligned underneath.
 function table(head, rows) {
   if (!rows.length) return '<div class="empty">nothing to show</div>';
-  return `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${
-    rows.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'n' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  const cls = (i) => (i ? 'n' : 'l');
+  return `<table><thead><tr>${head.map((h, i) => `<th class="${cls(i)}">${h}</th>`).join('')}</tr></thead><tbody>${
+    rows.map(r => `<tr>${r.map((c, i) => `<td class="${cls(i)}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
+// ---- armies -------------------------------------------------------------
+// Colour carries the mission type so the table reads at a glance; the exact
+// troops are on hover because a full breakdown per row would drown the list.
+const MISSION_META = {
+  attack:    { icon: '\u2694', label: 'Attack',      cls: 'm-attack' },
+  scout:     { icon: '\u{1F441}', label: 'Scout',    cls: 'm-scout' },
+  transport: { icon: '\u{1F69A}', label: 'Transport', cls: 'm-transport' },
+  reinforce: { icon: '\u{1F6E1}', label: 'Reinforce', cls: 'm-reinforce' },
+  construct: { icon: '\u{1F3D7}', label: 'Build',    cls: 'm-construct' },
+};
+const missionMeta = (m) => MISSION_META[m] || { icon: '\u2753', label: m || '?', cls: '' };
+
+const RES_ICON = { food: '\u{1F33E}', wood: '\u{1FAB5}', stone: '\u{1FAA8}', iron: '\u2692', gold: '\u{1FA99}' };
+
+// "4m 12s", or the wall-clock landing time when it is further out
+function etaText(reachTime, now) {
+  if (!reachTime) return '—';
+  const ms = reachTime - now;
+  if (ms <= 0) return '<span class="soon">landing</span>';
+  const s = Math.round(ms / 1000);
+  const t = new Date(reachTime);
+  const clock = t.toLocaleTimeString([], { hour12: false });
+  const rel = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s`
+    : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `<span class="eta${s < 120 ? ' soon' : ''}" title="lands at ${clock}">${rel}</span>`;
+}
+
+const troopTip = (units, loot) => {
+  const t = Object.entries(units || {}).map(([k, v]) =>
+    `${(TROOP_NAME[k] || k)}: ${typeof v === 'number' ? fmt(v) : v}`);
+  const l = Object.entries(loot || {}).map(([k, v]) => `${RES_ICON[k] || ''} ${k}: ${fmt(v)}`);
+  if (!t.length && !l.length) return 'no troops reported';
+  return (t.length ? 'Troops\n  ' + t.join('\n  ') : '')
+    + (l.length ? (t.length ? '\n\n' : '') + 'Carrying\n  ' + l.join('\n  ') : '');
+};
+
+// Filled from the city payload, which already carries key -> display name for
+// every troop type, so this stays in step with constants.js without duplicating it.
+let TROOP_NAME = {
+  peasants: 'Worker', militia: 'Warrior', scouter: 'Scout', pikemen: 'Pikeman',
+  swordsmen: 'Swordsman', archer: 'Archer', carriage: 'Transporter',
+  lightCavalry: 'Cavalry', heavyCavalry: 'Cataphract', ballista: 'Ballista',
+  batteringRam: 'Battering Ram', catapult: 'Catapult',
+};
+
+function armyRows(list, now, { incoming }) {
+  if (!list.length) {
+    return `<div class="empty">${incoming ? 'Nothing inbound. ' : 'No armies out. '}`
+      + `${incoming ? 'You are not under attack.' : 'Send one from the script pane.'}</div>`;
+  }
+  const head = incoming
+    ? ['Type', 'From', 'Player', 'Hitting', 'Troops', 'Lands in']
+    : ['Type', 'From', 'Target', 'Hero', 'Troops', 'Arrives in'];
+  const rows = list.slice().sort((a, b) => (a.reachTime || 0) - (b.reachTime || 0)).map((a) => {
+    const m = missionMeta(a.mission);
+    const tag = `<span class="mtag ${m.cls}"><i class="mbar"></i>${m.icon} ${m.label}</span>`;
+    const coord = (c) => (c ? `${c.x},${c.y}` : '—');
+    const troops = a.scouted === false
+      ? '<span style="color:var(--dim)" title="not scouted — the server hides the numbers">unknown</span>'
+      : (a.troopTotal ? fmt(a.troopTotal) : '—');
+    const cells = incoming
+      ? [tag, esc(a.from || coord(a.origin)), esc(a.king || a.alliance || '—'),
+         esc(a.myCity || coord(a.target)), troops, etaText(a.reachTime, now)]
+      : [tag, esc(a.from || '—'), coord(a.target), esc(a.hero || '—'),
+         troops + (a.lootTotal ? ` <span style="color:var(--ok)" title="carrying loot">+${fmt(a.lootTotal)}</span>` : ''),
+         etaText(a.reachTime, now)];
+    return `<tr class="army" title="${esc(troopTip(a.units, a.loot))}">`
+      + cells.map((c, i) => `<td class="${i === 0 || i === 1 || i === 2 || i === 3 ? 'l' : 'n'}">${c}</td>`).join('')
+      + '</tr>';
+  }).join('');
+  return `<table><thead><tr>${head.map((h, i) =>
+    `<th class="${i <= 3 ? 'l' : 'n'}">${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`
+    + `<div style="padding:8px 12px;color:var(--dim);font-size:11.5px">hover a row for the exact troops</div>`;
+}
+
+async function renderArmies(incoming) {
+  const r = await fetch('/api/marches').then((x) => x.json()).catch(() => null);
+  if (!r) { $('monBody').innerHTML = '<div class="empty">Could not read the armies.</div>'; return; }
+  const list = incoming ? (r.incoming || []) : (r.outgoing || []);
+  $('monBody').innerHTML = armyRows(list, r.serverNow || r.now, { incoming });
+}
+
 function renderMon() {
   const d = S.cityData;
+  if (d && d.troops) for (const t of d.troops) if (t.key && t.name) TROOP_NAME[t.key] = t.name;
   if (!d) { $('monBody').innerHTML = '<div class="empty">Connect to load city data.</div>'; return; }
+  if (S.mon === 'armies') { renderArmies(false); return; }
+  if (S.mon === 'incoming') { renderArmies(true); return; }
   if (S.mon === 'resources') {
     const r = d.resources;
     const inc = d.incoming || {};
@@ -547,18 +655,22 @@ function renderMon() {
       if (!e || !e.total) return '<span style="color:#4b515d">—</span>';
       return `<span class="inc" data-res="${k}" style="color:var(--ok);cursor:help">+${fmt(e.total)}</span>`;
     };
+    const resRow = (k, label) => `<span class="ico">${RES_ICON[k]}</span>${label}`;
     $('monBody').innerHTML = table(['Resource', 'Amount', 'Incoming'], [
-      ['Food', fmt(r.food), incCell('food')], ['Wood', fmt(r.wood), incCell('wood')],
-      ['Stone', fmt(r.stone), incCell('stone')], ['Iron', fmt(r.iron), incCell('iron')],
-      ['Gold', fmt(r.gold), incCell('gold')],
-      ['Population', `${fmt(r.population)} / ${fmt(r.maxPopulation)}`],
+      [resRow('food', 'Food'), fmt(r.food), incCell('food')],
+      [resRow('wood', 'Wood'), fmt(r.wood), incCell('wood')],
+      [resRow('stone', 'Stone'), fmt(r.stone), incCell('stone')],
+      [resRow('iron', 'Iron'), fmt(r.iron), incCell('iron')],
+      [resRow('gold', 'Gold'), fmt(r.gold), incCell('gold')],
+      ['<span class="ico">\u{1F465}</span>Population', `${fmt(r.population)} / ${fmt(r.maxPopulation)}`],
       ['&nbsp;&nbsp;<span style="color:var(--dim)">employed on fields</span>', fmt(r.employed)],
       ['&nbsp;&nbsp;<span style="color:var(--dim)">on construction</span>', fmt(r.building)],
       ['&nbsp;&nbsp;<span style="color:var(--ok)">idle (free for troops)</span>', fmt(r.idle), ''],
     ]) + `<div style="padding:9px 10px 3px;color:var(--dim);font-size:11px">TOWN HALL — labour assigned to fields (zero these to free the whole city)</div>`
       + table(['Field', 'Labour', 'Output / hr'], (d.production || []).map((p) => [
-          esc(p.resource), p.labour ? fmt(p.labour) : '<span style="color:#4b515d">0</span>', fmt(p.rate),
-        ]).concat([['<span style="color:var(--dim)">tax rate</span>', d.tax + '%', '']]));
+          `<span class="ico">${RES_ICON[p.resource] || ''}</span>${esc(p.resource)}`,
+          p.labour ? fmt(p.labour) : '<span style="color:var(--faint)">0</span>', fmt(p.rate),
+        ]).concat([['<span class="ico">\u{1F4B0}</span><span style="color:var(--dim)">tax rate</span>', d.tax + '%', '']]));
 
     // hover breakdown for the Incoming column
     document.querySelectorAll('.inc').forEach((el) => {

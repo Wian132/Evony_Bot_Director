@@ -92,4 +92,41 @@ function marches(g) {
   });
 }
 
-module.exports = { buildSnapshot, marches };
+// Armies heading AT us. ArmyBean.troop is a TroopStrBean of STRINGS, and an
+// unscouted army sends "?" — reading it as numbers makes every real attack look
+// like nothing, which is a mistake this codebase has already made once.
+function incomingArmies(g) {
+  const C = require('./constants');
+  const MISSION_NAME = Object.fromEntries(Object.entries(C.MISSION).map(([k, v]) => [v, k]));
+  const mine = new Map((g.castles || []).map((c) => [Number(c.fieldId), c.name]));
+
+  return ((g.player && g.player.enemyArmys) || []).map((a) => {
+    const troop = a.troop || a.troops || {};
+    const units = {};
+    let known = true, total = 0;
+    if (troop && typeof troop === 'object') {
+      for (const [k, v] of Object.entries(troop)) {
+        const raw = String(v);
+        if (raw === '?' || raw === '') { known = false; units[k] = '?'; continue; }
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) { units[k] = n; total += n; }
+      }
+    }
+    const target = Number(a.targetFieldId);
+    return {
+      missionType: Number(a.missionType),
+      mission: MISSION_NAME[Number(a.missionType)] || String(a.missionType),
+      from: a.startPosName, to: a.targetPosName || mine.get(target) || null,
+      startFieldId: Number(a.startFieldId), targetFieldId: target,
+      origin: Number.isFinite(Number(a.startFieldId)) ? C.fieldIdToCoords(Number(a.startFieldId)) : null,
+      target: Number.isFinite(target) ? C.fieldIdToCoords(target) : null,
+      hero: a.hero || null, heroLevel: Number(a.heroLevel || 0),
+      alliance: a.alliance, king: a.king,
+      startTime: Number(a.startTime || 0), reachTime: Number(a.reachTime || 0),
+      units, troopTotal: total, scouted: known,
+      myCity: mine.get(target) || null,
+    };
+  });
+}
+
+module.exports = { buildSnapshot, marches, incomingArmies };

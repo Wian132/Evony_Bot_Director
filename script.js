@@ -113,6 +113,32 @@ function parseLine(raw) {
     if (!tok[1]) throw new Error('useitem: usage  useitem <itemId> [num]');
     return { cmd: 'useitem', itemId: tok[1], amount: parseInt(tok[2] || '1', 10) };
   }
+  // useheroitem OTTO excalibur repeat 5    (NEAT spelling)
+  // useheroitem OTTO excalibur 5           (same thing)
+  // useheroitem OTTO hero.power.1          (ids always work)
+  if (cmd === 'useheroitem' || cmd === 'heroitem') {
+    const HI = require('./heroitems');
+    if (!tok[1] || !tok[2]) {
+      throw new Error('useheroitem: usage  useheroitem <hero> <item> [repeat <n>]  |  items: '
+        + Object.values(HI.ALL).map((d) => d.names[0]).join(', '));
+    }
+    const rest = tok.slice(2);
+    let times = 1;
+    const ri = rest.findIndex((t) => String(t).toLowerCase() === 'repeat');
+    if (ri !== -1) { times = parseInt(rest[ri + 1] || '1', 10) || 1; rest.splice(ri, 2); }
+    else if (/^\d+$/.test(rest[rest.length - 1] || '')) times = parseInt(rest.pop(), 10) || 1;
+    const word = rest.join('');
+    const itemId = HI.resolveItem(word);
+    if (!itemId) {
+      throw new Error(`useheroitem: unknown item "${rest.join(' ')}". Known: `
+        + Object.values(HI.ALL).map((d) => d.names[0]).join(', ')
+        + ' — or give the raw id, e.g. hero.power.1');
+    }
+    if (times < 1 || times > 500) throw new Error('useheroitem: repeat must be between 1 and 500');
+    return { cmd: 'useheroitem', heroName: tok[1], itemId, times };
+  }
+  if (cmd === 'heroitems') return { cmd: 'heroitems' };
+
   if (cmd === 'packages' || cmd === 'inventory') return { cmd: 'packages' };
   if (cmd === 'lostheroes') return { cmd: 'lostheroes' };
   if (cmd === 'recover') {
@@ -334,6 +360,39 @@ async function run(game, actions, log, opts = {}) {
         const r = await game.useItem(game.castleId(castle), a.itemId, a.amount);
         log('  -> ' + say(r));
         done++; continue;
+      }
+
+      if (a.cmd === 'useheroitem') {
+        const HI = require('./heroitems');
+        log(`  ${a.heroName} <- ${a.times} x ${HI.describeItem(a.itemId)}`);
+        if (dryRun) { log('  [dry run] nothing sent'); done++; continue; }
+        const r = await HI.useOnHero(game, { heroName: a.heroName, itemId: a.itemId, times: a.times, log });
+        if (!r.ok && !r.used) { log('  ' + r.error); continue; }
+        const d = (k) => (r.after[k] - r.before[k]);
+        const moved = ['power', 'management', 'stratagem', 'experience']
+          .filter((k) => d(k) !== 0)
+          .map((k) => `${k} ${r.before[k]} -> ${r.after[k]} (+${d(k)})`);
+        const spent = r.heldBefore !== undefined && r.heldAfter !== undefined
+          ? `, ${r.heldBefore} -> ${r.heldAfter} left` : '';
+        log(`  used ${r.used} on ${r.hero} in ${r.castle}${spent}`
+          + (moved.length
+            ? ' — ' + moved.join(', ')
+            : ' — the server accepted and consumed it, but reports no change to the'
+              + ' hero attributes it sends us'));
+        if (r.error) log('  ' + r.error);
+        done++;
+        continue;
+      }
+
+      if (a.cmd === 'heroitems') {
+        const HI = require('./heroitems');
+        const rows = HI.heldHeroItems(game);
+        if (!rows.length) { log('  no hero items in the inventory'); done++; continue; }
+        log('  hero items held:');
+        for (const r of rows) log(`    ${String(r.count).padStart(6)}  ${r.label.padEnd(30)} ${r.id}`);
+        log('  use any of them with:  useheroitem <hero> <name or id> repeat <n>');
+        done++;
+        continue;
       }
 
       if (a.cmd === 'packages') {

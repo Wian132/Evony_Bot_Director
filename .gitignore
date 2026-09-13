@@ -30,4 +30,9 @@ scriptstore.json
 enginestate.json
 mapcache.json
 
+dbg.json
+itemdefs.json
+ik.txt
+ck.txt
+
 node_modules/

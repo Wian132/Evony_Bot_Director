@@ -188,6 +188,12 @@ const server = http.createServer(async (req, res) => {
         }
         return typeof v === 'string' ? `"${String(v).slice(0, 24)}"` : String(v);
       };
+      // One hero in full, when asked for by name — the shape summary truncates.
+      const heroName = q.get('hero');
+      if (heroName) {
+        const h = (c.heros || []).find((x) => String(x.name || '').toLowerCase() === heroName.toLowerCase());
+        return send(200, 'application/json', JSON.stringify({ hero: h || null }, null, 1));
+      }
       return send(200, 'application/json', JSON.stringify({
         castleKeys: Object.keys(c),
         castle: shape(c),

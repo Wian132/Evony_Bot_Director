@@ -109,12 +109,20 @@ async function useOnHero(game, { heroName, itemId, times = 1, log = () => {} }) 
   const n = Math.min(times, have);
   if (n < times) log(`  only ${have} ${describeItem(itemId)} held — using ${n}`);
 
-  const before = {
-    power: Number(hero.power || 0),
-    management: Number(hero.management || 0),
-    stratagem: Number(hero.stratagem || 0),
-    experience: Number(hero.experience || 0),
-  };
+  // The attribute items do NOT move `power` — they set a timed percentage buff
+  // in powerBuffAdded and add an entry to `buffs`. Watching only the base is why
+  // a successful Excalibur looked like a no-op.
+  const snap = (x) => ({
+    power: Number(x.power || 0),
+    management: Number(x.management || 0),
+    stratagem: Number(x.stratagem || 0),
+    experience: Number(x.experience || 0),
+    powerBuff: Number(x.powerBuffAdded || 0),
+    managementBuff: Number(x.managementBuffAdded || 0),
+    stratagemBuff: Number(x.stratagemBuffAdded || 0),
+    buffEnds: Math.max(0, ...((x.buffs || []).map((b) => Number(b.endTime || 0)))) || 0,
+  });
+  const before = snap(hero);
 
   let used = 0;
   for (let i = 0; i < n; i++) {
@@ -137,12 +145,8 @@ async function useOnHero(game, { heroName, itemId, times = 1, log = () => {} }) 
     ok: true, used, hero: hero.name, castle: castle.name, itemId,
     heldBefore: have, heldAfter: countOf(game, itemId),
     before,
-    after: {
-      power: Number(fresh.power || 0),
-      management: Number(fresh.management || 0),
-      stratagem: Number(fresh.stratagem || 0),
-      experience: Number(fresh.experience || 0),
-    },
+    after: snap(fresh),
+    buffs: (fresh.buffs || []).map((b) => ({ text: b.descName, endTime: Number(b.endTime || 0) })),
   };
 }
 

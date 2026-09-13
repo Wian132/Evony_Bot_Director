@@ -633,9 +633,17 @@ function armyRows(list, now, { incoming }) {
     const troops = a.scouted === false
       ? '<span style="color:var(--dim)" title="not scouted — the server hides the numbers">unknown</span>'
       : (a.troopTotal ? fmt(a.troopTotal) : '—');
+    const who = incoming
+      ? `${esc(a.king || a.alliance || '—')} <span class="chip ${a.hostile ? 'bad' : 'ok'}">`
+        + `${a.hostile ? 'hostile' : 'friendly'}</span>`
+      : '';
+    const carrying = incoming && a.resources && Object.keys(a.resources).length
+      ? ' <span style="color:var(--ok)" title="carrying resources">+'
+        + fmt(Object.values(a.resources).reduce((x, y) => x + y, 0)) + '</span>'
+      : '';
     const cells = incoming
-      ? [tag, esc(a.from || coord(a.origin)), esc(a.king || a.alliance || '—'),
-         esc(a.myCity || coord(a.target)), troops, etaText(a.reachTime, now)]
+      ? [tag, esc(a.from || coord(a.origin)), who,
+         esc(a.myCity || coord(a.target)), troops + carrying, etaText(a.reachTime, now)]
       : [tag, esc(a.from || '—'), coord(a.target), esc(a.hero || '—'),
          troops + (a.lootTotal ? ` <span style="color:var(--ok)" title="carrying loot">+${fmt(a.lootTotal)}</span>` : ''),
          etaText(a.reachTime, now)];
@@ -924,6 +932,22 @@ function renderMarket() {
 // ---------- heroes (manual control) ----------
 let INN = null;
 
+// Hero items set a TIMED PERCENTAGE buff rather than changing the base, so the
+// useful number is base x (1 + buff). Both are shown: the boosted figure is what
+// the hero actually fights at, the base is what it drops back to when the buff
+// expires.
+function attrCell(h, key) {
+  const base = Number(h[key] || 0);
+  const pct = Number(h[key + 'Buff'] || 0);
+  const eff = Number(h[key + 'Eff'] || base);
+  if (!pct) return String(base);
+  const ends = Math.max(0, ...((h.buffs || []).map((b) => b.msLeft || 0)));
+  const days = ends ? (ends / 86400000).toFixed(1) + ' days left' : '';
+  return `<b style="color:var(--ok)">${fmt(eff)}</b>`
+    + ` <span style="color:var(--dim)" title="base ${fmt(base)} plus a ${pct}% buff${days ? ' — ' + days : ''}">`
+    + `(${fmt(base)} +${pct}%)</span>`;
+}
+
 function renderHeroes() {
   const d = S.cityData;
   if (!d) { $('monBody').innerHTML = '<div class="empty">Connect to load city data.</div>'; return; }
@@ -934,7 +958,7 @@ function renderHeroes() {
       `<button class="ha" data-act="${act}" data-hero="${esc(h.name)}" style="padding:2px 7px;font-size:11px;${style}">${label}</button>`;
     return [
       esc(h.name) + (isMayor ? ' <span style="color:var(--amber);font-size:10.5px">★ mayor</span>' : ''),
-      h.level, h.attack, h.politics, h.intel, h.loyalty,
+      h.level, attrCell(h, 'attack'), attrCell(h, 'politics'), attrCell(h, 'intel'), h.loyalty,
       h.unspent ? `<span style="color:var(--warn)">${h.unspent}</span>` : '0',
       (isMayor ? btn('unmayor', 'Stand down') : btn('mayor', 'Mayor')) + ' ' +
       btn('points', '+Pts') + ' ' +
@@ -942,8 +966,17 @@ function renderHeroes() {
     ];
   });
 
+  const buffed = (d.heroes || []).filter((h) => (h.buffs || []).length);
+  const buffHtml = buffed.length
+    ? `<div class="sect">Active hero buffs</div>` + table(['Hero', 'Effect', 'Expires'],
+        buffed.flatMap((h) => (h.buffs || []).map((b) => [
+          esc(h.name), esc(b.text || b.type || ''),
+          b.msLeft ? `${(b.msLeft / 86400000).toFixed(1)} days` : 'expired',
+        ])))
+    : '';
+
   const mine = d.heroes && d.heroes.length
-    ? table(['Hero', 'Lvl', 'Atk', 'Pol', 'Int', 'Loy', 'Unspent', 'Actions'], rows)
+    ? table(['Hero', 'Lvl', 'Atk', 'Pol', 'Int', 'Loy', 'Unspent', 'Actions'], rows) + buffHtml
     : '<div class="empty">no heroes in this city</div>';
 
   const innRows = (INN && INN.heroes || []).map((h) => [

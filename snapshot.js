@@ -84,7 +84,11 @@ function marches(g) {
       from: a.startPosName, to: a.targetPosName,
       startFieldId: Number(a.startFieldId), targetFieldId: Number(a.targetFieldId),
       target: Number.isFinite(Number(a.targetFieldId)) ? C.fieldIdToCoords(Number(a.targetFieldId)) : null,
-      hero: a.hero && a.hero.name, heroId: a.hero && a.hero.id,
+      // ArmyBean.hero is a STRING (the name), with heroLevel beside it — there is
+      // no hero object and no heroId. Reading a.hero.name gives undefined, which
+      // is why every march showed a blank hero.
+      hero: typeof a.hero === 'string' ? a.hero : (a.hero && a.hero.name) || null,
+      heroLevel: Number(a.heroLevel || 0),
       startTime: Number(a.startTime || 0), reachTime: Number(a.reachTime || 0),
       units, troopTotal: total,
       loot, lootTotal,
@@ -95,12 +99,21 @@ function marches(g) {
 // Armies heading AT us. ArmyBean.troop is a TroopStrBean of STRINGS, and an
 // unscouted army sends "?" — reading it as numbers makes every real attack look
 // like nothing, which is a mistake this codebase has already made once.
+// "Incoming" means armies OTHER people are sending at us, hostile or not. The
+// server splits those across two lists: enemyArmys for attacks and scouts, and
+// friendArmys for reinforcements and resource transports from allies. Reading
+// only the enemy list left Incoming permanently empty for everything friendly.
+//
+// Our OWN marches are not incoming, whichever way they are pointing — they are
+// what is sitting in the rally spot, and they belong on the Armies tab.
 function incomingArmies(g) {
   const C = require('./constants');
   const MISSION_NAME = Object.fromEntries(Object.entries(C.MISSION).map(([k, v]) => [v, k]));
   const mine = new Map((g.castles || []).map((c) => [Number(c.fieldId), c.name]));
+  const p = g.player || {};
+  const hostile = new Set((p.enemyArmys || []).map((a) => a));
 
-  return ((g.player && g.player.enemyArmys) || []).map((a) => {
+  return [...(p.enemyArmys || []), ...(p.friendArmys || [])].map((a) => {
     const troop = a.troop || a.troops || {};
     const units = {};
     let known = true, total = 0;
@@ -125,6 +138,16 @@ function incomingArmies(g) {
       startTime: Number(a.startTime || 0), reachTime: Number(a.reachTime || 0),
       units, troopTotal: total, scouted: known,
       myCity: mine.get(target) || null,
+      hostile: hostile.has(a),
+      resources: (() => {
+        const r = a.resource || {};
+        const out = {};
+        for (const k of ['food', 'wood', 'stone', 'iron', 'gold']) {
+          const v = Number(r[k] || 0);
+          if (v > 0) out[k] = v;
+        }
+        return out;
+      })(),
     };
   });
 }

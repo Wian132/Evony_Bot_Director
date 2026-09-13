@@ -744,11 +744,32 @@ class Session {
           outside: !!(def && def.outside),
         };
       }),
-      heroes: (c.heros || []).map((h) => ({
-        name: h.name, level: h.level, loyalty: h.loyalty,
-        attack: Game.attrValue(h, 'power'), politics: Game.attrValue(h, 'management'), intel: Game.attrValue(h, 'stratagem'),
-        unspent: h.remainPoint || 0, status: h.status,
-      })),
+      // Hero items apply a TIMED PERCENTAGE buff, not a permanent stat change:
+      // the hero carries powerBuffAdded / managementBuffAdded / stratagemBuffAdded
+      // as a percent, plus a `buffs` array with the description and an endTime.
+      // Reading only `power` is why using an Excalibur looked like it did
+      // nothing — the base is untouched and the bonus lives beside it.
+      heroes: (c.heros || []).map((h) => {
+        const pct = (k) => Number(h[k + 'BuffAdded'] || 0);
+        const eff = (k) => Math.round(Game.attrValue(h, k) * (1 + pct(k) / 100));
+        const buffs = (h.buffs || []).map((b) => ({
+          type: b.typeId, text: b.descName,
+          endTime: Number(b.endTime || 0),
+          msLeft: Math.max(0, Number(b.endTime || 0) - Date.now()),
+        }));
+        return {
+          name: h.name, level: h.level, loyalty: h.loyalty,
+          attack: Game.attrValue(h, 'power'),
+          politics: Game.attrValue(h, 'management'),
+          intel: Game.attrValue(h, 'stratagem'),
+          attackBuff: pct('power'), politicsBuff: pct('management'), intelBuff: pct('stratagem'),
+          attackEff: eff('power'), politicsEff: eff('management'), intelEff: eff('stratagem'),
+          buffs,
+          experience: Number(h.experience || 0),
+          upgradeExp: Number(h.upgradeExp || 0),
+          unspent: h.remainPoint || 0, status: h.status,
+        };
+      }),
       queues: { building: (c.buildingQueues || []).length },
     };
   }

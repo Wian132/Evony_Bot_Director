@@ -271,8 +271,25 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/api/log') {
     const kind = q.get('kind') || 'log';
-    const lines = kind === 'reports' ? SESSION.reports : SESSION.log;
-    return send(200, 'application/json', JSON.stringify({ lines: lines.slice(-300) }));
+    const city = q.get('city');
+    const find = String(q.get('q') || '').trim().toLowerCase();
+    let lines = kind === 'reports' ? SESSION.reports : SESSION.log;
+    if (city) lines = lines.filter((l) => l.city === city);
+    // Filtering happens BEFORE the tail is taken, so a match further back is
+    // still found instead of being cut off by the window.
+    if (find) lines = lines.filter((l) => String(l.m).toLowerCase().includes(find));
+    return send(200, 'application/json', JSON.stringify({
+      lines: lines.slice(-500),
+      total: lines.length,
+      cities: SESSION.logCities(kind),
+      filtered: !!(city || find),
+    }));
+  }
+
+  if (url.pathname === '/api/log/clear' && req.method === 'POST') {
+    const b = await body(req);
+    const removed = SESSION.clearLog(b.kind || 'log', b.city || null);
+    return send(200, 'application/json', JSON.stringify({ ok: true, removed }));
   }
   if (url.pathname === '/api/chat' && req.method === 'GET') {
     const ch = q.get('channel') || 'alliance';

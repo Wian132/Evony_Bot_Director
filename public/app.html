@@ -150,6 +150,16 @@
   .chatline { padding:3px 12px; font-size:13.5px; }
   .chatline .who { color:var(--blue); font-weight:600; }
   .chatline .ts { color:var(--faint); font-variant-numeric:tabular-nums; }
+  .logbar { display:flex; align-items:center; gap:7px; padding:6px 9px;
+            border-bottom:1px solid var(--line); background:var(--panel); }
+  .logbar input { flex:0 1 220px; background:var(--panel); border:1px solid var(--line);
+                  color:var(--ink); border-radius:6px; padding:4px 9px; font:12.5px inherit; }
+  .logbar input:focus { outline:2px solid var(--blue); outline-offset:1px; border-color:var(--blue); }
+  .logbar select { padding:4px 8px; font:12.5px inherit; }
+  .logbar button { padding:4px 11px; font:12.5px inherit; }
+  #logCount { color:var(--dim); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  mark { background:rgba(24,87,196,.22); color:inherit; border-radius:2px; }
+
   .sendbar { display:flex; gap:7px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); }
   .sendbar input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--ink);
                    border-radius:6px; padding:6px 11px; font:13.5px inherit; }
@@ -277,6 +287,13 @@
       <div class="t" data-k="engine">Engine</div>
       <div class="t" data-k="reports">Reports</div>
     </div>
+    <div class="logbar">
+      <input id="logFind" placeholder="search the log…" spellcheck="false">
+      <select id="logCity"><option value="">all cities</option></select>
+      <span id="logCount"></span>
+      <span style="flex:1"></span>
+      <button id="logClear" title="Remove the lines currently shown">Clear</button>
+    </div>
     <div class="body"><pre id="logBody">—</pre></div>
   </div>
 
@@ -394,7 +411,8 @@ function initResizers() {
 window.name = 'evony_console';
 
 const $ = (id) => document.getElementById(id);
-const S = { city: null, edit: 'goals', mon: 'general', logs: 'log', chat: 'alliance', cityData: null };
+const S = { city: null, edit: 'goals', mon: 'general', logs: 'log', chat: 'alliance',
+            cityData: null, logFind: '', logCity: '' };
 
 // connection banner state — ticks down locally between polls
 const CONN = { state: 'offline', reason: null, retryInSec: null, attempt: 0, syncedAt: 0 };
@@ -1234,10 +1252,70 @@ async function doScan() {
 // ---------- logs ----------
 async function renderLogs() {
   if (S.logs === 'engine') return;      // engine pane holds validate/run output
-  const r = await fetch('/api/log?kind=' + S.logs).then(x => x.json()).catch(() => ({ lines: [] }));
-  $('logBody').textContent = (r.lines || []).map(l => `${hhmm(l.t)}  ${l.m}`).join('\n') || '—';
-  $('logBody').parentElement.scrollTop = 1e9;
+
+  const qs = new URLSearchParams({ kind: S.logs });
+  if (S.logFind) qs.set('q', S.logFind);
+  if (S.logCity) qs.set('city', S.logCity);
+  const r = await fetch('/api/log?' + qs).then(x => x.json()).catch(() => null);
+  if (!r) return;
+
+  // Keep the city list in step without stamping on a selection being made.
+  const sel = $('logCity');
+  const want = ['', ...(r.cities || []).map(c => c.city)].join('|');
+  if (sel.dataset.sig !== want) {
+    sel.dataset.sig = want;
+    sel.innerHTML = '<option value="">all cities</option>'
+      + (r.cities || []).map(c =>
+          `<option value="${esc(c.city)}">${esc(c.city)} (${c.count})</option>`).join('');
+    sel.value = S.logCity || '';
+  }
+
+  const lines = r.lines || [];
+  const body = $('logBody');
+  // Only stick to the bottom if the reader is already there — otherwise scrolling
+  // back through history is yanked away every few seconds.
+  const pane = body.parentElement;
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+
+  if (S.logFind) {
+    const needle = S.logFind.toLowerCase();
+    body.innerHTML = lines.map(l => {
+      const text = `${hhmm(l.t)}  ${l.m}`;
+      const i = text.toLowerCase().indexOf(needle);
+      if (i === -1) return esc(text);
+      return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + needle.length))
+           + '</mark>' + esc(text.slice(i + needle.length));
+    }).join('\n') || '<span style="color:var(--dim)">nothing matches</span>';
+  } else {
+    body.textContent = lines.map(l => `${hhmm(l.t)}  ${l.m}`).join('\n') || '—';
+  }
+
+  $('logCount').textContent = r.filtered
+    ? `${lines.length} of ${r.total} shown`
+    : `${lines.length} line(s)`;
+  if (atBottom) pane.scrollTop = 1e9;
 }
+
+// Typing filters as you go, but the fetch is debounced so a long log is not
+// re-queried on every keystroke.
+let logFindTimer = null;
+$('logFind').addEventListener('input', () => {
+  S.logFind = $('logFind').value.trim();
+  clearTimeout(logFindTimer);
+  logFindTimer = setTimeout(renderLogs, 180);
+});
+$('logCity').addEventListener('change', () => { S.logCity = $('logCity').value; renderLogs(); });
+
+$('logClear').onclick = async () => {
+  const where = S.logCity ? `the log for ${S.logCity}` : 'the whole log';
+  if (!confirm(`Clear ${where}?`)) return;
+  const r = await fetch('/api/log/clear', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: S.logs, city: S.logCity || null }),
+  }).then(x => x.json()).catch(() => null);
+  if (r && r.ok) { S.logCity = ''; $('logCity').value = ''; }
+  renderLogs();
+};
 
 // ---------- chat ----------
 async function renderChat() {

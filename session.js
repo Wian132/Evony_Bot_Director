@@ -81,7 +81,44 @@ class Session {
     return this.org ? this.org.settings : { get: (k, d) => d, set: () => {} };
   }
 
-  note(m) { this.logSeq = (this.logSeq || 0) + 1; push(this.log, { t: Date.now(), m: String(m) }); }
+  // logSeq is monotonic; this.log is a 400-entry ring whose length plateaus, so
+  // it cannot tell you whether anything happened between two samples.
+  //
+  // The engine already prefixes its per-city lines with "[CityName]", so the
+  // city is taken off the front rather than threaded through every caller.
+  // Anything without a prefix belongs to the session as a whole.
+  note(m, city = null) {
+    this.logSeq = (this.logSeq || 0) + 1;
+    const text = String(m);
+    let tag = city;
+    if (!tag) {
+      const hit = text.match(/^\[([^\]]{1,24})\]\s*/);
+      if (hit) tag = hit[1];
+    }
+    push(this.log, { t: Date.now(), m: text, city: tag || null });
+  }
+
+  // Empty the log, or only the lines belonging to one city.
+  clearLog(kind = 'log', city = null) {
+    const target = kind === 'reports' ? 'reports' : 'log';
+    const before = this[target].length;
+    if (city) this[target] = this[target].filter((l) => l.city !== city);
+    else this[target] = [];
+    const removed = before - this[target].length;
+    // The note comes after the clear, or it would be wiped along with it.
+    this.note(city ? `log cleared for ${city} (${removed} line(s))` : `log cleared (${removed} line(s))`);
+    return removed;
+  }
+
+  // Every city that currently has lines, for the filter.
+  logCities(kind = 'log') {
+    const seen = new Map();
+    for (const l of (kind === 'reports' ? this.reports : this.log)) {
+      if (l.city) seen.set(l.city, (seen.get(l.city) || 0) + 1);
+    }
+    return [...seen.entries()].map(([city, count]) => ({ city, count }))
+      .sort((a, b) => String(a.city).localeCompare(String(b.city), undefined, { numeric: true }));
+  }
 
   get connected() { return !!(this.game && this.game.c && this.game.c.sock && !this.game.c.sock.destroyed); }
 

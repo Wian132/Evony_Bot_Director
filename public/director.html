@@ -68,6 +68,9 @@
   .edit { color:var(--dim); padding:0 4px; border-radius:4px; }
   .edit:hover { color:var(--ink); background:#2a313b; }
   tr:hover .focus { color:var(--blue); text-decoration:underline; }
+  a.focus { color:var(--blue); text-decoration:none; font-weight:600; cursor:pointer; }
+  a.focus:hover { text-decoration:underline; }
+  .focus.noconsole { color:var(--dim); cursor:default; }
   .pill { font-size:11px; padding:3px 9px; border-radius:99px; font-weight:600; white-space:nowrap; }
   .ok { background:rgba(123,216,143,.15); color:var(--acc); }
   .stale { background:rgba(255,180,84,.15); color:var(--warn); }
@@ -282,8 +285,15 @@ const itemCount = (a, id) => Number(((s(a).items) || {})[id] || 0);
 // {key, head, render, align, item?}  — align 'l' for names, 'c' for everything else
 const COLS = [
   { key: '_edit', head: '', align: 'c', render: () => '<span class="edit" title="Edit details">✎</span>', fixed: true },
+  // A real anchor, not window.open: a scripted popup is blocked by the browser,
+  // a link click never is. target names the tab after the account, so each bot
+  // gets its own tab and clicking it again focuses that tab instead of opening
+  // another.
   { key: 'label', head: 'Account', align: 'l', fixed: true,
-    render: (a) => `<span class="focus" title="Open this account in the console">${esc(a.label)}</span>` },
+    render: (a) => (a.consoleUrl
+      ? `<a class="focus" href="${esc(a.consoleUrl)}/" target="otto_bot_${esc(a.id)}"
+            title="Open ${esc(a.label)} — ${esc(a.consoleUrl)}">${esc(a.label)}</a>`
+      : `<span class="focus noconsole" title="No console is running for this account">${esc(a.label)}</span>`) },
   { key: 'status', head: 'Status', align: 'c', render: (a) => statusPill(a) },
   { key: 'mem', head: 'Memory', align: 'c', render: (a) => memCell(a), sort: (a) => memOf(a) },
   { key: 'coins', head: 'Coins', align: 'c', render: (a) => fmt(s(a).coins) },
@@ -396,14 +406,22 @@ function filtered() {
   rows.sort((x, y) => { const p = sortVal(x, sortKey), q2 = sortVal(y, sortKey); return (p < q2 ? -1 : p > q2 ? 1 : 0) * sortDir; });
   return rows;
 }
+// The table refreshes every 5s. Rebuilding the DOM each time throws away
+// whatever the mouse was over, so a click landing mid-refresh can be lost —
+// write the HTML only when it has actually changed.
+let lastHead = '', lastBody = '';
+
 function render() {
   const cols = shownCols();
-  $('#tbl thead').innerHTML = '<tr>' + cols.map((c) =>
+  const head = '<tr>' + cols.map((c) =>
     `<th class="${c.align}" data-k="${c.key}">${c.head}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
+  if (head !== lastHead) { $('#tbl thead').innerHTML = head; lastHead = head; }
+
   const rows = filtered();
-  $('#tbl tbody').innerHTML = rows.map((a) =>
+  const body = rows.map((a) =>
     `<tr data-id="${a.id}">` + cols.map((c) => `<td class="${c.align}">${c.render(a)}</td>`).join('') + '</tr>').join('')
     || `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--dim);padding:26px">no accounts match</td></tr>`;
+  if (body !== lastBody) { $('#tbl tbody').innerHTML = body; lastBody = body; }
 
   const inMaint = DATA.accounts.filter((a) => a.live && a.live.state === 'maintenance'
     && Date.now() - a.live.at < 5 * 60000);
@@ -434,17 +452,16 @@ $('#tbl').addEventListener('click', (e) => {
   const tr = e.target.closest('tr[data-id]');
   if (!tr) return;
   const acc = DATA.accounts.find((a) => a.id === tr.dataset.id);
-  // the pencil edits; anywhere else on the row brings that bot into focus
   if (e.target.closest('.edit')) return openDlg(acc);
+  // The account name is a real link — let the browser handle it, or we would
+  // both navigate and open a tab.
+  if (e.target.closest('a')) return;
   focusBot(acc);
 });
 
-// One tab per bot, reused.
-//
-// Consoles are PINNED to a single account now, so the old behaviour — one shared
-// tab told to switch accounts — is refused by the console and popped up an
-// error. Instead each account gets a window named after it: clicking the same
-// bot twice focuses its existing tab rather than opening another.
+// Clicking anywhere on the row that is not the name link. Navigating a named
+// tab from here needs window.open, which the browser may block — so if it does,
+// say so rather than appearing to do nothing.
 function focusBot(acc) {
   if (!acc) return;
   if (!acc.consoleUrl) {
@@ -454,8 +471,11 @@ function focusBot(acc) {
     return;
   }
   const w = window.open(acc.consoleUrl + '/', 'otto_bot_' + acc.id);
-  if (w) w.focus();
-  $('#status').textContent = `${acc.label} -> ${acc.consoleUrl}`;
+  if (w) { w.focus(); $('#status').textContent = `${acc.label} -> ${acc.consoleUrl}`; }
+  else {
+    $('#status').innerHTML = `Your browser blocked the pop-up. Click the account name `
+      + `<b>${esc(acc.label)}</b> instead — that is a normal link and always opens.`;
+  }
 }
 
 function openDlg(acc) {

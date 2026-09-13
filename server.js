@@ -124,7 +124,9 @@ const server = http.createServer(async (req, res) => {
   }
   const ORG = SESSION.org;
 
-  const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type.includes('charset') ? type : type + '; charset=utf-8' }); res.end(data); };
+  const send = (code, type, data) => { res.writeHead(code, {
+    // never let a browser hold on to a stale page or a stale account list
+    'Cache-Control': 'no-store, must-revalidate', 'Content-Type': type.includes('charset') ? type : type + '; charset=utf-8' }); res.end(data); };
 
   const url = new URL(req.url, 'http://x');
   const q = url.searchParams;

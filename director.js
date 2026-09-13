@@ -283,7 +283,9 @@ http.createServer(async (req, res) => {
   // over the org from the SESSION — never from anything the caller sends.
   const ORG = req.org ? D.org(req.org.id) : null;
   const url = new URL(req.url, 'http://x');
-  const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type + '; charset=utf-8' }); res.end(data); };
+  const send = (code, type, data) => { res.writeHead(code, {
+    // never let a browser hold on to a stale page or a stale account list
+    'Cache-Control': 'no-store, must-revalidate', 'Content-Type': type + '; charset=utf-8' }); res.end(data); };
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
     return send(200, 'text/html', fs.readFileSync(path.join(__dirname, 'public', 'director.html')));

@@ -31,16 +31,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = [];
 const note = (m) => { log.push({ t: Date.now(), m: String(m) }); if (log.length > 500) log.shift(); console.log(new Date().toLocaleTimeString(), m); };
 
-// seed from .env on first run so there is something to look at
-if (!D.accounts.all().length && fs.existsSync(path.join(__dirname, '.env'))) {
-  const env = {};
-  for (const l of fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split(/\r?\n/)) {
-    const m = l.match(/^\s*([A-Z_]+)\s*=\s*(.*)\s*$/); if (m) env[m[1]] = m[2];
-  }
-  if (env.EVONY_EMAIL) {
-    D.accounts.upsert({ id: 'a1', label: 'Lord22', server: env.EVONY_SERVER || 'ss71', email: env.EVONY_EMAIL, password: env.EVONY_PASSWORD, enabled: true, notes: 'seeded from .env' });
-  }
-}
+// First-run setup belongs to migrate-tenancy.js: an account has to land in
+// SOMEONE's organization, and this process serves many.
 
 // ------------------------------------------------------------------ proxies
 // Evony tolerates roughly 10 accounts per IP, so accounts are spread across the
@@ -49,23 +41,24 @@ const { parseList, parseProxy } = require('./proxy');
 const PROXY_FILE = path.join(__dirname, 'proxies.txt');
 const MAX_PER_PROXY = Number(process.env.MAX_PER_PROXY || 10);
 
-function proxyText() {
-  let t = D.settings.get('proxyText', null);
+// Proxies belong to an organization: one tenant's IP budget is not another's.
+function proxyText(org) {
+  let t = org.settings.get('proxyText', null);
   if (t === null && fs.existsSync(PROXY_FILE)) {
-    t = fs.readFileSync(PROXY_FILE, 'utf8');
-    D.settings.set('proxyText', t);
+    t = fs.readFileSync(PROXY_FILE, 'utf8');      // one-time import of the old file
+    org.settings.set('proxyText', t);
   }
   return t || '';
 }
-function loadProxies() { return parseList(proxyText()); }
+function loadProxies(org) { return parseList(proxyText(org)); }
 
 // Deterministic spread: account order decides the bucket, so assignments are
 // stable between restarts instead of shuffling every poll.
-function proxyAssignments() {
-  const list = loadProxies();
+function proxyAssignments(org) {
+  const list = loadProxies(org);
   const out = new Map();
   if (!list.length) return out;
-  const accts = D.accounts.all();
+  const accts = org.accounts.all();
   const spread = accts.filter((a) => !a.proxy);
   spread.forEach((a, i) => out.set(a.id, list[Math.floor(i / MAX_PER_PROXY) % list.length]));
   for (const a of accts.filter((x) => x.proxy)) {
@@ -75,13 +68,13 @@ function proxyAssignments() {
   return out;
 }
 
-function proxyFor(acc) { return proxyAssignments().get(acc.id) || null; }
+function proxyFor(org, acc) { return proxyAssignments(org).get(acc.id) || null; }
 
 // ---------------------------------------------------------------- snapshot
-async function pollAccount(acc) {
+async function pollAccount(org, acc) {
   const g = new Game(() => {});
   const started = Date.now();
-  const proxy = proxyFor(acc);
+  const proxy = proxyFor(org, acc);
   try {
     await g.connect(acc.server || 'ss71', acc.email, acc.password, proxy);
     const snap = buildSnapshot(g, {
@@ -104,7 +97,7 @@ let polling = false;
 // a console on another port and kick it.
 async function focusedAccountIds() {
   const held = new Set();
-  for (const pr of probeList()) {
+  for (const pr of allProbes()) {
     const r = await getJson(pr.url.replace(/\/$/, '') + '/api/session', 1500);
     if (!r.ok || !r.json) continue;
     // Claim the account if the console OWNS it, even mid-reconnect — otherwise
@@ -114,24 +107,36 @@ async function focusedAccountIds() {
   return held;
 }
 
+// One process serves every organization, so the poller walks them in turn. The
+// gap between accounts is global on purpose: it exists to avoid hammering the
+// game server, which does not care whose account it is.
 async function pollCycle() {
   if (polling) return;
   polling = true;
-  const targets = D.accounts.all().filter((a) => a.enabled !== false);
-  note(`poll cycle: ${targets.length} account(s), ~${Math.round((targets.length * GAP_MS) / 60000)} min`);
-  const focused = await focusedAccountIds();
-  for (const acc of targets) {
-    if (focused.has(acc.id)) {
-      note(`${acc.label}: open in the console — skipped (a second login would kick it)`);
-      continue;
+  try {
+    const allOrgs = D.orgs.all().filter((o) => !o.disabled);
+    const focused = await focusedAccountIds();
+    let total = 0;
+    for (const o of allOrgs) {
+      const org = D.org(o.id);
+      const targets = org.accounts.all().filter((a) => a.enabled !== false);
+      if (!targets.length) continue;
+      note(`poll cycle: ${o.name} — ${targets.length} account(s)`);
+      for (const acc of targets) {
+        if (focused.has(acc.id)) {
+          note(`${acc.label}: open in a console — skipped (a second login would kick it)`);
+          continue;
+        }
+        const snap = await pollAccount(org, acc);
+        org.snapshots.add(acc.id, snap);
+        total++;
+        note(snap.ok ? `${acc.label}: ok (${snap.cities} cities, ${snap.incoming} incoming)`
+                     : `${acc.label}: ${snap.error}`);
+        await sleep(GAP_MS);
+      }
     }
-    const snap = await pollAccount(acc);
-    D.snapshots.add(acc.id, snap);
-    note(snap.ok ? `${acc.label}: ok (${snap.cities} cities, ${snap.incoming} incoming)` : `${acc.label}: ${snap.error}`);
-    await sleep(GAP_MS);
-  }
-  polling = false;
-  note('poll cycle done');
+    note(`poll cycle done (${total} account(s) across ${allOrgs.length} org(s))`);
+  } finally { polling = false; }
 }
 
 // ------------------------------------------------------------ bot uptime
@@ -147,8 +152,8 @@ async function pollCycle() {
 // server is ignoring us, which looks identical to healthy on a plain ping.
 const PROBE_DEFAULTS = [{ probe: 'console', url: 'http://localhost:8711' }];
 
-function probeList() {
-  const extra = D.settings.get('probes', null);
+function probeList(org) {
+  const extra = org.settings.get('probes', null);
   return Array.isArray(extra) && extra.length ? extra : PROBE_DEFAULTS;
 }
 
@@ -177,12 +182,23 @@ const lastSeq = {};
 // sitting in maintenance.
 const liveByAccount = new Map();
 
+// Every organization's probes, tagged with who they belong to.
+function allProbes() {
+  const out = [];
+  for (const o of D.orgs.all()) {
+    if (o.disabled) continue;
+    for (const pr of probeList(D.org(o.id))) out.push({ ...pr, orgId: o.id });
+  }
+  return out;
+}
+
 async function sampleUptime() {
   const at = Date.now();
-  for (const pr of probeList()) {
+  for (const pr of allProbes()) {
+    const org = pr.orgId ? D.org(pr.orgId) : null;
     const r = await getJson(pr.url.replace(/\/$/, '') + '/api/session');
     if (!r.ok) {
-      D.uptime.add({ at, probe: pr.probe, reachable: false, up: false,
+      D.uptime.add({ orgId: pr.orgId, at, probe: pr.probe, reachable: false, up: false,
         state: 'down', reason: r.error === 'ECONNREFUSED' ? 'bot process not running' : r.error,
         latencyMs: r.ms, activity: false });
       for (const [id, v] of liveByAccount) {
@@ -201,7 +217,10 @@ async function sampleUptime() {
     if (h.snapshot && h.account && h.account.id) {
       try {
         const last = D.one('SELECT at FROM snapshots WHERE accountId = ? ORDER BY at DESC LIMIT 1', h.account.id);
-        if (!last || h.snapshot.at > n(last.at)) D.snapshots.add(h.account.id, h.snapshot);
+        // Only file it if this org really owns the account the console names —
+        // a console is a separate process and its claim is not proof.
+        if (org && org.ownsAccount(h.account.id)
+            && (!last || h.snapshot.at > n(last.at))) org.snapshots.add(h.account.id, h.snapshot);
       } catch (e) { note(`snapshot from ${pr.probe}: ${e.message}`); }
     }
     // Traffic within the sample window, or the log/tick counters moved.
@@ -223,7 +242,7 @@ async function sampleUptime() {
       });
     }
     D.uptime.add({
-      at, probe: pr.probe,
+      orgId: pr.orgId, at, probe: pr.probe,
       accountId: h.account && h.account.id, label: (h.account && h.account.label) || h.lord || null,
       reachable: true, up: !!h.connected,
       state: paused ? 'maintenance' : (h.state || null),
@@ -259,6 +278,9 @@ const rawBody = (req) => new Promise((resolve) => {
 
 http.createServer(async (req, res) => {
   if (await AUTH.guard(req, res, { readBody: rawBody })) return;
+  // Every tenant read and write below goes through this handle, which is closed
+  // over the org from the SESSION — never from anything the caller sends.
+  const ORG = req.org ? D.org(req.org.id) : null;
   const url = new URL(req.url, 'http://x');
   const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type + '; charset=utf-8' }); res.end(data); };
 
@@ -268,44 +290,44 @@ http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/accounts') {
     const procs = await scanProcesses();
-    const assign = proxyAssignments();
-    const list = loadProxies();
+    const assign = proxyAssignments(ORG);
+    const list = loadProxies(ORG);
     const counts = {};
     for (const [, p] of assign) counts[p.label] = (counts[p.label] || 0) + 1;
     return send(200, 'application/json', JSON.stringify({
-      accounts: D.accounts.withSnapshots().map((a) => ({
+      accounts: ORG.accounts.withSnapshots().map((a) => ({
         ...a,
         proxyLabel: (assign.get(a.id) || {}).label || null,
         live: liveByAccount.get(a.id) || null,
       })),
       polling, gapMs: GAP_MS, processes: procs, log: log.slice(-120),
       proxies: list.map((p) => ({ label: p.label, accounts: counts[p.label] || 0 })),
-      proxyText: proxyText(), maxPerProxy: MAX_PER_PROXY, storage: D.stats(),
+      proxyText: proxyText(ORG), maxPerProxy: MAX_PER_PROXY, storage: D.stats(),
     }));
   }
 
   if (url.pathname === '/api/proxies' && req.method === 'POST') {
     const b = await body(req);
-    D.settings.set('proxyText', String(b.text || ''));
+    ORG.settings.set('proxyText', String(b.text || ''));
     fs.writeFileSync(PROXY_FILE, String(b.text || ''));   // kept so it stays eyeballable
-    const list = loadProxies();
+    const list = loadProxies(ORG);
     note(`proxy list updated: ${list.length} usable, covers ${list.length * MAX_PER_PROXY} accounts`);
     return send(200, 'application/json', JSON.stringify({ ok: true, count: list.length }));
   }
 
   if (url.pathname === '/api/account' && req.method === 'POST') {
     const b = await body(req);
-    if (b.delete) D.accounts.remove(b.id);
-    else D.accounts.upsert(b);
-    return send(200, 'application/json', JSON.stringify({ ok: true, accounts: D.accounts.withSnapshots() }));
+    if (b.delete) ORG.accounts.remove(b.id);
+    else ORG.accounts.upsert(b);
+    return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
   }
 
   if (url.pathname === '/api/poll' && req.method === 'POST') {
     const b = await body(req);
     if (b.id) {
-      const acc = D.accounts.get(b.id);
-      if (acc) { note(`polling ${acc.label} on demand`); D.snapshots.add(acc.id, await pollAccount(acc)); }
-      return send(200, 'application/json', JSON.stringify({ ok: true, accounts: D.accounts.withSnapshots() }));
+      const acc = ORG.accounts.get(b.id);
+      if (acc) { note(`polling ${acc.label} on demand`); ORG.snapshots.add(acc.id, await pollAccount(acc)); }
+      return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
     }
     pollCycle();
     return send(200, 'application/json', JSON.stringify({ ok: true, started: true }));
@@ -315,7 +337,7 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/uptime') {
     const hours = Math.min(720, Math.max(1, Number(url.searchParams.get('hours')) || 12));
     const since = Date.now() - hours * 3600000;
-    const rows = D.uptime.series(since, url.searchParams.get('probe') || null);
+    const rows = ORG.uptime.series(since, url.searchParams.get('probe') || null);
 
     // Bucket into fixed slots so a gap (bot process dead, nothing written) shows
     // up as a real hole rather than the chart joining across it.
@@ -385,7 +407,7 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/probes' && req.method === 'POST') {
     const b = await body(req);
     if (Array.isArray(b.probes)) {
-      D.settings.set('probes', b.probes.filter((p) => p && p.probe && p.url));
+      ORG.settings.set('probes', b.probes.filter((p) => p && p.probe && p.url));
       note(`uptime probes updated: ${probeList().map((p) => p.probe).join(', ')}`);
     }
     return send(200, 'application/json', JSON.stringify({ ok: true, probes: probeList() }));
@@ -397,21 +419,24 @@ http.createServer(async (req, res) => {
     const field = url.searchParams.get('field') || 'prestige';
     const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
     return send(200, 'application/json', JSON.stringify({
-      id, field, points: D.snapshots.series(id, Date.now() - days * 86400000, field),
+      id, field, points: ORG.snapshots.series(id, Date.now() - days * 86400000, field),
     }));
   }
 
   send(404, 'text/plain', 'not found');
 }).listen(PORT, AUTH.bindHost(), () => {
   const st = D.stats();
-  note(`Director on http://localhost:${PORT}  (${st.accounts} account(s), ${GAP_MS / 1000}s between polls)`);
+  note(`OTTObot Director on http://localhost:${PORT}  `
+    + `(${D.orgs.all().length} org(s), ${st.accounts} account(s), ${GAP_MS / 1000}s between polls)`);
   note(`storage: ${path.basename(D.FILE)} — ${(st.sizeBytes / 1024).toFixed(0)} KB, ${st.snapshots} snapshot(s), ${st.uptime} uptime sample(s)`);
   // Give any console that is starting alongside the Director time to come up
   // and claim its account before the first poll goes looking for logins.
   setTimeout(pollCycle, 30000);
-  setInterval(pollCycle, Math.max(CYCLE_MIN_MS, D.accounts.all().length * GAP_MS + 60000));
+  const totalAccounts = D.orgs.all().reduce((t, o) => t + D.org(o.id).accounts.all().length, 0);
+  setInterval(pollCycle, Math.max(CYCLE_MIN_MS, totalAccounts * GAP_MS + 60000));
   sampleUptime();
   setInterval(sampleUptime, UPTIME_MS);
+  // Retention is by age and applies to every organization alike.
   setInterval(() => { D.uptime.prune(30); D.snapshots.prune(90); }, 6 * 3600000);
   // Keep the write-ahead log from growing all night.
   setInterval(() => {

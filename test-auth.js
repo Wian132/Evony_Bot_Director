@@ -1,6 +1,7 @@
 'use strict';
-// The login gate. These pages control live accounts and the Director's editor
-// shows stored passwords, so each of these is a test that the fleet stays shut.
+// Sign-in for OTTObot. These pages control live game accounts and the Director's
+// editor shows their stored passwords, so each of these is a test that one
+// customer's fleet stays shut to everyone else.
 const path = require('path'), os = require('os'), fs = require('fs'), assert = require('assert');
 process.env.EVONY_DB = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ev-auth-')), 't.db');
 const A = require('./auth');
@@ -40,62 +41,113 @@ t('garbage stored values are refused, not crashed on', () => {
   }
 });
 
-section('sessions');
+section('sessions belong to a user and an org');
 
-t('a fresh session is valid and a made-up one is not', () => {
-  const sid = A.newSession('1.2.3.4', 'test');
-  assert.strictEqual(A.validSession(sid), true);
-  assert.strictEqual(A.validSession('deadbeef'), false);
-  assert.strictEqual(A.validSession(''), false);
-  assert.strictEqual(A.validSession(null), false);
+const ORG = D.orgs.create('Test Fleet');
+const USER = D.users.create({ email: 'a@x.com', passwordHash: A.hashPassword('pw') });
+D.users.join(USER.id, ORG.id, 'owner');
+
+t('a fresh session resolves to its user and org', () => {
+  const sid = A.newSession(USER.id, ORG.id, '1.2.3.4', 'test');
+  const r = A.resolveSession(sid);
+  assert.strictEqual(r.user.id, USER.id);
+  assert.strictEqual(r.org.id, ORG.id);
+});
+
+t('a made-up session id resolves to nothing', () => {
+  assert.strictEqual(A.resolveSession('deadbeef'), null);
+  assert.strictEqual(A.resolveSession(''), null);
+  assert.strictEqual(A.resolveSession(null), null);
 });
 
 t('session ids are long and random', () => {
-  const a = A.newSession('1.2.3.4', 't'), b = A.newSession('1.2.3.4', 't');
+  const a = A.newSession(USER.id, ORG.id, '1.2.3.4', 't');
+  const b = A.newSession(USER.id, ORG.id, '1.2.3.4', 't');
   assert.strictEqual(a.length, 64);
   assert.notStrictEqual(a, b);
 });
 
 t('signing out revokes only that session', () => {
-  const a = A.newSession('1.1.1.1', 't'), b = A.newSession('2.2.2.2', 't');
+  const a = A.newSession(USER.id, ORG.id, '1.1.1.1', 't');
+  const b = A.newSession(USER.id, ORG.id, '2.2.2.2', 't');
   A.endSession(a);
-  assert.strictEqual(A.validSession(a), false);
-  assert.strictEqual(A.validSession(b), true);
+  assert.strictEqual(A.resolveSession(a), null);
+  assert.ok(A.resolveSession(b));
 });
 
 t('an expired session is rejected', () => {
-  const sid = A.newSession('1.2.3.4', 't');
-  const all = D.settings.get('authSessions', {});
-  all[sid].expires = Date.now() - 1000;
-  D.settings.set('authSessions', all);
-  assert.strictEqual(A.validSession(sid), false);
+  const sid = A.newSession(USER.id, ORG.id, '1.2.3.4', 't');
+  D.run('UPDATE user_sessions SET expiresAt = ? WHERE sid = ?', Date.now() - 1000, sid);
+  assert.strictEqual(A.resolveSession(sid), null);
 });
 
-t('revokeAll clears everything', () => {
-  A.newSession('1.1.1.1', 't');
-  const sid = A.newSession('2.2.2.2', 't');
-  A.revokeAll();
-  assert.strictEqual(A.validSession(sid), false);
+t('revoking a user ends every one of their sessions', () => {
+  const a = A.newSession(USER.id, ORG.id, '1.1.1.1', 't');
+  const b = A.newSession(USER.id, ORG.id, '2.2.2.2', 't');
+  A.revokeAll(USER.id);
+  assert.strictEqual(A.resolveSession(a), null);
+  assert.strictEqual(A.resolveSession(b), null);
 });
 
 section('cookie parsing');
 
 t('the session cookie is read out of a normal header', () => {
-  const c = A.cookiesOf({ headers: { cookie: 'a=1; evony_sid=abc123; theme=light' } });
-  assert.strictEqual(c.evony_sid, 'abc123');
+  const c = A.cookiesOf({ headers: { cookie: 'a=1; otto_sid=abc123; theme=light' } });
+  assert.strictEqual(c.otto_sid, 'abc123');
 });
 
 t('a missing or malformed cookie header is harmless', () => {
   assert.deepStrictEqual(A.cookiesOf({ headers: {} }), {});
-  assert.strictEqual(A.cookiesOf({ headers: { cookie: ';;; =x; junk' } }).evony_sid, undefined);
+  assert.strictEqual(A.cookiesOf({ headers: { cookie: ';;; =x; junk' } }).otto_sid, undefined);
+});
+
+section('register and sign in');
+
+t('registering creates a user who owns a brand new org', () => {
+  const r = A.register({ email: 'new@x.com', password: 'long-enough-pw', orgName: 'Newbie Fleet' });
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(A.verifyPassword('long-enough-pw', r.user.passwordHash), true);
+  assert.strictEqual(D.users.roleIn(r.user.id, r.org.id), 'owner');
+  assert.strictEqual(r.org.name, 'Newbie Fleet');
+});
+
+t('a short password is refused', () => {
+  assert.match(A.register({ email: 'x@y.com', password: 'short' }).error, /10 characters/);
+});
+
+t('a malformed email is refused', () => {
+  for (const bad of ['notanemail', 'a@b', '', 'a b@c.com']) {
+    assert.strictEqual(A.register({ email: bad, password: 'long-enough-pw' }).ok, false, 'accepted ' + bad);
+  }
+});
+
+t('the same email cannot register twice', () => {
+  assert.match(A.register({ email: 'new@x.com', password: 'long-enough-pw' }).error, /already registered/);
+});
+
+t('wrong password and unknown email give the SAME message', () => {
+  const wrong = A.signIn({ email: 'new@x.com', password: 'nope' });
+  const unknown = A.signIn({ email: 'nobody@nowhere.com', password: 'nope' });
+  assert.strictEqual(wrong.ok, false);
+  assert.strictEqual(unknown.ok, false);
+  assert.strictEqual(wrong.error, unknown.error,
+    'the form reveals whether an email is registered here');
+});
+
+t('signing in is case-insensitive on the email', () => {
+  assert.strictEqual(A.signIn({ email: 'NEW@X.COM', password: 'long-enough-pw' }).ok, true);
+});
+
+t('a disabled user cannot sign in', () => {
+  const u = D.users.byEmail('new@x.com');
+  D.run('UPDATE users SET disabled = 1 WHERE id = ?', u.id);
+  assert.strictEqual(A.signIn({ email: 'new@x.com', password: 'long-enough-pw' }).ok, false);
+  D.run('UPDATE users SET disabled = 0 WHERE id = ?', u.id);
 });
 
 section('enabled state');
 
-t('auth is off until a password is set', () => {
-  D.settings.set('authHash', null);
-  assert.strictEqual(A.isEnabled(), false);
-  D.settings.set('authHash', A.hashPassword('pw'));
+t('auth is on as soon as any user exists', () => {
   assert.strictEqual(A.isEnabled(), true);
 });
 

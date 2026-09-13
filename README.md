@@ -1,7 +1,9 @@
-# Evony Bot + Director
+# OTTObot
 
-A dependency-free Node client for Evony Age 1 (server `ss71`), replacing NEAT/`bobby.exe`.
-Flash was never needed — the game speaks a plain socket protocol.
+Multi-tenant fleet control for Evony Age 1. A dependency-free Node client replacing
+NEAT/`bobby.exe` — Flash was never needed, the game speaks a plain socket protocol.
+
+Sign up, get your own organization, and run your bots. Nobody else can see them.
 
 Two apps and a goal engine:
 
@@ -86,28 +88,48 @@ recovers on a 5-minute ladder — probing with a bare **TCP handshake**, never a
 Reachability costs a handshake; a login is a scarce, account-scoped resource, and
 spending them against a server in maintenance is believed to be what earns a block.
 
+## Organizations
+
+Every user belongs to one or more organizations, and **all customer data is scoped to
+one**: game accounts, goals, snapshots, engine state, the city registry, proxies, probes
+and uptime. The org comes from the signed-in session, never from a request parameter.
+
+The risk being defended against is one missing `WHERE orgId = ?` — the `accounts` table
+holds other people's game logins in plain text, so a leak there is a breach, not a bug.
+So the defence is structural: callers never get an unscoped handle. They call `D.org(id)`,
+which closes over the org and applies it to every read and write, and anything reached by
+account id is checked for ownership first — an id guessed or leaked from elsewhere simply
+does not resolve. `test-tenancy.js` covers that from both directions.
+
+The **map cache is deliberately shared**. It describes the game world, not a customer, and
+every tenant scanning it makes it better for everyone. The one piece of tenant data that
+used to live there — "is this city mine" — is computed at read time instead.
+
+First run:
+
+```bash
+OTTO_PASSWORD='...' node migrate-tenancy.js you@example.com "Your Fleet"
+```
+
+That creates your user, your org, and moves any existing single-operator data into it.
+Registration is closed by default; `ALLOW_SIGNUP=1` opens it.
+
 ## Running it on a server
 
 It is portable — the only Windows-specific thing was the NEAT process scan, which
 now short-circuits off Windows. Node 24+ is the only requirement.
 
-**Binding to anything but loopback requires a password.** These pages control every
-bot and the Director's account editor shows stored passwords, so the server refuses
-to start otherwise:
+**Binding to anything but loopback requires at least one registered user**, because
+otherwise the first stranger to find the port becomes the operator:
 
 ```
-REFUSING TO BIND 0.0.0.0: no password is set.
+REFUSING TO BIND 0.0.0.0: no users exist yet.
 ```
 
-Set one once (it is stored scrypt-hashed, never in plain text):
-
-```bash
-AUTH_PASSWORD='something long' BIND=0.0.0.0 node director.js
-```
-
-After that `AUTH_PASSWORD` can be dropped; the hash lives in `evony.db`. Sessions are
-32 random bytes, httpOnly + SameSite=Strict, 12h expiry, revocable. Failed logins back
-off exponentially per IP.
+Passwords are scrypt-hashed with `timingSafeEqual`. Sessions are 32 random bytes,
+httpOnly + SameSite=Strict, 12h expiry, revocable per user. Failed logins back off
+exponentially per IP, and a wrong password and an unknown email return the *same*
+message so the form cannot be used to discover who has an account here.
 
 **Put TLS in front of it.** The login cookie is only marked `Secure` when a proxy sets
 `X-Forwarded-Proto: https`. Over plain HTTP on the open internet the password and cookie
@@ -126,10 +148,10 @@ uptime samples and the city registry.
 ## Tests
 
 ```bash
-for t in test-war test-heroes test-npc test-enginestate test-buildnpc test-maint; do node $t.js; done
+for t in test-war test-heroes test-npc test-enginestate test-buildnpc test-maint test-auth test-tenancy; do node $t.js; done
 ```
 
-304 tests, no network required.
+349 tests, no network required.
 
 ## Not in this repo
 

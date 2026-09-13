@@ -200,6 +200,8 @@ for (const [table, col, decl] of [
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
 }
 
+const TEN = require('./tenancy');
+
 const n = (x) => (x === null || x === undefined || x === '' ? null : Number(x));
 const b = (x) => (x ? 1 : 0);
 const now = () => Date.now();
@@ -491,9 +493,9 @@ const settings = {
 
 const uptime = {
   add(row) {
-    run(`INSERT INTO uptime (at,probe,accountId,label,reachable,up,state,reason,engineMode,idleMs,latencyMs,logLines,activity,maintenance,rssMb,heapMb)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      row.at || now(), row.probe, row.accountId || null, row.label || null,
+    run(`INSERT INTO uptime (orgId,at,probe,accountId,label,reachable,up,state,reason,engineMode,idleMs,latencyMs,logLines,activity,maintenance,rssMb,heapMb)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      row.orgId || '', row.at || now(), row.probe, row.accountId || null, row.label || null,
       b(row.reachable), b(row.up), row.state || null, row.reason || null,
       row.engineMode || null, n(row.idleMs), n(row.latencyMs), n(row.logLines), b(row.activity),
       b(row.maintenance), n(row.rssMb), n(row.heapMb));
@@ -681,8 +683,16 @@ function checkpoint(mode = 'PASSIVE') {
   catch { return false; }
 }
 
+// ---------------------------------------------------------------- tenancy
+TEN.install(db, { run, all, one });
+const T = TEN.build(db, { run, all, one, bind });
+T.attach({ snapshots, goals, engineState, registry, uptime, players });
+
 module.exports = {
   db, FILE, run, all, one, checkpoint,
+  // Multi-tenant surface. Anything that touches customer data goes through
+  // org(id) — see tenancy.js for why the unscoped handles below are not it.
+  orgs: T.orgs, users: T.users, sessions: T.sessions, org: T.org,
   accounts, snapshots, goals, engineState, mapCache, settings, uptime, players, registry,
   stats() {
     const t = (name) => n(one(`SELECT count(*) c FROM ${name}`).c) || 0;

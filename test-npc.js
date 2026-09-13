@@ -192,8 +192,11 @@ t('excludelist splits coordinates from names', () => {
   eq(p.goals[0].names, ['somelord']);
 });
 
-t('rallypolicy keeps its switches', () => {
-  eq(parseAll('rallypolicy /npc:3 /valley:2').goals[0].switches, { npc: 3, valley: 2 });
+t('rallypolicy reads the NEAT spelling and the older /npc: one', () => {
+  const neat = parseAll('rallypolicy n:10:1 n:8 r:2 t:1 max:8');
+  eq(neat.errors, []);
+  eq([neat.goals[0].caps, neat.goals[0].levels, neat.goals[0].max], [{ n: 8, r: 2, t: 1 }, { 10: 1 }, 8]);
+  eq(parseAll('rallypolicy /npc:3 /valley:2').goals[0].caps, { n: 3, v: 2 });
 });
 
 t('goals.js accepts every npc config key without warning', () => {
@@ -339,6 +342,61 @@ t('hero string picks by name, by condition, and strongest first', () => {
   eq(I.heroCandidates(pool, 'any:attack>900').length, 0);
 });
 
+t('hero string: !name vetoes a hero, the rest of "any" still stands', () => {
+  const pool = [hero(1, 'Strong', 150), hero(2, 'Middling', 80), hero(3, 'Weakling', 20)];
+  eq(I.heroCandidates(pool, '!Strong,any').map((h) => h.name), ['Middling', 'Weakling']);
+  eq(I.heroCandidates(pool, '!strong,any').map((h) => h.name), ['Middling', 'Weakling'], 'names are case-insensitive');
+  eq(I.heroCandidates(pool, '!Strong,!Weakling,any').map((h) => h.name), ['Middling']);
+  eq(I.heroCandidates(pool, '!Strong,any:attack>50').map((h) => h.name), ['Middling']);
+});
+
+t('hero string: best is measured against the whole city, not just who is idle', () => {
+  const roster = [hero(1, 'Strong', 150), hero(5, 'Brawler', 140)];
+  const idle = [roster[1]];                      // Strong is out on a run
+  eq(I.heroCandidates(idle, 'any:attack=best', roster).length, 0, 'the runner-up is not "best"');
+  eq(I.heroCandidates(roster, 'any:attack=best', roster).map((h) => h.name), ['Strong']);
+});
+
+t('npcheroes with a bad hero string is a parse error', () => {
+  has(parseAll('npcheroes 5 any:sneakiness>5').errors.map((e) => e.error).join(' '), 'unknown hero field');
+  eq(parseAll('npcheroes !OTTO,any').errors, []);
+});
+
+t('npcheroes !name,any keeps that hero off every level', () => {
+  const { plan } = run([
+    'config npc:5', 'distancepolicy 10',
+    'npctroops 10 a:90000,wo:2000,w:2000,s:4000,t:2000',
+    'npclimits 10 a:100000,s:20000',
+    'npcheroes !Strong,any',
+  ].join('\n'));
+  ok(plan.actions.length >= 3);
+  ok(plan.actions.some((a) => a.level === 10) && plan.actions.some((a) => a.level === 5), 'both levels farmed');
+  ok(!plan.actions.some((a) => a.hero.name === 'Strong'), 'Strong never marches');
+});
+
+t('npcheroes 10 any + npcheroes !name,any: that hero farms 10s only', () => {
+  const { plan } = run([
+    'config npc:5', 'distancepolicy 10',
+    'npctroops 10 a:90000,wo:2000,w:2000,s:4000,t:2000',
+    'npclimits 10 a:100000,s:20000',
+    'npcheroes 10 any',
+    'npcheroes !Strong,any',
+  ].join('\n'));
+  eq(plan.actions.find((a) => a.level === 10).hero.name, 'Strong', 'the level 10 line lets him in');
+  const fives = plan.actions.filter((a) => a.level === 5);
+  ok(fives.length >= 1);
+  ok(!fives.some((a) => a.hero.name === 'Strong'), 'the level-less line keeps him off 5s');
+});
+
+t('several npcheroes lines for one level are OR\'d', () => {
+  const ctx = makeCtx('npcheroes 5 Weakling\nnpcheroes 5 any:attack>100\nnpcheroes Rookie').ctx;
+  eq(I.heroSpecFor(ctx, 5), 'Weakling|any:attack>100');
+  eq(I.heroSpecFor(ctx, 4), 'Rookie', 'a level with no line of its own uses the level-less ones');
+  eq(I.heroSpecFor(makeCtx('config npc:5').ctx, 5), 'any', 'no line at all is "any"');
+  const pool = fixtureCastle().heros.filter((h) => h.status === 0);
+  eq(I.heroCandidates(pool, I.heroSpecFor(ctx, 5)).map((h) => h.name), ['Strong', 'Brawler', 'Scrapper', 'Weakling']);
+});
+
 t('npcheroes is honoured per level and the mayor stays home', () => {
   const { plan } = run('config npc:5\ndistancepolicy 3\nnpcheroes 5 Middling');
   ok(plan.actions.length >= 1);
@@ -406,15 +464,38 @@ t('rallypolicy /npc and the rally spot level both cap it', () => {
   has(one.note, 'rally spot L1');
 });
 
-t('marches already in the air take their slots', () => {
+// wiki NpcTeams: npcteams counts farming teams. A transport is not one, but it
+// still holds a rally slot.
+t('attacks in the air take team slots; a transport takes only a rally slot', () => {
   const selfArmys = [
     { startFieldId: HOME_ID, targetFieldId: C.coordsToFieldId(101, 100), missionType: 5, startTime: Date.now(), hero: { id: 1 } },
     { startFieldId: HOME_ID, targetFieldId: C.coordsToFieldId(500, 500), missionType: 1, startTime: Date.now() },
   ];
   const { plan } = run('config npc:5\ndistancepolicy 10\nnpcteams 3', { selfArmys });
-  eq(plan.actions.length, 1, '3 teams, 2 already out');
+  eq(plan.actions.length, 2, '3 teams, 1 attack out');
+  has(plan.note, 'rally spot L10: 2/10 busy');
   ok(!plan.actions.some((a) => a.target.x === 101 && a.target.y === 100), 'the camp already under attack is skipped');
   ok(!plan.actions.some((a) => a.heroId === 1), 'a hero already marching cannot be sent again');
+
+  const castle = fixtureCastle({ buildings: [{ typeId: 29, level: 3, positionId: 3 }] });
+  const tight = run('config npc:5\ndistancepolicy 10\nnpcteams 3', { castle, selfArmys }).plan;
+  eq(tight.actions.length, 1, 'rally spot L3 with 2 marches out leaves one slot');
+});
+
+t('transports filling the rally spot stop npc farming, and say so', () => {
+  const castle = fixtureCastle({ buildings: [{ typeId: 29, level: 2, positionId: 3 }] });
+  const selfArmys = [1, 2].map((i) => ({ startFieldId: HOME_ID, targetFieldId: C.coordsToFieldId(400 + i, 400), missionType: 1, startTime: Date.now() }));
+  const { plan } = run('config npc:5\ndistancepolicy 10\nnpcteams 3', { castle, selfArmys });
+  eq(plan.actions.length, 0);
+  has(plan.note, 'no rally slot — rally spot L2: 2/2 busy');
+});
+
+t('rallypolicy max: and n:<level>: cap the runs', () => {
+  eq(run('config npc:5\ndistancepolicy 10\nnpcteams 9\nrallypolicy max:4').plan.actions.length, 4);
+  const one = run('config npc:4\ndistancepolicy 10\nnpcteams 9\nrallypolicy n:5:1').plan;
+  eq(one.actions.filter((a) => a.level === 5).length, 1, 'one level 5 run');
+  ok(one.actions.some((a) => a.level === 4), 'level 4 still farms');
+  ok(!JSON.stringify(one.actions[0]).includes('"rally"'), 'the rally tag stays out of JSON');
 });
 
 t('nothing is planned when every team is out', () => {

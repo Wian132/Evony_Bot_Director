@@ -46,8 +46,11 @@ const EXPERIENCE_ITEMS = {
   'player.experience.1.c': { names: ['onwars', 'onwar', 'ow', 'exp3', 'explarge'], label: 'On Wars', effect: 'hero experience (large)' },
 };
 
+// Holy Water is named here so `useheroitem <hero> holy water` finds it, but it is
+// never used through hero.useItem: the client resets with hero.resetPoint, and
+// script.js hands it to waterhero (water-hero.js).
 const OTHER_ITEMS = {
-  'hero.reset.1': { names: ['reset', 'resetpoints', 'heroreset'], label: 'Hero reset', effect: 'refunds allocated attribute points' },
+  'hero.reset.1': { names: ['holywater', 'water', 'reset', 'resetpoints', 'heroreset'], label: 'Holy Water', effect: 'resets attribute points — see waterhero' },
 };
 
 const ALL = { ...ATTRIBUTE_ITEMS, ...EXPERIENCE_ITEMS, ...OTHER_ITEMS };
@@ -96,6 +99,9 @@ const countOf = (game, itemId) => {
 // runs out, or the server refuses — repeating a refused command is how an
 // account gets throttled.
 async function useOnHero(game, { heroName, itemId, times = 1, log = () => {} }) {
+  if (itemId === 'hero.reset.1') {
+    return { ok: false, used: 0, error: `Holy Water goes through hero.resetPoint, not hero.useItem — use  waterhero ${heroName || '<hero>'}` };
+  }
   const wanted = String(heroName || '').toLowerCase();
   let castle = null, hero = null;
   for (const c of game.castles || []) {

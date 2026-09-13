@@ -1,0 +1,47 @@
+/* One report's body (reportview.js), in the console's NEAT look: pale-gold
+   table heads, grey grid, Georgia headings. Used inside the console (app.html)
+   and on the stand-alone battle log (report.html); both define the colour
+   tokens, and every token here falls back to the light theme. */
+.rv { font:12px/1.4 Tahoma, Verdana, "Segoe UI", sans-serif; color:var(--ink, #111); }
+.rv-headline { font:bold 13px Georgia, "Times New Roman", serif; margin:9px 0 4px; }
+.rv-verdict { display:inline-block; font:bold 11.5px Tahoma, sans-serif; padding:1px 9px; border-radius:2px; margin:1px 0 5px;
+  color:var(--panel, #fff); background:var(--faint, #8a8a8a); }   /* panel-coloured text reads on both themes' greens and reds */
+.rv-verdict.good { background:var(--ok, #1c8a1c); }
+.rv-verdict.bad { background:var(--bad, #c42020); }
+.rv-line { color:var(--dim, #555); margin:2px 0; }
+.rv-foot { color:var(--faint, #8a8a8a); font-size:11px; font-style:italic; margin:12px 0 0; }
+.rv-sub { padding:8px 6px 3px; margin-top:6px; font:bold 11.5px Georgia, serif; color:var(--th-ink, #3b2e00);
+  border-top:1px solid var(--grid, #dedede); }
+.rv-none { color:var(--dim, #555); padding:10px 6px; }
+.rv-muted { color:var(--faint, #8a8a8a); }
+.rv-pos { color:var(--ok, #1c8a1c); }
+.rv-neg { color:var(--bad, #c42020); }
+
+table.rv-t { width:100%; border-collapse:collapse; font-size:11.5px; background:var(--panel, #fff); }
+table.rv-t th { font:bold 12px Georgia, "Times New Roman", serif; color:var(--th-ink, #3b2e00); white-space:nowrap;
+  background:linear-gradient(var(--th-top, #fdf8d9), var(--th-bot, #efe3a6)); border:1px solid var(--th-edge, #c8b56a);
+  padding:3px 6px; text-align:center; }
+table.rv-t td { padding:2px 6px; height:21px; border-right:1px solid var(--grid, #dedede); border-bottom:1px solid var(--grid, #dedede);
+  font-variant-numeric:tabular-nums; word-break:break-word; }
+table.rv-t td.n { text-align:right; white-space:nowrap; }
+table.rv-t tr.total td { font-weight:bold; border-top:2px solid var(--th-edge, #c8b56a); }
+table.rv-kv td:first-child { color:var(--dim, #555); width:42%; }
+
+/* a battle's two armies, side by side where there is room */
+.rv-sides { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:8px; margin:8px 0 4px; }
+.rv-side { border:1px solid var(--grid, #dedede); border-top-width:3px; background:var(--panel, #fff); min-width:0; }
+.rv-side.won { border-top-color:var(--ok, #1c8a1c); }
+.rv-side.lost { border-top-color:var(--bad, #c42020); }
+.rv-sh { display:flex; align-items:baseline; gap:6px; padding:5px 6px 2px; font:bold 12.5px Georgia, serif; color:var(--th-ink, #3b2e00); }
+.rv-whose { font:11px Tahoma, sans-serif; color:var(--dim, #555); }
+.rv-won, .rv-lost { margin-left:auto; font:bold 11.5px Tahoma, sans-serif; }
+.rv-won { color:var(--ok, #1c8a1c); }
+.rv-lost { color:var(--bad, #c42020); }
+.rv-who { padding:0 6px 5px; font-size:11px; color:var(--dim, #555); }
+
+.rv-res { display:flex; flex-wrap:wrap; gap:4px 18px; padding:4px 6px 6px; }
+.rv-res b { font-variant-numeric:tabular-nums; }
+.rv-ico { display:inline-block; width:1.3em; text-align:center; margin-right:3px; }
+.rv-text { white-space:pre-wrap; word-break:break-word; font:12.5px/1.55 Arial, sans-serif; padding:6px 4px; }
+pre.rv-raw { margin:0; padding:5px 7px; max-height:300px; overflow:auto; font:11.5px/1.5 "Courier New", Consolas, monospace;
+  white-space:pre-wrap; word-break:break-word; background:var(--panel2, #f4f4f4); border:1px solid var(--grid, #dedede); }

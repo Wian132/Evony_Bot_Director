@@ -392,6 +392,13 @@ t('with no open-ended stage the leftovers go to the highest stat', () => {
   eq(a.add.power, 25, 'the rest into attack, the highest stat');
 });
 
+t('the highest stat for leftovers is the highest once the stages are met', () => {
+  const h = pointy({ power: 30, stratagem: 10, remainPoint: 60 });
+  const c = ctx([h], { goals: [goal('heropoints', 'billybob', 'int:50')] });
+  eq(H.plans.heropoints(c, {}).actions[0].add, { power: 0, management: 0, stratagem: 60 },
+    'int 50 tops attack 30, so the 20 left go to intel too (wiki: "which would be intel")');
+});
+
 t('off holds the points back', () => {
   const c = ctx([pointy()], { goals: [goal('heropoints', 'billybob', 'off')] });
   const p = H.plans.heropoints(c, {});

@@ -278,6 +278,11 @@ function buildNpcPlan(ctx, state, game) {
                + `(${Math.round(target.dist * 10) / 10} tiles) to build an NPC on`,
         });
         Object.defineProperty(actions[actions.length - 1], 'state', { value: state, enumerable: false });
+        // the engine holds it while the rally spot or rallypolicy b:/max: is full
+        Object.defineProperty(actions[actions.length - 1], 'rally', {
+          value: { from: ctx.castle, kind: 'b', missionType: C.MISSION.construct, targetFieldId: target.id, troops: { peasants: 100 } },
+          enumerable: false,
+        });
       }
     }
   } else if (!actions.length) {

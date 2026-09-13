@@ -5,10 +5,30 @@
 //   scout 500,500 any s:1
 //   transport 123,456 any t:1000 wood:100000
 //   reinforce 123,456 any a:5000
+//   reinforce Fla                          (a city of yours by name; no hero, 1 scout)
+//   reinforce "Home City" none a:500 wood:50k,food:20k
+//   deploy bu 123,456 any wo:500 f:26k,l:26k,s:26k,i:12k,g:10k @:14:30:07.500
+//                                          (NEAT: at attack, bu build city, re reinforce, sc scout, tr transport)
+//     troops come first, resources second: s: and w: are scouts and warriors in
+//     the first list, stone and wood in the second (f w/l s i g, or full names)
+//     @:14:30:07.500   land then, on this machine's clock (timed-march.js lands it,
+//                      checks the server's stamp, and recalls and resends a miss)
+//     @0:30:00 / 0:30:00   camp that long (NEAT)
+//   buildstatus                            (build marches on the way, by landing second; city-build.js)
+//   marchcheck                             (the march formula against the server's times for every march out)
+//   set target 111,222   then %target%     (NEAT's replacement variables)
+//   logout now @:14:35 | logout now 1:05:00   (off the game until then; logout.js)
 //   sell wood 1000 @0.55
 //   buy food 1000 @1.2
+//   repeat 10 | repeat                     (the line above 10 more times, failed goes too | until it fails or Stop)
 //   cleanreports trade
-//   sleep 5
+//   holidaysnipe [dry] | holidaysnipe stop | holidaysnipe status   (holiday-snipe.js)
+//   teleport 123,456 | teleport thuringia | teleport random | warteleport 123,456   (teleport.js)
+//   lostheroes | recover <hero> [to <city>]   (stone-of-finding.js)
+//   renamehero <hero> <new name> [anyway]   (rename-hero.js)
+//   waterhero <hero> [/heropoints="pol:300 att"]   (water-hero.js: Holy Water, then re-spend the points)
+//   canceltroopqueues [n] | cancelfortifications [n]   (queue-cancel.js)
+//   sleep 5 | sleep 1:30 | sleep 1:00:00 | sleep @:14:15
 //   echo hello
 //
 // from <castle> may be appended to any march:  attack 1,2 any a:100 from MyCity
@@ -37,21 +57,49 @@ function parseTroops(s) {
   return troops;
 }
 
+// deploy's march types (NEAT's Deploy, plus the full names).
+const DEPLOY = {
+  at: 'attack', attack: 'attack', bu: 'construct', build: 'construct', buildcity: 'construct', construct: 'construct',
+  re: 'reinforce', reinforce: 'reinforce', sc: 'scout', scout: 'scout', tr: 'transport', transport: 'transport',
+};
+
+// NEAT's resource codes f w s i g (Abbreviations), l for lumber, or the names.
+const RES_CODE = {
+  f: 'food', food: 'food', w: 'wood', l: 'wood', wood: 'wood', lumber: 'wood',
+  s: 'stone', stone: 'stone', i: 'iron', iron: 'iron', g: 'gold', gold: 'gold',
+};
+
 function parseResources(s) {
   const out = {};
   for (const part of s.split(',')) {
-    const m = part.trim().match(/^(wood|food|stone|iron|gold)\s*:\s*([\d.]+[kmb]?)$/i);
-    if (!m) throw new Error('bad resource string: ' + part);
-    out[m[1].toLowerCase()] = num(m[2]);
+    const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?)$/i);
+    const key = m && RES_CODE[m[1].toLowerCase()];
+    if (!key) throw new Error('bad resource string: ' + part + ' (f w s i g, l for lumber, or food/wood/stone/iron/gold)');
+    out[key] = num(m[2]);
   }
   return out;
 }
 
-// "@07:00:00.500" / "@07:00:00:500" / "07:00:00"
+// A clock time: "@:14:30", "@:14:30:07", "@:14:30:07.500" (NEAT: "local time
+// when prefaced with @:", 24-hour). The seconds may carry a fraction, so .04 is
+// 40 ms and .5 is 500 ms. One digit will do for any part: `set timem 5` then
+// @:%timeh%:%timem% reads 14:05.
 function parseLandTime(s) {
-  const m = String(s).replace(/^@/, '').match(/^(\d{1,2}):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?$/);
-  if (!m) throw new Error('bad time: ' + s);
-  return { h: +m[1], m: +m[2], s: +m[3], ms: m[4] ? +String(m[4]).padEnd(3, '0') : 0 };
+  const m = String(s).replace(/^@:?/, '').match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.:](\d{1,3}))?)?$/);
+  if (!m || +m[1] > 23 || +m[2] > 59 || (m[3] !== undefined && +m[3] > 59)) {
+    throw new Error('bad time: ' + s + ' (24-hour clock, e.g. @:14:30:07.500)');
+  }
+  return { h: +m[1], m: +m[2], s: +(m[3] || 0), ms: m[4] ? +String(m[4]).padEnd(3, '0') : 0 };
+}
+
+// A length of time in whole seconds: "1:30" is m:ss, "1:30:00" h:mm:ss. NEAT
+// writes a march's camp time this way, with or without an @ in front.
+function parseDuration(s, what = 'camp time') {
+  const t = String(s).replace(/^@/, '');
+  const m = t.match(/^(?:(\d+):)?(\d{1,2}):(\d{2})$/);
+  if (m) return Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  if (/\.\d/.test(t)) throw new Error(`${what} is whole seconds; for a landing time put a colon after the @: @:${t}`);
+  throw new Error(`bad ${what}: ${s} (h:mm:ss or m:ss)`);
 }
 
 // next occurrence of that wall-clock time, on the server clock
@@ -68,10 +116,23 @@ function parseLine(raw) {
   const tok = line.split(/\s+/);
   const cmd = tok[0].toLowerCase();
 
-  if (cmd === 'sleep') return { cmd, seconds: parseFloat(tok[1]) };
+  // sleep 15 | sleep 1:43 | sleep 4:22:32 | sleep @:14:15:00   (NEAT's Sleep)
+  if (cmd === 'sleep') {
+    if (String(tok[1] || '').startsWith('@:')) return { cmd, until: parseLandTime(tok[1]) };
+    if (/:/.test(tok[1] || '')) return { cmd, seconds: parseDuration(tok[1], 'sleep time') };
+    return { cmd, seconds: parseFloat(tok[1]) };
+  }
+  if (cmd === 'buildstatus' || cmd === 'marchcheck') return { cmd };
+  if (cmd === 'logout') return { cmd, ...require('./logout').parseArgs(tok.slice(1)) };
   if (cmd === 'echo') return { cmd, text: line.slice(5) };
   if (cmd === 'cleanreports') return { cmd, type: (tok[1] || 'trade').toLowerCase() };
-  if (cmd === 'repeat') return { cmd, times: Math.max(1, parseInt(tok[1] || '1', 10)) };
+  // A bare `repeat` has no count: it runs the line above until that fails or
+  // the run is stopped (see expand and run).
+  if (cmd === 'repeat') {
+    if (tok[1] === undefined) return { cmd, times: null };
+    if (!/^\d+$/.test(tok[1])) throw new Error('repeat: give a count (repeat 10), or none to repeat until it fails or you press Stop');
+    return { cmd, times: Math.max(1, parseInt(tok[1], 10)) };
+  }
   if (cmd === 'loop') return { cmd, times: Math.max(1, parseInt(tok[1] || '1', 10)) };
   if (cmd === 'endloop') return { cmd };
 
@@ -81,6 +142,11 @@ function parseLine(raw) {
     if (!w) throw new Error('wall: type must be one of ' + C.WALLS.map((x) => x.code).join('/'));
     return { cmd: 'wall', wall: w, amount: num(tok[2] || '1') };
   }
+
+  // NEAT's canceltroopqueues / cancelfortifications [n]: leave n batches, cancel
+  // the rest. See queue-cancel.js.
+  const QC = require('./queue-cancel');
+  if (QC.COMMANDS[cmd]) return { cmd: 'cancelqueue', ...QC.parseArgs(cmd, tok.slice(1)) };
 
   // train a 10k   (troops)
   if (cmd === 'train') {
@@ -111,6 +177,16 @@ function parseLine(raw) {
   }
   if (cmd === 'useitem') {
     if (!tok[1]) throw new Error('useitem: usage  useitem <itemId> [num]');
+    // The client never spends these through shop.useGoods; each has its own move command.
+    if (require('./teleport').ITEM_IDS.has(tok[1])) {
+      throw new Error(`useitem: ${tok[1]} is a teleporter — use  teleport <x,y>  |  teleport <state>  |  teleport random  |  warteleport <x,y>`);
+    }
+    if (tok[1] === require('./stone-of-finding').ITEM_ID) {
+      throw new Error('useitem: the Stone of Finding is spent by  recover <hero>  — run  lostheroes  to see who it can bring back');
+    }
+    if (tok[1] === require('./water-hero').ITEM_ID) {
+      throw new Error('useitem: Holy Water is spent on a hero by  waterhero <hero> [/heropoints="att"]');
+    }
     return { cmd: 'useitem', itemId: tok[1], amount: parseInt(tok[2] || '1', 10) };
   }
   // useheroitem OTTO excalibur repeat 5    (NEAT spelling)
@@ -135,16 +211,19 @@ function parseLine(raw) {
         + ' — or give the raw id, e.g. hero.power.1');
     }
     if (times < 1 || times > 500) throw new Error('useheroitem: repeat must be between 1 and 500');
+    // The client resets through hero.resetPoint, never hero.useItem.
+    if (itemId === require('./water-hero').ITEM_ID) {
+      if (times !== 1) throw new Error('useheroitem: Holy Water resets a hero once — a second one only costs more. Use  waterhero <hero>');
+      return { cmd: 'waterhero', ...require('./water-hero').parseArgs(tok[1]) };
+    }
     return { cmd: 'useheroitem', heroName: tok[1], itemId, times };
   }
   if (cmd === 'heroitems') return { cmd: 'heroitems' };
 
   if (cmd === 'packages' || cmd === 'inventory') return { cmd: 'packages' };
+  // The Stone of Finding's restore window; see stone-of-finding.js.
   if (cmd === 'lostheroes') return { cmd: 'lostheroes' };
-  if (cmd === 'recover') {
-    if (!tok[1]) throw new Error('recover: usage  recover <heroId>   (see lostheroes)');
-    return { cmd: 'recover', heroId: tok.slice(1).join(' ') };
-  }
+  if (cmd === 'recover') return { cmd, ...require('./stone-of-finding').parseArgs(tok.slice(1)) };
   if (cmd === 'find') {
     if (!tok[1]) throw new Error('find: usage  find <player name>');
     return { cmd: 'find', query: tok.slice(1).join(' ') };
@@ -172,6 +251,10 @@ function parseLine(raw) {
     return { cmd: 'mayor', name: tok.slice(1).join(' ') };
   }
   if (cmd === 'unmayor' || cmd === 'unappoint' || cmd === 'dischargemayor') return { cmd: 'unmayor' };
+  // Finds the hero in whichever city it is; see rename-hero.js.
+  if (cmd === 'renamehero') return { cmd, ...require('./rename-hero').parseArgs(tok.slice(1)) };
+  // Holy Water; the rest of the line goes whole, as /heropoints="..." may hold spaces.
+  if (cmd === 'waterhero') return { cmd, ...require('./water-hero').parseArgs(line.slice(tok[0].length)) };
   if (cmd === 'levelup') {
     if (!tok[1]) throw new Error('levelup: give a hero name (or "all")');
     const last = (tok[tok.length - 1] || '').toLowerCase();
@@ -223,6 +306,13 @@ function parseLine(raw) {
     return { cmd: 'research', tech: t };
   }
 
+  // Starts a background market sniper and returns at once; see holiday-snipe.js.
+  if (cmd === 'holidaysnipe') return { cmd, ...require('./holiday-snipe').parseArgs(tok.slice(1)) };
+
+  // Coordinates spend an Advanced Teleporter, a state name or `random` a City
+  // Teleporter, and warteleport a War Teleporter; see teleport.js.
+  if (cmd === 'teleport' || cmd === 'warteleport') return { cmd: 'teleport', ...require('./teleport').parseArgs(cmd, tok.slice(1)) };
+
   if (cmd === 'sell' || cmd === 'buy') {
     // sell wood 1000 @0.55
     const priceTok = tok.find((t) => t.startsWith('@'));
@@ -230,32 +320,82 @@ function parseLine(raw) {
     return { cmd, resource: tok[1].toLowerCase(), amount: num(tok[2]), price: priceTok.slice(1) };
   }
 
-  if (['attack', 'scout', 'transport', 'reinforce'].includes(cmd)) {
-    const coords = tok[1] && tok[1].match(/^(\d+)\s*,\s*(\d+)$/);
-    if (!coords) throw new Error(`${cmd}: expected coords like 123,456`);
-    const target = { x: +coords[1], y: +coords[2] };
+  // <mission> <where> [hero] [troops] [resources] [time] [from <city>]
+  //   where  x,y, or one of your cities by name ("Home City" in quotes)
+  //   hero   a name, any, any:level<500,attack>400 — or none, or left out
+  //   time   @:14:30:07.500 lands then (timed-march.js); @0:30:00 or 0:30:00 camps that long
+  // `deploy <type> ...` is NEAT's general form of the same line; type bu is a
+  // build-city march. Attack and scout need a hero and troops, a build needs
+  // troops. Reinforce and transport go without a hero if none is named, and a
+  // reinforce with no troop string sends 1 scout.
+  const deploy = cmd === 'deploy';
+  const mission = deploy ? DEPLOY[(tok[1] || '').toLowerCase()] : cmd;
+  if (deploy && !mission) {
+    throw new Error('deploy: say the march type first — at (attack), bu (build city), re (reinforce), sc (scout), tr (transport)');
+  }
+  if (deploy || ['attack', 'scout', 'transport', 'reinforce'].includes(cmd)) {
+    const name = deploy ? `deploy ${tok[1].toLowerCase()}` : cmd;
+    // "123, 456" and "a:100, c:500" read the same as without the spaces
+    const words = (line.replace(/\s*,\s*/g, ',').match(/"[^"]*"|\S+/g) || [])
+      .map((w) => w.replace(/^"(.*)"$/, '$1')).slice(deploy ? 1 : 0);
+    const isList = (t) => /^[a-z]+:[\d.]+[kmb]?(,[a-z]+:[\d.]+[kmb]?)*$/i.test(t);
+    const codes = (t) => t.split(',').map((p) => p.split(':')[0].toLowerCase());
+    const allTroops = (t) => isList(t) && codes(t).every((c) => C.BY_CODE[c]);
+    const allRes = (t) => isList(t) && codes(t).every((c) => RES_CODE[c]);
+    const isTime = (t) => t.startsWith('@') || /^\d+:\d{2}(:\d{2})?$/.test(t);
 
-    // hero is OPTIONAL everywhere. Give a name ("Wian"), "any", or "any:level<500,attack>400".
-    // Omit it entirely and no heroId is sent (NewArmyWin.as only sets heroId when one is selected).
-    let from = null, land = null, hero = null, troops = null, resources = null;
-    for (let i = 2; i < tok.length; i++) {
-      const t = tok[i];
-      if (t.toLowerCase() === 'from') { from = tok[++i]; continue; }
-      if (t.startsWith('@')) { land = parseLandTime(t); continue; }
-      if (/^(wood|food|stone|iron|gold):/i.test(t)) { resources = parseResources(t); continue; }
-      if (/^[a-z]+:[\d.]+[kmb]?(,[a-z]+:[\d.]+[kmb]?)*$/i.test(t) && C.BY_CODE[t.split(':')[0].toLowerCase()]) { troops = parseTroops(t); continue; }
-      if (hero === null) { hero = t; continue; }
-      throw new Error(`${cmd}: unexpected token "${t}"`);
+    const where = words[1] || '';
+    if (!where || /^(any|none)(:|$)/i.test(where) || isTime(where) || /^from$/i.test(where) || isList(where)) {
+      throw new Error(`${name}: say where first — coords like 123,456, or one of your cities by name`);
     }
-    if (!troops) throw new Error(`${cmd}: no troop string (e.g. a:1000,c:500)`);
-    return { cmd, target, hero, troops, resources, land, from };
+    const coords = where.match(/^(\d+),(\d+)$/);
+    const target = coords ? { x: +coords[1], y: +coords[2] } : null;
+    const targetCity = coords ? null : where;
+    if (mission === 'construct' && !coords) throw new Error(`${name}: a build march goes to a flat's coordinates, like 123,456`);
+
+    // No hero sends no heroId at all; see Game.buildArmyBean.
+    let from = null, land = null, camp = null, hero, troops = null, resources = null;
+    for (let i = 2; i < words.length; i++) {
+      const t = words[i];
+      if (t.toLowerCase() === 'from') {
+        from = words[++i];
+        if (!from) throw new Error(`${name}: "from" needs a city name after it`);
+        continue;
+      }
+      if (isTime(t)) {
+        if (land || camp !== null) throw new Error(`${name}: one time per march — @:hh:mm:ss to land then, or a camp time`);
+        if (t.startsWith('@:')) land = parseLandTime(t); else camp = parseDuration(t);
+        continue;
+      }
+      if (isList(t)) {
+        // NEAT reads troops first and resources second, so in a later list
+        // s: and w: are stone and wood, not scouts and warriors.
+        if (troops === null && allTroops(t)) { troops = parseTroops(t); continue; }
+        if (allRes(t)) { resources = { ...resources, ...parseResources(t) }; continue; }
+        if (allTroops(t)) { troops = { ...troops, ...parseTroops(t) }; continue; }
+        throw new Error(`${name}: "${t}" is neither a troop string nor a resource string`);
+      }
+      if (hero === undefined) { hero = t.toLowerCase() === 'none' ? null : t; continue; }
+      throw new Error(`${name}: unexpected "${t}" — one hero per march${targetCity ? ', and a city name with spaces goes in quotes' : ''}`);
+    }
+    if ((mission === 'attack' || mission === 'scout') && !hero) {
+      throw new Error(`${name}: needs a hero — a name, any, or any:level<500,attack>400`);
+    }
+    let troopsDefault = false;
+    if (!troops) {
+      if (mission !== 'reinforce') throw new Error(`${name}: no troop string (e.g. a:1000,c:500${mission === 'construct' ? ', or wo:500 for a build' : ''})`);
+      troops = { scouter: 1 };
+      troopsDefault = true;
+    }
+    return { cmd: mission, target, targetCity, hero: hero || null, troops, troopsDefault, resources, land, camp, from };
   }
 
   throw new Error('unknown command: ' + cmd);
 }
 
 // Expands `repeat N` (NEAT-style: run the previous action N more times) and
-// `loop N` ... `endloop` blocks into a flat action list.
+// `loop N` ... `endloop` blocks into a flat action list. A bare `repeat` cannot
+// be flattened, so it leaves a `forever` marker after its action for run().
 function expand(raw) {
   const out = [];
   const stack = [];
@@ -273,7 +413,9 @@ function expand(raw) {
     if (a.cmd === 'repeat') {
       const prev = sink[sink.length - 1];
       if (!prev) { sink.push({ cmd: 'error', line: a.line, raw: a.raw, error: 'repeat with no previous action' }); continue; }
-      for (let i = 0; i < a.times; i++) sink.push({ ...prev });
+      if (prev.cmd === 'forever') { sink.push({ cmd: 'error', line: a.line, raw: a.raw, error: 'the repeat above never ends, so there is nothing after it to repeat' }); continue; }
+      if (a.times === null) { sink.push({ cmd: 'forever', action: prev, line: a.line, raw: a.raw }); continue; }
+      for (let i = 0; i < a.times; i++) sink.push({ ...prev, round: i + 1, of: a.times });
       continue;
     }
     sink.push(a);
@@ -284,39 +426,144 @@ function expand(raw) {
 
 function parse(text) {
   const raw = [];
-  text.split(/\r?\n/).forEach((line, i) => {
-    try { const a = parseLine(line); if (a) raw.push({ ...a, line: i + 1, raw: line.trim() }); }
-    catch (e) { raw.push({ cmd: 'error', line: i + 1, raw: line.trim(), error: e.message }); }
+  // NEAT's replacement variables: `set target 111,222`, then %target% in any
+  // later line reads 111,222. Plain text, swapped in before the line is read.
+  const vars = new Map();
+  text.split(/\r?\n/).forEach((given, i) => {
+    let line = given;
+    try {
+      line = given.replace(/%([a-z_][a-z0-9_]*)%/gi, (_, name) => {
+        const v = vars.get(name.toLowerCase());
+        if (v === undefined) throw new Error(`%${name}% is not set — put  set ${name} <value>  above this line`);
+        return v;
+      });
+      const bare = line.replace(/\/\/.*$/, '').trim();
+      if (/^set(\s|$)/i.test(bare)) {
+        const m = bare.match(/^set\s+([a-z_][a-z0-9_]*)\s+(.+)$/i);
+        if (!m) throw new Error('set: usage  set <name> <value>   and then %name% in the lines below');
+        vars.set(m[1].toLowerCase(), m[2].trim());
+        return;
+      }
+      const a = parseLine(line);
+      if (a) raw.push({ ...a, line: i + 1, raw: line.trim() });
+    } catch (e) { raw.push({ cmd: 'error', line: i + 1, raw: line.trim(), error: e.message }); }
   });
-  return expand(raw);
+  const out = expand(raw);
+  // After a logout there is no game to run anything against (logout.js).
+  const lo = out.findIndex((a) => a.cmd === 'logout');
+  const after = lo === -1 ? null : out.slice(lo + 1).find((a) => a.cmd !== 'error');
+  if (after) out.push({ cmd: 'error', line: after.line, raw: after.raw, error: 'nothing can run after logout — the console is off the game from then on' });
+  return out;
 }
 
 // ---------------------------------------------------------------- executor
 
 // The server sends a human-readable errorMsg on failure -- always show it.
-const say = (r) => {
+const verdict = (r) => {
   if (!r) return 'no response';
   if (r.ok === 1) return 'ok';
   return `FAILED (ok=${r.ok})` + (r.errorMsg ? ` - ${r.errorMsg}` : ` ${JSON.stringify(r)}`);
 };
 
+// A march target given by name is one of your own cities, matched whole.
+function ownCity(game, name) {
+  const c = (game.castles || []).find((x) => String(x.name || '').toLowerCase() === String(name).toLowerCase());
+  if (c) return c;
+  throw new Error(`no city of yours is called "${name}" — yours are ${(game.castles || []).map((x) => x.name).join(', ')}.`
+    + ' Give x,y for anywhere else, and put a name with spaces in quotes');
+}
+
+// opts.shouldStop() is polled between lines and during waits; once it says yes
+// the run ends where it is. It is the only way an endless `repeat` ends while
+// its line keeps going through.
 async function run(game, actions, log, opts = {}) {
   const dryRun = !!opts.dryRun;
+  const stopped = () => !!(opts.shouldStop && opts.shouldStop());
+  const pause = async (ms) => {
+    const end = Date.now() + ms;
+    while (!stopped() && Date.now() < end) await new Promise((r) => setTimeout(r, Math.min(250, end - Date.now())));
+  };
   let done = 0;
   let lastTradeAt = 0, tradeMisses = 0;
+  const sentHeroes = new Map();         // hero id -> when this run sent it
 
-  for (const a of actions) {
+  // `done` counts replies, refusals included, so a refusal is caught here:
+  // every server reply goes through say().
+  let refused = false;
+  const say = (r) => { if (!r || r.ok !== 1) refused = true; return verdict(r); };
+  // After a reconnect the session holds a new Game, and the one this run began
+  // with talks to a closed socket. Take the session's while it is the same
+  // player: the console can switch accounts under a running script.
+  const who = (g) => ((g && g.player && g.player.playerInfo) || {}).userName;
+  const follow = () => {
+    const s = opts.session;
+    if (s && s.connected && s.game && s.game !== game && who(s.game) && who(s.game) === who(game)) game = s.game;
+  };
+
+  // A `forever` marker puts its action back in front of itself for as long as
+  // the last go went through: counted, not refused, and no exception.
+  const queue = actions.slice();
+  let prev = null, doneBefore = 0;
+  while (queue.length) {
+    const wentThrough = !!prev && !refused && (done > doneBefore || prev.cmd === 'echo' || prev.cmd === 'sleep');
+    refused = false; doneBefore = done;
+    if (stopped()) { log('stopped — the rest of the script was not run'); break; }
+    follow();
+    const a = queue.shift();
+    prev = a;
+    if (a.cmd === 'forever') {
+      const n = a.action.line;
+      if (dryRun) { log(`line ${a.line}: repeat — [dry run] would run line ${n} again until it fails or you press Stop`); continue; }
+      if (!wentThrough) { log(`line ${a.line}: repeat ends — line ${n} did not go through`); continue; }
+      // A line that never waits on the server (echo) would otherwise spin here
+      // without yielding, and Stop could never get through.
+      await new Promise((r) => setImmediate(r));
+      await pause(opts.repeatGapMs ?? 200);
+      const round = (a.round || 0) + 1;
+      queue.unshift({ ...a.action, round, of: null }, { ...a, round });
+      continue;
+    }
     if (a.cmd === 'error') { log(`line ${a.line}: PARSE ERROR — ${a.error}`); continue; }
-    log(`line ${a.line}: ${a.raw}`);
+    log(`line ${a.line}: ${a.raw}${a.round ? ` (repeat ${a.round}${a.of ? ' of ' + a.of : ', until it fails or Stop'})` : ''}`);
 
     try {
       if (a.cmd === 'echo') { log('  ' + a.text); continue; }
-      if (a.cmd === 'sleep') { await new Promise((r) => setTimeout(r, a.seconds * 1000)); continue; }
+      if (a.cmd === 'sleep') {
+        if (a.until) {
+          const at = nextOccurrence(a.until, game.now());
+          log(`  until ${new Date(at).toLocaleTimeString()} on this machine's clock`);
+          await pause(at - game.now());
+        } else await pause(a.seconds * 1000);
+        continue;
+      }
+
+      if (a.cmd === 'buildstatus') {
+        for (const l of require('./city-build').status(game)) log('  ' + l);
+        continue;
+      }
+      if (a.cmd === 'marchcheck') { await require('./timed-march').check(game, log); continue; }
+
+      // Ends the run: from here the console is off the game (logout.js).
+      if (a.cmd === 'logout') {
+        const out = await require('./logout').run(game, a, {
+          session: opts.session, log, dryRun, stopped, otherScripts: opts.otherScripts, atLogout: opts.atLogout,
+        });
+        if (out) { done++; break; }
+        continue;
+      }
 
       if (a.cmd === 'cleanreports') {
         if (dryRun) { log('  [dry run] would delete all ' + a.type + ' reports'); continue; }
         const n = await game.cleanReports(a.type);
         log(`  removed ${n} ${a.type} report(s)`);
+        done++; continue;
+      }
+
+      // It needs the console's session, not just this run's game: it outlives
+      // the run, follows reconnects, and writes to the Log tab.
+      if (a.cmd === 'holidaysnipe') {
+        const lines = await require('./holiday-snipe').command(a, { session: opts.session, dryRun });
+        for (const l of lines) log('  ' + l);
         done++; continue;
       }
 
@@ -351,10 +598,6 @@ async function run(game, actions, log, opts = {}) {
 
       if (a.cmd === 'useitem') {
         const castle = game.castle(opts.castle);
-        if (a.itemId === 'player.item.stoneoffinding') {
-          log('  the Stone of Finding is not used through shop.useGoods — use "lostheroes" then "recover <heroId>"');
-          continue;
-        }
         log(`  use ${a.amount} x ${a.itemId} in ${castle.name}`);
         if (dryRun) { log('  [dry run] not sent'); continue; }
         const r = await game.useItem(game.castleId(castle), a.itemId, a.amount);
@@ -405,21 +648,10 @@ async function run(game, actions, log, opts = {}) {
         continue;
       }
 
-      if (a.cmd === 'lostheroes') {
-        const d = await game.lostHeroes();
-        const hs = d.heros || d.disappearHeros || d.list || [];
-        if (!hs.length) { log('  no heroes lost in the last 24h (nothing for a Stone of Finding to recover)'); continue; }
-        for (const h of hs) log(`  id ${h.id}  ${h.name}  L${h.level}  atk ${Game.attrValue(h, 'power')} pol ${Game.attrValue(h, 'management')} int ${Game.attrValue(h, 'stratagem')}`);
+      if (a.cmd === 'lostheroes' || a.cmd === 'recover') {
+        const ok = await require('./stone-of-finding').run(game, a, { castle: opts.castle, dryRun, log });
+        if (ok && a.cmd === 'recover') done++;
         continue;
-      }
-
-      if (a.cmd === 'recover') {
-        const castle = game.castle(opts.castle);
-        log(`  recover lost hero ${a.heroId} (consumes a Stone of Finding)`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.recoverHero(game.castleId(castle), a.heroId);
-        log('  -> ' + say(r));
-        done++; continue;
       }
 
       if (a.cmd === 'find') {
@@ -511,6 +743,16 @@ async function run(game, actions, log, opts = {}) {
         done++; continue;
       }
 
+      if (a.cmd === 'renamehero') {
+        if (await require('./rename-hero').run(game, a, { dryRun, log })) done++;
+        continue;
+      }
+
+      if (a.cmd === 'waterhero') {
+        if (await require('./water-hero').run(game, a, { dryRun, log })) done++;
+        continue;
+      }
+
       if (a.cmd === 'unmayor') {
         const castle = game.castle(opts.castle);
         log(`  remove the mayor of ${castle.name}`);
@@ -570,6 +812,12 @@ async function run(game, actions, log, opts = {}) {
         const r = await game.constructCastle(game.castleId(castle), fieldId, false);
         log('  -> ' + say(r));
         done++; continue;
+      }
+
+      if (a.cmd === 'teleport') {
+        const moved = await require('./teleport').run(game, a, { castle: opts.castle, session: opts.session, dryRun, log });
+        if (moved) done++;
+        continue;
       }
 
       if (a.cmd === 'build') {
@@ -648,6 +896,12 @@ async function run(game, actions, log, opts = {}) {
         done++; continue;
       }
 
+      if (a.cmd === 'cancelqueue') {
+        const n = await require('./queue-cancel').run(game, a, { castle: opts.castle, session: opts.session, dryRun, log });
+        if (n) done++;
+        continue;
+      }
+
       if (a.cmd === 'wall') {
         const castle = game.castle(opts.castle);
         log(`  build ${a.amount.toLocaleString('en-US')} x ${a.wall.name} (type ${a.wall.typeId}) in ${castle.name}`);
@@ -671,12 +925,16 @@ async function run(game, actions, log, opts = {}) {
         log(`  ${a.cmd} ${a.amount.toLocaleString()} ${a.resource} @ ${a.price} from ${castle.name || game.castleId(castle)}`);
         if (dryRun) { log('  [dry run] not sent'); continue; }
 
-        // Market writes are throttled hardest by the server. Pace them, and stop
-        // the run once it starts ignoring us instead of hammering it further.
-        const gap = Number(opts.tradeGapMs ?? 1200);
+        // A refused or unanswered order costs only its own go: the lines after
+        // it, and every round of a `repeat N`, still run. Market writes are
+        // paced, and each unanswered one in a row doubles the gap, up to a
+        // minute, rather than hammering a server that has stopped answering.
+        const gapAfter = (misses) => Math.min(60000, Number(opts.tradeGapMs ?? 1200) * 2 ** misses);
         if (lastTradeAt) {
-          const wait = gap - (Date.now() - lastTradeAt);
-          if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+          const wait = gapAfter(tradeMisses) - (Date.now() - lastTradeAt);
+          if (wait > 0) await pause(wait);
+          if (stopped()) { log('  stopped before it was sent'); break; }
+          follow();   // the session may have reconnected during a long wait
         }
         lastTradeAt = Date.now();
 
@@ -685,57 +943,78 @@ async function run(game, actions, log, opts = {}) {
           r = await game.newTrade({ castleId: game.castleId(castle), resource: a.resource, type: a.cmd, amount: a.amount, price: a.price });
         } catch (e) {
           tradeMisses++;
-          log(`  -> ${e.message}`);
-          if (tradeMisses >= 2) { log('  STOPPING: the server stopped answering market commands. Give it a few minutes.'); break; }
+          log(`  -> ${e.message} — carrying on, the next order waits ${Math.round(gapAfter(tradeMisses) / 1000)}s`);
           continue;
         }
         tradeMisses = 0;
         log('  -> ' + say(r));
-        if (r.ok === -38) { log('  marketplace full (10 offers max) — stopping this run'); break; }
+        if (r.ok === -38) log('  marketplace full (10 offers max) — this one is skipped, the script carries on');
         done++; continue;
       }
 
       // ---- marches ----
       const castle = game.castle(a.from ?? opts.castle);
       const from = game.castleXY(castle);
-      const targetPoint = C.coordsToFieldId(a.target.x, a.target.y);
+      const toCity = a.targetCity ? ownCity(game, a.targetCity) : null;
+      const target = toCity ? game.castleXY(toCity) : a.target;
+      if (!target) throw new Error(`cannot tell where ${toCity.name} is`);
+      if (toCity && game.castleId(toCity) === game.castleId(castle)) throw new Error(`${toCity.name} is the city this march would leave from`);
+      const targetPoint = C.coordsToFieldId(target.x, target.y);
       const troopKeys = Object.keys(a.troops).filter((k) => a.troops[k] > 0);
-      const march = from ? C.marchTimeMs(from, a.target, troopKeys, game.marchSkillParam) : null;
-      const hero = a.hero ? game.pickHero(castle, a.hero) : null;
+      const construct = a.cmd === 'construct';
+      if (construct) for (const n of require('./city-build').preflight(game, targetPoint)) log('  ' + n);
 
-      let restTimeSec = 0, sendAt = null;
+      const troopText = troopKeys.map((k) => `${a.troops[k].toLocaleString('en-US')} ${(C.BY_KEY[k] || {}).name || k}`).join(', ');
+      // Base load only: research raises it, so this warns rather than refuses.
+      const carried = Object.values(a.resources || {}).reduce((s2, v) => s2 + v, 0);
+      const load = troopKeys.reduce((s2, k) => s2 + a.troops[k] * ((C.BY_KEY[k] || {}).load || 0), 0);
+      if (carried > load) log(`  note: ${troopText} carry about ${load.toLocaleString('en-US')} before research, and this asks for ${carried.toLocaleString('en-US')} — the server may refuse`);
+
+      // Built for each send, so a march that is recalled and sent again can take
+      // another idle hero. An `any` skips the heroes this run sent in the last
+      // minute: the HeroUpdate saying they are away can come after the next line.
+      let hero = null;
+      const makeBean = (restTimeSec) => {
+        const skip = new Set([...sentHeroes].filter(([, at]) => Date.now() - at < 60000).map(([id]) => id));
+        hero = a.hero ? game.pickHero(castle, a.hero, skip) : null;
+        const bean = game.buildArmyBean({
+          missionType: C.MISSION[a.cmd],
+          heroId: hero ? hero.id : undefined,
+          targetPoint,
+          troops: a.troops,
+          resources: a.resources || {},
+          restTimeSec,
+        });
+        log(`  ${construct ? 'build city' : a.cmd} -> ${toCity ? toCity.name + ' ' : ''}(${target.x},${target.y}) field ${targetPoint} from ${castle.name}`
+          + ` · hero ${hero ? (hero.name || hero.id) : 'none'} · ${troopText}${a.troopsDefault ? ' (no troop string given)' : ''} · missionType ${bean.missionType}`);
+        return bean;
+      };
+
+      // Land at a moment: sent to the ms, checked against the server's stamp,
+      // and recalled and resent if it misses (timed-march.js).
       if (a.land) {
-        if (march === null) throw new Error('cannot compute march time (castle coords unknown) — @time needs it');
-        const serverNow = game.now();
-        const targetMs = nextOccurrence(a.land, serverNow);
-        const slack = targetMs - serverNow - march;
-        if (slack < 0) throw new Error(`too late: march takes ${(march / 1000).toFixed(1)}s but target is ${((targetMs - serverNow) / 1000).toFixed(1)}s away`);
-        // camp time is whole seconds; the leftover fraction is absorbed by delaying the send
-        restTimeSec = Math.floor(slack / 1000);
-        sendAt = targetMs - march - restTimeSec * 1000;
-        log(`  march ${(march / 1000).toFixed(1)}s, camp ${restTimeSec}s, send in ${((sendAt - serverNow) / 1000).toFixed(3)}s -> lands ${new Date(targetMs).toLocaleTimeString()}.${String(a.land.ms).padStart(3, '0')}`);
-      } else if (march !== null) {
-        log(`  march ${(march / 1000).toFixed(1)}s (no @time, lands on arrival)`);
+        if (!from) throw new Error('cannot compute march time (castle coords unknown) — @: needs it');
+        const res = await require('./timed-march').send({
+          game, castle, construct, from, target, targetPoint, toCity, troopKeys,
+          aimMs: nextOccurrence(a.land, game.now()), makeBean, log, stopped, dryRun,
+        });
+        if (res.sent) { done++; if (hero) sentHeroes.set(hero.id, Date.now()); } else if (!dryRun) refused = true;
+        if (res.why === 'stopped') break;
+        continue;
       }
 
-      const bean = game.buildArmyBean({
-        missionType: C.MISSION[a.cmd],
-        heroId: hero ? hero.id : undefined,
-        targetPoint,
-        troops: a.troops,
-        resources: a.resources || {},
-        restTimeSec,
-      });
-      log(`  ${a.cmd} -> field ${targetPoint} (${a.target.x},${a.target.y}) hero ${hero ? (hero.name || hero.id) : 'none'} missionType ${bean.missionType}`);
-
+      const march = from ? C.marchTimeMs(from, target, troopKeys, game.marchSkillParam) : null;
+      const restTimeSec = a.camp || 0;
+      if (march !== null) {
+        log(`  march ${(march / 1000).toFixed(1)}s` + (restTimeSec
+          ? `, camp ${require('./timed-march').dur(restTimeSec * 1000)} (lands when the camp is over)`
+          : ' (no @: time, lands on arrival)'));
+      }
+      const bean = makeBean(restTimeSec);
       if (dryRun) { log('  [dry run] not sent'); continue; }
-
-      if (sendAt) {
-        const wait = sendAt - game.now();
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      }
       const r = await game.newArmy(game.castleId(castle), bean);
       log('  -> ' + say(r));
+      if (r && r.ok === 1 && hero) sentHeroes.set(hero.id, Date.now());
       done++;
     } catch (e) {
       log(`  FAILED: ${e.message}`);
@@ -745,4 +1024,4 @@ async function run(game, actions, log, opts = {}) {
   return done;
 }
 
-module.exports = { parse, parseLine, run, parseTroops, parseLandTime, nextOccurrence };
+module.exports = { parse, parseLine, run, parseTroops, parseResources, parseLandTime, parseDuration, nextOccurrence };

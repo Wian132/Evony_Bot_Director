@@ -79,19 +79,41 @@ const TECHS = [
 const TECH_BY_CODE = Object.fromEntries(TECHS.map((t) => [slug(t.name), t]));
 const TECH_BY_ID = Object.fromEntries(TECHS.map((t) => [t.typeId, t]));
 
-const SLOTS = { insideFrom: 1, insideTo: 30, outsideFrom: 1001, outsideTo: 1040 };
+// Building plots (BuildingConstants.as). Inside the walls there are 32, numbered
+// 0-31 (CastleIn.SPACE_LIMIT); the Town Hall sits at -1 and the Walls at -2, so a
+// full city holds 74 buildings. Outside there are 40, 1001-1040, but they open
+// with the Town Hall: 13 at level 1 and 3 more per level, all 40 at level 10
+// (CastleOut.initSpace / townHallLevelChange).
+const SLOTS = {
+  insideFrom: 0, insideTo: 31, outsideFrom: 1001, outsideTo: 1040,
+  outsideAtL1: 13, outsidePerTownHall: 3,
+};
+const TOWN_HALL = 31, WALLS_TYPE = 32;
+
+// The plots a building can go on, given the Town Hall level.
+function plotRange(outside, townHallLevel = 1) {
+  if (!outside) return { from: SLOTS.insideFrom, to: SLOTS.insideTo };
+  const open = SLOTS.outsideAtL1 + (Math.max(1, Number(townHallLevel) || 1) - 1) * SLOTS.outsidePerTownHall;
+  return { from: SLOTS.outsideFrom, to: Math.min(SLOTS.outsideTo, SLOTS.outsideFrom + open - 1) };
+}
 
 // TFConstants.as -- fortification ("wall") types for fortifications.produceWallProtect
 // `beanKey` is how the castle's fortification object names it:
 //   {"trap":1,"rollingLogs":0,"rockfall":0,"arrowTower":0,"abatis":1418}
+// `space` is the fortified space one unit takes (CastleDefProduce.countFortSpace).
 const WALLS = [
-  { code: 'trap',   typeId: 14, name: 'Trap',         beanKey: 'trap' },
-  { code: 'abatis', typeId: 15, name: 'Abatis',       beanKey: 'abatis' },
-  { code: 'tower',  typeId: 16, name: 'Arrow Tower',  beanKey: 'arrowTower' },
-  { code: 'logs',   typeId: 17, name: 'Rolling Logs', beanKey: 'rollingLogs' },
-  { code: 'rocks',  typeId: 18, name: 'Rock Fall',    beanKey: 'rockfall' },
+  { code: 'trap',   typeId: 14, name: 'Trap',         beanKey: 'trap',        space: 1 },
+  { code: 'abatis', typeId: 15, name: 'Abatis',       beanKey: 'abatis',      space: 2 },
+  { code: 'tower',  typeId: 16, name: 'Arrow Tower',  beanKey: 'arrowTower',  space: 3 },
+  { code: 'logs',   typeId: 17, name: 'Rolling Logs', beanKey: 'rollingLogs', space: 4 },
+  { code: 'rocks',  typeId: 18, name: 'Rock Fall',    beanKey: 'rockfall',    space: 5 },
 ];
 const WALL_BY_CODE = Object.fromEntries(WALLS.flatMap((w) => [[w.code, w], [w.name.toLowerCase().replace(/ /g, ''), w]]));
+const WALL_BY_TYPE = Object.fromEntries(WALLS.map((w) => [w.typeId, w]));
+
+// Fortified space by Walls level (Wall.as changeCastleSpace). Built AND queued
+// fortifications both take from it (Wall.as countSpace).
+const WALL_SPACE = [0, 1000, 3000, 6000, 10000, 15000, 21000, 28000, 36000, 45000, 55000];
 
 // interior.pacifyPeople typeId -- view/module/office/PacifyPeopleView.as switch
 const PACIFY = {
@@ -157,22 +179,72 @@ const REC_SIZE = 60000;   // NewArmyWin.as:80
 const coordsToFieldId = (x, y) => y * MAP_W + x;
 const fieldIdToCoords = (id) => ({ x: id % MAP_W, y: Math.floor(id / MAP_W) });
 
-// NewArmyWin.as:2850/3033 -- needTime = (distance * recSize / effectiveSpeed) * 1000
-// effectiveSpeed = slowest troop speed * (1 + marchSkillParam/100)
-function marchTimeMs(fromXY, toXY, troopKeys, marchSkillParam = 100) {
-  const dx = fromXY.x - toXY.x, dy = fromXY.y - toXY.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const speeds = troopKeys.filter((k) => BY_KEY[k]).map((k) => BY_KEY[k].speed);
+// The sixteen states, a 4x4 grid of 200x200 blocks over the 800x800 map, read
+// row by row. (457,281) -> column 2, row 1 -> Thuringia, which is what NEAT
+// shows for that city. Only the NAMES are relied on elsewhere: the ids that
+// city.moveCastle takes come live from common.zoneInfo.
+const ZONES = [
+  'Friesland', 'Saxony', 'North March', 'Bohemia',
+  'Lower Lorraine', 'Franconia', 'Thuringia', 'Moravia',
+  'Upper Lorraine', 'Swabia', 'Bavaria', 'Carinthia',
+  'Burgundy', 'Lombardy', 'Tuscany', 'Romagna',
+];
+const zoneOf = (x, y) => ZONES[Math.min(3, Math.floor(y / 200)) * 4 + Math.min(3, Math.floor(x / 200))] || null;
+
+// Mounted troops and siege engines move at driveSkillParam (Horseback Riding),
+// everything on foot at marchSkillParam (NewArmyWin.speedFood).
+const DRIVE_KEYS = new Set(['carriage', 'lightCavalry', 'heavyCavalry', 'ballista', 'batteringRam', 'catapult']);
+
+// Tiles between two points the short way round: the map wraps at every edge,
+// and NewArmyWin.countDistance tries all nine copies of the target.
+function mapDistance(a, b) {
+  let best = Infinity;
+  for (const ox of [0, MAP_W, -MAP_W]) {
+    for (const oy of [0, MAP_W, -MAP_W]) best = Math.min(best, Math.hypot(a.x - (b.x + ox), a.y - (b.y + oy)));
+  }
+  return best;
+}
+
+// How long a march takes, in ms, worked out the way the client does it
+// (NewArmyWin.speedFood, :2850-3100). A timed landing is only as good as this.
+//   skills   a number: marchSkillParam, used for every troop (the old call), or
+//            { marchSkill, driveSkill, relief, castleBuffs, playerBuffs, now }
+//   relief   army.getTroopParam's transportStationParam for the sending city.
+//            The client applies it whenever the target is yours or your
+//            alliance's, and that includes your own flats and valleys.
+// The slowest speed is held in an int, and so is its product with relief.
+function marchTimeMs(fromXY, toXY, troopKeys, skills = 100) {
+  const p = skills !== null && typeof skills === 'object' ? skills : { marchSkill: skills };
+  const march = Number(p.marchSkill ?? 100);
+  const drive = Number(p.driveSkill ?? march);
+  const speeds = troopKeys.filter((k) => BY_KEY[k])
+    .map((k) => BY_KEY[k].speed * (1 + (DRIVE_KEYS.has(k) ? drive : march) / 100));
   if (!speeds.length) return null;
-  const slowest = Math.min(...speeds);
-  const effective = slowest * (1 + marchSkillParam / 100);
-  return (distance * REC_SIZE / effective) * 1000;
+  let speed = Math.trunc(Math.min(...speeds));
+  if (Number(p.relief) > 0) speed = Math.trunc(Number(p.relief) * speed);
+  if (speed <= 0) return null;
+  let ms = mapDistance(fromXY, toXY) * REC_SIZE / speed * 1000;
+
+  // Buffs, applied in the client's order. The first two scale with how long the
+  // buff has left to run.
+  const now = Number(p.now ?? Date.now());
+  const latest = (list, name) => Math.max(0, ...(list || [])
+    .filter((b) => String((b && b.typeId) || '').includes(name)).map((b) => Number(b.endTime) || 0));
+  const band = (end, pcts) => (end - now > 8 * 3600000 ? pcts[0] : end - now > 4 * 3600000 ? pcts[1] : pcts[2]);
+  const slower = latest(p.castleBuffs, 'IncArmyActionTimeBuff');
+  if (slower > 0) ms += ms * band(slower, [60, 40, 20]) / 100;
+  const faster = latest(p.playerBuffs, 'ReduceArmyActionBuff');
+  if (faster > 0) ms -= ms * band(faster, [105, 70, 35]) / 100;
+  for (const b of p.playerBuffs || []) if (String((b && b.typeId) || '').includes('HarvesterWagesBuff')) ms = ms * 90 / 100;
+  return Math.max(0, ms);
 }
 
 module.exports = {
-  MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE,
-  BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID, SLOTS,
+  MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
+  BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
+  SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
   TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS,
-  MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, FIELD_TYPES, decodeTile,
+  MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
+  ZONES, zoneOf,
 };

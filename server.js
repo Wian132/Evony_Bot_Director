@@ -51,10 +51,10 @@ const PINNED = process.env.ACCOUNT_ID || null;
 })();
 
 console.log(`  account: ${SESSION.account ? SESSION.account.id + ' ' + SESSION.account.label : '(from .env)'}`
-  + `   port: ${PORT}   engine: ${SESSION.engineMode}`);
+  + `   port: ${PORT}   engine: live`);
 
 SESSION.startSupervisor();     // heartbeat + auto-reconnect for the console session
-SESSION.startEngine();         // ticks the goal engine while engineMode != 'off'
+SESSION.startEngine();         // ticks the goal engine, live, unless paused from the console
 
 function loadEnv() {
   const out = {};
@@ -63,6 +63,21 @@ function loadEnv() {
     const m = l.match(/^\s*([A-Z_]+)\s*=\s*(.*)\s*$/); if (m) out[m[1]] = m[2];
   }
   return out;
+}
+
+const LOADOUTS = 10;     // script loadout slots per city
+
+// Scripts running now, by city: { stop, startedAt, lines, dropped }. Stop sets
+// `stop`, which the run polls between lines — the only way an endless `repeat`
+// ends while its line keeps going through.
+const SCRIPT_RUNS = new Map();
+const SCRIPT_KEEP = 2000;          // lines a run keeps; older ones are dropped
+
+// A script's parse errors, once each: loop/repeat expansion copies a bad line.
+function scriptErrors(actions) {
+  const seen = new Map();
+  for (const a of actions) if (a.cmd === 'error') seen.set(`${a.line}:${a.error}`, { line: a.line, error: a.error });
+  return [...seen.values()];
 }
 
 function body(req) {
@@ -138,6 +153,16 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/scanner' || url.pathname === '/index.html') {
     return send(200, 'text/html; charset=utf-8', fs.readFileSync(path.join(__dirname, 'public', 'index.html')));
   }
+  // The web battle log rebuilt without Flash, and the report view it shares
+  // with the console's Reports window.
+  if (url.pathname === '/report' || url.pathname === '/report.html') {
+    return send(200, 'text/html; charset=utf-8', fs.readFileSync(path.join(__dirname, 'public', 'report.html')));
+  }
+  if (url.pathname === '/reportview.js' || url.pathname === '/reportview.css') {
+    const js = url.pathname.endsWith('.js');
+    return send(200, js ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8',
+      fs.readFileSync(path.join(__dirname, 'public', js ? 'reportview.js' : 'reportview.css')));
+  }
 
   // ---- shared session endpoints ----
   if (url.pathname === '/api/session') {
@@ -166,6 +191,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/connect' && req.method === 'POST') {
+    // Connect is also how a script's logout is ended early (logout.js).
+    if (SESSION.maint.plan && SESSION.maint.plan.source === 'logout') SESSION.clearMaintenancePlan();
     try { await SESSION.connect(); } catch (e) { /* reported via header */ }
     return send(200, 'application/json', JSON.stringify(SESSION.header()));
   }
@@ -221,7 +248,7 @@ const server = http.createServer(async (req, res) => {
 
       if (b.action === 'abandon') {
         const r = await g.req('field.giveUpField', { fieldId });
-        SESSION.note(`valley ${fieldId} abandoned -> ok=${r && r.ok}`);
+        SESSION.note(`valley ${fieldId} abandoned -> ok=${r && r.ok}`, { city: owner.name, kind: 'act' });
         return send(200, 'application/json', JSON.stringify({ ok: r && r.ok === 1, error: r && r.errorMsg }));
       }
 
@@ -232,7 +259,7 @@ const server = http.createServer(async (req, res) => {
         const r = await g.req('city.constructCastle', {
           castleId: g.castleId(owner), fieldId, isTroopBack: true,
         });
-        SESSION.note(`constructCastle on ${fieldId} -> ok=${r && r.ok}`);
+        SESSION.note(`constructCastle on ${fieldId} -> ok=${r && r.ok}`, { city: owner.name, kind: 'act' });
         return send(200, 'application/json', JSON.stringify({ ok: r && r.ok === 1, error: r && r.errorMsg }));
       }
 
@@ -266,30 +293,117 @@ const server = http.createServer(async (req, res) => {
       return send(200, 'application/json', JSON.stringify(raw));
     } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
+  // The Items tab: everything the account holds, named (items.js). Read from the
+  // session's own copy, which server.ItemUpdate keeps current — the tab polls,
+  // so this never connects or asks the server anything.
+  if (url.pathname === '/api/items') {
+    const g = SESSION.game;
+    if (!g || !g.player) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected' }));
+    return send(200, 'application/json', JSON.stringify({ ok: true, ...require('./items').inventory(g) }));
+  }
   if (url.pathname === '/api/city') {
     return send(200, 'application/json', JSON.stringify(SESSION.city(q.get('id')) || {}));
   }
+  // kind: activity (what the bot did) | engine (its thinking) | reports |
+  // debug (everything, the protocol trace included). 'log' is the old name for debug.
   if (url.pathname === '/api/log') {
-    const kind = q.get('kind') || 'log';
-    const city = q.get('city');
-    const find = String(q.get('q') || '').trim().toLowerCase();
-    let lines = kind === 'reports' ? SESSION.reports : SESSION.log;
-    if (city) lines = lines.filter((l) => l.city === city);
-    // Filtering happens BEFORE the tail is taken, so a match further back is
-    // still found instead of being cut off by the window.
-    if (find) lines = lines.filter((l) => String(l.m).toLowerCase().includes(find));
-    return send(200, 'application/json', JSON.stringify({
-      lines: lines.slice(-500),
-      total: lines.length,
-      cities: SESSION.logCities(kind),
-      filtered: !!(city || find),
-    }));
+    const kind = q.get('kind') || 'activity';
+    return send(200, 'application/json', JSON.stringify(
+      SESSION.logView(kind, { city: q.get('city') || null, q: q.get('q') || '' })));
   }
 
   if (url.pathname === '/api/log/clear' && req.method === 'POST') {
     const b = await body(req);
-    const removed = SESSION.clearLog(b.kind || 'log', b.city || null);
+    const removed = SESSION.clearLog(b.kind || 'debug', b.city || null);
     return send(200, 'application/json', JSON.stringify({ ok: true, removed }));
+  }
+
+  // ---- the console's per-city controls -----------------------------------
+  // Gate Control: auto | open | closed. Open/closed go to the server at once.
+  if (url.pathname === '/api/gate' && req.method === 'POST') {
+    const b = await body(req);
+    try { return send(200, 'application/json', JSON.stringify(await SESSION.setGate(b.city, String(b.mode || '')))); }
+    catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+  // War Town Mode: auto | 0 | 1 | 2 — overrides `config wartown:` for the city.
+  if (url.pathname === '/api/wartown' && req.method === 'POST') {
+    const b = await body(req);
+    try { return send(200, 'application/json', JSON.stringify(SESSION.setWarTown(b.city, b.mode))); }
+    catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+  // The pause button: the engine stops acting; its mode is left alone.
+  if (url.pathname === '/api/pause' && req.method === 'POST') {
+    const b = await body(req);
+    SESSION.userPaused = !!b.paused;
+    SESSION.note(SESSION.userPaused ? 'PAUSED from the console — the engine will not act until resumed' : 'resumed from the console');
+    return send(200, 'application/json', JSON.stringify({ ok: true, paused: SESSION.userPaused }));
+  }
+  // Per-city data that costs a request: queues | research | reinf | prod.
+  if (url.pathname === '/api/cityx') {
+    try {
+      const data = await SESSION.cityExtra(q.get('id'), q.get('kind'), q.get('fresh') === '1');
+      return send(200, 'application/json', JSON.stringify(data));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+  if (url.pathname === '/api/engine/report') {
+    return send(200, 'application/json', JSON.stringify({
+      paused: SESSION.userPaused, lastTickAt: SESSION.lastTickAt || null,
+      report: SESSION.engineReport(q.get('city')),
+    }));
+  }
+
+  // Cancel one of our own market offers. Only an offer this city actually has
+  // is accepted, never an arbitrary id.
+  if (url.pathname === '/api/trade/cancel' && req.method === 'POST') {
+    const b = await body(req);
+    try {
+      const g = SESSION.game;
+      if (!SESSION.connected || !g) throw new Error('not connected');
+      const castle = g.castles.find((c) => g.castleId(c) === Number(b.city));
+      if (!castle) throw new Error('no such city');
+      const t = (castle.trades || []).find((x) => Number(x.id) === Number(b.tradeId));
+      if (!t) throw new Error('that offer is not one of this city\'s');
+      const r = await g.cancelTrade(g.castleId(castle), t.id);
+      SESSION.note(`cancelled ${Number(t.tradeType) === 0 ? 'buy' : 'sell'} offer: ${t.resourceName || 'resource'} `
+        + `${Number(t.amount).toLocaleString('en-US')} @ ${t.price} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'refused'}`,
+      { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ok: !!(r && r.ok === 1), error: r && r.errorMsg }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+
+  // Cancel one batch in a barrack or the Walls queue: the ✖ on the Barracks and
+  // Fortifications panels. {city, kind: troop|wall, positionId, queueId}. Only a
+  // batch the city's queue holds right now is sent (queue-cancel.js).
+  if (url.pathname === '/api/queue/cancel' && req.method === 'POST') {
+    const b = await body(req);
+    try {
+      const g = SESSION.game;
+      if (!SESSION.connected || !g) throw new Error('not connected');
+      const castle = g.castles.find((c) => g.castleId(c) === Number(b.city));
+      if (!castle) throw new Error('no such city');
+      const r = await require('./queue-cancel').cancelOne(g, castle, String(b.kind || ''),
+        { positionId: b.positionId, queueId: b.queueId }, { session: SESSION });
+      SESSION.note(r.text, { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ok: r.ok, error: r.error }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+
+  // Recall one of our own marches. army.callBackArmy {castleId, armyId}
+  // (ArmyCommands.as:118) — the castle is the one the army left from.
+  if (url.pathname === '/api/army/recall' && req.method === 'POST') {
+    const b = await body(req);
+    try {
+      const g = SESSION.game;
+      if (!SESSION.connected || !g) throw new Error('not connected');
+      const a = ((g.player && g.player.selfArmys) || []).find((x) => String(x.armyId) === String(b.armyId));
+      if (!a) throw new Error('no such army of yours');
+      const castle = g.castles.find((c) => Number(c.fieldId) === Number(a.startFieldId));
+      if (!castle) throw new Error('cannot tell which city that army belongs to');
+      const r = await g.req('army.callBackArmy', { castleId: g.castleId(castle), armyId: a.armyId });
+      SESSION.note(`recalled army ${a.armyId} (${a.targetPosName || 'target'}) -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'refused'}`,
+        { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ok: !!(r && r.ok === 1), error: r && r.errorMsg }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
   if (url.pathname === '/api/chat' && req.method === 'GET') {
     const ch = q.get('channel') || 'alliance';
@@ -299,6 +413,34 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     try { await SESSION.sendChat(b.channel, b.msg, b.target); return send(200, 'application/json', '{"ok":true}'); }
     catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+  // ---- mail & reports: the windows behind the header's Mail / Reports boxes ----
+  //   GET  /api/mail?box=inbox|system|sent&page=1     GET /api/mail/read?id=
+  //   POST /api/mail/delete {ids}   /api/mail/markread {ids}   /api/mail/send {to, title, body}
+  //   GET  /api/reports?type=army|trade|other&page=1   GET /api/reports/read?id=
+  //   POST /api/reports/delete {ids}   /api/reports/markread {ids}
+  // Each one is the user opening the window or acting in it — nothing polls.
+  // Not connected, or refused by the server: {ok:false, error}. See session.js.
+  if (url.pathname === '/api/mail' || url.pathname.startsWith('/api/mail/')
+      || url.pathname === '/api/reports' || url.pathname.startsWith('/api/reports/')) {
+    const reply = (v) => send(200, 'application/json', JSON.stringify(v));
+    const b = req.method === 'POST' ? await body(req) : {};
+    try {
+      switch (`${req.method} ${url.pathname}`) {
+        case 'GET /api/mail': return reply(await SESSION.mailList(q.get('box') || 'inbox', q.get('page')));
+        case 'GET /api/mail/read': return reply(await SESSION.mailRead(q.get('id')));
+        case 'POST /api/mail/delete': return reply(await SESSION.mailDelete(b.ids));
+        case 'POST /api/mail/markread': return reply(await SESSION.mailMarkRead(b.ids));
+        case 'POST /api/mail/send': return reply(await SESSION.mailSend(b.to, b.title, b.body));
+        case 'GET /api/reports': return reply(await SESSION.reportPage(q.get('type') || 'army', q.get('page')));
+        case 'GET /api/reports/read': return reply(await SESSION.reportRead(q.get('id')));
+        case 'POST /api/reports/delete': return reply(await SESSION.reportDelete(b.ids));
+        case 'POST /api/reports/markread': return reply(await SESSION.reportMarkRead(b.ids));
+        // the web battle log, fetched from the game's report host: ?u=<link>&from=&to=
+        case 'GET /api/reports/log': return reply(await SESSION.reportLog(q.get('u'), { from: q.get('from'), to: q.get('to') }));
+        default: break;
+      }
+    } catch (e) { return reply({ ok: false, error: e.message }); }
   }
   // Manual override: keep working even while the server reports maintenance.
   if (url.pathname === '/api/maintenance' && req.method === 'POST') {
@@ -314,17 +456,17 @@ const server = http.createServer(async (req, res) => {
     const m = b.override === undefined ? SESSION.maint : SESSION.setMaintenanceOverride(b.override);
     return send(200, 'application/json', JSON.stringify({ ok: true, maintenance: { ...m, paused: SESSION.paused } }));
   }
-  if (url.pathname === '/api/engine' && req.method === 'POST') {
-    const b = await body(req);
-    SESSION.engineMode = ['off', 'plan', 'live'].includes(b.mode) ? b.mode : 'off';
-    SESSION.note('engine mode -> ' + SESSION.engineMode);
-    return send(200, 'application/json', JSON.stringify({ ok: true, mode: SESSION.engineMode }));
-  }
+  // A city's Goals window shows that city's own goals, exactly what the engine
+  // runs there (db.goals.own) — never another city's or the default's.
   if (url.pathname === '/api/editor') {
     const city = q.get('city') || 'default';
     const kind = q.get('kind') === 'script' ? 'script' : 'goal';
     const acct = SESSION.account && SESSION.account.id;
-    const entry = ORG.goals.find(acct, [city], kind);
+    const g = SESSION.game;
+    const castle = g && (g.castles || []).find((c) => String(g.castleId(c)) === city);
+    const entry = kind === 'goal' && city !== 'default'
+      ? ORG.goals.own(acct, city, castle && castle.name, kind)
+      : ORG.goals.find(acct, [city], kind);
     return send(200, 'application/json', JSON.stringify({ src: (entry && entry.src) || '' }));
   }
   // ---- manual hero operations (inn + feasting hall) ----
@@ -337,7 +479,7 @@ const server = http.createServer(async (req, res) => {
       const base = (h, k) => Number(h[k] || 0) - Number(h[k + 'Added'] || 0);
       return send(200, 'application/json', JSON.stringify({
         heroes: (d.heros || []).map((h) => ({
-          name: h.name, level: h.level,
+          name: h.name, level: h.level, base: Game.heroBase(h),
           attack: Game.attrValue(h, 'power'), politics: Game.attrValue(h, 'management'), intel: Game.attrValue(h, 'stratagem'),
           baseAttack: base(h, 'power'), basePolitics: base(h, 'management'), baseIntel: base(h, 'stratagem'),
         })),
@@ -353,6 +495,22 @@ const server = http.createServer(async (req, res) => {
       const cid = g.castleId(castle);
       const hero = b.heroName ? g.findHero(castle, b.heroName) : null;
       let r;
+
+      // Holy Water, as the waterhero script line (water-hero.js), its lines sent
+      // back for the page to show. The preview only checks: it sends nothing.
+      if (b.action === 'water' || b.action === 'waterpreview') {
+        if (!hero) throw new Error('hero not found in this city');
+        const WH = require('./water-hero');
+        const a = { hero: String(hero.id), rule: b.heropoints ? WH.parseRule(b.heropoints) : null };
+        if (b.action === 'waterpreview') {
+          const p = WH.prepare(g, a);
+          return send(200, 'application/json', JSON.stringify({ ok: p.ok, need: p.need, held: p.held, lines: p.lines.map((l) => l.trim()) }));
+        }
+        const lines = [];
+        const went = await WH.run(g, a, { log: (m) => lines.push(m.trim()) });
+        for (const l of lines) SESSION.note(`manual: waterhero ${hero.name}: ${l}`, { city: castle.name, kind: 'act' });
+        return send(200, 'application/json', JSON.stringify({ ok: went, lines }));
+      }
 
       if (b.action === 'mayor') {
         if (!hero) throw new Error('hero not found in this city');
@@ -377,6 +535,12 @@ const server = http.createServer(async (req, res) => {
       } else if (b.action === 'levelup') {
         if (!hero) throw new Error('hero not found in this city');
         r = await g.levelUpHero(cid, hero.id);
+      } else if (b.action === 'recall') {
+        // hero.callBackHero {castleId, heroId}: the Feasting Hall's recall, which
+        // it offers for a hero out marching (3) or defending a valley (2).
+        if (!hero) throw new Error('hero not found in this city');
+        if (![2, 3].includes(Number(hero.status))) throw new Error(`${hero.name} is not out marching or defending`);
+        r = await g.callBackHero(cid, hero.id);
       } else if (b.action === 'hire') {
         r = await g.hireHero(cid, b.heroName);
       } else if (b.action === 'refreshinn') {
@@ -385,7 +549,8 @@ const server = http.createServer(async (req, res) => {
         throw new Error('unknown action ' + b.action);
       }
 
-      SESSION.note(`manual: ${b.action}${b.heroName ? ' ' + b.heroName : ''} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`);
+      SESSION.note(`manual: ${b.action}${b.heroName ? ' ' + b.heroName : ''} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`,
+        { city: castle.name, kind: 'act' });
       return send(200, 'application/json', JSON.stringify({ ok: r && r.ok === 1, result: r }));
     } catch (e) {
       return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message }));
@@ -404,7 +569,25 @@ const server = http.createServer(async (req, res) => {
         const xy = g.castleXY(c) || { x: 400, y: 400 };
         cx = xy.x; cy = xy.y;
       }
-      const out = await SESSION.scanArea(cx, cy, r);
+      // Served from the session's block cache while fresh; fresh=1 re-reads it.
+      const out = await SESSION.scanArea(cx, cy, r, { fresh: q.get('fresh') === '1' });
+      return send(200, 'application/json', JSON.stringify(out));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+
+  // The panning map: ?blocks=440,280;460,280[&fresh=1] names up to 9 20x20
+  // blocks by any point inside them (wrapped into the world, aligned to 20).
+  // Cached blocks come straight back; the rest are asked for only over a live
+  // socket — this never logs in. Returns {blocks, missing, skipped, offline,
+  // fetched, cached, ttlMs, tiles, diplo} — diplo is the alliance's standing
+  // with others, for the map's colours (Session.diplomacy).
+  if (url.pathname === '/api/mapblocks') {
+    try {
+      const points = String(q.get('blocks') || '').split(';')
+        .map((s) => s.split(',').map((v) => (v.trim() === '' ? NaN : Number(v))))
+        .filter((p) => p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+        .map(([x, y]) => ({ x, y }));
+      const out = await SESSION.mapBlocks(points, { fresh: q.get('fresh') === '1' });
       return send(200, 'application/json', JSON.stringify(out));
     } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
@@ -461,9 +644,9 @@ const server = http.createServer(async (req, res) => {
     }
     return send(200, 'application/json', JSON.stringify({
       ok: true, errors: parsed.errors, described: describe(parsed), saved,
-      engineNote: SESSION.engineMode === 'off'
-        ? 'Saved. The engine is OFF for this console — switch it to plan or live to act on these goals.'
-        : `Saved. The engine is running in ${SESSION.engineMode.toUpperCase()} mode and will pick these up on the next tick.`,
+      engineNote: SESSION.userPaused
+        ? 'Saved. The engine is PAUSED — these take effect when you resume it.'
+        : 'Saved. The engine picks these up on its next tick.',
     }));
   }
 
@@ -480,25 +663,103 @@ const server = http.createServer(async (req, res) => {
     const { Game } = require('./game');
 
     const actions = parse(b.src || '');
-    const errs = actions.filter((a) => a.cmd === 'error');
-    log(`parsed ${actions.length - errs.length} action(s)` + (errs.length ? `, ${errs.length} parse error(s)` : ''));
+    const errors = scriptErrors(actions);
+    log(`parsed ${actions.filter((a) => a.cmd !== 'error').length} action(s)` + (errors.length ? `, ${errors.length} error(s)` : ''));
 
     if (b.parseOnly) {
       for (const a of actions) log(a.cmd === 'error' ? `line ${a.line}: ERROR ${a.error}` : `line ${a.line}: ${a.cmd} ${JSON.stringify({ ...a, cmd: undefined, line: undefined, raw: undefined })}`);
-      return send(200, 'application/json', JSON.stringify({ ok: true, log: lines }));
+      return send(200, 'application/json', JSON.stringify({ ok: true, log: lines, errors }));
     }
 
+    // A script is one sequence; running it with lines missing is not what was
+    // written, so it runs whole or not at all.
+    if (errors.length) {
+      for (const e of errors) log(`line ${e.line}: ERROR ${e.error}`);
+      log('nothing was run — fix the error(s) and run it again');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
+
+    // One run per city at a time, so Stop and the live output know which run
+    // is meant.
+    const key = String(b.castle ?? b.city ?? '');
+    if (SCRIPT_RUNS.has(key)) {
+      log('a script is already running in this city — stop it first');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
+    const running = { stop: false, startedAt: Date.now(), lines, dropped: 0 };
+    SCRIPT_RUNS.set(key, running);
     // Use the SHARED session. Logging in a second time for the same account makes
     // the server kick the first connection, which is what was knocking the
-    // console offline every time a script ran (even a dry run).
+    // console offline every time a script ran.
     try {
       const game = await SESSION.connect();
-      const n = await run(game, actions, log, { dryRun: b.dryRun !== false, castle: b.castle, autoReq: !!b.autoReq });
+      // The console sends the open city tab as `city`. Reading only `castle`
+      // ran every console script in the FIRST city, whichever tab was open.
+      // Live unless a caller asks otherwise — only the old /script page still does.
+      const n = await run(game, actions, (m) => {
+        log(m);
+        // an endless `repeat` would otherwise grow this without bound
+        if (lines.length > SCRIPT_KEEP) { lines.shift(); running.dropped++; }
+      }, {
+        dryRun: b.dryRun === true, castle: b.castle ?? b.city, autoReq: !!b.autoReq, session: SESSION, shouldStop: () => running.stop,
+        // `logout` waits for the other cities' scripts, except any already waiting at a logout.
+        otherScripts: () => [...SCRIPT_RUNS].filter(([, r]) => r !== running && !r.atLogout).map(([city]) => city),
+        atLogout: (on) => { running.atLogout = !!on; },
+      });
       log(`done — ${n} action(s) executed`);
     } catch (e) {
       log('ERROR: ' + e.message);
+    } finally {
+      SCRIPT_RUNS.delete(key);
     }
-    return send(200, 'application/json', JSON.stringify({ ok: true, log: lines }));
+    const kept = running.dropped ? [`(${running.dropped} earlier line(s) not kept)`, ...lines] : lines;
+    return send(200, 'application/json', JSON.stringify({ ok: true, log: kept, errors, stopped: running.stop }));
+  }
+
+  // Stop a city's script after the line it is on; waits (sleep, @time, market
+  // pacing) are cut short.
+  if (url.pathname === '/api/script/stop' && req.method === 'POST') {
+    const b = await body(req);
+    const running = SCRIPT_RUNS.get(String(b.city ?? ''));
+    if (!running) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no script is running in that city' }));
+    running.stop = true;
+    return send(200, 'application/json', JSON.stringify({ ok: true }));
+  }
+
+  // Which cities have a script running, and ?city='s output so far — how the
+  // page shows a long run as it goes, and finds runs again after a reload.
+  if (url.pathname === '/api/script/runs') {
+    const running = q.get('city') === null ? null : SCRIPT_RUNS.get(q.get('city'));
+    const tail = running ? running.lines.slice(-400) : null;
+    return send(200, 'application/json', JSON.stringify({
+      runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, startedAt: r.startedAt, stopping: r.stop })),
+      lines: tail,
+      dropped: running ? running.dropped + running.lines.length - tail.length : 0,
+    }));
+  }
+
+  // Script loadouts: numbered slots per CITY, so a city's Load 1 is its own and
+  // saving it never changes another city's. Kept as goals rows of kind 'script'
+  // keyed <cityId>:load<N>, read exactly (db.goals.loadouts). An emptied slot is
+  // saved empty, not deleted: a city with no rows at all is one never opened,
+  // and its first look copies in the account-wide slots the console used to
+  // share between cities.
+  if (url.pathname === '/api/loadouts') {
+    const acct = SESSION.account && SESSION.account.id;
+    try {
+      const b = req.method === 'POST' ? await body(req) : {};
+      const city = String(b.city ?? q.get('city') ?? '').trim();
+      if (!/^\d+$/.test(city)) throw new Error('loadouts belong to a city — open one first');
+      if (req.method === 'POST') {
+        const slot = Number(b.slot);
+        if (!Number.isInteger(slot) || slot < 1 || slot > LOADOUTS) throw new Error(`there is no loadout ${b.slot}`);
+        const src = String(b.src || '');
+        ORG.goals.set(acct, `${city}:load${slot}`, 'script', src.trim() ? src : '');
+        return send(200, 'application/json', JSON.stringify({ ok: true, errors: scriptErrors(require('./script').parse(src)) }));
+      }
+      const slots = ORG.goals.loadouts(acct, city);
+      return send(200, 'application/json', JSON.stringify({ ok: true, account: acct || null, city, count: LOADOUTS, slots }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
 
   if (url.pathname === '/api/scan' && req.method === 'POST') {

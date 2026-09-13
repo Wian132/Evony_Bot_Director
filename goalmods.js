@@ -6,7 +6,6 @@ const path = require('path');
 const C = require('./constants');
 
 const n = (x) => Number(x || 0);
-const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
 
 // ------------------------------------------------------------- comfortpolicy
 // comfortpolicy <minMinutes> <maxMinutes> <mode>   e.g. "comfortpolicy 15 16 popraise"
@@ -78,52 +77,8 @@ function defensePlan(ctx, state) {
   return { note, actions };
 }
 
-// ---------------------------------------------------------- requestresources
-// requestresources <fromCity|any> <type> <min> <max> <batch> <keep> [t]
-// Balances resources BETWEEN YOUR OWN CITIES: if this city is below <min>, pull
-// <batch> from a city that can spare it without dropping under <keep>.
-function requestResourcesPlan(ctx, game) {
-  const goals = ctx.goals.filter((x) => x.name === 'requestresources');
-  if (!goals.length) return null;
-  if (!game || game.castles.length < 2) {
-    return { note: `requestresources: ${goals.length} rule(s) idle — needs a second city to pull from` };
-  }
-  const here = ctx.castle;
-  const amountOf = (castle, type) => {
-    const r = castle.resource || {};
-    return type === 'gold' ? n(r.gold) : n(r[type] && r[type].amount);
-  };
-  const actions = [];
-  for (const g of goals) {
-    const [min, max, batch, keep] = g.amounts;
-    const have = amountOf(here, g.type);
-    if (have >= n(min)) continue;
-    const donors = game.castles
-      .filter((c) => game.castleId(c) !== game.castleId(here))
-      .filter((c) => g.target === 'any' || (c.name || '').toLowerCase() === String(g.target).toLowerCase())
-      .map((c) => ({ c, spare: amountOf(c, g.type) - n(keep) }))
-      .filter((d) => d.spare > 0)
-      .sort((a, b) => b.spare - a.spare);
-    if (!donors.length) { actions.push({ kind: 'note', label: `${g.type}: short ${fmt(n(min) - have)} but no city can spare any` }); continue; }
-    // Transports are a shared resource: NPC farming rides on the same carriages,
-    // so a transfer must fit in what the donor has AND leave a working reserve.
-    // Without this the order asks for more carriages than exist and simply fails.
-    const LOAD = C.BY_KEY.carriage.load;
-    const carriages = n((donors[0].c.troop || {}).carriage);
-    const reserve = Math.min(2000, Math.ceil(carriages * 0.25));
-    const usable = Math.max(0, carriages - reserve);
-    const take = Math.min(n(batch), donors[0].spare, n(max) - have, usable * LOAD);
-    if (take <= 0) {
-      actions.push({ kind: 'note', label: `${g.type}: ${donors[0].c.name} can spare it but has only ${fmt(carriages)} transport(s)` });
-      continue;
-    }
-    actions.push({
-      kind: 'transport', from: donors[0].c, to: here, resource: g.type, amount: take,
-      label: `pull ${fmt(take)} ${g.type} from ${donors[0].c.name} (${fmt(Math.ceil(take / LOAD))} transports)`,
-    });
-  }
-  return { note: actions.length ? `requestresources: ${actions.length} transfer(s) wanted` : 'requestresources: all cities within range', actions };
-}
+// requestresources / requesttroops moved to goal-transfer.js: nearest sender,
+// arrivals counted, one march per sender, and the rally spot honoured.
 
 // --------------------------------------------------------------- npc farming
 // NOTE: npcPlan used to live here as a stub reading mapcache.json directly.
@@ -209,4 +164,4 @@ function trainingHeroPlan(game, cityGoals, state) {
   return plans;
 }
 
-module.exports = { comfortPlan, defensePlan, requestResourcesPlan, trainingHeroPlan, mayorPlan };
+module.exports = { comfortPlan, defensePlan, trainingHeroPlan, mayorPlan };

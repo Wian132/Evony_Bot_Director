@@ -90,6 +90,9 @@ function marches(g) {
       hero: typeof a.hero === 'string' ? a.hero : (a.hero && a.hero.name) || null,
       heroLevel: Number(a.heroLevel || 0),
       startTime: Number(a.startTime || 0), reachTime: Number(a.reachTime || 0),
+      // ArmyConstants.as: 1 forward, 2 backward, 3 stay (encamped)
+      direction: { 1: 'out', 2: 'back', 3: 'camped' }[Number(a.direction)] || null,
+      restTime: Number(a.restTime || 0),
       units, troopTotal: total,
       loot, lootTotal,
     };
@@ -104,16 +107,21 @@ function marches(g) {
 // friendArmys for reinforcements and resource transports from allies. Reading
 // only the enemy list left Incoming permanently empty for everything friendly.
 //
-// Our OWN marches are not incoming, whichever way they are pointing — they are
-// what is sitting in the rally spot, and they belong on the Armies tab.
+// Our OWN marches are inbound too when they are on their way to one of our
+// cities: a reinforcement or transport from another city lands there just as an
+// ally's would, and neither server list carries it — only selfArmys does.
+// Leaving them out showed "Nothing inbound" with Lord02's reinforcements on
+// the road to Flat. Only while going (ArmyConstants.as: direction 1); one
+// coming back is headed home, and that is the Armies tab's business.
 function incomingArmies(g) {
   const C = require('./constants');
   const MISSION_NAME = Object.fromEntries(Object.entries(C.MISSION).map(([k, v]) => [v, k]));
   const mine = new Map((g.castles || []).map((c) => [Number(c.fieldId), c.name]));
   const p = g.player || {};
   const hostile = new Set((p.enemyArmys || []).map((a) => a));
+  const own = new Set((p.selfArmys || []).filter((a) => Number(a.direction) === 1 && mine.has(Number(a.targetFieldId))));
 
-  return [...(p.enemyArmys || []), ...(p.friendArmys || [])].map((a) => {
+  return [...(p.enemyArmys || []), ...(p.friendArmys || []), ...own].map((a) => {
     const troop = a.troop || a.troops || {};
     const units = {};
     let known = true, total = 0;
@@ -138,7 +146,7 @@ function incomingArmies(g) {
       startTime: Number(a.startTime || 0), reachTime: Number(a.reachTime || 0),
       units, troopTotal: total, scouted: known,
       myCity: mine.get(target) || null,
-      hostile: hostile.has(a),
+      hostile: hostile.has(a), own: own.has(a),
       resources: (() => {
         const r = a.resource || {};
         const out = {};

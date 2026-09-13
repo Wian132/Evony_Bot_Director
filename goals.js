@@ -42,7 +42,7 @@ const CONFIG_KEYS = new Set([
   'npc', 'buildnpc', 'comfort', 'hero', 'troop', 'trade', 'valley', 'hunting',
   'troopsusepopmax', 'troopsusereserved', 'troopqueuetime', 'troopidlequeuetime',
   'warrules', 'wartown', 'keepatthome', 'reservedbarrack', 'feastinghallspace',
-  'troopincrement', 'attackgap', 'embassy', 'farmingcycle',
+  'troopincrement', 'attackgap', 'embassy', 'farmingcycle', 'troopslot',
 ]);
 
 // name -> { kind, multi, parse(args, raw) }
@@ -58,6 +58,11 @@ const GOALS = {
         const [k, v] = kv(t);
         if (v === null) { errs.push(`"${t}" is missing a value (expected key:value)`); continue; }
         if (!CONFIG_KEYS.has(k.toLowerCase())) errs.push(`unknown config key "${k}"`);
+        // NUM reads "30m" as 30 million, which would silently mean "no cap"
+        if (k.toLowerCase() === 'troopslot' && !/^\d+(\.\d+)?$/.test(v)) {
+          errs.push(`troopslot is minutes per training batch as a plain number, e.g. troopslot:30`);
+          continue;
+        }
         out[k.toLowerCase()] = NUM(v) ?? v;
       }
       return { values: out, errors: errs };
@@ -167,22 +172,14 @@ const GOALS = {
     },
   },
 
-  requestresources: {
-    kind: 'directive', multi: true,
-    parse(args) {
-      const errs = [];
-      const [target, type, ...rest] = args;
-      const flag = rest.length && /^[a-z]$/i.test(rest[rest.length - 1]) ? rest.pop() : null;
-      const amounts = rest.map(NUM);
-      if (!type) errs.push('expected: requestresources <target> <type> <min> <max> <batch> <keep> [flag]');
-      if (amounts.some((a) => a === null)) errs.push('one of the amounts could not be read');
-      return { target, type, amounts, flag, errors: errs };
-    },
-  },
+  // rallypolicy n:8 n:10:1 r:2 t:1 max:8 — how many rally slots goal marches
+  // may hold, by kind (rally.js). requestresources/requesttroops live in
+  // goal-transfer.js.
+  rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (war, heroes, npc) contribute their own parsers + config keys ----
-for (const mod of ['./goal-war', './goal-heroes', './goal-npc', './goal-buildnpc']) {
+// ---- goal modules (war, heroes, npc, transfers) contribute their own parsers + config keys ----
+for (const mod of ['./goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -257,8 +254,19 @@ function describe(parsed) {
       for (const g of list) out.push(`comfortpolicy: ${g.mode} every ${g.everyMinMin}-${g.everyMaxMin} min`);
     } else if (name === 'defensepolicy') {
       for (const g of list) out.push(`defensepolicy: ${Object.entries(g.switches).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-    } else if (name === 'requestresources') {
-      for (const g of list) out.push(`requestresources: ${g.type} from ${g.target} [${g.amounts.map((n) => n.toLocaleString('en-US')).join(' / ')}]${g.flag ? ' ' + g.flag : ''}`);
+    } else if (name === 'requestresources' || name === 'requesttroops') {
+      const amt = (v) => (v == null ? '*' : v.toLocaleString('en-US'));
+      for (const g of list) {
+        const [min, max, batch, keep] = g.amounts || [];
+        out.push(`${name}: ${g.type || g.troop} from ${g.target} when under ${amt(min)}, up to ${amt(max)}, `
+          + `${amt(batch)} per send, senders keep ${amt(keep)}${g.slots > 1 ? `, ${g.slots} missions at a time` : ''}`);
+      }
+    } else if (name === 'rallypolicy') {
+      for (const g of list) {
+        const parts = [...Object.entries(g.caps || {}).map(([k, v]) => `${k}:${v}`),
+          ...Object.entries(g.levels || {}).map(([l, v]) => `n:${l}:${v}`), ...(g.max != null ? [`max:${g.max}`] : [])];
+        out.push(`rallypolicy: ${parts.join(' ')}`);
+      }
     } else {
       for (const g of list) out.push(`${name}: ${g.raw}`);
     }

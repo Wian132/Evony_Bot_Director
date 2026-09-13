@@ -280,6 +280,10 @@ function build(db, helpers) {
       find(accountId, keys, kind) {
         return ownsAccount(accountId) ? raw.goals.find(accountId, keys, kind) : null;
       },
+      own(accountId, cityId, cityName, kind) {
+        return ownsAccount(accountId) ? raw.goals.own(accountId, cityId, cityName, kind) : null;
+      },
+      loadouts(accountId, cityId) { return ownsAccount(accountId) ? raw.goals.loadouts(accountId, cityId) : []; },
       set(accountId, cityKey, kind, src) { return raw.goals.set(requireAccount(accountId), cityKey, kind, src); },
       remove(accountId, cityKey, kind) { return raw.goals.remove(requireAccount(accountId), cityKey, kind); },
       list(kind) {
@@ -300,6 +304,7 @@ function build(db, helpers) {
       claimFlat(accountId, ...a) { return raw.registry.claimFlat(requireAccount(accountId), ...a); },
       markBuilt(accountId, ...a) { return raw.registry.markBuilt(requireAccount(accountId), ...a); },
       markAbandoned(accountId, ...a) { return raw.registry.markAbandoned(requireAccount(accountId), ...a); },
+      markMoved(accountId, ...a) { return raw.registry.markMoved(requireAccount(accountId), ...a); },
       reconcile(accountId, ...a) { return raw.registry.reconcile(requireAccount(accountId), ...a); },
     };
 

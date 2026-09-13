@@ -354,35 +354,41 @@ const parsers = {
       const spec = parseHeroString(who);
       for (const e of spec.errors) errors.push(e);
       if (!rest.length) errors.push('heropoints needs at least one target, e.g. att:500 or int or off');
-
-      const stages = [];
-      for (const stageRaw of rest) {
-        const targets = [];
-        let off = false;
-        for (const part of stageRaw.split(',')) {
-          const t = part.trim();
-          if (!t) continue;
-          const [nameRaw, capRaw] = t.split(':');
-          const nm = nameRaw.toLowerCase();
-          if (nm === 'off' || nm === 'none') { off = true; continue; }
-          const attr = ATTR[nm];
-          if (!attr) { errors.push(`unknown heropoints target "${nameRaw}" (use attack/politics/intel/off)`); continue; }
-          let cap;
-          if (capRaw === undefined || capRaw === '*') cap = Infinity;      // "int" == "int:*"
-          else if (capRaw.toLowerCase() === 'any') cap = 0;                // "pol:any" == don't
-          else {
-            cap = parseInt(capRaw, 10);
-            if (!Number.isFinite(cap) || cap < 0) { errors.push(`bad heropoints cap "${t}"`); continue; }
-          }
-          targets.push({ attr, cap, raw: t });
-        }
-        if (off) stages.push({ off: true, targets: [], raw: stageRaw });
-        else if (targets.length) stages.push({ off: false, targets, raw: stageRaw });
-      }
-      return { reset: false, spec, stages, errors };
+      const { stages, errors: stageErrors } = parseStages(rest);
+      return { reset: false, spec, stages, errors: errors.concat(stageErrors) };
     },
   },
 };
+
+// The targets of a heropoints line, one stage per word. waterhero's
+// /heropoints="..." switch is the same list (wiki: WaterHero).
+function parseStages(words) {
+  const errors = [], stages = [];
+  for (const stageRaw of words) {
+    const targets = [];
+    let off = false;
+    for (const part of stageRaw.split(',')) {
+      const t = part.trim();
+      if (!t) continue;
+      const [nameRaw, capRaw] = t.split(':');
+      const nm = nameRaw.toLowerCase();
+      if (nm === 'off' || nm === 'none') { off = true; continue; }
+      const attr = ATTR[nm];
+      if (!attr) { errors.push(`unknown heropoints target "${nameRaw}" (use attack/politics/intel/off)`); continue; }
+      let cap;
+      if (capRaw === undefined || capRaw === '*') cap = Infinity;      // "int" == "int:*"
+      else if (capRaw.toLowerCase() === 'any') cap = 0;                // "pol:any" == don't
+      else {
+        cap = parseInt(capRaw, 10);
+        if (!Number.isFinite(cap) || cap < 0) { errors.push(`bad heropoints cap "${t}"`); continue; }
+      }
+      targets.push({ attr, cap, raw: t });
+    }
+    if (off) stages.push({ off: true, targets: [], raw: stageRaw });
+    else if (targets.length) stages.push({ off: false, targets, raw: stageRaw });
+  }
+  return { stages, errors };
+}
 
 // ============================================================================
 // Reading the goal list
@@ -633,15 +639,22 @@ function allocateStages(hero, stages, points) {
   const current = (k) => attrOf(hero, k) + add[k];
 
   const stageList = stages.slice();
-  // wiki: with no trailing "att:*", whatever is left goes to the highest stat.
+  // wiki: with no trailing "att:*", whatever is left goes to the highest stat —
+  // the highest once the stages are met ("att:100,int:850" leaves intel on top),
+  // so it is picked when reached. A whole Holy Water refund goes through here in
+  // one pass, and the hero's stat before it would be the wrong one.
   const last = stageList[stageList.length - 1];
   const openEnded = last && !last.off && last.targets.some((t) => t.cap === Infinity);
-  if (!openEnded) stageList.push({ off: false, targets: [{ attr: dominant(hero), cap: Infinity, raw: 'highest stat' }], raw: '(default: highest stat)' });
+  if (!openEnded) stageList.push({ off: false, highest: true, targets: [], raw: '(default: highest stat)' });
 
   let usedStage = null;
   for (const stage of stageList) {
     if (left <= 0) break;
     if (stage.off) return { add, spent: 0, stage: stage.raw, off: true };
+    if (stage.highest) {
+      const top = ATTR_KEYS.slice().sort((a, b) => current(b) - current(a))[0];
+      stage.targets = [{ attr: top, cap: Infinity, raw: 'highest stat' }];
+    }
     const open = stage.targets
       .map((t) => ({ t, deficit: t.cap === Infinity ? Infinity : Math.max(0, t.cap - current(t.attr)) }))
       .filter((x) => x.deficit > 0);
@@ -864,6 +877,6 @@ module.exports = {
   attrOf, addedOf, baseOf, heroBase, dominant,
   STATUS, STATUS_NAME, FIREABLE, ATTR, FIELDS,
   heroPolicy, feastingHall, farmableHeroes, spamHeroes, npcCooldownMs, npcUsesTransports,
-  isCaptive, rosterProblems, allocateStages,
+  isCaptive, rosterProblems, allocateStages, parseStages,
   DEFAULT_KEEP, DEFAULT_KEEP_CAPTURED, DEFAULT_SPAM, FIRE_COOLDOWN_MS,
 };

@@ -63,14 +63,7 @@ class Game {
     }
 
     // Heroes are not in LoginResponse; the server pushes them as server.HeroUpdate.
-    this.c.on('cmd', (cmd, data) => {
-      if (cmd !== 'server.HeroUpdate' || !data || !data.hero) return;
-      const c = this.castles.find((x) => this.castleId(x) === data.castleId);
-      if (!c) return;
-      c.heros = c.heros || [];
-      const i = c.heros.findIndex((h) => h.id === data.hero.id);
-      if (i >= 0) c.heros[i] = data.hero; else c.heros.push(data.hero);
-    });
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.HeroUpdate') this.applyHeroUpdate(data); });
 
     // Items are pushed the same way. Without this the inventory we hold goes
     // stale the moment anything is spent, so a count of 52 stays 52 forever.
@@ -137,6 +130,19 @@ class Game {
     throw new Error('unknown castle: ' + ref);
   }
 
+  // updateType 0 add, 1 delete, 2 update (Context.onHeroUpdate, the client's
+  // only way a hero ever leaves a city). A dismissed hero arrives as a delete;
+  // treating that as an update kept it on the roster until the next login.
+  applyHeroUpdate(data) {
+    if (!data || !data.hero) return;
+    const c = this.castles.find((x) => this.castleId(x) === data.castleId);
+    if (!c) return;
+    c.heros = c.heros || [];
+    const i = c.heros.findIndex((h) => h.id === data.hero.id);
+    if (Number(data.updateType) === 1) { if (i >= 0) c.heros.splice(i, 1); return; }
+    if (i >= 0) c.heros[i] = data.hero; else c.heros.push(data.hero);
+  }
+
   castleId(c) { return c.castleId ?? c.id; }
   castleXY(c) {
     if (c.fieldId !== undefined) return C.fieldIdToCoords(c.fieldId);
@@ -146,11 +152,13 @@ class Game {
   }
 
   // ---- hero selection ----
-  // "any", a hero name, or "any:level<500,attack>400"
-  pickHero(castle, spec) {
+  // "any", a hero name, or "any:level<500,attack>400". `skip` holds ids an
+  // "any" must not pick: heroes a script has just sent, before the server's
+  // HeroUpdate has marked them away.
+  pickHero(castle, spec, skip = null) {
     const heros = castle.heros || [];
     if (!heros.length) throw new Error('no heroes in castle');
-    const idle = heros.filter((h) => h.status === 0 || h.status === undefined);
+    const idle = heros.filter((h) => (h.status === 0 || h.status === undefined) && !(skip && skip.has(h.id)));
     const pool = idle.length ? idle : heros;
 
     if (!spec || spec === 'any') return pool[0];
@@ -201,6 +209,37 @@ class Game {
     this.c.send('army.newArmy', { castleId, newArmyBean: bean });
     const r = await this.c.await(['army.newArmy'], 12000);
     return r.data;
+  }
+
+  // army.callBackArmy {castleId, armyId} (ArmyCommands.as:105)
+  recallArmy(castleId, armyId) { return this.req('army.callBackArmy', { castleId, armyId }); }
+
+  // The speed inputs for marches from one city. The client asks per city
+  // (ArmyCommands.getTroopParam(castleId)), because transportStationParam is
+  // that city's Relief Station. Held for a few minutes: none of it moves fast.
+  async troopParams(castleId, maxAgeMs = 300000) {
+    this._troopParams = this._troopParams || new Map();
+    const hit = this._troopParams.get(castleId);
+    if (hit && Date.now() - hit.at < maxAgeMs) return hit.p;
+    const d = (await this.req('army.getTroopParam', { castleId }, 8000)) || {};
+    const p = {
+      marchSkill: Number(d.marchSkillParam ?? this.marchSkillParam ?? 100),
+      driveSkill: Number(d.driveSkillParam ?? d.marchSkillParam ?? this.marchSkillParam ?? 100),
+      loadSkill: Number(d.loadSkillParam ?? this.loadSkillParam ?? 100),
+      relief: Number(d.transportStationParam || 0),
+    };
+    this._troopParams.set(castleId, { at: Date.now(), p });
+    return p;
+  }
+
+  // Who holds a tile: field.getOtherFieldInfo {fieldId} -> bean {userName, allianceName}.
+  // The client gives a march the Relief Station speed when the answer is you or
+  // your alliance (NewArmyWin.otherFieldInfo). The raw values are kept, because
+  // that test is ActionScript `==`, where a missing name equals a missing name.
+  async fieldOwner(fieldId) {
+    const r = await this.req('field.getOtherFieldInfo', { fieldId }, 8000);
+    const b = r && r.bean;
+    return b ? { userName: b.userName, allianceName: b.allianceName } : null;
   }
 
   // The item catalogue, straight from the server. Item NAMES are not in the
@@ -259,7 +298,17 @@ class Game {
   useCastleItem(castleId, itemId) { return this.req('shop.useCastleGoods', { castleId, itemId }); }
   packageList(castleId) { return this.req('common.getPackageList', { castleId }); }
 
-  // ---- lost heroes (this is what a Stone of Finding actually drives) ----
+  // ---- teleporting a city (CityCommands.as) ----
+  // Each one spends its item server-side; none goes through shop.useGoods.
+  // targetId is a fieldId, y * 800 + x (DesignatedMoveCityWin.changeZone). The
+  // new tile arrives as a server.CastleUpdate push — Context.onCastleUpdate is
+  // the only place the real client learns it too. See teleport.js.
+  zoneInfo() { return this.req('common.zoneInfo', {}); }
+  moveCastle(castleId, zoneId) { return this.req('city.moveCastle', { castleId, zoneId }); }             // City Teleporter
+  advMoveCastle(castleId, targetId) { return this.req('city.advMoveCastle', { castleId, targetId }); }   // Advanced Teleporter
+  warMoveCastle(castleId, targetId) { return this.req('city.WarMoveCastle', { castleId, targetId }); }  // War Teleporter
+
+  // ---- dismissed heroes: what a Stone of Finding restores (stone-of-finding.js) ----
   lostHeroes() { return this.req('hero.GetDisappearHeros', {}); }
   // NOTE: this command uses lowercase `castleid` and `id`, unlike every other one.
   recoverHero(castleId, heroId) { return this.req('hero.RecoverDisappearHero', { castleid: castleId, id: String(heroId) }); }
@@ -277,7 +326,8 @@ class Game {
   resetPoint(castleId, heroId) { return this.req('hero.resetPoint', { castleId, heroId }); }
   awardGold(castleId, heroId) { return this.req('hero.awardGold', { castleId, heroId }); }
   callBackHero(castleId, heroId) { return this.req('hero.callBackHero', { castleId, heroId }); }
-  renameHero(castleId, heroId, name) { return this.req('hero.changeName', { castleId, heroId, name }); }
+  // The key is newName (HeroCommand.changeName); see rename-hero.js.
+  renameHero(castleId, heroId, newName) { return this.req('hero.changeName', { castleId, heroId, newName }); }
 
   // hero.addPoint carries ABSOLUTE NEW TOTALS, not increments.
   // HeroProperties.as seeds its boxes from the hero's current attributes
@@ -301,9 +351,17 @@ class Game {
 
   // The attribute field ALREADY includes allocated points — HeroProperties.as
   // displays h.power directly and never reads powerAdded. So the effective value
-  // is the field itself; base (what the hero started with) is field - *Added.
+  // is the field itself.
   static attrValue(h, key) { return Number(h[key] || 0); }
-  static attrBase(h, key) { return Number(h[key] || 0) - Number(h[key + 'Added'] || 0); }
+  // A hero's base is its strongest attribute less the one point per level that
+  // levelling gave it, with any unspent points added back. The *Added fields
+  // can't tell us: the live roster sends 0 for every one (Griselda: L26,
+  // power 87, powerAdded 0 — base 61). The attribute is pre-buff, since an
+  // Excalibur's 25% lives in powerBuffAdded and never touches it.
+  static heroBase(h) {
+    const top = Math.max(...['power', 'management', 'stratagem'].map((k) => Game.attrValue(h, k)));
+    return top - Number(h.level || 0) + Number(h.remainPoint || 0);
+  }
 
   // HeroConstants.as: 0 free, 1 chief (mayor), 2 guard, 3 marching, 4 captured, 5 returning, 8 farming
   static HERO_STATUS = { free: 0, mayor: 1, garrison: 2, marching: 3, captured: 4, returning: 5, farming: 8 };
@@ -353,7 +411,9 @@ class Game {
     return this.req('castle.newBuilding', { castleId, positionId, buildingType });
   }
 
-  // Tear a building down completely (frees its slot).
+  // Take a building down ONE level; at level 0 it is gone and its plot frees.
+  // The client's "demolish completely" is this order finished at once with the
+  // paid player.destroy.1.a item (DestrctChoiceWin.as).
   destructBuilding(castleId, positionId) {
     return this.req('castle.destructBuilding', { castleId, positionId });
   }
@@ -379,23 +439,47 @@ class Game {
   troopQueue(castleId) { return this.req('troop.getProduceQueue', { castleId }); }
   wallQueue(castleId) { return this.req('fortifications.getProduceQueue', { castleId }); }
   idleBarracks(castleId) { return this.req('troop.checkIdleBarrack', { castleId }); }
+  // One batch out of a queue, by the queueId the queue reply gives it
+  // (Barrack.doCancel, Wall.doCancel). The reply names neither the batch nor the
+  // city, so each command waits in its own lane. See queue-cancel.js.
+  cancelTroop(castleId, positionId, queueId) {
+    return this.lane('troop.cancelTroopProduce', () => this.req('troop.cancelTroopProduce', { castleId, positionId, queueId }));
+  }
+  cancelWall(castleId, queueId) {
+    return this.lane('fortifications.cancelFortificationProduce',
+      () => this.req('fortifications.cancelFortificationProduce', { castleId, queueId }));
+  }
 
   // Market: our own offers, and purchases still in transit.
   myTrades(castleId) { return this.req('trade.getMyTradeList', { castleId }); }
   transitTrades(castleId) { return this.req('trade.getTransingTradeList', { castleId }); }
 
+  // Plots taken, and the Town Hall level that decides how many field plots are
+  // open. A finished demolition is pushed as a status-0, level-0 bean
+  // (UIUtil.isBuildingDestroy): that plot is empty, whatever the list says. A
+  // building waiting in the construction queue has its plot spoken for.
+  static plotsInUse(castle) {
+    const standing = (castle.buildings || []).filter((b) => !(Number(b.status || 0) === 0 && Number(b.level || 0) === 0));
+    const th = standing.find((b) => Number(b.typeId) === C.TOWN_HALL);
+    return {
+      used: new Set([...standing, ...(castle.buildingQueues || [])].map((b) => Number(b.positionId))),
+      townHall: th ? Number(th.level || 0) : 1,
+    };
+  }
+
   // How many plots are left, inside the walls and out. Uses the same slot
   // ranges as freeSlot() below rather than a second set of assumptions.
+  // Outside, `total` is what the Town Hall has opened, not all 40.
   freeSlots(castle) {
-    const used = new Set((castle.buildings || []).map((b) => Number(b.positionId)));
-    const span = (from, to) => {
+    const { used, townHall } = Game.plotsInUse(castle);
+    const span = ({ from, to }) => {
       let free = 0, total = 0;
       for (let p = from; p <= to; p++) { total++; if (!used.has(p)) free++; }
       return { free, total, used: total - free };
     };
     return {
-      inside: span(C.SLOTS.insideFrom, C.SLOTS.insideTo),
-      outside: span(C.SLOTS.outsideFrom, C.SLOTS.outsideTo),
+      inside: span(C.plotRange(false)),
+      outside: span(C.plotRange(true, townHall)),
     };
   }
   research(castleId, techId) { return this.req('tech.research', { castleId, techId }); }
@@ -406,9 +490,8 @@ class Game {
 
   // Lowest free slot of the right kind, or null when the castle is full.
   freeSlot(castle, outside) {
-    const used = new Set((castle.buildings || []).map((b) => b.positionId));
-    const from = outside ? C.SLOTS.outsideFrom : C.SLOTS.insideFrom;
-    const to = outside ? C.SLOTS.outsideTo : C.SLOTS.insideTo;
+    const { used, townHall } = Game.plotsInUse(castle);
+    const { from, to } = C.plotRange(!!outside, townHall);
     for (let p = from; p <= to; p++) if (!used.has(p)) return p;
     return null;
   }
@@ -431,33 +514,39 @@ class Game {
   }
 
   // ---- market ----
+  // A market reply names its command and nothing else: no castle, no trade id,
+  // and a search does not even say which resource it answers. Two callers with
+  // the same command in flight would each take the first reply — the console's
+  // Market panel reading food while the sniper reads wood gets wood's prices.
+  // So each market command queues in its own lane, whoever is asking. A caller
+  // that pipelines a batch (holiday-snipe.js) holds the lane until every reply
+  // of the batch is in.
+  lane(cmd, fn) {
+    this._lanes = this._lanes || new Map();
+    const run = (this._lanes.get(cmd) || Promise.resolve()).then(() => fn());
+    this._lanes.set(cmd, run.catch(() => {}));
+    return run;
+  }
+
   // NOTE: price is a STRING on the wire (TradeCommands.as newTrade param5:String)
   async newTrade({ castleId, resource, type, amount, price }) {
     const resType = C.TRADE_RES[resource];
     const tradeType = C.TRADE_TYPE[type];
     if (resType === undefined) throw new Error('trade resource must be food/wood/stone/iron, got ' + resource);
     if (tradeType === undefined) throw new Error('trade type must be buy/sell');
-    this.c.send('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) });
-    const r = await this.c.await(['trade.newTrade'], 12000);
-    return r.data;
+    return this.lane('trade.newTrade', () => this.req('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) }));
   }
 
-  async searchTrades(resource) {
-    this.c.send('trade.searchTrades', { resType: C.TRADE_RES[resource] });
-    const r = await this.c.await(['trade.searchTrades'], 12000);
-    return r.data;
+  searchTrades(resource) {
+    return this.lane('trade.searchTrades', () => this.req('trade.searchTrades', { resType: C.TRADE_RES[resource] }));
   }
 
-  async myTrades(castleId) {
-    this.c.send('trade.getMyTradeList', { castleId });
-    const r = await this.c.await(['trade.getMyTradeList'], 12000);
-    return r.data;
+  myTrades(castleId) {
+    return this.lane('trade.getMyTradeList', () => this.req('trade.getMyTradeList', { castleId }));
   }
 
-  async cancelTrade(castleId, tradeId) {
-    this.c.send('trade.cancelTrade', { castleId, tradeId });
-    const r = await this.c.await(['trade.cancelTrade'], 12000);
-    return r.data;
+  cancelTrade(castleId, tradeId) {
+    return this.lane('trade.cancelTrade', () => this.req('trade.cancelTrade', { castleId, tradeId }));
   }
 
   // ---- reports ----
@@ -489,6 +578,26 @@ class Game {
     }
     return removed;
   }
+
+  // report.markAsRead is how the client OPENS a report (PublicReportCanvas
+  // .showDetail): the reply is a ReportResponse whose `report` is the full
+  // ReportBean, XML `content` included — receiveReportList is only the index.
+  readReport(reportId) { return this.req('report.markAsRead', { reportId: Number(reportId) }); }
+  // The "mark as read" button: ids comma-joined (PublicReportCanvas.onMarkAsReadSelected).
+  markReportsRead(ids) { return this.req('report.readOverReport', { reportIds: ids.join(',') }); }
+
+  // ---- mail ----
+  // MailCommands.as. `type` is the box — MailConstants MAIL_RECEIVE 1 (inbox),
+  // MAIL_SYSTEM 2, MAIL_SEND 3. Replies: MailListResponse {pageNo, totalPage,
+  // mails: [MailBean]}, MailResponse (one mail with its content), and a plain
+  // CommandResponse {ok, errorMsg} for delete and send.
+  mailList(type, pageNo = 1, pageSize = 10) { return this.req('mail.receiveMailList', { pageNo, type, pageSize }); }
+  // Opening a mail IS reading it: MailWin.onSeeAbout sends only this.
+  readMail(mailId) { return this.req('mail.readMail', { mailId: Number(mailId) }); }
+  markMailRead(ids) { return this.req('mail.readOverMailList', { mailIds: ids.join(',') }); }
+  // NOTE: lowercase, underscored `str_mailid` — MailCommands.deleteMail.
+  deleteMail(ids) { return this.req('mail.deleteMail', { str_mailid: ids.join(',') }); }
+  sendMail(username, title, content) { return this.req('mail.sendMail', { username, title, content }); }
 
   // Cheap read used as a heartbeat — keeps the socket warm and proves it is alive.
   async ping(ms = 10000) {

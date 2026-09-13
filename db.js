@@ -343,6 +343,48 @@ const goals = {
     return null;
   },
 
+  // One city's own row and nothing else: what its window shows and what the
+  // engine runs there, so saving one city never changes another. A city with no
+  // row yet gets a copy of what find() would have fallen through to (a row under
+  // its name, then the account's default, then the shared rows), once. That way
+  // it keeps running what it ran before, and from then on the row is its own. A
+  // row saved empty stays empty and never falls back to the default again.
+  own(accountId, cityId, cityName, kind = 'goal') {
+    if (cityId === null || cityId === undefined || cityId === '') return null;
+    const key = String(cityId);
+    const get = () => one('SELECT * FROM goals WHERE accountId = ? AND cityKey = ? AND kind = ?', accountId || '', key, kind);
+    let row = get();
+    if (!row) {
+      const seed = goals.find(accountId, [key, cityName], kind);
+      if (!seed) return null;
+      goals.set(accountId, key, kind, seed.src);
+      row = get();
+    }
+    return row && row.src ? row : null;
+  },
+
+  // One city's script loadouts as [{slot, src, savedAt}], the empty ones left
+  // out. They are rows of kind 'script' keyed <cityId>:load<N>. A city with no
+  // such rows at all has never been opened, so it takes a copy of the
+  // account-wide slots (load<N>) the console once shared between all cities.
+  // An emptied slot is saved as an empty row, which is why that copy is made
+  // only once.
+  loadouts(accountId, cityId) {
+    const acct = accountId || '', city = String(cityId);
+    const slotOf = new RegExp(`^${city.replace(/\W/g, '\\$&')}:load(\\d+)$`);
+    const scripts = () => all("SELECT * FROM goals WHERE accountId = ? AND kind = 'script' ORDER BY cityKey", acct);
+    let rows = scripts().filter((r) => slotOf.test(r.cityKey));
+    if (!rows.length) {
+      for (const r of scripts()) {
+        if (/^load\d+$/.test(r.cityKey) && r.src) goals.set(acct, `${city}:${r.cityKey}`, 'script', r.src);
+      }
+      rows = scripts().filter((r) => slotOf.test(r.cityKey));
+    }
+    return rows.filter((r) => r.src)
+      .map((r) => ({ slot: Number(slotOf.exec(r.cityKey)[1]), src: r.src, savedAt: r.savedAt }))
+      .sort((a, b) => a.slot - b.slot);
+  },
+
   set(accountId, cityKey, kind, src) {
     run(`INSERT INTO goals (accountId,cityKey,kind,src,savedAt) VALUES (?,?,?,?,?)
          ON CONFLICT(accountId,cityKey,kind) DO UPDATE SET src=excluded.src, savedAt=excluded.savedAt`,
@@ -585,6 +627,15 @@ const registry = {
   markAbandoned(accountId, fieldId) {
     run(`UPDATE city_registry SET state='abandoned', abandonable=0, abandonedAt=? WHERE accountId=? AND fieldId=?`,
       now(), accountId, Number(fieldId));
+  },
+
+  // We just teleported this city ourselves. Its new tile may not be known yet
+  // (a state move lands somewhere random and only a push says where), so stop
+  // trusting any claim on it NOW, by castleId; reconcile moves the row and
+  // counts the move once the tile is known.
+  markMoved(accountId, castleId) {
+    run(`UPDATE city_registry SET abandonable=0, movedAt=? WHERE accountId=? AND castleId=?`,
+      now(), accountId, Number(castleId));
   },
 
   // Bring the registry in line with the live city list. Unknown cities are

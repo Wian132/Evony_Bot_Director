@@ -696,6 +696,22 @@ function pickHideTarget(ctx, opt, game, here) {
 // Policy values: 0 = bot's choice, 1 = always open, 2 = always close.
 function gatePlan(ctx, state, game) {
   game = game || ctx.game;
+
+  // Gate Control on the console (Auto / Open / Closed). A manual Open or Closed
+  // outranks every gate goal and is held until someone sets it back to Auto:
+  // NEAT's semantics, where "Closed" means the gate stays closed. Only the
+  // console writes ctx.controls, so a goal file alone never lands here.
+  const manual = ctx.controls && ctx.controls.gate;
+  if (manual === 'open' || manual === 'closed') {
+    const want = manual === 'open';
+    const head = `gate: manual ${want ? 'OPEN' : 'CLOSED'} from the console`;
+    if (!!ctx.castle.goOutForBattle === want) return { note: `${head} — holding`, actions: [] };
+    return {
+      note: `${head} — the gate is ${want ? 'closed' : 'open'}, putting it back`,
+      actions: [{ kind: 'setGate', open: want, scenario: 'manual', label: `${want ? 'open' : 'close'} the gate (manual setting)` }],
+    };
+  }
+
   const cfg = parsers.gate.parse(ctx.config.gate);
   const pol = (ctx.goals || []).find((x) => x.name === 'gatepolicy');
   if (!cfg.enabled) {

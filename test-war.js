@@ -566,6 +566,30 @@ const GP = (s) => ({ name: 'gatepolicy', ...W.parsers.gatepolicy.parse(s.split(/
 test('gate off -> no plan', () => {
   assert.strictEqual(W.plans.gate(makeCtx({ config: {} }), {}), null);
 });
+test('gate: manual CLOSED from the console outranks a gatepolicy that says open', () => {
+  const ctx = makeCtx({ castle: fakeCastle({ goOutForBattle: true }), config: { gate: 1 }, goals: [GP('1 1 1 1 1')] });
+  ctx.controls = { gate: 'closed' };
+  const p = W.plans.gate(ctx, {});
+  assert.strictEqual(p.actions.length, 1);
+  assert.strictEqual(p.actions[0].open, false);
+  assert.strictEqual(p.actions[0].scenario, 'manual');
+});
+test('gate: manual OPEN works with no gate goal at all, then holds once open', () => {
+  const ctx = makeCtx({ config: {} });
+  ctx.controls = { gate: 'open' };
+  assert.strictEqual(W.plans.gate(ctx, {}).actions[0].open, true);
+  ctx.castle.goOutForBattle = true;
+  const p = W.plans.gate(ctx, {});
+  assert.deepStrictEqual(p.actions, []);
+  assert.ok(/holding/.test(p.note), p.note);
+});
+test('gate: Auto hands the gate back to the goals', () => {
+  const ctx = makeCtx({ config: { gate: 1 }, goals: [GP('1 1 2 0 1')] });
+  ctx.controls = { gate: 'auto' };
+  const p = W.plans.gate(ctx, {});
+  assert.strictEqual(p.actions[0].open, true);
+  assert.notStrictEqual(p.actions[0].scenario, 'manual');
+});
 test('gatepolicy without config gate -> says it is idle', () => {
   const p = W.plans.gate(makeCtx({ config: {}, goals: [GP('2 1 2 0 1')] }), {});
   assert.ok(/idle/.test(p.note));

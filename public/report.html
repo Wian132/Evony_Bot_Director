@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle log — OTTObot</title>
+<link rel="stylesheet" href="/reportview.css">
+<style>
+  /* The console's tokens (app.html), so the page matches it in either theme. */
+  :root {
+    --win:#e9e9e9; --panel:#ffffff; --panel2:#f4f4f4; --line:#a9a9a9; --grid:#dedede;
+    --ink:#111111; --dim:#555555; --faint:#8a8a8a;
+    --btn-top:#fdfdfd; --btn-bot:#d9d9d9; --btn-edge:#8f8f8f;
+    --th-top:#fdf8d9; --th-bot:#efe3a6; --th-edge:#c8b56a; --th-ink:#3b2e00;
+    --link:#2233cc; --ok:#1c8a1c; --bad:#c42020; --focus:#2a62d8;
+  }
+  :root[data-theme="dark"] {
+    --win:#1c1e22; --panel:#24272c; --panel2:#2c3036; --line:#4a4f57; --grid:#383c43;
+    --ink:#ececec; --dim:#a9adb4; --faint:#80858d;
+    --btn-top:#40454d; --btn-bot:#30343a; --btn-edge:#5c626b;
+    --th-top:#4a4322; --th-bot:#3a3419; --th-edge:#6d6232; --th-ink:#f3e7b3;
+    --link:#9fb0ff; --ok:#6fd66f; --bad:#ff7a7a; --focus:#8db4ff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--win); color:var(--ink); font:12px/1.4 Tahoma, Verdana, "Segoe UI", sans-serif; }
+  :focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+  a { color:var(--link); }
+  button {
+    font:bold 11px Tahoma, Verdana, sans-serif; color:var(--ink); cursor:pointer;
+    background:linear-gradient(var(--btn-top), var(--btn-bot)); border:1px solid var(--btn-edge); border-radius:3px; padding:3px 10px;
+  }
+  button:hover { filter:brightness(1.04); }
+  input { font:12px Tahoma, Verdana, sans-serif; color:var(--ink); background:var(--panel); border:1px solid var(--line);
+    border-radius:2px; padding:3px 6px; min-width:0; }
+
+  .cap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 16px; color:var(--th-ink);
+    background:linear-gradient(var(--th-top), var(--th-bot)); border-bottom:1px solid var(--th-edge); }
+  .cap h1 { margin:0; font:bold 14px Georgia, "Times New Roman", serif; }
+  .cap form { display:flex; gap:6px; flex:1 1 320px; max-width:680px; margin-left:auto; }
+  .cap input { flex:1; }
+  .wrap { max-width:920px; margin:14px auto 30px; padding-inline:16px; }
+  .paper { background:var(--panel); border:1px solid var(--line); box-shadow:0 1px 3px rgba(0,0,0,.12); padding:0 12px 12px; }
+
+  /* PublicReportDetail's header: subject, time, where it happened */
+  .gh { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); margin:0 -12px 4px;
+    border-bottom:1px solid var(--th-edge); }
+  .gh div { text-align:center; padding:0 6px 6px; min-width:0; overflow-wrap:anywhere; }
+  .gh b { display:block; margin:0 -6px 5px; padding:3px 6px; font:bold 12px Georgia, "Times New Roman", serif; color:var(--th-ink);
+    background:linear-gradient(var(--th-top), var(--th-bot)); border-bottom:1px solid var(--th-edge); }
+
+  .foot { margin-top:14px; padding-top:8px; border-top:1px solid var(--grid); color:var(--dim); font-size:11px; }
+  .foot .link { display:flex; gap:6px; align-items:center; margin-top:5px; }
+  .foot .link input { flex:1; font:11px "Courier New", Consolas, monospace; color:var(--dim); }
+  details.raw { margin-top:10px; }
+  details.raw summary { cursor:pointer; color:var(--dim); font-size:11px; }
+  .msg { padding:30px 10px; text-align:center; color:var(--dim); line-height:1.6; }
+  .msg.bad { color:var(--bad); }
+  .intro { padding:16px 6px 6px; line-height:1.6; }
+  .intro code { font:11.5px "Courier New", Consolas, monospace; background:var(--panel2); padding:1px 4px; overflow-wrap:anywhere; }
+</style>
+<script>
+  // the console's theme choice, before first paint
+  (function () {
+    var t = 'light';
+    try { t = localStorage.getItem('evony_theme') || 'light'; } catch (e) {}
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+</head>
+<body>
+<header class="cap">
+  <h1>Battle log</h1>
+  <form id="open">
+    <input id="link" type="text" spellcheck="false" autocomplete="off" aria-label="Battle-log link"
+      placeholder="Paste a battle-log link — …evony.com/default.html?logfile/….xml">
+    <button type="submit">Open</button>
+  </form>
+</header>
+<main class="wrap"><div class="paper" id="out"></div></main>
+
+<script src="/reportview.js"></script>
+<script>
+// The game's web battle log ran in Flash (WarReport.swf), which no browser runs
+// any more. It only ever read the report's XML from the game's report server
+// and showed it with the in-game report screens, so this page does the same:
+// the console fetches the XML (/api/reports/log) and mailbox.js decodes it.
+//   /report?log=<the game's link>[&title=&when=&from=&to=]
+// The log itself carries neither the subject nor the time or places, so the
+// Reports window passes them along; a pasted link goes without.
+const $ = (id) => document.getElementById(id);
+const { esc } = ReportView;
+let current = null;
+
+function params() {
+  const q = new URLSearchParams(location.search);
+  const g = (k) => (q.get(k) || '').trim();
+  return { log: g('log'), title: g('title'), when: g('when'), from: g('from'), to: g('to') };
+}
+
+function say(html, cls) { $('out').innerHTML = `<div class="msg${cls ? ' ' + cls : ''}">${html}</div>`; }
+
+function intro() {
+  $('out').innerHTML = '<div class="intro">'
+    + '<p><b>Open a battle log without Flash.</b> The game\'s "battle log on the web" needs Adobe Flash, which browsers no longer run. '
+    + 'This page reads the same log from the game\'s report server and shows it the way the game did.</p>'
+    + '<p>Paste a battle-log link above — the kind the game puts on every report and players share in chat:<br>'
+    + '<code>battless71.evony.com/default.html?logfile/20260913/26/b8/26b8db5fd5effbd730fba6745c62f0e4.xml</code></p>'
+    + '<p>From the console, a report\'s <i>Open as a battle log</i> link opens here with its subject, time and places filled in.</p></div>';
+}
+
+async function load() {
+  const p = params();
+  $('link').value = p.log;
+  if (!p.log) { document.title = 'Battle log — OTTObot'; return intro(); }
+  say('Fetching the battle log from the game\'s report server…');
+  let r = null;
+  try {
+    const res = await fetch(`/api/reports/log?${new URLSearchParams({ u: p.log, from: p.from, to: p.to })}`, { credentials: 'same-origin' });
+    r = await res.json();
+  } catch (e) {
+    r = { ok: false, error: 'no answer from the console — is it running, and are you signed in?' };
+  }
+  if (!r || r.ok === false || !r.detail) return say(`Could not open that battle log: ${esc((r && r.error) || 'unknown error')}`, 'bad');
+  current = r;
+  paint(p, r);
+}
+
+function paint(p, r) {
+  const d = r.detail;
+  const subject = p.title || ReportView.kindTitle(d.kind);
+  document.title = `${subject} — battle log`;
+  const when = p.when || (r.log && r.log.day ? `${r.log.day} (the day it was logged)` : '—');
+  const cells = [['Subject', subject], ['Time', when]];
+  // army reports say where the march came from; every report says where it happened
+  if (p.from && p.from !== p.to) cells.push(['From', p.from]);
+  cells.push([p.from ? 'To' : 'Location', p.to || '—']);
+  $('out').innerHTML = `<div class="gh">${cells.map(([k, v]) => `<div><b>${esc(k)}</b>${esc(v)}</div>`).join('')}</div>`
+    + ReportView.body(d)
+    + '<div class="foot">'
+    + (p.to ? '' : 'The log file does not name the places, so a pasted link shows none. ')
+    + ((d.sections || []).some((s) => s.type === 'sides') ? 'Our side and the enemy side are as the player who got this report saw them.' : '')
+    + (r.log ? '<div class="link"><span>The game\'s own link:</span>'
+      + `<input readonly value="${esc(r.log.page)}" aria-label="The game's battle-log link" onfocus="this.select()">`
+      + '<button type="button" id="copy">Copy</button></div>' : '')
+    + (r.content ? `<details class="raw"><summary>Raw report, as the game's report server sent it</summary><pre class="rv-raw">${esc(r.content)}</pre></details>` : '')
+    + '</div>';
+}
+
+$('out').addEventListener('click', async (e) => {
+  if (e.target.id !== 'copy' || !current || !current.log) return;
+  try { await navigator.clipboard.writeText(current.log.page); e.target.textContent = 'Copied'; }
+  catch { e.target.textContent = 'Select it and copy'; }
+});
+
+$('open').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const log = $('link').value.trim();
+  if (!log) return;
+  // a pasted link is a different report: drop the header the last one came with
+  history.pushState(null, '', `/report?${new URLSearchParams({ log })}`);
+  load();
+});
+window.addEventListener('popstate', load);
+load();
+</script>
+</body>
+</html>

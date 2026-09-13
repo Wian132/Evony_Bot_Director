@@ -28,6 +28,13 @@
   table.t { width:100%; border-collapse:collapse; margin-top:6px; }
   table.t td { padding:1px 6px 1px 0; font-family:Consolas,monospace; }
   .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  dialog { width:min(400px, 92vw); padding:18px 20px 16px; background:var(--panel); color:var(--ink);
+           border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 32px rgba(0,0,0,.5); }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  dialog b { color:var(--warn); font-size:15px; }
+  dialog p { margin:8px 0 0; color:var(--dim); font-size:13px; }
+  dialog .btns { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+  button.danger { background:var(--bad); }
 </style>
 </head>
 <body>
@@ -56,22 +63,33 @@
     <div class="ref">
       <b>Commands</b>
       <table class="t">
-        <tr><td><code>attack</code></td><td>x,y hero troops [@time] [from castle]</td></tr>
-        <tr><td><code>scout</code></td><td>x,y hero troops</td></tr>
-        <tr><td><code>reinforce</code></td><td>x,y hero troops</td></tr>
-        <tr><td><code>transport</code></td><td>x,y hero troops wood:100k</td></tr>
+        <tr><td><code>attack</code></td><td>where hero troops [resources] [@:14:30:07.500 lands then | @0:30:00 camps] [from castle]</td></tr>
+        <tr><td><code>deploy</code></td><td>at|bu|re|sc|tr where hero troops [f:26k,l:26k,s:26k,i:12k,g:10k] [time] &nbsp;— NEAT's form; <code>bu</code> builds a city on your flat</td></tr>
+        <tr><td><code>buildstatus</code></td><td>build marches on the way, grouped by the second they land in</td></tr>
+        <tr><td><code>marchcheck</code></td><td>the march formula against the server's times for every march out (read-only)</td></tr>
+        <tr><td><code>set</code></td><td>name value &nbsp;— then <code>%name%</code> in later lines</td></tr>
+        <tr><td><code>logout</code></td><td>now @:14:35 &nbsp;|&nbsp; now 1:05:00 &nbsp;— off the game until then (Connect ends it early)</td></tr>
+        <tr><td><code>scout</code></td><td>where hero troops</td></tr>
+        <tr><td><code>reinforce</code></td><td>where [hero] [troops] [wood:50k,food:20k] &nbsp;— no troops sends 1 scout</td></tr>
+        <tr><td><code>transport</code></td><td>where [hero] troops wood:100k</td></tr>
         <tr><td><code>find</code></td><td>player name — instant, from the map cache</td></tr>
         <tr><td><code>buyitem</code> / <code>useitem</code></td><td>itemId [n]</td></tr>
         <tr><td><code>packages</code></td><td>list unopened gift packages</td></tr>
-        <tr><td><code>lostheroes</code> / <code>recover</code></td><td>Stone of Finding flow</td></tr>
+        <tr><td><code>lostheroes</code></td><td>lost heroes (captured ones too) a Stone of Finding can bring back</td></tr>
+        <tr><td><code>recover</code></td><td>hero name|id [to city] &nbsp;— spends a Stone of Finding</td></tr>
         <tr><td><code>heroes</code> / <code>inn</code></td><td>list your heroes / the inn's offers</td></tr>
         <tr><td><code>innrefresh</code></td><td>reroll the inn, then list it</td></tr>
         <tr><td><code>hire</code></td><td>Hiram &nbsp;|&nbsp; best &nbsp;|&nbsp; best politics</td></tr>
         <tr><td><code>fire</code> / <code>release</code></td><td>hero name</td></tr>
+        <tr><td><code>renamehero</code></td><td>hero name|id &nbsp;newname &nbsp;[anyway] &nbsp;— in whichever city it is</td></tr>
         <tr><td><code>mayor</code> / <code>unmayor</code></td><td>appoint / remove the mayor</td></tr>
         <tr><td><code>levelup</code></td><td>hero | all &nbsp;[attack|politics|intel]</td></tr>
         <tr><td><code>addpoint</code></td><td>hero attack|politics|intel N</td></tr>
+        <tr><td><code>waterhero</code></td><td>hero name|id &nbsp;[/heropoints="pol:300 att"] &nbsp;— Holy Water: reset the points, spend them again</td></tr>
         <tr><td><code>buildcity</code></td><td>x,y &nbsp;— found a city on an owned flat</td></tr>
+        <tr><td><code>teleport</code></td><td>x,y &nbsp;— Advanced Teleporter, onto an empty flat</td></tr>
+        <tr><td><code>teleport</code></td><td>thuringia | random &nbsp;— City Teleporter, into a state</td></tr>
+        <tr><td><code>warteleport</code></td><td>x,y &nbsp;— War Teleporter, onto an NPC camp</td></tr>
         <tr><td><code>build</code></td><td>cottage|academy|barracks… [at N]</td></tr>
         <tr><td><code>upgrade</code></td><td>townhall|walls|academy… [at N]</td></tr>
         <tr><td><code>research</code></td><td>archery | military science | …</td></tr>
@@ -80,14 +98,20 @@
         <tr><td><code>sell</code>/<code>buy</code></td><td>wood|food|stone|iron amount @price</td></tr>
         <tr><td><code>cleanreports</code></td><td>trade | army | other</td></tr>
         <tr><td><code>repeat</code> N</td><td>run the previous line N <b>more</b> times (so N+1 total)</td></tr>
+        <tr><td><code>repeat</code></td><td>no count: run the previous line again until it fails, or Stop in the console</td></tr>
         <tr><td><code>loop</code> N … <code>endloop</code></td><td>repeat a block N times (nestable)</td></tr>
-        <tr><td><code>sleep</code> / <code>echo</code></td><td>seconds / text</td></tr>
+        <tr><td><code>sleep</code> / <code>echo</code></td><td>seconds | m:ss | h:mm:ss | @:14:15 / text</td></tr>
       </table>
+      <b style="display:block;margin-top:10px">Where</b>
+      <div style="margin-top:4px">
+        <code>123,456</code>, or one of your cities by name: <code>reinforce Fla</code>,
+        <code>transport "Home City" t:20 wood:100k</code> (quotes when the name has spaces).
+      </div>
       <b style="display:block;margin-top:10px">Heroes</b>
       <div style="margin-top:4px">
         <code>Wian</code> by name · <code>any</code> first idle · <code>any:level&lt;500,attack&gt;400</code> filtered
-        (level / attack / politics / intel). <b>Optional</b> — omit it and no hero is sent,
-        which is the norm for transport and reinforce.
+        (level / attack / politics / intel). Attack and scout need one. Reinforce and transport
+        don't: write <code>none</code> or leave it out, and no hero is sent.
       </div>
       <b style="display:block;margin-top:10px">Troop codes</b>
       <div style="font-family:Consolas,monospace;margin-top:4px">
@@ -126,6 +150,16 @@
     </div>
   </div>
 </main>
+<dialog id="liveDlg">
+  <form method="dialog">
+    <b>Dry run is off</b>
+    <p>This will send real commands to Evony.</p>
+    <div class="btns">
+      <button value="run" class="danger">Run for real</button>
+      <button value="" class="ghost" autofocus>Cancel</button>
+    </div>
+  </form>
+</dialog>
 <script>
 const $ = (id) => document.getElementById(id);
 const SAMPLE = `// dry run is on — nothing is sent until you turn it off
@@ -167,11 +201,13 @@ async function go(dryRun, parseOnly) {
   finally { btn.disabled = false; btn.textContent = old; }
 }
 
+// A live run asks first, in this page's own dialog rather than the browser's.
 $('run').onclick = () => {
-  const dry = $('dry').checked;
-  if (!dry && !confirm('Dry run is OFF. This will send real commands to Evony. Continue?')) return;
-  go(dry, false);
+  if ($('dry').checked) return go(true, false);
+  $('liveDlg').returnValue = '';
+  $('liveDlg').showModal();
 };
+$('liveDlg').addEventListener('close', () => { if ($('liveDlg').returnValue === 'run') go(false, false); });
 $('check').onclick = () => go(true, true);
 </script>
 </body>

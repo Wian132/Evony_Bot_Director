@@ -17,8 +17,10 @@
 //   * One pass starts at the closest npc and works outward. The pass restarts on
 //     the farming cycle: 1h under `config training:1` / `training10:1`, else
 //     `/farmingcycle` in farmingpolicy, else `config farmingcycle:x`, else 8h.
-//   * How many runs may be in the air at once comes from `npcteams` (default 10)
-//     or `rallypolicy`, and in practice from the rally spot's march slots.
+//   * How many runs may be in the air at once comes from `npcteams` (default 10),
+//     which counts farming teams — attacks — and not transports or
+//     reinforcements (wiki NpcTeams). The rally spot's slots and `rallypolicy`
+//     n: / n:<level>: / max: limit it further (rally.js).
 //   * `config npclimit:<days>` stops farming once the city holds that many days of
 //     food — unless `config training` is on, in which case it keeps going hourly
 //     for the hero experience.
@@ -32,10 +34,12 @@
 const fs = require('fs');
 const path = require('path');
 const C = require('./constants');
+const R = require('./rally');
+const H = require('./goal-heroes');
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
-const kv = (s) => { const i = String(s).indexOf(':'); return i < 0 ? [String(s), null] : [String(s).slice(0, i), String(s).slice(i + 1)]; };
+const kv =(s) => { const i = String(s).indexOf(':'); return i < 0 ? [String(s), null] : [String(s).slice(0, i), String(s).slice(i + 1)]; };
 
 // same number grammar as goals.js: 5k / 1.5m / 400
 const NUM = (s) => {
@@ -64,7 +68,6 @@ const TRAINING_CYCLE_H = 1;       // wiki: "config training:1 ... farm every hou
 const DEFAULT_TEAMS = 10;         // wiki: NpcTeams default
 const DEFAULT_RADIUS = 20;        // INFERRED: DistancePolicy's default is unread (wiki was down)
 const HERO_ATTACK_FLOOR = 50;     // wiki: attack < 50 forces the safe ballista count
-const RALLY_SPOT_TYPE = 29;       // constants.js BUILDINGS
 const MAX_NPC_LEVEL = 10;
 
 // NEAT troop codes that differ from ours (mirrors the ALIAS map in goals.js).
@@ -122,13 +125,16 @@ function parseCoord(tok, errs) {
 
 const parsers = {
   // npcheroes [level] <hero-string>       wiki: NpcHeroes (default: any)
+  //   npcheroes !OTTO,any        every hero but OTTO, every level
+  //   npcheroes 10 any           ...except npc10s, which any hero may hit
   npcheroes: {
     kind: 'directive', multi: true,
     parse(args) {
       const errs = [];
       const { level, rest } = takeLevel(args.slice());
       const spec = rest.join(' ').trim() || 'any';
-      if (!rest.length) errs.push('needs a hero string (e.g. "any", a hero name, or "any:attack>100")');
+      if (!rest.length) errs.push('needs a hero string (e.g. "any", a hero name, "!name,any" or "any:attack>100")');
+      else errs.push(...H.parseHeroString(spec).errors);
       return { level, spec, errors: errs };
     },
   },
@@ -233,16 +239,8 @@ const parsers = {
     },
   },
 
-  // rallypolicy /npc:<n> /valley:<n> ...  — per-type cap on simultaneous teams
-  rallypolicy: {
-    kind: 'policy', multi: false,
-    parse(args) {
-      const errs = [];
-      const sw = parseSwitches(args, errs, null);
-      if (!Object.keys(sw).length) errs.push('expected: rallypolicy /npc:<teams> [/valley:<teams>]');
-      return { switches: sw, errors: errs };
-    },
-  },
+  // rallypolicy is a core goal now (rally.js): it caps transports and
+  // reinforcements as well as npc teams.
 
   // excludelist x,y x,y | excludelist SomePlayer   wiki: ExcludeList
   excludelist: {
@@ -335,43 +333,24 @@ function foodDays(castle) {
 }
 
 // ------------------------------------------------------------ hero selection
-// A hero string is "any", a name, "a|b|c", or either of those plus conditions:
-//   any:attack>100,level<80        Alexander:loyalty>50
-// Modelled on Game.pickHero so the two behave the same way.
-const HERO_FIELD = {
-  level: 'level', attack: 'power', atk: 'power', power: 'power',
-  politics: 'management', pol: 'management', management: 'management',
-  intel: 'stratagem', int: 'stratagem', stratagem: 'stratagem',
-  loyalty: 'loyalty', exp: 'experience',
-};
+// The full NEAT hero string (wiki HeroString), read by goal-heroes.js so every
+// goal that names heroes agrees on what a string means:
+//   any    Alexander    bob,fred    !OTTO,any    any:attack>100,level<80    a|b
+// `roster` is the whole city, which is what best/worst measure against, so
+// "any:attack=best" waits for the best hero rather than sending the runner-up.
 
 // The attribute field ALREADY includes allocated points (HeroProperties.as reads
 // h.power directly, never powerAdded) — same rule as Game.attrValue. Adding
 // *Added here would inflate every hero and quietly defeat the under-50 rule.
-const heroAttr = (h, key) => n(h[key]);
-const heroAttack = (h) => heroAttr(h, 'power');
+const heroAttack = (h) => n(h.power);
 
-function heroCandidates(pool, spec) {
-  const [head, cond] = String(spec || 'any').split(':');
-  let cands = pool;
-  if (head && head.toLowerCase() !== 'any') {
-    const wanted = head.toLowerCase().split('|').map((s) => s.trim());
-    cands = cands.filter((h) => wanted.includes(String(h.name || '').toLowerCase()));
-  }
-  for (const clause of (cond || '').split(',')) {
-    const m = clause.trim().match(/^(\w+)\s*(<=|>=|<|>|=)\s*(\d+)$/);
-    if (!m) continue;
-    const f = HERO_FIELD[m[1].toLowerCase()];
-    if (!f) continue;
-    const op = m[2], v = Number(m[3]);
-    cands = cands.filter((h) => {
-      const x = heroAttr(h, f);
-      return op === '<' ? x < v : op === '>' ? x > v : op === '<=' ? x <= v : op === '>=' ? x >= v : x === v;
-    });
-  }
+function heroCandidates(pool, spec, roster) {
+  const parsed = H.parseHeroString(spec || 'any');
+  const everyone = roster && roster.length ? roster : pool;
   // strongest first: attack is what keeps losses off, and it is what the
   // under-50 rule keys on.
-  return cands.slice().sort((a, b) => heroAttack(b) - heroAttack(a));
+  return pool.filter((h) => H.matchHero(h, parsed, everyone))
+    .sort((a, b) => heroAttack(b) - heroAttack(a));
 }
 
 // ------------------------------------------------------------- goal plumbing
@@ -379,6 +358,16 @@ function heroCandidates(pool, spec) {
 const goalsNamed = (ctx, name) => (ctx.goals || []).filter((g) => g.name === name);
 // a level-specific line wins; a line written without a level is the fallback
 const forLevel = (list, level) => list.find((g) => g.level === level) || list.find((g) => g.level == null) || null;
+
+// wiki HeroString: several npcheroes lines for one level are OR'd, as if joined
+// with '|'. Lines for this level win; the lines written without a level cover
+// every level that has none of its own.
+function heroSpecFor(ctx, level) {
+  const list = goalsNamed(ctx, 'npcheroes');
+  const own = list.filter((g) => g.level === level);
+  const use = own.length ? own : list.filter((g) => g.level == null);
+  return use.length ? use.map((g) => g.spec).join('|') : 'any';
+}
 
 function radiusFor(ctx, level) {
   const fp = forLevel(goalsNamed(ctx, 'farmingpolicy'), level);
@@ -410,32 +399,28 @@ function cycleMsFor(ctx, level) {
   return floorMin > 0 ? Math.max(ms, floorMin * 60000) : ms;
 }
 
-function teamCapFor(ctx, castle) {
+// How many farming teams may be out. The rally spot and rallypolicy are the
+// rally book's to enforce (rally.js), across every kind of march.
+function teamCapFor(ctx) {
   const teamsGoal = goalsNamed(ctx, 'npcteams')[0];
-  const rally = goalsNamed(ctx, 'rallypolicy')[0];
   const reasons = [];
   let teams = teamsGoal ? n(teamsGoal.teams) : DEFAULT_TEAMS;
   reasons.push(teamsGoal ? `npcteams ${teams}` : `npcteams ${teams} (default)`);
 
-  const rallyNpc = rally && rally.switches ? n(rally.switches.npc) : 0;
-  if (rallyNpc > 0 && rallyNpc < teams) { teams = rallyNpc; reasons.push(`rallypolicy /npc:${rallyNpc}`); }
-
-  // INFERRED: a city may have as many marches in the air as its rally spot level.
-  const spot = (castle.buildings || []).filter((b) => b.typeId === RALLY_SPOT_TYPE).reduce((m, b) => Math.max(m, n(b.level)), 0);
   const fp = forLevel(goalsNamed(ctx, 'farmingpolicy'), null);
   const fpTeams = fp && fp.switches ? n(fp.switches.teams) : 0;
   if (fpTeams > 0 && fpTeams < teams) { teams = fpTeams; reasons.push(`farmingpolicy /teams:${fpTeams}`); }
-  if (spot > 0 && spot < teams) { teams = spot; reasons.push(`rally spot L${spot}`); }
-  return { teams: Math.max(0, teams), why: reasons.join(', '), rallySpot: spot };
+  return { teams: Math.max(0, teams), why: reasons.join(', ') };
 }
 
-// Marches this city currently has out, straight from the live player bean. This is
-// the honest source for "how many rally slots are busy" — it counts transports and
-// reinforcements too, because they occupy the same slots.
-function liveMarches(game, castle) {
-  const armies = (game && game.player && game.player.selfArmys) || [];
+// Marches this city currently has out, straight from the live army list. Only
+// the attacks are farming teams; everything else still holds a rally slot, and
+// the rally book counts those.
+function liveMarches(game, castle, armies) {
+  armies = armies || (game && game.player && game.player.selfArmys) || [];
   const fieldId = castle.fieldId;
   return armies
+    .map((a) => a.raw || a)            // the engine's list wraps the ArmyBean
     .filter((a) => fieldId === undefined || Number(a.startFieldId) === Number(fieldId))
     .map((a) => ({
       target: Number(a.targetFieldId),
@@ -587,20 +572,33 @@ function npcPlan(ctx, state, game) {
   }
 
   // ---- how many runs may be in the air
-  const cap = teamCapFor(ctx, castle);
-  const live = liveMarches(game, castle);
+  // npcteams counts farming teams (wiki NpcTeams): the attacks. Transports and
+  // reinforcements are not teams, but they hold rally slots, and the rally book
+  // counts every march against the rally spot and rallypolicy.
+  const cap = teamCapFor(ctx);
+  const live = liveMarches(game, castle, ctx.selfArmies);
   for (const m of live) if (m.missionType === C.MISSION.attack && m.target) st.hits[m.target] = Math.max(n(st.hits[m.target]), m.startedAt);
-  const inFlight = Math.max(st.runs.length, live.length);
+  const inFlight = Math.max(st.runs.length, live.filter((m) => m.missionType === C.MISSION.attack).length);
   const busyTargets = new Set([...live.map((m) => m.target), ...st.runs.map((r) => r.fieldId)]);
   const busyHeroes = new Set([...live.map((m) => m.heroId), ...st.runs.map((r) => r.heroId)].filter((x) => x != null));
-  let slots = cap.teams - inFlight;
+  const book = ctx.rally || R.rallyBook({ game, armies: ctx.selfArmies, goalsOf: (c) => (c === castle ? ctx.goals : null) });
+  let levels = null;
+  const levelOf = (fieldId) => {
+    if (!levels) levels = new Map(cache.npcs.map((t) => [t.id, t.level]));
+    return levels.has(fieldId) ? levels.get(fieldId) : null;
+  };
+  const rally = book.room(castle, 'n');
+  let slots = Math.min(cap.teams - inFlight, rally.room);
   if (slots <= 0) {
-    return { note: `npc:${lowest} — ${inFlight}/${cap.teams} teams already out (${cap.why})`, actions: [] };
+    const why = cap.teams - inFlight <= 0 ? `${inFlight}/${cap.teams} teams already out (${cap.why})` : `no rally slot — ${rally.why}`;
+    return { note: `npc:${lowest} — ${why}`, actions: [] };
   }
 
-  // ---- troops and heroes still at home
+  // ---- troops and heroes still at home, less what left moments ago
+  const sent = book.committed(castle).troops;
   const avail = {};
-  for (const [k, v] of Object.entries(castle.troop || {})) avail[k] = n(v);
+  for (const [k, v] of Object.entries(castle.troop || {})) avail[k] = Math.max(0, n(v) - n(sent[k]));
+  const plannedAt = {};
   // HeroConstants.as: 0 free, 1 chief/mayor, 2 guard, 3 marching, 4 captured,
   // 5 returning, 8 farming. Only a free hero may be given a new march.
   const idleHeroes = (castle.heros || []).filter((h) => (h.status === 0 || h.status === undefined) && !busyHeroes.has(h.id));
@@ -641,10 +639,10 @@ function npcPlan(ctx, state, game) {
     for (const target of fresh) {
       if (slots <= 0) break;
 
-      const spec = (forLevel(goalsNamed(ctx, 'npcheroes'), level) || {}).spec || 'any';
+      const spec = heroSpecFor(ctx, level);
       const free = idleHeroes.filter((h) => !busyHeroes.has(h.id));
       if (!free.length) { stop = 'no idle hero left'; outOfHeroes = true; break; }
-      const hero = heroCandidates(free, spec)[0];
+      const hero = heroCandidates(free, spec, castle.heros)[0];
       if (!hero) { stop = `no idle hero matches "${spec}"`; break; }
 
       const load = troopLoadFor(ctx, level, hero, target, { ...opts, home });
@@ -664,11 +662,16 @@ function npcPlan(ctx, state, game) {
         if (broken) { stop = `npclimits ${level}: would leave ${fmt(n(avail[broken[0]]) - n(load.troops[broken[0]]))} ${C.BY_KEY[broken[0]] ? C.BY_KEY[broken[0]].name : broken[0]}, needs ${fmt(broken[1])}`; break; }
       }
 
+      // rallypolicy n:<level>:<slots>
+      const lr = book.room(castle, 'n', { level, levelOf, planned: { total: actions.length, kind: actions.length, level: n(plannedAt[level]) } });
+      if (lr.room <= 0) { stop = lr.why; break; }
+
       for (const [k, v] of Object.entries(load.troops)) avail[k] -= v;
       busyHeroes.add(hero.id);
       busyTargets.add(target.id);
       if (!cyc.startedAt) cyc.startedAt = now;
       slots--;
+      plannedAt[level] = n(plannedAt[level]) + 1;
 
       actions.push({
         kind: 'npcAttack',
@@ -680,8 +683,14 @@ function npcPlan(ctx, state, game) {
         label: `npc L${level} at ${target.x},${target.y} (${Math.round(target.dist * 10) / 10} tiles, ${hms(load.oneWayMs)} out) ` +
                `with ${hero.name} atk ${heroAttack(hero)} — ${troopText(load.troops)}`,
       });
-      // hand the executor the state object without it showing up in reports
-      Object.defineProperty(actions[actions.length - 1], 'state', { value: state, enumerable: false });
+      // hand the executor the state object, and the engine the rally slot it
+      // takes, without either showing up in reports
+      const a = actions[actions.length - 1];
+      Object.defineProperty(a, 'state', { value: state, enumerable: false });
+      Object.defineProperty(a, 'rally', {
+        value: { from: castle, kind: 'n', level, levelOf, missionType: C.MISSION.attack, targetFieldId: target.id, troops: load.troops },
+        enumerable: false,
+      });
     }
     if (tooFar) notes.push(`L${level}: ${tooFar} camp(s) skipped — round trip longer than the ${hms(cycleMs)} cycle`);
     if (stop) notes.push(`L${level}: stopped — ${stop}`);
@@ -692,6 +701,7 @@ function npcPlan(ctx, state, game) {
     ? `npc:${lowest} — ${actions.length} run(s) ready, nearest ${actions[0].target.x},${actions[0].target.y} L${actions[0].level}`
     : `npc:${lowest} — nothing to send`;
   const tail = [`${inFlight}/${cap.teams} teams out (${cap.why})`];
+  if (rally.why) tail.push(rally.why);
   if (scanned) tail.push(`${scanned} camp(s) in range`);
   if (cache.unleveled) tail.push(`${cache.unleveled} npc tile(s) have no level cached`);
   if (cache.updatedAt && now - cache.updatedAt > 12 * 3600000) tail.push(`map cache is ${hms(now - cache.updatedAt)} old`);
@@ -756,6 +766,6 @@ module.exports = {
   _internals: {
     SAFE_BALLISTAS, NPC_LOOT, DEFAULT_CYCLE_H, DEFAULT_TEAMS, DEFAULT_RADIUS, HERO_ATTACK_FLOOR,
     loadNpcCache, digestCache, troopLoadFor, targetsFor, cycleMsFor, teamCapFor,
-    heroCandidates, heroAttack, foodDays, capacityOf, marchFoodOf, recordSend, troopText,
+    heroCandidates, heroSpecFor, heroAttack, foodDays, capacityOf, marchFoodOf, recordSend, troopText,
   },
 };

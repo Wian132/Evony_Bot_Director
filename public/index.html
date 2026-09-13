@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evony Scanner</title>
+<style>
+  :root { --bg:#15171c; --panel:#1d2026; --line:#2c313a; --ink:#e6e9ef; --dim:#8d95a5; --acc:#6ea8fe; --warn:#ffb454; --bad:#ff6b6b; --ok:#5ed49a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Segoe UI",system-ui,sans-serif; }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:14px; }
+  h1 { font-size:17px; margin:0; font-weight:600; letter-spacing:.2px; }
+  header span { color:var(--dim); font-size:12px; }
+  main { display:grid; grid-template-columns:320px 1fr; gap:0; min-height:calc(100vh - 54px); }
+  .side { padding:18px 20px; border-right:1px solid var(--line); }
+  .side label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:14px 0 5px; }
+  input, textarea { width:100%; background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:8px 10px; font:13px/1.4 inherit; }
+  textarea { height:190px; resize:vertical; font-family:Consolas,monospace; font-size:12.5px; }
+  button { margin-top:16px; width:100%; padding:10px; border:0; border-radius:6px; background:var(--acc); color:#0f1115; font-weight:600; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .content { padding:18px 22px; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); border-bottom:1px solid var(--line); padding:7px 9px; font-weight:600; }
+  td { padding:7px 9px; border-bottom:1px solid #23262d; font-variant-numeric:tabular-nums; }
+  tr.stalled td { background:rgba(255,107,107,.09); }
+  .tag { font-size:11px; padding:2px 7px; border-radius:99px; font-weight:600; }
+  .tag.stalled { background:rgba(255,107,107,.18); color:var(--bad); }
+  .tag.moving { background:rgba(94,212,154,.15); color:var(--ok); }
+  .tag.new { background:rgba(141,149,165,.15); color:var(--dim); }
+  pre#log { margin-top:18px; background:#12141a; border:1px solid var(--line); border-radius:7px; padding:12px 14px; font:12px/1.55 Consolas,monospace; color:#a9b2c3; max-height:260px; overflow:auto; white-space:pre-wrap; }
+  .empty { color:var(--dim); padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Evony Scanner</h1>
+  <span id="sub">offline-account detection &mdash; direct protocol client, no Flash</span>
+</header>
+<main>
+  <div class="side">
+    <label>Server</label><input id="server" value="ss71">
+    <label>Email</label><input id="email">
+    <label>Password</label><input id="password" type="password" placeholder="(using .env)">
+    <label>Watch list (one name per line)</label>
+    <textarea id="names"></textarea>
+    <button id="run">Log in &amp; scan</button>
+  </div>
+  <div class="content">
+    <div id="out"><div class="empty">Run a scan to see results.<br>The first run records a baseline; the second shows who hasn't moved.</div></div>
+    <pre id="log" hidden></pre>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n === null || n === undefined ? '—' : n.toLocaleString());
+
+fetch('/api/config').then(r => r.json()).then(c => {
+  $('server').value = c.server; $('email').value = c.email;
+  $('names').value = (c.names || []).join('\n');
+  if (c.hasPassword) $('password').placeholder = '(stored in .env — leave blank)';
+});
+
+$('run').onclick = async () => {
+  const btn = $('run'); btn.disabled = true; btn.textContent = 'Scanning…';
+  $('log').hidden = false; $('log').textContent = 'connecting…';
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server: $('server').value, email: $('email').value,
+        password: $('password').value, names: $('names').value.split('\n'),
+      }),
+    }).then(r => r.json());
+
+    $('log').textContent = (res.log || []).join('\n');
+    if (!res.ok) { $('out').innerHTML = '<div class="empty" style="color:var(--bad)">' + res.error + '</div>'; return; }
+    render(res.rows);
+  } catch (e) {
+    $('log').textContent = 'request failed: ' + e.message;
+  } finally { btn.disabled = false; btn.textContent = 'Log in & scan'; }
+};
+
+function render(rows) {
+  if (!rows.length) { $('out').innerHTML = '<div class="empty">No players resolved.</div>'; return; }
+  rows.sort((a, b) => (b.stalled === true) - (a.stalled === true) || b.prestige - a.prestige);
+  const head = ['Player','Alliance','Prestige','Change','Castles','Rank','Population','Status'];
+  const body = rows.map(r => {
+    const tag = r.stalled === null ? '<span class="tag new">baseline</span>'
+      : r.stalled ? '<span class="tag stalled">not moving ' + r.sinceMin + 'm</span>'
+      : '<span class="tag moving">active</span>';
+    const chg = r.delta === null ? '—' : (r.delta === 0 ? '0' : '+' + fmt(r.delta));
+    return '<tr class="' + (r.stalled ? 'stalled' : '') + '">'
+      + [r.name, r.alliance || '—', fmt(r.prestige), chg, r.castles, r.rank, fmt(r.population), tag]
+        .map(c => '<td>' + c + '</td>').join('') + '</tr>';
+  }).join('');
+  $('out').innerHTML = '<table><thead><tr>' + head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' + body + '</tbody></table>';
+}
+</script>
+</body>
+</html>

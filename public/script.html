@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evony Script Console</title>
+<style>
+  :root { --bg:#15171c; --panel:#1d2026; --line:#2c313a; --ink:#e6e9ef; --dim:#8d95a5; --acc:#6ea8fe; --ok:#5ed49a; --bad:#ff6b6b; --warn:#ffb454; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Segoe UI",system-ui,sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:baseline; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  header a { color:var(--dim); font-size:12px; text-decoration:none; }
+  header a:hover { color:var(--acc); }
+  main { display:grid; grid-template-columns:1fr 420px; gap:0; height:calc(100vh - 50px); }
+  .left { display:flex; flex-direction:column; border-right:1px solid var(--line); min-width:0; }
+  .bar { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  textarea { flex:1; background:#12141a; border:0; color:var(--ink); padding:14px 16px; font:13px/1.7 Consolas,monospace; resize:none; outline:none; }
+  button { padding:8px 16px; border:0; border-radius:6px; background:var(--acc); color:#0f1115; font-weight:600; cursor:pointer; font-size:13px; }
+  button.ghost { background:var(--panel); color:var(--ink); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text] { background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:7px 9px; font:13px inherit; width:120px; }
+  label.chk { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--dim); cursor:pointer; }
+  .right { display:flex; flex-direction:column; min-width:0; }
+  pre#log { flex:1; margin:0; padding:14px 16px; overflow:auto; font:12px/1.6 Consolas,monospace; color:#a9b2c3; white-space:pre-wrap; word-break:break-word; }
+  .ref { padding:12px 16px; border-top:1px solid var(--line); font-size:11.5px; color:var(--dim); max-height:38%; overflow:auto; }
+  .ref b { color:var(--ink); font-weight:600; }
+  .ref code { color:var(--acc); }
+  table.t { width:100%; border-collapse:collapse; margin-top:6px; }
+  table.t td { padding:1px 6px 1px 0; font-family:Consolas,monospace; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Evony</h1>
+  <span style="background:var(--acc);color:#0f1115;font-size:10.5px;font-weight:700;letter-spacing:.9px;padding:3px 8px;border-radius:4px">SCRIPTS</span>
+  <a href="/goals">Goals &rarr;</a>
+  <a href="/">scanner</a>
+  <span id="who" style="color:var(--dim);font-size:12px"></span>
+</header>
+<main>
+  <div class="left">
+    <div class="bar">
+      <button id="run">Run</button>
+      <button id="check" class="ghost">Check only</button>
+      <label class="chk"><input type="checkbox" id="dry" checked> dry run (parse &amp; plan, send nothing)</label>
+      <label class="chk"><input type="checkbox" id="autoreq"> auto-queue missing prerequisites</label>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--dim)">castle</span>
+      <input type="text" id="castle" placeholder="(first)">
+    </div>
+    <textarea id="src" spellcheck="false"></textarea>
+  </div>
+  <div class="right">
+    <pre id="log">Ready. Dry run is ON — nothing is sent to the server until you switch it off.</pre>
+    <div class="ref">
+      <b>Commands</b>
+      <table class="t">
+        <tr><td><code>attack</code></td><td>x,y hero troops [@time] [from castle]</td></tr>
+        <tr><td><code>scout</code></td><td>x,y hero troops</td></tr>
+        <tr><td><code>reinforce</code></td><td>x,y hero troops</td></tr>
+        <tr><td><code>transport</code></td><td>x,y hero troops wood:100k</td></tr>
+        <tr><td><code>find</code></td><td>player name — instant, from the map cache</td></tr>
+        <tr><td><code>buyitem</code> / <code>useitem</code></td><td>itemId [n]</td></tr>
+        <tr><td><code>packages</code></td><td>list unopened gift packages</td></tr>
+        <tr><td><code>lostheroes</code> / <code>recover</code></td><td>Stone of Finding flow</td></tr>
+        <tr><td><code>heroes</code> / <code>inn</code></td><td>list your heroes / the inn's offers</td></tr>
+        <tr><td><code>innrefresh</code></td><td>reroll the inn, then list it</td></tr>
+        <tr><td><code>hire</code></td><td>Hiram &nbsp;|&nbsp; best &nbsp;|&nbsp; best politics</td></tr>
+        <tr><td><code>fire</code> / <code>release</code></td><td>hero name</td></tr>
+        <tr><td><code>mayor</code> / <code>unmayor</code></td><td>appoint / remove the mayor</td></tr>
+        <tr><td><code>levelup</code></td><td>hero | all &nbsp;[attack|politics|intel]</td></tr>
+        <tr><td><code>addpoint</code></td><td>hero attack|politics|intel N</td></tr>
+        <tr><td><code>buildcity</code></td><td>x,y &nbsp;— found a city on an owned flat</td></tr>
+        <tr><td><code>build</code></td><td>cottage|academy|barracks… [at N]</td></tr>
+        <tr><td><code>upgrade</code></td><td>townhall|walls|academy… [at N]</td></tr>
+        <tr><td><code>research</code></td><td>archery | military science | …</td></tr>
+        <tr><td><code>wall</code></td><td>trap|abatis|tower|logs|rocks count</td></tr>
+        <tr><td><code>train</code></td><td>troopcode count &nbsp;(troops)</td></tr>
+        <tr><td><code>sell</code>/<code>buy</code></td><td>wood|food|stone|iron amount @price</td></tr>
+        <tr><td><code>cleanreports</code></td><td>trade | army | other</td></tr>
+        <tr><td><code>repeat</code> N</td><td>run the previous line N <b>more</b> times (so N+1 total)</td></tr>
+        <tr><td><code>loop</code> N … <code>endloop</code></td><td>repeat a block N times (nestable)</td></tr>
+        <tr><td><code>sleep</code> / <code>echo</code></td><td>seconds / text</td></tr>
+      </table>
+      <b style="display:block;margin-top:10px">Heroes</b>
+      <div style="margin-top:4px">
+        <code>Wian</code> by name · <code>any</code> first idle · <code>any:level&lt;500,attack&gt;400</code> filtered
+        (level / attack / politics / intel). <b>Optional</b> — omit it and no hero is sent,
+        which is the norm for transport and reinforce.
+      </div>
+      <b style="display:block;margin-top:10px">Troop codes</b>
+      <div style="font-family:Consolas,monospace;margin-top:4px">
+        wo worker · w warrior · s scout · p pike · sw sword · a archer<br>
+        t transport · c cavalry · cata cataphract · b ballista · r ram · cp catapult
+      </div>
+      <b style="display:block;margin-top:10px">Map memory</b>
+      <div style="margin-top:4px">
+        <code>node mapscan.js</code> scans the world into <code>mapcache.json</code>
+        (the server caps each request at 20&times;20, so it tiles and pipelines).
+        Then <code>find Bob</code> here — or <code>node mapscan.js --find Bob</code> —
+        answers in milliseconds with no login.
+      </div>
+
+      <b style="display:block;margin-top:10px">Hero points</b>
+      <div style="margin-top:4px">
+        <code>levelup Eli</code> levels the hero then spends every unspent point on his
+        <b>dominant</b> attribute — an attack hero gets attack, a politics hero gets politics.
+        Override with <code>levelup Eli intel</code>, or do the whole city with
+        <code>levelup all</code>. Attack = power, politics = management, intel = stratagem.
+      </div>
+
+      <b style="display:block;margin-top:10px">Prerequisites</b>
+      <div style="margin-top:4px">
+        <code>build</code> / <code>upgrade</code> check requirements first and name what is
+        missing (“needs Town Hall level 2, you have 1”). Failures also show the game's own
+        message. Tick <b>auto-queue</b> to have a missing building upgrade queued for you —
+        it takes real build time, so re-run the line once it finishes.
+      </div>
+
+      <b style="display:block;margin-top:10px">Timing</b>
+      <div style="margin-top:4px">
+        <code>@07:00:00.500</code> sets camp time so the wave lands then. Camp time is whole
+        seconds; the sub-second part is handled by delaying the send.
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const SAMPLE = `// dry run is on — nothing is sent until you turn it off
+echo planning a wave
+attack 123,456 any:level<500,attack>400 a:99k,c:500,cata:500 @07:00:00.500
+scout 500,500 any s:1
+transport 123,456 any t:1000 wood:100000
+reinforce 123,456 any a:5000
+sell wood 1000 @0.55
+cleanreports trade`;
+
+$('src').value = localStorage.getItem('evony_script') || SAMPLE;
+$('src').addEventListener('input', () => localStorage.setItem('evony_script', $('src').value));
+
+fetch('/api/config').then(r => r.json()).then(c => { $('who').textContent = c.server + ' · ' + c.email; });
+
+function paint(lines) {
+  $('log').innerHTML = lines.map(l => {
+    const e = l.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    if (/FAILED|ERROR|error/.test(l)) return '<span class="bad">' + e + '</span>';
+    if (/ok=1|removed|logged in/.test(l)) return '<span class="ok">' + e + '</span>';
+    if (/dry run|camp |march /.test(l)) return '<span class="warn">' + e + '</span>';
+    return e;
+  }).join('\n');
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+async function go(dryRun, parseOnly) {
+  const btn = parseOnly ? $('check') : $('run');
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '…';
+  $('log').textContent = parseOnly ? 'parsing…' : 'connecting…';
+  try {
+    const res = await fetch('/api/script', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: $('src').value, dryRun, parseOnly, castle: $('castle').value, autoReq: $('autoreq').checked }),
+    }).then(r => r.json());
+    paint(res.log || [res.error || 'no output']);
+  } catch (e) { paint(['request failed: ' + e.message]); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+$('run').onclick = () => {
+  const dry = $('dry').checked;
+  if (!dry && !confirm('Dry run is OFF. This will send real commands to Evony. Continue?')) return;
+  go(dry, false);
+};
+$('check').onclick = () => go(true, true);
+</script>
+</body>
+</html>

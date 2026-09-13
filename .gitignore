@@ -1,0 +1,33 @@
+# ── secrets ───────────────────────────────────────────────────────────────
+# .env holds the console's account login; evony.db holds every account's
+# password in the accounts table. Neither ever belongs in the repo.
+.env
+*.db
+*.db-wal
+*.db-shm
+accounts.json
+proxies.txt
+json-backup/
+
+# ── third-party ───────────────────────────────────────────────────────────
+# Decompiled Evony client source. Kept locally as the authority for command and
+# field names, but it is someone else's copyrighted code — not ours to publish.
+src/
+ffdec.zip
+ffdec/
+*.swf
+
+# ── capture and scratch ───────────────────────────────────────────────────
+*.pcap
+payloads*.txt
+p2.txt
+payload*.json
+*.log
+snapshots.json
+watchlist.json
+goalstore.json
+scriptstore.json
+enginestate.json
+mapcache.json
+
+node_modules/

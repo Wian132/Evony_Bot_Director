@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Director</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Same token system as the console. Light is the default ground; the dark
+     block only REDEFINES tokens, so no colour is left defined solely behind a
+     selector that may never match. */
+  :root {
+    --bg:#eef1f5; --panel:#ffffff; --panel2:#e6eaf1; --sunken:#f7f9fb;
+    --line:#d3dae3; --line-soft:#e6ebf1;
+    --ink:#16202c; --dim:#5a6878; --faint:#8795a5;
+    --acc:#0f7a4a; --bad:#c22f2f; --warn:#9a6400; --blue:#1857c4;
+    --on-accent:#ffffff;
+    --shadow:0 1px 2px rgba(20,30,45,.06), 0 6px 18px rgba(20,30,45,.06);
+  }
+  :root[data-theme="dark"] {
+    --bg:#171b22; --panel:#1f242d; --panel2:#283040; --sunken:#14181e;
+    --line:#39424f; --line-soft:#2a313b;
+    --ink:#f0f3f8; --dim:#9fabbb; --faint:#78859a;
+    --acc:#5ed49a; --bad:#ff7b7b; --warn:#e0ad4e; --blue:#7cb0ff;
+    --on-accent:#0d1219;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14.5px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  :focus-visible { outline:2px solid var(--blue); outline-offset:1px; border-radius:4px; }
+  header { display:flex; align-items:center; gap:16px; padding:11px 18px; background:var(--panel);
+           border-bottom:1px solid var(--line); box-shadow:var(--shadow); position:relative; z-index:5; }
+  h1 { font-size:16.5px; margin:0; font-weight:600; letter-spacing:-.01em; }
+  .badge { background:var(--acc); color:#0c1410; font-size:10.5px; font-weight:700; letter-spacing:.9px; padding:3px 8px; border-radius:4px; }
+  header .sp { flex:1; }
+  header .stat { color:var(--dim); font-size:12px; } header .stat b { color:var(--ink); font-weight:600; }
+  button { background:#222831; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:5px 11px; font:12.5px inherit; cursor:pointer; }
+  button.primary { background:var(--acc); color:#0c1410; border-color:var(--acc); font-weight:700; }
+  input, select { background:#1d222a; border:1px solid var(--line); color:var(--ink); border-radius:5px; padding:5px 8px; font:12.5px inherit; }
+  .views { display:flex; gap:7px; padding:9px 18px; background:var(--panel);
+           border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap; }
+  .views .v { padding:4px 11px; border-radius:99px; border:1px solid var(--line); color:var(--dim); cursor:pointer; font-size:12px; }
+  .views .v.active { background:#23303a; color:var(--ink); border-color:var(--blue); }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; background:var(--panel); }
+  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+       color:var(--dim); padding:9px 12px; border-bottom:1px solid var(--line); cursor:pointer;
+       white-space:nowrap; position:sticky; top:0; background:var(--panel); z-index:1; }
+  th:hover { color:var(--ink); }
+  th:hover { color:var(--ink); }
+  td { padding:8px 12px; border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tbody tr:hover td { background:var(--panel2); }
+  /* header and value share one alignment per column so they line up exactly */
+  th.c, td.c { text-align:center; }
+  th.l, td.l { text-align:left; }
+  tr:hover td { background:var(--panel2); }
+  tbody tr { cursor:pointer; }
+  .edit { color:var(--dim); padding:0 4px; border-radius:4px; }
+  .edit:hover { color:var(--ink); background:#2a313b; }
+  tr:hover .focus { color:var(--blue); text-decoration:underline; }
+  .pill { font-size:11px; padding:3px 9px; border-radius:99px; font-weight:600; white-space:nowrap; }
+  .ok { background:rgba(123,216,143,.15); color:var(--acc); }
+  .stale { background:rgba(255,180,84,.15); color:var(--warn); }
+  .err { background:rgba(255,107,107,.15); color:var(--bad); }
+  .maint { background:rgba(110,168,254,.15); color:var(--blue); }
+  .warn { background:rgba(255,180,84,.15); color:var(--warn); }
+  .war { color:var(--bad); font-weight:700; }
+  .wrap { max-height:calc(100vh - 210px); overflow:auto; }
+  .foot { display:flex; gap:18px; padding:9px 18px; border-top:1px solid var(--line);
+          background:var(--panel); font-size:12.5px; color:var(--dim); }
+  pre { margin:0; padding:10px 18px; font:12.5px/1.6 "IBM Plex Mono",Consolas,ui-monospace,monospace;
+        color:var(--dim); max-height:130px; overflow:auto; background:var(--sunken);
+        border-top:1px solid var(--line); }
+  dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:9px; padding:18px; min-width:420px; }
+
+  /* ---- page tabs ---- */
+  .tabs { display:flex; gap:2px; margin-right:4px; }
+  .tab { padding:5px 13px; border-radius:6px 6px 0 0; font-size:12px; cursor:pointer; color:var(--dim); border:1px solid transparent; border-bottom:none; }
+  .tab.on { background:var(--bg); color:var(--ink); border-color:var(--line); font-weight:600; }
+
+  /* ---- uptime ---- */
+  #pageUptime { padding:14px 16px; overflow:auto; flex:1; }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px 14px; min-width:206px; }
+  .card h4 { margin:0 0 8px; font-size:12.5px; display:flex; align-items:center; gap:7px; }
+  .card .big { font-size:25px; font-variant-numeric:tabular-nums; line-height:1.15; }
+  .card .sub { font-size:11px; color:var(--dim); margin-top:5px; line-height:1.65; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
+  .bandwrap { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:13px 15px; margin-bottom:14px; }
+  .bandwrap h3 { margin:0 0 3px; font-size:13px; }
+  .legend { display:flex; gap:15px; flex-wrap:wrap; font-size:11px; color:var(--dim); margin:10px 0 13px; align-items:center; }
+  .legend span.k { display:flex; align-items:center; gap:5px; }
+  .legend i { width:11px; height:11px; border-radius:2px; display:inline-block; }
+  #bandTip { position:fixed; pointer-events:none; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:6px;
+             padding:7px 9px; font-size:11.5px; line-height:1.65; display:none; z-index:50; max-width:290px; box-shadow:var(--shadow); }
+  .range { display:flex; gap:5px; }
+  .range div { padding:3px 10px; border:1px solid var(--line); border-radius:5px; font-size:11.5px; cursor:pointer; color:var(--dim); }
+  .range div.on { background:var(--panel2); color:var(--ink); border-color:var(--blue); font-weight:600; }
+  .trouble { font-size:11.5px; border-collapse:collapse; width:100%; }
+  .trouble td { padding:6px 10px; border-bottom:1px solid var(--line-soft); }
+  dialog label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin:10px 0 4px; }
+  dialog input { width:100%; }
+</style>
+</head>
+<script>(function(){document.documentElement.setAttribute('data-theme', localStorage.getItem('evony_theme') || 'light');})();</script>
+<body>
+<header>
+  <h1>Director</h1><span class="badge">FLEET</span>
+  <span class="stat"><b id="cAcc">0</b> accounts</span>
+  <span class="stat"><b id="cOk">0</b> reporting</span>
+  <span class="stat"><b id="cWar">0</b> under attack</span>
+  <span class="stat"><b id="cProc">0</b> bobby.exe</span>
+  <span class="sp"></span>
+  <div class="tabs">
+    <div class="tab on" data-p="fleet">Fleet</div>
+    <div class="tab" data-p="uptime">Uptime</div>
+  </div>
+  <input id="q" placeholder="filter…" style="width:150px">
+  <button id="colsBtn">Columns</button>
+  <button id="proxyBtn">Proxies</button>
+  <button id="add">Add account</button>
+  <button id="themeBtn" title="Switch between light and dark">Dark</button>
+  <button id="pollAll" class="primary">Poll all</button>
+</header>
+
+<div id="maintStrip" hidden style="display:flex;align-items:center;gap:10px;padding:6px 16px;
+     background:#1b2740;border-bottom:1px solid #2b3c5c;font-size:12px;color:#cfe0ff">
+  <b style="color:#6ea8fe">SERVER MAINTENANCE</b><span id="maintStripText"></span>
+</div>
+
+<div id="pageFleet">
+<div class="views" id="views">
+  <span style="color:var(--dim);font-size:11.5px">views</span>
+  <div class="v active" data-v="all">All</div>
+  <div class="v" data-v="war">Under attack</div>
+  <div class="v" data-v="rich">High resources</div>
+  <div class="v" data-v="troops">Big armies</div>
+  <div class="v" data-v="idle">Idle / stale</div>
+  <div class="v" data-v="fail">Errors</div>
+</div>
+
+<div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+<div class="foot"><span id="status">—</span></div>
+<pre id="log"></pre>
+</div>
+
+<div id="pageUptime" hidden>
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+    <div class="range" id="range">
+      <div data-h="3">3h</div><div data-h="12" class="on">12h</div>
+      <div data-h="24">24h</div><div data-h="72">3d</div><div data-h="168">7d</div>
+    </div>
+    <span style="color:var(--dim);font-size:11.5px" id="upMeta">—</span>
+    <span class="sp" style="flex:1"></span>
+    <button id="probeBtn">Probes</button>
+  </div>
+
+  <div class="cards" id="upCards"></div>
+
+  <div class="bandwrap">
+    <h3>Timeline</h3>
+    <div style="color:var(--dim);font-size:11.5px">Each bot, sampled once a minute. A red gap means the bot process was not running at all — nothing was there to record a sample.</div>
+    <div class="legend">
+      <span class="k"><i style="background:#4ea96b"></i>up &amp; active</span>
+      <span class="k"><i style="background:#2e5f43"></i>up but silent</span>
+      <span class="k"><i style="background:#ffb454"></i>reconnecting</span>
+      <span class="k"><i style="background:#6ea8fe"></i>maintenance</span>
+      <span class="k"><i style="background:#ff6b6b"></i>process down</span>
+      <span class="k"><i style="background:#2b313c"></i>no data</span>
+    </div>
+    <canvas id="band" style="width:100%;display:block"></canvas>
+    <div id="bandAxis" style="display:flex;justify-content:space-between;color:var(--dim);font-size:10.5px;margin-top:6px"></div>
+  </div>
+
+  <div class="bandwrap">
+    <h3>Recent trouble</h3>
+    <table class="trouble" id="troubleTbl"></table>
+  </div>
+</div>
+<div id="bandTip"></div>
+
+<dialog id="probeDlg">
+  <b>Uptime probes</b>
+  <div style="color:var(--dim);font-size:11.5px;margin:6px 0 10px;line-height:1.6">
+    One line per bot console: <code>name http://host:port</code>.<br>
+    The Director asks each one every minute. This costs no game traffic — it is a local HTTP call — so it is safe while the game poller stays slow.
+  </div>
+  <textarea id="probeText" spellcheck="false" style="width:520px;height:140px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font:12.5px/1.6 Consolas,monospace;resize:vertical"></textarea>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button id="probeSave" class="primary">Save</button>
+    <button id="probeClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="colsDlg">
+  <b>Columns</b>
+  <div style="color:var(--dim);font-size:11.5px;margin:5px 0 10px">Pick what the table shows. Click any header to sort by it.</div>
+  <div id="colsList" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 18px;max-height:340px;overflow:auto"></div>
+  <div style="display:flex;gap:8px;margin-top:14px">
+    <button id="colsAll">All</button>
+    <button id="colsReset">Defaults</button>
+    <span style="flex:1"></span>
+    <button id="colsClose" class="primary">Done</button>
+  </div>
+</dialog>
+
+<dialog id="proxyDlg">
+  <b>Proxy list</b>
+  <div style="color:var(--dim);font-size:11.5px;margin:6px 0 10px;line-height:1.6">
+    One per line. Paste straight from your provider — these all work:<br>
+    <code style="color:var(--blue)">host:port</code> ·
+    <code style="color:var(--blue)">host:port:user:pass</code> ·
+    <code style="color:var(--blue)">socks5://user:pass@host:port</code> ·
+    <code style="color:var(--blue)">http://host:port</code><br>
+    Bare <code style="color:var(--blue)">host:port</code> is treated as socks5. Blank lines and <code>#</code> comments are ignored.
+  </div>
+  <textarea id="proxyText" spellcheck="false" style="width:560px;height:230px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font:12.5px/1.6 Consolas,monospace;resize:vertical"></textarea>
+  <div id="proxyStat" style="margin-top:9px;font-size:12px;color:var(--dim)"></div>
+  <div id="proxyList" style="margin-top:8px;max-height:130px;overflow:auto;font:11.5px/1.7 Consolas,monospace;color:#9aa3b2"></div>
+  <div style="display:flex;gap:8px;margin-top:14px">
+    <button id="proxySave" class="primary">Save</button>
+    <button id="proxyClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="dlg">
+  <form method="dialog" id="frm">
+    <b id="dlgTitle">Add account</b>
+    <label>Label</label><input name="label" required>
+    <label>Server</label><input name="server" value="ss71">
+    <label>Email</label><input name="email" required>
+    <label>Password</label><input name="password" type="text">
+    <label>Notes</label><input name="notes">
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button value="save" class="primary">Save</button>
+      <button value="cancel">Cancel</button>
+      <span style="flex:1"></span>
+      <button value="delete" style="color:var(--bad)">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-US'));
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const short = (v) => {
+  v = Number(v || 0);
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + 'b';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'm';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
+  return String(v);
+};
+let DATA = { accounts: [], processes: [], log: [] };
+let view = 'all', sortKey = 'label', sortDir = 1, editing = null;
+
+const CONSOLE_URL = localStorage.getItem('consoleUrl') || 'http://localhost:8711';
+// Item ids come from the client's own <itemEum> table.
+const ITEM_COLS = [
+  { key: 'i_stone',    head: 'Stone of Finding', id: 'player.item.stoneoffinding' },
+  { key: 'i_sigil',    head: 'Sigil of Recr.',   id: 'player.box.hero.f' },
+  { key: 'i_banner',   head: "Stygandr's Banner", id: 'player.item.stygandrsbannerofthehorde' },
+  { key: 'i_onwar',    head: 'On War',           id: 'player.experience.1.c' },
+  { key: 'i_fleet',    head: 'Fleet Feet',       id: 'player.box.present.money.70' },
+  { key: 'i_advtele',  head: 'Adv Teleporter',   id: 'player.more.castle.1.a' },
+  { key: 'i_wartele',  head: 'War Teleporter',   id: 'player.more.castle.1.c' },
+  { key: 'i_citytele', head: 'City Teleporter',  id: 'consume.move.1' },
+];
+
+const itemCount = (a, id) => Number(((s(a).items) || {})[id] || 0);
+
+// {key, head, render, align, item?}  — align 'l' for names, 'c' for everything else
+const COLS = [
+  { key: '_edit', head: '', align: 'c', render: () => '<span class="edit" title="Edit details">✎</span>', fixed: true },
+  { key: 'label', head: 'Account', align: 'l', fixed: true,
+    render: (a) => `<span class="focus" title="Open this account in the console">${esc(a.label)}</span>` },
+  { key: 'status', head: 'Status', align: 'c', render: (a) => statusPill(a) },
+  { key: 'mem', head: 'Memory', align: 'c', render: (a) => memCell(a), sort: (a) => memOf(a) },
+  { key: 'coins', head: 'Coins', align: 'c', render: (a) => fmt(s(a).coins) },
+  { key: 'server', head: 'Server', align: 'c', render: (a) => esc(a.server || '') },
+  { key: 'lord', head: 'Lord', align: 'l', render: (a) => esc(s(a).lord || '—') },
+  { key: 'alliance', head: 'Alliance', align: 'l', render: (a) => esc(s(a).alliance || '—') },
+  { key: 'cities', head: 'Cities', align: 'c', render: (a) => fmt(s(a).cities) },
+  { key: 'prestige', head: 'Prestige', align: 'c', render: (a) => fmt(s(a).prestige) },
+  { key: 'honor', head: 'Honor', align: 'c', render: (a) => fmt(s(a).honor) },
+  { key: 'rank', head: 'Rank', align: 'c', render: (a) => fmt(s(a).rank) },
+  { key: 'incoming', head: 'On wars', align: 'c', render: (a) => (s(a).incoming ? `<span class="war">${s(a).incoming}</span>` : '0') },
+  { key: 'marching', head: 'Marching', align: 'c', render: (a) => fmt(s(a).marching) },
+  { key: 'troops', head: 'Troops', align: 'c', render: (a) => short(s(a).troops) },
+  { key: 'heroes', head: 'Heroes', align: 'c', render: (a) => fmt(s(a).heroes) },
+  { key: 'food', head: 'Food', align: 'c', render: (a) => short(t(a).food) },
+  { key: 'wood', head: 'Wood', align: 'c', render: (a) => short(t(a).wood) },
+  { key: 'stone', head: 'Stone', align: 'c', render: (a) => short(t(a).stone) },
+  { key: 'iron', head: 'Iron', align: 'c', render: (a) => short(t(a).iron) },
+  { key: 'gold', head: 'Gold', align: 'c', render: (a) => short(t(a).gold) },
+  ...ITEM_COLS.map((ic) => ({
+    key: ic.key, head: ic.head, align: 'c', itemId: ic.id,
+    render: (a) => { const n = itemCount(a, ic.id); return n ? fmt(n) : '<span style="color:#3d434d">0</span>'; },
+  })),
+  { key: 'lastPolled', head: 'Polled', align: 'c', render: (a) => (a.lastPolled ? ago(a.lastPolled) : 'never') },
+];
+
+// which columns are on screen (persisted)
+const DEFAULT_VISIBLE = ['_edit', 'label', 'status', 'mem', 'coins', 'server', 'lord', 'alliance', 'cities',
+  'prestige', 'honor', 'rank', 'incoming', 'marching', 'troops', 'heroes',
+  'food', 'wood', 'stone', 'iron', 'gold', 'lastPolled'];
+let VISIBLE = (() => {
+  try { const v = JSON.parse(localStorage.getItem('director_cols') || 'null'); return new Set(v && v.length ? v : DEFAULT_VISIBLE); }
+  catch { return new Set(DEFAULT_VISIBLE); }
+})();
+const saveCols = () => localStorage.setItem('director_cols', JSON.stringify([...VISIBLE]));
+const shownCols = () => COLS.filter((c) => c.fixed || VISIBLE.has(c.key));
+const s = (a) => a.snapshot || {};
+const t = (a) => (a.snapshot && a.snapshot.totals) || {};
+const ago = (ts) => { const m = Math.round((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm' : Math.round(m / 60) + 'h'; };
+
+// The console process this account runs in. One process may carry several
+// accounts, so the figure is labelled per-process, not per-account.
+function memOf(a) {
+  const p = a.live && a.live.proc;
+  return p && Date.now() - a.live.at < 5 * 60000 ? p.rssMb : null;
+}
+
+function memCell(a) {
+  const p = a.live && a.live.proc;
+  if (!p || Date.now() - a.live.at > 5 * 60000) return '<span style="color:var(--faint)">—</span>';
+  const share = p.accounts > 1 ? ` shared by ${p.accounts} accounts` : '';
+  const each = p.accounts > 1 ? ` · ~${(p.rssMb / p.accounts).toFixed(0)} MB each` : '';
+  const hrs = (p.upSec / 3600).toFixed(1);
+  const title = `pid ${p.pid} · rss ${p.rssMb} MB · heap ${p.heapMb} MB · `
+    + `up ${hrs}h · node ${p.node}${share}${each}`;
+  // Node's own runtime is ~60 MB before any account state, so colour by how far
+  // past that floor the process has drifted rather than by the raw number.
+  const over = p.rssMb - 60;
+  const col = over > 240 ? 'var(--bad)' : over > 120 ? 'var(--warn)' : 'var(--dim)';
+  return `<span title="${esc(title)}" style="color:${col};font-variant-numeric:tabular-nums">`
+       + `${p.rssMb.toFixed(0)} MB</span>`;
+}
+
+function statusPill(a) {
+  const sn = s(a);
+  if (a.enabled === false) return '<span class="pill stale">disabled</span>';
+
+  // A console that holds this account is the authority on it. The Director never
+  // polls such an account, so its snapshot is always older than what the bot
+  // itself knows — showing "reporting" while the bot sits in maintenance was
+  // exactly that mismatch.
+  const L = a.live;
+  if (L && Date.now() - L.at < 5 * 60000) {
+    const why = esc(L.reason || '');
+    if (L.state === 'maintenance') return `<span class="pill maint" title="${why}">maintenance</span>`;
+    if (L.state === 'process down') return `<span class="pill err" title="${why}">bot down</span>`;
+    if (L.connected) {
+      const mode = L.engineMode && L.engineMode !== 'off' ? ` · ${esc(L.engineMode)}` : '';
+      return `<span class="pill ok" title="live from ${esc(L.probe)}">online${mode}</span>`;
+    }
+    const retry = L.retryInSec != null ? ` (${L.retryInSec}s)` : '';
+    return `<span class="pill warn" title="${why}">${esc(L.state || 'offline')}${retry}</span>`;
+  }
+
+  if (!a.lastPolled) return '<span class="pill stale">never polled</span>';
+  if (!sn.ok) return `<span class="pill err" title="${esc(sn.error)}">error</span>`;
+  const mins = (Date.now() - a.lastPolled) / 60000;
+  return mins > 45 ? '<span class="pill stale">stale</span>' : '<span class="pill ok">reporting</span>';
+}
+function sortVal(a, key) {
+  const col = COLS.find((c) => c.key === key);
+  if (col && col.itemId) return itemCount(a, col.itemId);
+  if (key === 'label' || key === 'server') return String(a[key] || '').toLowerCase();
+  if (['lord', 'alliance'].includes(key)) return String(s(a)[key] || '').toLowerCase();
+  if (['food', 'wood', 'stone', 'iron', 'gold'].includes(key)) return Number(t(a)[key] || 0);
+  if (key === 'lastPolled') return Number(a.lastPolled || 0);
+  if (key === 'status') return s(a).ok ? 1 : 0;
+  if (key === '_edit') return 0;
+  return Number(s(a)[key] || 0);
+}
+function filtered() {
+  const q = $('#q').value.trim().toLowerCase();
+  let rows = DATA.accounts.slice();
+  if (q) rows = rows.filter((a) => JSON.stringify([a.label, a.email, a.server, s(a).lord, s(a).alliance, a.notes]).toLowerCase().includes(q));
+  if (view === 'war') rows = rows.filter((a) => s(a).incoming > 0);
+  if (view === 'rich') rows = rows.filter((a) => Object.values(t(a)).some((v) => Number(v) > 1e9));
+  if (view === 'troops') rows = rows.filter((a) => Number(s(a).troops || 0) > 10000);
+  if (view === 'idle') rows = rows.filter((a) => !a.lastPolled || (Date.now() - a.lastPolled) / 60000 > 45);
+  if (view === 'fail') rows = rows.filter((a) => a.lastPolled && !s(a).ok);
+  rows.sort((x, y) => { const p = sortVal(x, sortKey), q2 = sortVal(y, sortKey); return (p < q2 ? -1 : p > q2 ? 1 : 0) * sortDir; });
+  return rows;
+}
+function render() {
+  const cols = shownCols();
+  $('#tbl thead').innerHTML = '<tr>' + cols.map((c) =>
+    `<th class="${c.align}" data-k="${c.key}">${c.head}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
+  const rows = filtered();
+  $('#tbl tbody').innerHTML = rows.map((a) =>
+    `<tr data-id="${a.id}">` + cols.map((c) => `<td class="${c.align}">${c.render(a)}</td>`).join('') + '</tr>').join('')
+    || `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--dim);padding:26px">no accounts match</td></tr>`;
+
+  const inMaint = DATA.accounts.filter((a) => a.live && a.live.state === 'maintenance'
+    && Date.now() - a.live.at < 5 * 60000);
+  $('#maintStrip').hidden = !inMaint.length;
+  if (inMaint.length) {
+    const since = Math.min(...inMaint.map((a) => (a.live.maintenance && a.live.maintenance.since) || Date.now()));
+    $('#maintStripText').textContent =
+      `${inMaint.length} bot(s) paused — ${esc(inMaint[0].live.reason || '')} · ${Math.round((Date.now() - since) / 60000)}m so far`;
+  }
+  $('#cAcc').textContent = DATA.accounts.length;
+  $('#cOk').textContent = DATA.accounts.filter((a) => {
+    const L = a.live;
+    if (L && Date.now() - L.at < 5 * 60000) return L.connected;
+    return s(a).ok;
+  }).length;
+  $('#cWar').textContent = DATA.accounts.filter((a) => s(a).incoming > 0).length;
+  $('#cProc').textContent = (DATA.processes || []).length;
+  $('#status').textContent = `${rows.length} shown · polling ${DATA.polling ? 'in progress' : 'idle'} · ${Math.round((DATA.gapMs || 0) / 1000)}s between accounts · click a row to focus that bot, ✎ to edit, header to sort`;
+  $('#log').textContent = (DATA.log || []).slice(-12).map((l) => new Date(l.t).toLocaleTimeString() + '  ' + l.m).join('\n');
+}
+async function refresh() {
+  DATA = await fetch('/api/accounts').then((r) => r.json()).catch(() => DATA);
+  render();
+}
+$('#tbl').addEventListener('click', (e) => {
+  const th = e.target.closest('th');
+  if (th) { const k = th.dataset.k; sortDir = sortKey === k ? -sortDir : 1; sortKey = k; return render(); }
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  const acc = DATA.accounts.find((a) => a.id === tr.dataset.id);
+  // the pencil edits; anywhere else on the row brings that bot into focus
+  if (e.target.closest('.edit')) return openDlg(acc);
+  focusBot(acc);
+});
+
+// Reuse one console tab. A held window reference is the only reliable handle —
+// Chrome clears window.name across origins, so name targeting alone spawns tabs.
+let consoleWin = null;
+function focusBot(acc) {
+  if (!acc) return;
+  const url = `${CONSOLE_URL}/?account=${encodeURIComponent(acc.id)}`;
+
+  if (consoleWin && !consoleWin.closed) {
+    // already open: switch it in place, no reload, then bring it forward
+    try { consoleWin.postMessage({ type: 'focus', accountId: acc.id }, CONSOLE_URL); } catch {}
+    consoleWin.focus();
+  } else {
+    consoleWin = window.open(url, 'evony_console');
+    if (consoleWin) consoleWin.focus();
+  }
+  $('#status').textContent = `focused ${acc.label} in the console`;
+}
+$('#views').addEventListener('click', (e) => {
+  const v = e.target.closest('.v'); if (!v) return;
+  document.querySelectorAll('.v').forEach((x) => x.classList.remove('active'));
+  v.classList.add('active'); view = v.dataset.v; render();
+});
+$('#q').addEventListener('input', render);
+$('#add').onclick = () => openDlg(null);
+$('#pollAll').onclick = async () => { await fetch('/api/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); refresh(); };
+
+function openDlg(acc) {
+  editing = acc;
+  $('#dlgTitle').textContent = acc ? 'Edit ' + acc.label : 'Add account';
+  for (const k of ['label', 'server', 'email', 'password', 'notes']) $('#frm')[k].value = acc ? (acc[k] || '') : (k === 'server' ? 'ss71' : '');
+  $('#dlg').showModal();
+}
+$('#frm').addEventListener('submit', async (e) => {
+  const action = e.submitter && e.submitter.value;
+  if (action === 'cancel') return;
+  const f = $('#frm');
+  const payload = action === 'delete'
+    ? { id: editing && editing.id, delete: true }
+    : { id: editing && editing.id, label: f.label.value, server: f.server.value, email: f.email.value, password: f.password.value, notes: f.notes.value };
+  await fetch('/api/account', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  refresh();
+});
+
+// ---------- column chooser ----------
+function paintCols() {
+  $('#colsList').innerHTML = COLS.filter((c) => !c.fixed).map((c) =>
+    `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer">
+       <input type="checkbox" data-k="${c.key}" ${VISIBLE.has(c.key) ? 'checked' : ''}>
+       <span>${c.head}${c.itemId ? ' <span style="color:var(--dim);font-size:10.5px">item</span>' : ''}</span>
+     </label>`).join('');
+  $('#colsList').querySelectorAll('input').forEach((el) => {
+    el.onchange = () => {
+      if (el.checked) VISIBLE.add(el.dataset.k); else VISIBLE.delete(el.dataset.k);
+      saveCols(); render();
+    };
+  });
+}
+$('#colsBtn').onclick = () => { paintCols(); $('#colsDlg').showModal(); };
+$('#colsClose').onclick = () => $('#colsDlg').close();
+$('#colsAll').onclick = () => { COLS.forEach((c) => { if (!c.fixed) VISIBLE.add(c.key); }); saveCols(); paintCols(); render(); };
+$('#colsReset').onclick = () => { VISIBLE = new Set(DEFAULT_VISIBLE); saveCols(); paintCols(); render(); };
+
+// ---------- proxies ----------
+$('#proxyBtn').onclick = () => {
+  $('#proxyText').value = DATA.proxyText || '';
+  paintProxyStat();
+  $('#proxyDlg').showModal();
+};
+$('#proxyClose').onclick = () => $('#proxyDlg').close();
+$('#proxyText').addEventListener('input', paintProxyStat);
+function paintProxyStat() {
+  const lines = $('#proxyText').value.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const per = DATA.maxPerProxy || 10;
+  const cap = lines.length * per;
+  const need = DATA.accounts.length;
+  const okCap = cap >= need;
+  $('#proxyStat').innerHTML = `${lines.length} proxy line(s) · capacity <b style="color:var(--ink)">${cap}</b> accounts at ${per} per IP · ` +
+    (need ? `you have <b style="color:var(--ink)">${need}</b> — <span style="color:${okCap ? 'var(--acc)' : 'var(--bad)'}">${okCap ? 'enough' : 'need ' + Math.ceil((need - cap) / per) + ' more'}</span>` : 'no accounts yet');
+  $('#proxyList').innerHTML = (DATA.proxies || []).map((p) =>
+    `${esc(p.label)} <span style="color:${p.accounts > per ? 'var(--bad)' : 'var(--dim)'}">— ${p.accounts} account(s)</span>`).join('<br>');
+}
+$('#proxySave').onclick = async () => {
+  await fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('#proxyText').value }) });
+  await refresh(); paintProxyStat();
+};
+
+// ======================================================================
+//  Uptime
+// ======================================================================
+let PAGE = 'fleet', UP = null, UP_HOURS = 12;
+
+document.querySelectorAll('.tab').forEach((t) => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
+    PAGE = t.dataset.p;
+    $('#pageFleet').hidden = PAGE !== 'fleet';
+    $('#pageUptime').hidden = PAGE !== 'uptime';
+    if (PAGE === 'uptime') loadUptime();
+  };
+});
+
+$('#range').onclick = (e) => {
+  const d = e.target.closest('[data-h]');
+  if (!d) return;
+  document.querySelectorAll('#range div').forEach((x) => x.classList.toggle('on', x === d));
+  UP_HOURS = Number(d.dataset.h);
+  loadUptime();
+};
+
+async function loadUptime() {
+  UP = await fetch('/api/uptime?hours=' + UP_HOURS).then((r) => r.json()).catch(() => UP);
+  if (UP) paintUptime();
+}
+
+const pct = (v) => (v >= 99.95 ? '100' : v.toFixed(1));
+const dur = (ms) => {
+  const m = Math.round(ms / 60000);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+};
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+function healthColour(v) { return v >= 99 ? 'var(--acc)' : v >= 95 ? 'var(--warn)' : 'var(--bad)'; }
+
+function paintUptime() {
+  const names = (UP.configured || []).map((p) => p.probe);
+  for (const s of UP.summary) if (!names.includes(s.probe)) names.push(s.probe);
+
+  $('#upMeta').textContent = `sampled every ${Math.round(UP.sampleMs / 1000)}s · `
+    + `${UP.hours}h window · one bar = ${dur(UP.bucketMs)}`;
+
+  // ---- cards
+  $('#upCards').innerHTML = names.map((name) => {
+    const s = UP.summary.find((x) => x.probe === name);
+    if (!s) {
+      return `<div class="card"><h4><span class="dot" style="background:var(--bad)"></span>${esc(name)}</h4>
+        <div class="big" style="color:var(--bad)">no data</div>
+        <div class="sub">Nothing recorded in this window — the Director never got an answer from this bot.</div></div>`;
+    }
+    const stale = UP.now - (s.lastSample || 0) > UP.sampleMs * 3;
+    return `<div class="card">
+      <h4><span class="dot" style="background:${s.upPct >= 95 ? 'var(--acc)' : s.upPct > 0 ? 'var(--warn)' : 'var(--bad)'}"></span>
+          ${esc(name)}${s.label && s.label !== name ? ` <span style="color:var(--dim);font-weight:400">${esc(s.label)}</span>` : ''}</h4>
+      <div class="big" style="color:${healthColour(s.upPct)}">${pct(s.upPct)}<span style="font-size:14px;color:var(--dim)">% up</span></div>
+      <div class="sub">
+        active ${pct(s.activePct)}% · process alive ${pct(s.reachablePct)}%<br>
+        ${s.maintenance ? `<span style="color:var(--blue)">${dur(s.maintenance * UP.sampleMs)} of server maintenance (excluded)</span><br>` : ''}
+        ${s.missing ? `<span style="color:var(--bad)">${s.missing} missing sample(s) — ${dur(s.missing * UP.sampleMs)} with nothing running</span><br>` : ''}
+        last seen ${s.lastSample ? clock(s.lastSample) : '—'}${stale ? ' <span style="color:var(--bad)">(stale)</span>' : ''}
+      </div></div>`;
+  }).join('');
+
+  drawBand(names);
+
+  // ---- trouble list
+  const rows = [];
+  for (const s of UP.summary) for (const t of s.recentTrouble || []) rows.push({ probe: s.probe, ...t });
+  rows.sort((a, b) => b.t - a.t);
+  $('#troubleTbl').innerHTML = rows.length
+    ? rows.slice(0, 24).map((r) => `<tr><td style="color:var(--dim);width:78px">${clock(r.t)}</td>
+        <td style="width:96px">${esc(r.probe)}</td><td style="color:var(--warn)">${esc(r.reason || 'down')}</td></tr>`).join('')
+    : '<tr><td style="color:var(--dim);padding:8px 9px">Nothing went wrong in this window.</td></tr>';
+}
+
+let BAND = { rows: [], t0: 0, t1: 0 };
+
+function drawBand(names) {
+  const cv = $('#band');
+  const cssW = cv.clientWidth || 900;
+  const rowH = 26, gap = 9, padL = 88;
+  const h = names.length * (rowH + gap) + 6;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cssW * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, h);
+
+  const t1 = UP.now, t0 = t1 - UP.hours * 3600000;
+  const slots = Math.max(1, Math.ceil((t1 - t0) / UP.bucketMs));
+  const plotW = cssW - padL;
+  const bw = plotW / slots;
+  BAND = { rows: [], t0, t1, slots, bw, padL, rowH, gap, bucketMs: UP.bucketMs };
+
+  names.forEach((name, i) => {
+    const y = i * (rowH + gap);
+    const bySlot = new Map();
+    for (const b of (UP.probes[name] || [])) {
+      bySlot.set(Math.floor((b.t - t0) / UP.bucketMs), b);
+    }
+
+    g.fillStyle = '#8b93a3';
+    g.font = '11px system-ui,sans-serif';
+    g.textBaseline = 'middle';
+    g.fillText(name.slice(0, 12), 0, y + rowH / 2);
+
+    for (let sI = 0; sI < slots; sI++) {
+      const b = bySlot.get(sI);
+      let col;
+      if (!b) {
+        // No sample at all. Before the first ever sample that just means the
+        // Director was not watching yet; after it, the bot was not running.
+        col = (t0 + sI * UP.bucketMs) < (UP.firstSample || 0) ? '#2b313c' : '#ff6b6b';
+      } else if (b.maintenance > 0) col = '#6ea8fe';     // scheduled, not a fault
+      else if (!b.reachable) col = '#ff6b6b';
+      else if (!b.up) col = '#ffb454';
+      else col = b.activity > 0 ? '#4ea96b' : '#2e5f43';
+      g.fillStyle = col;
+      g.fillRect(padL + sI * bw, y, Math.max(1, bw - (bw > 3 ? 0.5 : 0)), rowH);
+    }
+    BAND.rows.push({ name, y, bySlot });
+  });
+
+  const ticks = 5;
+  $('#bandAxis').innerHTML = '<span style="width:' + padL + 'px"></span>'
+    + Array.from({ length: ticks }, (_, i) => {
+      const t = t0 + ((t1 - t0) * i) / (ticks - 1);
+      return `<span>${new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</span>`;
+    }).join('');
+}
+
+$('#band').addEventListener('mousemove', (e) => {
+  const tip = $('#bandTip');
+  const r = e.target.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const row = BAND.rows.find((rw) => y >= rw.y && y < rw.y + BAND.rowH);
+  const sI = Math.floor((x - BAND.padL) / BAND.bw);
+  if (!row || sI < 0 || sI >= BAND.slots) { tip.style.display = 'none'; return; }
+  const t = BAND.t0 + sI * BAND.bucketMs;
+  const b = row.bySlot.get(sI);
+  let what;
+  if (!b) what = `<span style="color:var(--bad)">no sample — bot process not running</span>`;
+  else if (b.maintenance > 0) what = `<span style="color:var(--blue)">server maintenance</span> — paused on purpose, not counted as downtime`;
+  else if (!b.reachable) what = `<span style="color:var(--bad)">process down</span> — ${esc(b.reason || '')}`;
+  else if (!b.up) what = `<span style="color:var(--warn)">${esc(b.state || 'disconnected')}</span> — ${esc(b.reason || 'no reason given')}`;
+  else what = b.activity > 0
+    ? `<span style="color:var(--acc)">up, traffic flowing</span>`
+    : `<span style="color:var(--acc)">up</span> <span style="color:var(--warn)">but silent</span> — connected with no traffic, which is what a server-side throttle looks like`;
+  tip.innerHTML = `<b>${esc(row.name)}</b> · ${new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}<br>${what}`
+    + (b ? `<br><span style="color:var(--dim)">${b.up}/${b.n} sample(s) up in this bar</span>` : '');
+  tip.style.display = 'block';
+  tip.style.left = Math.min(window.innerWidth - 300, e.clientX + 13) + 'px';
+  tip.style.top = (e.clientY + 15) + 'px';
+});
+$('#band').addEventListener('mouseleave', () => { $('#bandTip').style.display = 'none'; });
+window.addEventListener('resize', () => { if (PAGE === 'uptime' && UP) paintUptime(); });
+
+// ---- probe editor
+$('#probeBtn').onclick = () => {
+  $('#probeText').value = (UP && UP.configured || []).map((p) => `${p.probe} ${p.url}`).join('\n');
+  $('#probeDlg').showModal();
+};
+$('#probeClose').onclick = () => $('#probeDlg').close();
+$('#probeSave').onclick = async () => {
+  const probes = $('#probeText').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+    const m = l.match(/^(\S+)\s+(\S+)$/);
+    return m ? { probe: m[1], url: m[2] } : null;
+  }).filter(Boolean);
+  await fetch('/api/probes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ probes }) });
+  $('#probeDlg').close();
+  loadUptime();
+};
+
+(function () {
+  const btn = $('#themeBtn');
+  const paint = () => {
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = dark ? 'Light' : 'Dark';
+  };
+  btn.onclick = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('evony_theme', next);
+    paint();
+    if (PAGE === 'uptime' && UP) paintUptime();     // canvas colours are baked in
+  };
+  paint();
+})();
+
+refresh();
+setInterval(() => { if (PAGE === 'fleet') refresh(); else loadUptime(); }, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evony Goals</title>
+<style>
+  /* Goals use a warm accent; scripts use blue. The two should never be confused. */
+  :root { --bg:#17151c; --panel:#221e26; --line:#342d3a; --ink:#ece6ef; --dim:#9a8fa5; --acc:#d9a441; --ok:#5ed49a; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Segoe UI",system-ui,sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  .badge { background:var(--acc); color:#1a1206; font-size:10.5px; font-weight:700; letter-spacing:.9px; padding:3px 8px; border-radius:4px; }
+  nav a { color:var(--dim); font-size:12.5px; text-decoration:none; margin-left:14px; }
+  nav a:hover { color:var(--acc); }
+  .mode { margin-left:auto; font-size:12px; color:var(--dim); }
+  .strip { background:rgba(217,164,65,.10); border-bottom:1px solid var(--line); padding:9px 22px; font-size:12.5px; color:#d9c9a8; }
+  main { display:grid; grid-template-columns:1fr 440px; height:calc(100vh - 50px - 38px); }
+  .left { display:flex; flex-direction:column; border-right:1px solid var(--line); min-width:0; }
+  .bar { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; }
+  textarea { flex:1; background:#141119; border:0; color:var(--ink); padding:14px 16px; font:13px/1.65 Consolas,monospace; resize:none; outline:none; }
+  button { padding:8px 16px; border:0; border-radius:6px; background:var(--acc); color:#1a1206; font-weight:700; cursor:pointer; font-size:13px; }
+  button.ghost { background:var(--panel); color:var(--ink); border:1px solid var(--line); font-weight:600; }
+  input[type=text] { background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:7px 9px; font:13px inherit; width:130px; }
+  .right { overflow:auto; padding:16px 18px; }
+  pre { margin:0; font:12px/1.62 Consolas,monospace; white-space:pre-wrap; word-break:break-word; color:#bdb2c6; }
+  h3 { font-size:11px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:16px 0 7px; }
+  h3:first-child { margin-top:0; }
+  .err { color:var(--bad); }
+  .ok { color:var(--ok); }
+  .note { color:var(--dim); font-size:12px; margin-top:14px; border-top:1px solid var(--line); padding-top:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Evony</h1><span class="badge">GOALS</span>
+  <nav><a href="/script">Scripts &rarr;</a><a href="/">Scanner</a></nav>
+  <span class="mode" id="engine">engine: not running</span>
+</header>
+<div class="strip">
+  <b>Goals are standing intentions, not commands.</b> They describe the state you want a city to
+  reach and are re-evaluated continuously — order does not matter. For "do this now, once", use
+  <a href="/script" style="color:var(--acc)">Scripts</a>.
+</div>
+<main>
+  <div class="left">
+    <div class="bar">
+      <button id="check">Validate</button>
+      <button id="save" class="ghost">Save for city</button>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--dim)">city</span>
+      <input type="text" id="city" placeholder="(first)">
+    </div>
+    <textarea id="src" spellcheck="false"></textarea>
+  </div>
+  <div class="right" id="out"><pre>Press Validate to see how these goals are interpreted.</pre></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+$('src').value = localStorage.getItem('evony_goals') || `// standing goals for this city
+config comfort:1,hero:1,troopsusepopmax:1
+comfortpolicy 15 16 popraise
+traininghero otto 30 60
+troop b:30k,cp:20k
+troop r:150k,b:50k,cp:50k
+fortification ab:5000
+build c:10:23,a:10:1`;
+$('src').addEventListener('input', () => localStorage.setItem('evony_goals', $('src').value));
+
+async function validate(save) {
+  const res = await fetch('/api/goals', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src: $('src').value, city: $('city').value, save }),
+  }).then(r => r.json());
+
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  let html = '';
+  if (res.errors && res.errors.length) {
+    html += '<h3>Problems</h3><pre class="err">' + res.errors.map(e => `line ${e.line}: ${esc(e.error)}\n  ${esc(e.text)}`).join('\n') + '</pre>';
+  } else {
+    html += '<h3>Problems</h3><pre class="ok">none — all goals understood</pre>';
+  }
+  html += '<h3>Interpreted as</h3><pre>' + esc((res.described || []).join('\n')) + '</pre>';
+  if (res.saved) html += '<pre class="ok">\nsaved for ' + esc(res.saved) + '</pre>';
+  html += '<div class="note">' + esc(res.engineNote || '') + '</div>';
+  $('out').innerHTML = html;
+}
+$('check').onclick = () => validate(false);
+$('save').onclick = () => validate(true);
+</script>
+</body>
+</html>

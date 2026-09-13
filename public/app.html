@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evony Console</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* ── tokens ────────────────────────────────────────────────────────────
+     Light is the default ground. Every colour is defined here on bare :root;
+     the dark block below only REDEFINES tokens, so nothing is left with its
+     sole definition behind a media query. */
+  :root {
+    --bg:#eef1f5;          /* page ground, cool slate tint */
+    --panel:#ffffff;       /* raised surfaces */
+    --panel2:#e6eaf1;      /* recessed chips, active tabs */
+    --sunken:#f7f9fb;      /* editors, log wells */
+    --line:#d3dae3;
+    --line-soft:#e6ebf1;
+    --ink:#16202c;
+    --dim:#5a6878;
+    --faint:#8795a5;
+
+    --blue:#1857c4;
+    --amber:#9a6400;
+    --ok:#0f7a4a;
+    --bad:#c22f2f;
+
+    --on-accent:#ffffff;   /* text on a filled accent button */
+    --tint-blue:rgba(24,87,196,.10);
+    --shadow:0 1px 2px rgba(20,30,45,.06), 0 6px 18px rgba(20,30,45,.06);
+    --tip-bg:#ffffff;
+  }
+  :root[data-theme="dark"] {
+    --bg:#171b22; --panel:#1f242d; --panel2:#283040; --sunken:#14181e;
+    --line:#39424f; --line-soft:#2a313b;
+    --ink:#f0f3f8; --dim:#9fabbb; --faint:#78859a;
+    --blue:#7cb0ff; --amber:#e0ad4e; --ok:#5ed49a; --bad:#ff7b7b;
+    --on-accent:#0d1219;
+    --tint-blue:rgba(124,176,255,.14);
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
+    --tip-bg:#0f1218;
+  }
+
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:14.5px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  :focus-visible { outline:2px solid var(--blue); outline-offset:1px; border-radius:4px; }
+
+  /* ── header ─────────────────────────────────────────────────────────── */
+  .top { display:flex; align-items:center; gap:20px; padding:10px 16px; background:var(--panel);
+         border-bottom:1px solid var(--line); font-size:13.5px; box-shadow:var(--shadow); z-index:5; }
+  .top b { font-size:15.5px; font-weight:600; letter-spacing:-.01em; }
+  .stat { color:var(--dim); font-size:13px; }
+  .stat span { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:550; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); display:inline-block; margin-right:6px;
+         box-shadow:0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent); }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+  .top .right { margin-left:auto; display:flex; gap:9px; align-items:center; }
+
+  select, button {
+    background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:6px;
+    padding:6px 12px; font:13.5px/1.2 inherit; cursor:pointer;
+    transition:background .12s, border-color .12s;
+  }
+  select:hover, button:hover { background:var(--panel2); border-color:var(--faint); }
+  button.primary { background:var(--blue); color:var(--on-accent); border-color:var(--blue); font-weight:600; }
+  button.primary:hover { filter:brightness(1.08); background:var(--blue); }
+  button.amber { background:var(--amber); color:var(--on-accent); border-color:var(--amber); font-weight:600; }
+  button.amber:hover { filter:brightness(1.08); background:var(--amber); }
+
+  /* ── city tabs ──────────────────────────────────────────────────────── */
+  .cities { display:flex; gap:4px; padding:7px 12px 0; background:var(--panel);
+            border-bottom:1px solid var(--line); overflow-x:auto; }
+  .cities .tab { padding:7px 16px; border:1px solid var(--line); border-bottom:0; border-radius:7px 7px 0 0;
+                 background:var(--bg); color:var(--dim); cursor:pointer; white-space:nowrap; font-size:13.5px; }
+  .cities .tab:hover { color:var(--ink); }
+  .cities .tab.active { background:var(--panel2); color:var(--ink); border-color:var(--blue);
+                        font-weight:600; box-shadow:inset 0 2px 0 var(--blue); }
+
+  /* ── four-pane layout (unchanged structurally) ──────────────────────── */
+  .main { flex:1; display:flex; flex-direction:column; min-height:0; }
+  .row { display:flex; min-height:0; min-width:0; }
+  #rowTop { flex:0 0 auto; }
+  #rowBot { flex:1 1 auto; }
+  .cell { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--panel); }
+  .cell.left { flex:0 0 auto; border-right:0; }
+  .cell.right { flex:1 1 auto; }
+  .vsplit { flex:0 0 6px; cursor:col-resize; background:var(--line-soft); position:relative; }
+  .hsplit { flex:0 0 6px; cursor:row-resize; background:var(--line-soft); position:relative; }
+  .vsplit:hover, .hsplit:hover, .vsplit.drag, .hsplit.drag { background:var(--blue); }
+  .vsplit::after { content:''; position:absolute; inset:0 -3px; }
+  .hsplit::after { content:''; position:absolute; inset:-3px 0; }
+  body.resizing { user-select:none; cursor:inherit; }
+
+  .tabs { display:flex; gap:3px; padding:6px 10px; background:var(--panel);
+          border-bottom:1px solid var(--line); overflow-x:auto; }
+  .tabs .t { padding:5px 13px; border-radius:6px; color:var(--dim); cursor:pointer;
+             white-space:nowrap; font-size:13px; }
+  .tabs .t:hover { color:var(--ink); background:var(--panel2); }
+  .tabs .t.active { background:var(--panel2); color:var(--ink); font-weight:600; }
+  .tabs .t.active.goals { color:var(--amber); box-shadow:inset 0 -2px 0 var(--amber); }
+  .tabs .t.active.script { color:var(--blue); box-shadow:inset 0 -2px 0 var(--blue); }
+
+  .body { flex:1; overflow:auto; min-height:0; background:var(--panel); }
+  .bar { display:flex; gap:8px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); }
+
+  /* ── data surfaces ──────────────────────────────────────────────────── */
+  textarea {
+    width:100%; height:100%; background:var(--sunken); color:var(--ink); border:0; padding:12px 14px;
+    font:13.5px/1.7 "IBM Plex Mono",Consolas,ui-monospace,monospace; resize:none; outline:none;
+  }
+  pre { margin:0; padding:11px 14px; font:12.5px/1.6 "IBM Plex Mono",Consolas,ui-monospace,monospace;
+        white-space:pre-wrap; word-break:break-word; color:var(--dim); }
+
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+       color:var(--dim); padding:8px 12px; border-bottom:1px solid var(--line);
+       position:sticky; top:0; background:var(--panel); z-index:1; }
+  td { padding:6px 12px; border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; }
+  tbody tr:hover td { background:var(--panel2); }
+  td.n { text-align:right; }
+  .empty { color:var(--dim); padding:26px; text-align:center; font-size:13.5px; }
+
+  .cell.fullscreen { position:fixed; inset:0; z-index:120; border:0; background:var(--panel); }
+  .mapwrap { display:flex; gap:14px; align-items:flex-start; padding:11px 12px; }
+  .mapwrap .side { flex:1; min-width:0; overflow:auto; }
+  .cell.fullscreen .mapwrap { height:calc(100vh - 96px); }
+  .cell.fullscreen .mapwrap .side { max-height:100%; }
+
+  #tipcard { position:fixed; z-index:300; pointer-events:none; display:none;
+    background:var(--tip-bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+    font-size:13px; line-height:1.6; box-shadow:var(--shadow); max-width:290px; color:var(--ink); }
+  #tipcard b { font-size:13.5px; }
+  #tipcard .k { color:var(--dim); display:inline-block; min-width:68px; }
+
+  .mf { padding:4px 11px; border-radius:99px; border:1px solid var(--line); color:var(--dim);
+        cursor:pointer; font-size:12.5px; background:var(--panel); }
+  .mf:hover { color:var(--ink); }
+  .mf.on { background:var(--tint-blue); color:var(--blue); border-color:var(--blue); font-weight:600; }
+  tr.hit td { background:var(--tint-blue); }
+
+  .chatline { padding:3px 12px; font-size:13.5px; }
+  .chatline .who { color:var(--blue); font-weight:600; }
+  .chatline .ts { color:var(--faint); font-variant-numeric:tabular-nums; }
+  .sendbar { display:flex; gap:7px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); }
+  .sendbar input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--ink);
+                   border-radius:6px; padding:6px 11px; font:13.5px inherit; }
+  .sendbar input:focus { border-color:var(--blue); outline:none; }
+
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
+</style>
+</head>
+<script>
+  // Applied before first paint so the console never flashes the wrong ground.
+  (function () {
+    var t = localStorage.getItem('evony_theme') || 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<body>
+
+<div class="top">
+  <b>Evony</b>
+  <span class="stat"><span class="dot" id="dot"></span><span id="conn">offline</span></span>
+  <span class="stat">Lord <span id="lord">—</span></span>
+  <span class="stat">Coins <span id="coins">—</span></span>
+  <span class="stat">Prestige <span id="prestige">—</span></span>
+  <span class="stat">Honor <span id="honor">—</span></span>
+  <span class="stat">Rank <span id="rank">—</span></span>
+  <span class="stat">Server <span id="stime">—</span></span>
+  <div class="right">
+    <button id="themeBtn" title="Switch between light and dark">Dark</button>
+    <span class="stat">engine</span>
+    <select id="engineMode"><option value="off">off</option><option value="plan">plan only</option><option value="live">live</option></select>
+    <button id="connect" class="primary">Connect</button>
+  </div>
+</div>
+
+<div id="maintBar" hidden style="display:flex;align-items:center;gap:12px;padding:7px 14px;
+     background:#1b2740;border-bottom:1px solid #2b3c5c;font-size:12.5px;color:#cfe0ff">
+  <b style="color:#6ea8fe">SERVER MAINTENANCE</b>
+  <span id="maintText">the game is down — the bot is paused</span>
+  <span style="flex:1"></span>
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+    <input type="checkbox" id="maintOverride"> keep working anyway
+  </label>
+</div>
+
+<div class="cities" id="cities"></div>
+
+<div class="main">
+  <div class="row" id="rowTop">
+  <!-- top-left: goals / script editor -->
+  <div class="cell left" id="cellEdit">
+    <div class="tabs" id="editTabs">
+      <div class="t goals active" data-k="goals">Goals</div>
+      <div class="t script" data-k="script">Script</div>
+    </div>
+    <div class="body"><textarea id="editor" spellcheck="false"></textarea></div>
+    <div class="bar">
+      <button id="apply" class="amber">Apply</button>
+      <button id="validate">Validate</button>
+      <button id="runScript">Run script</button>
+      <label style="color:var(--dim);display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="dry" checked> dry run</label>
+      <span style="flex:1"></span>
+      <span id="editHint" style="color:var(--dim);font-size:11.5px"></span>
+    </div>
+  </div>
+
+  <div class="vsplit" data-row="top"></div>
+
+  <!-- top-right: monitors -->
+  <div class="cell right" id="cellMon">
+    <div class="tabs" id="monTabs">
+      <div class="t active" data-k="resources">Resources</div>
+      <div class="t" data-k="troops">Troops</div>
+      <div class="t" data-k="buildings">Buildings</div>
+      <div class="t" data-k="walls">Walls</div>
+      <div class="t" data-k="heroes">Heroes</div>
+      <div class="t" data-k="market">Market</div>
+      <div class="t" data-k="map">Map</div>
+    </div>
+    <div class="body" id="monBody"><div class="empty">Connect to load city data.</div></div>
+  </div>
+
+  </div>
+
+  <div class="hsplit" id="hsplit"></div>
+
+  <div class="row" id="rowBot">
+  <!-- bottom-left: logs -->
+  <div class="cell left" id="cellLog">
+    <div class="tabs" id="logTabs">
+      <div class="t active" data-k="log">Log</div>
+      <div class="t" data-k="engine">Engine</div>
+      <div class="t" data-k="reports">Reports</div>
+    </div>
+    <div class="body"><pre id="logBody">—</pre></div>
+  </div>
+
+  <div class="vsplit" data-row="bot"></div>
+
+  <!-- bottom-right: chat -->
+  <div class="cell right" id="cellChat">
+    <div class="tabs" id="chatTabs">
+      <div class="t active" data-k="alliance">Alliance</div>
+      <div class="t" data-k="world">World</div>
+      <div class="t" data-k="private">Private</div>
+      <div class="t" data-k="system">System</div>
+    </div>
+    <div class="body" id="chatBody"><div class="empty">No messages yet.</div></div>
+    <div class="sendbar">
+      <input id="chatInput" placeholder="message…">
+      <button id="chatSend">Send</button>
+    </div>
+  </div>
+  </div>
+</div>
+
+<div id="tipcard"></div>
+
+<dialog id="ptDlg" style="background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:16px;min-width:300px">
+  <form method="dialog" id="ptForm">
+    <b>Add points to <span id="ptHero"></span></b>
+    <div id="ptInfo" style="color:var(--dim);font-size:11.5px;margin:5px 0 12px"></div>
+    <div style="display:flex;gap:7px;align-items:center">
+      <select id="ptAttr" style="background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:5px 8px">
+        <option value="attack">Attack</option>
+        <option value="politics">Politics</option>
+        <option value="intel">Intel</option>
+      </select>
+      <input id="ptAmount" type="number" min="1" value="1" style="width:80px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:5px 8px">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button value="add" class="primary" style="padding:5px 12px">Add</button>
+      <button value="cancel" style="padding:5px 12px">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+// ---------- resizable panes ----------
+// Three handles: the top row's column split, the bottom row's column split, and
+// the row height. Each pane is therefore independently sizable.
+const LAYOUT = (() => {
+  try { return JSON.parse(localStorage.getItem('evony_layout') || '{}'); } catch { return {}; }
+})();
+const saveLayout = () => localStorage.setItem('evony_layout', JSON.stringify(LAYOUT));
+
+function applyLayout() {
+  const main = document.querySelector('.main');
+  const h = main ? main.clientHeight : 600;
+  const topH = Math.max(120, Math.min(h - 140, LAYOUT.topH || Math.round(h * 0.6)));
+  document.getElementById('rowTop').style.height = topH + 'px';
+
+  const wTop = document.getElementById('rowTop').clientWidth || window.innerWidth;
+  const wBot = document.getElementById('rowBot').clientWidth || window.innerWidth;
+  document.getElementById('cellEdit').style.width =
+    Math.max(180, Math.min(wTop - 190, LAYOUT.topLeft || Math.round(wTop * 0.5))) + 'px';
+  document.getElementById('cellLog').style.width =
+    Math.max(180, Math.min(wBot - 190, LAYOUT.botLeft || Math.round(wBot * 0.5))) + 'px';
+}
+
+function startDrag(handle, onMove) {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    handle.classList.add('drag');
+    document.body.classList.add('resizing');
+    const move = (ev) => onMove(ev);
+    const up = () => {
+      handle.classList.remove('drag');
+      document.body.classList.remove('resizing');
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      saveLayout();
+      if (S.mon === 'map') renderMap();      // grid sizing depends on pane width
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+  // double-click a handle to even that split up again
+  handle.addEventListener('dblclick', () => {
+    if (handle.id === 'hsplit') delete LAYOUT.topH;
+    else if (handle.dataset.row === 'top') delete LAYOUT.topLeft;
+    else delete LAYOUT.botLeft;
+    saveLayout(); applyLayout();
+    if (S.mon === 'map') renderMap();
+  });
+}
+
+function initResizers() {
+  applyLayout();
+  document.querySelectorAll('.vsplit').forEach((h) => startDrag(h, (ev) => {
+    const row = h.dataset.row === 'top' ? document.getElementById('rowTop') : document.getElementById('rowBot');
+    const cell = h.dataset.row === 'top' ? document.getElementById('cellEdit') : document.getElementById('cellLog');
+    const w = Math.max(180, Math.min(row.clientWidth - 190, ev.clientX - row.getBoundingClientRect().left));
+    cell.style.width = w + 'px';
+    if (h.dataset.row === 'top') LAYOUT.topLeft = w; else LAYOUT.botLeft = w;
+  }));
+  const hs = document.getElementById('hsplit');
+  startDrag(hs, (ev) => {
+    const main = document.querySelector('.main');
+    const top = Math.max(120, Math.min(main.clientHeight - 140, ev.clientY - main.getBoundingClientRect().top));
+    document.getElementById('rowTop').style.height = top + 'px';
+    LAYOUT.topH = top;
+  });
+  window.addEventListener('resize', () => { applyLayout(); if (S.mon === 'map') renderMap(); });
+}
+
+// Chrome wipes window.name on cross-origin navigation, so re-claim it here.
+// That lets the Director target this tab again instead of opening a new one.
+window.name = 'evony_console';
+
+const $ = (id) => document.getElementById(id);
+const S = { city: null, edit: 'goals', mon: 'resources', logs: 'log', chat: 'alliance', cityData: null };
+
+// connection banner state — ticks down locally between polls
+const CONN = { state: 'offline', reason: null, retryInSec: null, attempt: 0, syncedAt: 0 };
+function paintConn() {
+  const dot = $('dot'), txt = $('conn');
+  if (CONN.state === 'connected') {
+    dot.className = 'dot on'; dot.style.background = '';
+    txt.textContent = 'connected'; txt.style.color = '';
+    txt.title = '';
+    return;
+  }
+  const elapsed = Math.floor((Date.now() - CONN.syncedAt) / 1000);
+  const left = CONN.retryInSec === null ? null : Math.max(0, CONN.retryInSec - elapsed);
+  dot.className = 'dot';
+  dot.style.background = CONN.state === 'connecting' ? 'var(--amber)' : 'var(--bad)';
+  txt.style.color = 'var(--bad)';
+  txt.textContent = CONN.state === 'connecting'
+    ? 'reconnecting…'
+    : `disconnected — retrying${left === null ? '' : ` in ${left > 60 ? Math.ceil(left / 60) + 'm' : left + 's'}`}`
+      + (CONN.reason ? ` · ${CONN.reason}` : '');
+  txt.title = CONN.attempt ? `attempt ${CONN.attempt}` : '';
+}
+setInterval(paintConn, 1000);
+const fmt = (n) => (n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US'));
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const hhmm = (t) => new Date(t).toLocaleTimeString();
+
+function wireTabs(el, key, after) {
+  $(el).addEventListener('click', (e) => {
+    const t = e.target.closest('.t'); if (!t) return;
+    [...$(el).children].forEach((c) => c.classList.remove('active'));
+    t.classList.add('active'); S[key] = t.dataset.k; after && after();
+  });
+}
+wireTabs('editTabs', 'edit', loadEditor);
+wireTabs('monTabs', 'mon', () => {
+  MARKET.renderedAt = -1;   // force one render when the tab is (re)opened
+  renderMon();
+});
+wireTabs('logTabs', 'logs', renderLogs);
+wireTabs('chatTabs', 'chat', renderChat);
+
+$('connect').onclick = async () => {
+  $('connect').textContent = '…';
+  await fetch('/api/connect', { method: 'POST' }).then(r => r.json()).catch(() => {});
+  $('connect').textContent = 'Connect';
+  refresh();
+};
+$('maintOverride').onchange = () => fetch('/api/maintenance', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ override: $('maintOverride').checked }),
+});
+(function () {
+  const btn = $('themeBtn');
+  const paint = () => {
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = dark ? 'Light' : 'Dark';
+    btn.title = dark ? 'Switch to the light console' : 'Switch to the dark console';
+  };
+  btn.onclick = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('evony_theme', next);
+    paint();
+  };
+  paint();
+})();
+
+$('engineMode').onchange = () => fetch('/api/engine', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ mode: $('engineMode').value }),
+});
+
+async function refresh() {
+  const h = await fetch('/api/session').then(r => r.json()).catch(() => null);
+  if (!h) return;
+  // Keep the console fully visible when the link drops — say what happened and
+  // when the next attempt is, rather than blanking out.
+  CONN.state = h.state; CONN.reason = h.reason; CONN.retryInSec = h.retryInSec; CONN.attempt = h.attempt;
+  CONN.syncedAt = Date.now();
+  paintConn();
+  $('lord').textContent = (h.account ? h.account.label + ' · ' : '') + (h.lord || '—');
+  $('coins').textContent = fmt(h.coins);
+  $('prestige').textContent = fmt(h.prestige);
+  $('honor').textContent = fmt(h.honor);
+  $('rank').textContent = h.rank ?? '—';
+  // the server's own wall clock in ITS timezone, not this browser's
+  $('stime').textContent = h.serverClock ? `${h.serverClock.text} ${h.serverClock.tz}` : '—';
+  $('stime').title = h.serverClock ? `server date ${h.serverClock.date} · your clock is ${h.clockOffset > 0 ? h.clockOffset + 'ms behind' : Math.abs(h.clockOffset) + 'ms ahead'}` : '';
+  if ($('engineMode').value !== h.engineMode) $('engineMode').value = h.engineMode;
+
+  // Maintenance: shown whenever the server reports it, even with the override on,
+  // so it is never a surprise why things are quiet.
+  const mt = h.maintenance || {};
+  $('maintBar').hidden = !mt.active;
+  if (mt.active) {
+    const mins = mt.since ? Math.round((Date.now() - mt.since) / 60000) : 0;
+    const why = mt.why ? ` — ${mt.why}` : '';
+    $('maintText').textContent = mt.paused
+      ? `the bot is paused${why}. ${mins}m so far; it probes once a minute and resumes on its own.`
+      : `override is on, so the bot keeps trying${why}. ${mins}m so far.`;
+    if ($('maintOverride').checked !== !!mt.override) $('maintOverride').checked = !!mt.override;
+  }
+
+  const cities = h.cities || [];
+  const tabs = $('cities');
+  tabs.innerHTML = cities.map(c =>
+    `<div class="tab${String(c.id) === String(S.city) ? ' active' : ''}" data-id="${c.id}">${esc(c.name)}(${c.x},${c.y})</div>`).join('')
+    || '<div class="tab">no cities</div>';
+  if (!S.city && cities.length) { S.city = String(cities[0].id); loadEditor(); }
+
+  if (S.city) {
+    // keep the last good snapshot on screen if the link is down
+    const fresh = await fetch('/api/city?id=' + S.city).then(r => r.json()).catch(() => null);
+    if (fresh && fresh.id) S.cityData = fresh;
+    renderMon();
+  }
+  renderLogs(); renderChat();
+}
+$('cities').addEventListener('click', (e) => {
+  const t = e.target.closest('.tab'); if (!t || !t.dataset.id) return;
+  S.city = t.dataset.id;
+  MARKET.data = null; MARKET.at = 0; MARKET.renderedAt = -1; INN = null;   // per-city data
+  loadEditor(); refresh();
+});
+
+// ---------- editor ----------
+async function loadEditor() {
+  const isGoals = S.edit === 'goals';
+  $('apply').style.display = isGoals ? '' : 'none';
+  $('validate').style.display = isGoals ? '' : 'none';
+  $('runScript').style.display = isGoals ? 'none' : '';
+  $('dry').parentElement.style.display = isGoals ? 'none' : '';
+  $('editHint').textContent = isGoals
+    ? 'standing intentions — re-evaluated continuously, order does not matter'
+    : 'runs top to bottom, once';
+  const r = await fetch(`/api/editor?city=${S.city}&kind=${S.edit}`).then(x => x.json()).catch(() => ({ src: '' }));
+  $('editor').value = r.src || '';
+}
+$('apply').onclick = async () => {
+  const r = await fetch('/api/goals', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src: $('editor').value, city: S.city, save: true }),
+  }).then(x => x.json());
+  $('editHint').textContent = r.errors && r.errors.length ? `${r.errors.length} error(s) — see Engine log` : 'applied';
+  showInLog([...(r.errors || []).map(e => `line ${e.line}: ${e.error}`), ...(r.described || [])].join('\n'));
+};
+$('validate').onclick = async () => {
+  const r = await fetch('/api/goals', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src: $('editor').value, city: S.city, save: false }),
+  }).then(x => x.json());
+  showInLog([...(r.errors || []).map(e => `line ${e.line}: ${e.error}`), '', ...(r.described || [])].join('\n'));
+};
+$('runScript').onclick = async () => {
+  showInLog('running…');
+  const r = await fetch('/api/script', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src: $('editor').value, city: S.city, dryRun: $('dry').checked, useSession: true }),
+  }).then(x => x.json());
+  showInLog((r.log || []).join('\n'));
+};
+function showInLog(text) {
+  S.logs = 'engine';
+  [...$('logTabs').children].forEach(c => c.classList.toggle('active', c.dataset.k === 'engine'));
+  $('logBody').textContent = text;
+}
+
+// ---------- monitors ----------
+function table(head, rows) {
+  if (!rows.length) return '<div class="empty">nothing to show</div>';
+  return `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${
+    rows.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'n' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function renderMon() {
+  const d = S.cityData;
+  if (!d) { $('monBody').innerHTML = '<div class="empty">Connect to load city data.</div>'; return; }
+  if (S.mon === 'resources') {
+    const r = d.resources;
+    const inc = d.incoming || {};
+    // "+N" is hoverable and explains where each lot is coming from
+    const incCell = (k) => {
+      const e = inc[k];
+      if (!e || !e.total) return '<span style="color:#4b515d">—</span>';
+      return `<span class="inc" data-res="${k}" style="color:var(--ok);cursor:help">+${fmt(e.total)}</span>`;
+    };
+    $('monBody').innerHTML = table(['Resource', 'Amount', 'Incoming'], [
+      ['Food', fmt(r.food), incCell('food')], ['Wood', fmt(r.wood), incCell('wood')],
+      ['Stone', fmt(r.stone), incCell('stone')], ['Iron', fmt(r.iron), incCell('iron')],
+      ['Gold', fmt(r.gold), incCell('gold')],
+      ['Population', `${fmt(r.population)} / ${fmt(r.maxPopulation)}`],
+      ['&nbsp;&nbsp;<span style="color:var(--dim)">employed on fields</span>', fmt(r.employed)],
+      ['&nbsp;&nbsp;<span style="color:var(--dim)">on construction</span>', fmt(r.building)],
+      ['&nbsp;&nbsp;<span style="color:var(--ok)">idle (free for troops)</span>', fmt(r.idle), ''],
+    ]) + `<div style="padding:9px 10px 3px;color:var(--dim);font-size:11px">TOWN HALL — labour assigned to fields (zero these to free the whole city)</div>`
+      + table(['Field', 'Labour', 'Output / hr'], (d.production || []).map((p) => [
+          esc(p.resource), p.labour ? fmt(p.labour) : '<span style="color:#4b515d">0</span>', fmt(p.rate),
+        ]).concat([['<span style="color:var(--dim)">tax rate</span>', d.tax + '%', '']]));
+
+    // hover breakdown for the Incoming column
+    document.querySelectorAll('.inc').forEach((el) => {
+      el.onmousemove = (ev) => {
+        const e = (d.incoming || {})[el.dataset.res];
+        if (!e || !e.sources.length) return;
+        const now = Date.now();
+        const rows = e.sources.map((s) => {
+          const eta = s.eta ? Math.max(0, Math.round((s.eta - now) / 1000)) : null;
+          const when = eta === null ? '' : eta > 3600 ? `${Math.round(eta / 3600)}h` : eta > 60 ? `${Math.round(eta / 60)}m` : `${eta}s`;
+          return `<div><span class="k">${esc(s.kind)}</span>+${fmt(s.amount)}${when ? ` <span style="color:var(--dim)">in ${when}</span>` : ''}</div>`;
+        }).join('');
+        showTipHtml(ev, `<b>${el.dataset.res} incoming</b>`
+          + `<div style="color:var(--dim);font-size:11px;margin-bottom:5px">${e.sources.length} shipment(s), +${fmt(e.total)} total</div>${rows}`);
+      };
+      el.onmouseleave = () => showTipHtml(null, null);
+    });
+  } else if (S.mon === 'troops') {
+    // barracks order, every type listed even at zero; Goal is the CURRENT stage
+    const rows = (d.troops || []).map(t => {
+      const goal = t.goal || 0;
+      const short = goal > t.count;
+      return [
+        esc(t.name), fmt(t.count),
+        goal ? `<span style="color:${short ? 'var(--warn)' : 'var(--ok)'}">${fmt(goal)}</span>` : '<span style="color:#4b515d">—</span>',
+      ];
+    });
+    const total = (d.troops || []).reduce((s2, t) => s2 + Number(t.count || 0), 0);
+    rows.push(['<b>Total</b>', '<b>' + fmt(total) + '</b>', '']);
+    const st = d.troopStage;
+    const caption = st && st.stageIndex
+      ? `<div style="padding:7px 10px;color:var(--dim);font-size:11.5px">current goal: stage <b style="color:var(--ink)">${st.stageIndex}</b> of ${st.stageCount}</div>`
+      : (st && st.done ? '<div style="padding:7px 10px;color:var(--ok);font-size:11.5px">all troop stages satisfied</div>'
+                       : '<div style="padding:7px 10px;color:var(--dim);font-size:11.5px">no troop goals set for this city</div>');
+    $('monBody').innerHTML = caption + table(['Troop', 'Count', 'Goal'], rows);
+  } else if (S.mon === 'buildings') {
+    // anything under construction goes on top
+    const con = d.construction || [];
+    const conHtml = con.length
+      ? '<div style="padding:7px 10px 3px;color:var(--amber);font-size:11px">UNDER CONSTRUCTION</div>'
+        + table(['Building', 'To level', 'Pos', 'Status'], con.map((c2) => [
+            esc(c2.name), c2.level, c2.positionId,
+            c2.state === 'building'
+              ? `<span style="color:var(--amber)">${c2.secsLeft > 3600 ? Math.round(c2.secsLeft / 3600) + 'h' : c2.secsLeft > 60 ? Math.round(c2.secsLeft / 60) + 'm' : c2.secsLeft + 's'} left</span>`
+              : '<span style="color:var(--dim)">queued</span>',
+          ]))
+      : '<div style="padding:7px 10px;color:var(--dim);font-size:11px">nothing under construction</div>';
+
+    $('monBody').innerHTML = conHtml + '<div style="padding:9px 10px 3px;color:var(--dim);font-size:11px">BUILDINGS</div>'
+      + table(['Building', 'Qty', 'Levels'], (d.buildings || []).map(b => [
+      (b.outside ? '<span style="color:var(--dim)">◦</span> ' : '') + esc(b.name),
+      b.qty ? fmt(b.qty) : '<span style="color:#4b515d">0</span>',
+      b.qty ? b.levels.join(', ') : '<span style="color:#4b515d">—</span>',
+    ]));
+  } else if (S.mon === 'walls') {
+    const f = d.fortifications || {};
+    const rows = Object.entries(f).map(([k, v]) => [
+      esc(k), v ? fmt(v) : '<span style="color:#4b515d">0</span>',
+    ]);
+    const total = Object.values(f).reduce((s2, v) => s2 + Number(v || 0), 0);
+    rows.push(['<b>Total</b>', '<b>' + fmt(total) + '</b>']);
+    $('monBody').innerHTML = rows.length > 1 ? table(['Fortification', 'Count'], rows)
+      : '<div class="empty">no fortification data for this city</div>';
+  } else if (S.mon === 'heroes') {
+    renderHeroes();
+  } else if (S.mon === 'map') {
+    renderMap();
+  } else if (S.mon === 'market') {
+    renderMarket();
+  }
+}
+
+// ---------- market ----------
+// Cached: the panel keeps showing the last good numbers and only swaps the DOM
+// when fresh data actually arrives. No blanking, no loading flash on every poll.
+const MARKET = { data: null, at: 0, busy: false, renderedAt: -1, ttl: 60000, error: null };
+
+function fetchMarket(force) {
+  if (MARKET.busy) return;
+  if (!force && MARKET.data && Date.now() - MARKET.at < MARKET.ttl) return;
+  MARKET.busy = true;
+  fetch('/api/market?city=' + (S.city || ''))
+    .then((r) => r.json())
+    .then((m) => {
+      if (m && m.error) { MARKET.error = m.error; return; }
+      MARKET.data = m; MARKET.at = Date.now(); MARKET.error = null;
+    })
+    .catch((e) => { MARKET.error = e.message; })
+    .finally(() => { MARKET.busy = false; if (S.mon === 'market') renderMarket(); });
+}
+
+function renderMarket() {
+  fetchMarket(false);                       // refresh in the background when stale
+  if (!MARKET.data) {
+    $('monBody').innerHTML = `<div class="empty">${MARKET.error ? esc(MARKET.error) : 'loading market…'}</div>`;
+    return;
+  }
+  const age = Math.round((Date.now() - MARKET.at) / 1000);
+  const ageText = `updated ${age}s ago${MARKET.busy ? ' · refreshing' : ''}`;
+
+  if (MARKET.renderedAt === MARKET.at) {
+    // nothing new: just tick the age label, leave the table untouched
+    const el = $('mktAge');
+    if (el) el.textContent = ageText;
+    return;
+  }
+  MARKET.renderedAt = MARKET.at;
+
+  const m = MARKET.data;
+  const rows = ['food', 'wood', 'stone', 'iron'].map((res) => {
+    const e = m[res] || {};
+    return [res, e.bestAsk ?? '—', e.bestBid ?? '—', fmt(e.sellVolume), fmt(e.buyVolume)];
+  });
+  $('monBody').innerHTML =
+    `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line)">
+       <button id="mktRefresh" style="padding:3px 10px;font-size:11.5px">Refresh</button>
+       <span style="color:var(--dim);font-size:11px" id="mktAge">${ageText}</span>
+     </div>`
+    + table(['Resource', 'Best ask', 'Best bid', 'Sell vol', 'Buy vol'], rows)
+    + (m.mine && m.mine.length
+        ? '<div style="padding:10px 10px 3px;color:var(--dim);font-size:11px">MY OFFERS</div>'
+          + table(['Resource', 'Type', 'Amount', 'Price'], m.mine.map((t) => [t.resourceName, t.tradeTypeName, fmt(t.amount), t.price]))
+        : '<div style="padding:9px 10px;color:var(--dim);font-size:11px">no open offers</div>');
+  $('mktRefresh').onclick = () => fetchMarket(true);
+}
+
+// ---------- heroes (manual control) ----------
+let INN = null;
+
+function renderHeroes() {
+  const d = S.cityData;
+  if (!d) { $('monBody').innerHTML = '<div class="empty">Connect to load city data.</div>'; return; }
+
+  const rows = (d.heroes || []).map((h) => {
+    const isMayor = h.status === 1;   // HeroConstants: chief = 1, 2 is garrison
+    const btn = (act, label, style = '') =>
+      `<button class="ha" data-act="${act}" data-hero="${esc(h.name)}" style="padding:2px 7px;font-size:11px;${style}">${label}</button>`;
+    return [
+      esc(h.name) + (isMayor ? ' <span style="color:var(--amber);font-size:10.5px">★ mayor</span>' : ''),
+      h.level, h.attack, h.politics, h.intel, h.loyalty,
+      h.unspent ? `<span style="color:var(--warn)">${h.unspent}</span>` : '0',
+      (isMayor ? btn('unmayor', 'Stand down') : btn('mayor', 'Mayor')) + ' ' +
+      btn('points', '+Pts') + ' ' +
+      btn('fire', 'Fire', 'color:var(--bad)'),
+    ];
+  });
+
+  const mine = d.heroes && d.heroes.length
+    ? table(['Hero', 'Lvl', 'Atk', 'Pol', 'Int', 'Loy', 'Unspent', 'Actions'], rows)
+    : '<div class="empty">no heroes in this city</div>';
+
+  const innRows = (INN && INN.heroes || []).map((h) => [
+    esc(h.name), h.level, h.attack, h.politics, h.intel,
+    `<button class="ha" data-act="hire" data-hero="${esc(h.name)}" style="padding:2px 7px;font-size:11px">Hire</button>`,
+  ]);
+  const innHtml = INN
+    ? (innRows.length ? table(['Inn offer', 'Lvl', 'Atk', 'Pol', 'Int', ''], innRows) : '<div class="empty">inn is empty</div>')
+    : '<div style="padding:10px;color:var(--dim);font-size:11.5px">not loaded</div>';
+
+  $('monBody').innerHTML = mine +
+    `<div style="display:flex;gap:7px;align-items:center;padding:9px 10px;border-top:1px solid var(--line);margin-top:6px">
+       <b style="font-size:11px;letter-spacing:.5px;color:var(--dim)">INN</b>
+       <button id="innLoad" style="padding:3px 9px;font-size:11.5px">Load</button>
+       <button id="innRefresh" style="padding:3px 9px;font-size:11.5px">Refresh inn</button>
+     </div>` + innHtml;
+
+  $('innLoad').onclick = loadInn;
+  $('innRefresh').onclick = async () => { await heroAction({ action: 'refreshinn' }); loadInn(); };
+  document.querySelectorAll('.ha').forEach((b) => {
+    b.onclick = () => onHeroAction(b.dataset.act, b.dataset.hero);
+  });
+}
+
+async function loadInn() {
+  INN = { heroes: [] };
+  renderHeroes();
+  INN = await fetch('/api/inn?city=' + (S.city || '')).then((r) => r.json()).catch(() => ({ heroes: [] }));
+  renderHeroes();
+}
+
+async function heroAction(payload) {
+  const r = await fetch('/api/hero', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ city: S.city, ...payload }),
+  }).then((x) => x.json()).catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) alert('Failed: ' + (r.error || (r.result && r.result.errorMsg) || 'unknown'));
+  await refresh();
+  return r;
+}
+
+function onHeroAction(act, name) {
+  if (act === 'fire') {
+    if (!confirm(`Fire ${name}?\n\nThis dismisses the hero permanently — a Stone of Finding cannot bring back a hero that was dismissed.`)) return;
+    return heroAction({ action: 'fire', heroName: name });
+  }
+  if (act === 'mayor') return heroAction({ action: 'mayor', heroName: name });
+  if (act === 'unmayor') return heroAction({ action: 'unmayor' });
+  if (act === 'hire') return heroAction({ action: 'hire', heroName: name }).then(loadInn);
+  if (act === 'points') return openPoints(name);
+}
+
+function openPoints(name) {
+  const h = (S.cityData.heroes || []).find((x) => x.name === name) || {};
+  $('ptHero').textContent = name;
+  $('ptInfo').textContent = `atk ${h.attack} · pol ${h.politics} · int ${h.intel} — ${h.unspent || 0} unspent`;
+  $('ptAmount').value = h.unspent || 1;
+  $('ptAmount').max = h.unspent || 999;
+  $('ptDlg').showModal();
+  $('ptDlg').dataset.hero = name;
+}
+$('ptForm').addEventListener('submit', (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  heroAction({ action: 'addpoint', heroName: $('ptDlg').dataset.hero, attr: $('ptAttr').value, amount: Number($('ptAmount').value) || 1 });
+});
+
+// ---------- map ----------
+// Focus defaults to the city you opened the map from.
+const MAP = { x: null, y: null, r: 10, data: null, busy: false, q: '', full: false, filter: new Set(), minLevel: 0 };
+const MAP_KINDS = ['player', 'npc', 'flat', 'lake', 'forest', 'hill', 'swamp', 'grassland', 'desert'];
+
+const VALLEY_KINDS = new Set(['lake', 'forest', 'hill', 'swamp', 'grassland', 'desert']);
+function tileColour(t) {
+  if (t.mine) return '#6ea8fe';
+  if (t.userName) return '#5ed49a';
+  if (t.npc) return '#b06a5a';
+  if (t.kind === 'flat') return '#6b6f78';
+  if (VALLEY_KINDS.has(t.kind)) return '#3f6b46';
+  return '#1b1f26';
+}
+function matchesFilter(t) {
+  if (!MAP.filter.size && !MAP.minLevel) return false;
+  if (MAP.filter.size && !MAP.filter.has(t.kind)) return false;
+  if (MAP.minLevel && Number(t.level || 0) < MAP.minLevel) return false;
+  return true;
+}
+
+// shared hover card — used by the map grid and the incoming-resources column
+function showTipHtml(ev, html) {
+  const el = $('tipcard');
+  if (!html || !ev) { el.style.display = 'none'; return; }
+  el.innerHTML = html;
+  el.style.display = 'block';
+  const pad = 14, w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = Math.min(window.innerWidth - w - 8, ev.clientX + pad) + 'px';
+  el.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, ev.clientY + pad)) + 'px';
+}
+
+function showTip(ev, t) {
+  const el = $('tipcard');
+  if (!t) { el.style.display = 'none'; return; }
+  const row = (k, v) => `<div><span class="k">${k}</span>${v}</div>`;
+  let html = `<b>${esc(t.typeName || t.kind)}${t.level !== undefined && t.level !== null && !t.userName ? ' level ' + t.level : ''}</b>`
+    + `<div style="color:var(--dim);font-size:11px;margin-bottom:5px">${t.x},${t.y} · ${t.dist} away</div>`;
+  if (t.userName) {
+    html += row('Player', esc(t.userName) + (t.mine ? ' <span style="color:var(--blue)">(you)</span>' : ''));
+    html += row('City', esc(t.name || '—'));
+    html += row('Alliance', esc(t.allianceName || '—'));
+    html += row('Prestige', fmt(t.prestige));
+    html += row('Honor', fmt(t.honor));
+    if (t.state !== undefined) html += row('State', t.state === 1 ? 'peace' : (t.furlough ? 'furlough' : 'at war'));
+  } else if (t.npc) {
+    html += row('NPC', 'level ' + (t.level ?? '?') + ' camp');
+    if (t.name) html += row('Name', esc(t.name));
+  } else {
+    if (t.desc) html += row('Bonus', esc(t.desc));
+    html += row('Level', t.level ?? '—');
+  }
+  el.innerHTML = html;
+  el.style.display = 'block';
+  const pad = 14;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = Math.min(window.innerWidth - w - 8, ev.clientX + pad) + 'px';
+  el.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, ev.clientY + pad)) + 'px';
+}
+
+// Expand the monitor panel (map + table) to fill the window.
+function setFullscreen(on) {
+  MAP.full = on;
+  const cell = $('monBody').closest('.cell');
+  cell.classList.toggle('fullscreen', on);
+  renderMap();          // re-render so the grid resizes to the new width
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && MAP.full) setFullscreen(false); });
+
+function renderMap() {
+  const d = S.cityData;
+  if (MAP.x === null && d) { MAP.x = d.x; MAP.y = d.y; }
+  const controls = `
+    <div style="display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <span style="color:var(--dim);font-size:11.5px">centre</span>
+      <input id="mx" value="${MAP.x ?? ''}" style="width:62px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px">
+      <input id="my" value="${MAP.y ?? ''}" style="width:62px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px">
+      <span style="color:var(--dim);font-size:11.5px">radius</span>
+      <input id="mr" value="${MAP.r}" style="width:48px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px">
+      <button id="mscan" class="primary" style="padding:4px 10px">Scan</button>
+      <button id="mhome" style="padding:4px 10px">My city</button>
+      <button id="mfull" style="padding:4px 10px">${MAP.full ? '↙ Exit' : '⛶ Fullscreen'}</button>
+      <span style="flex:1"></span>
+      <input id="mq" value="${esc(MAP.q)}" placeholder="find player…" style="width:130px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px">
+    </div>`;
+
+  let bodyHtml = '<div class="empty">Scan to see who is nearby.</div>';
+  if (MAP.busy) bodyHtml = '<div class="empty">scanning…</div>';
+  else if (MAP.data && MAP.data.error) bodyHtml = `<div class="empty" style="color:var(--bad)">${esc(MAP.data.error)}</div>`;
+  else if (MAP.data) {
+    const { center, radius, tiles } = MAP.data;
+    const size = radius * 2 + 1;
+    const availW = ($('monBody') && $('monBody').clientWidth) || 700;
+    const tableW = Math.min(MAP.full ? 640 : 340, Math.floor(availW * 0.52));
+    const gridW = Math.max(140, availW - tableW - 46);
+    const cell = Math.max(6, Math.min(MAP.full ? 26 : 16, Math.floor(gridW / size)));
+    const byKey = new Map(tiles.map((t) => [t.x + ',' + t.y, t]));
+    const filtering = MAP.filter.size > 0 || MAP.minLevel > 0;
+
+    const filterRow = '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line)">' +
+      '<span style="color:var(--dim);font-size:11px">show</span>' +
+      `<span class="mf ${filtering ? '' : 'on'}" data-k="__all">all</span>` +
+      MAP_KINDS.map((k) => `<span class="mf ${MAP.filter.has(k) ? 'on' : ''}" data-k="${k}">${k}</span>`).join('') +
+      '<span style="color:var(--dim);font-size:11px;margin-left:6px">min lvl</span>' +
+      `<input id="mlvl" type="number" min="0" max="10" value="${MAP.minLevel}" style="width:48px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:3px 6px">` +
+      '</div>';
+
+    let grid = `<div class="mapwrap"><div><div id="mgrid" style="display:grid;grid-template-columns:repeat(${size},${cell}px);gap:1px">`;
+    for (let y = center.y - radius; y <= center.y + radius; y++) {
+      for (let x = center.x - radius; x <= center.x + radius; x++) {
+        const t = byKey.get(x + ',' + y);
+        const isCentre = x === center.x && y === center.y;
+        const hit = t && matchesFilter(t);
+        const bg = t ? tileColour(t) : '#1b1f26';
+        const dim = filtering && !hit ? 'opacity:.2;' : '';
+        const ring = filtering && hit ? 'outline:1px solid #fff;outline-offset:-1px;' : '';
+        grid += `<div class="mt" data-xy="${x},${y}" style="width:${cell}px;height:${cell}px;background:${bg};border-radius:1px;${dim}${ring}${isCentre ? 'box-shadow:0 0 0 2px #fff inset;' : ''}"></div>`;
+      }
+    }
+    grid += '</div><div style="margin-top:7px;font-size:11px;color:var(--dim);max-width:' + (cell * size) + 'px">' +
+      '<span style="color:#6ea8fe">■</span> yours &nbsp; <span style="color:#5ed49a">■</span> player &nbsp; ' +
+      '<span style="color:#b06a5a">■</span> npc &nbsp; <span style="color:#3f6b46">■</span> valley &nbsp; <span style="color:#6b6f78">■</span> flat<br>' +
+      `${tiles.length} tile(s) · ${MAP.data.scanned}/${MAP.data.blocks} blocks</div></div>`;
+
+    // interesting tiles only, with anything matching the filter floated to the top
+    const listed = tiles.filter((t) => t.userName || t.npc || matchesFilter(t));
+    listed.sort((a, b) => (matchesFilter(b) ? 1 : 0) - (matchesFilter(a) ? 1 : 0) || a.dist - b.dist);
+
+    const rows = listed.slice(0, MAP.full ? 500 : 120).map((t) => [
+      (matchesFilter(t) && filtering ? '<b style="color:var(--blue)">' : '<span>') + esc(t.typeName || t.kind) + (matchesFilter(t) && filtering ? '</b>' : '</span>'),
+      `${t.x},${t.y}`,
+      t.level === undefined || t.level === null ? '—' : t.level,
+      t.userName ? esc(t.userName) + (t.allianceName ? ` <span style="color:var(--dim)">[${esc(t.allianceName)}]</span>` : '')
+                 : esc(t.desc || (t.npc ? 'npc camp' : '')),
+      t.dist,
+    ]);
+    grid += '<div class="side">' + table(['Tile', 'Coords', 'Lvl', 'Owner / detail', 'Dist'], rows) + '</div></div>';
+    bodyHtml = filterRow + grid;
+  }
+
+  $('monBody').innerHTML = controls + bodyHtml;
+  $('mscan').onclick = doScan;
+  $('mhome').onclick = () => { const c = S.cityData; if (c) { MAP.x = c.x; MAP.y = c.y; } doScan(); };
+  $('mfull').onclick = () => setFullscreen(!MAP.full);
+
+  // filter chips + min level
+  document.querySelectorAll('.mf').forEach((el) => {
+    el.onclick = () => {
+      const k = el.dataset.k;
+      if (k === '__all') { MAP.filter.clear(); MAP.minLevel = 0; }
+      else if (MAP.filter.has(k)) MAP.filter.delete(k);
+      else MAP.filter.add(k);
+      renderMap();
+    };
+  });
+  if ($('mlvl')) $('mlvl').onchange = (e) => { MAP.minLevel = Number(e.target.value) || 0; renderMap(); };
+
+  // hover card over the grid
+  const gridEl = $('mgrid');
+  if (gridEl && MAP.data && MAP.data.tiles) {
+    const byKey = new Map(MAP.data.tiles.map((t) => [t.x + ',' + t.y, t]));
+    gridEl.onmousemove = (ev) => {
+      const cellEl = ev.target.closest('.mt');
+      if (!cellEl) return showTip(ev, null);
+      showTip(ev, byKey.get(cellEl.dataset.xy));
+    };
+    gridEl.onmouseleave = () => showTip(null, null);
+  }
+  $('mq').onkeydown = async (e) => {
+    if (e.key !== 'Enter') return;
+    MAP.q = e.target.value.trim();
+    if (!MAP.q) return;
+    const r = await fetch('/api/mapsearch?q=' + encodeURIComponent(MAP.q)).then((x) => x.json());
+    $('monBody').innerHTML = controls + table(['Player', 'City', 'Coords', 'Alliance', 'Prestige'],
+      (r.hits || []).slice(0, 80).map((h) => [esc(h.userName || '—'), esc(h.name || ''), `${h.x},${h.y}`, esc(h.allianceName || '—'), fmt(h.prestige)]))
+      + `<div style="padding:6px 10px;color:var(--dim);font-size:11px">${(r.hits || []).length} of ${fmt(r.total)} cached castles — click Scan to refresh an area</div>`;
+    $('mscan').onclick = doScan;
+    $('mhome').onclick = () => { const c = S.cityData; if (c) { MAP.x = c.x; MAP.y = c.y; } doScan(); };
+  };
+}
+
+async function doScan() {
+  MAP.x = Number($('mx').value); MAP.y = Number($('my').value); MAP.r = Number($('mr').value) || 10;
+  MAP.busy = true; renderMap();
+  MAP.data = await fetch(`/api/map?x=${MAP.x}&y=${MAP.y}&r=${MAP.r}`).then((r) => r.json()).catch((e) => ({ error: e.message }));
+  MAP.busy = false; renderMap();
+}
+
+// ---------- logs ----------
+async function renderLogs() {
+  if (S.logs === 'engine') return;      // engine pane holds validate/run output
+  const r = await fetch('/api/log?kind=' + S.logs).then(x => x.json()).catch(() => ({ lines: [] }));
+  $('logBody').textContent = (r.lines || []).map(l => `${hhmm(l.t)}  ${l.m}`).join('\n') || '—';
+  $('logBody').parentElement.scrollTop = 1e9;
+}
+
+// ---------- chat ----------
+async function renderChat() {
+  const r = await fetch('/api/chat?channel=' + S.chat).then(x => x.json()).catch(() => ({ lines: [] }));
+  const lines = r.lines || [];
+  $('chatBody').innerHTML = lines.length
+    ? lines.map(l => `<div class="chatline"><span class="ts">${hhmm(l.t)}</span> <span class="who">${esc(l.from || '')}</span> ${esc(l.msg)}</div>`).join('')
+    : '<div class="empty">No messages yet.</div>';
+  $('chatBody').scrollTop = 1e9;
+}
+$('chatSend').onclick = async () => {
+  const msg = $('chatInput').value.trim(); if (!msg) return;
+  $('chatInput').value = '';
+  await fetch('/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: S.chat, msg }),
+  }).catch(() => {});
+};
+$('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('chatSend').click(); });
+
+async function focusAccount(id) {
+  $('conn').textContent = 'focusing…';
+  await fetch('/api/switch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accountId: id }),
+  }).catch(() => {});
+  S.city = null; S.cityData = null; MAP.x = null; MAP.data = null;
+  MARKET.data = null; MARKET.at = 0; MARKET.renderedAt = -1; INN = null;
+  refresh();
+}
+
+// The Director may ask this tab to switch account without reloading it.
+window.addEventListener('message', (e) => {
+  if (!/^https?:\/\/localhost:\d+$/.test(e.origin)) return;
+  const m = e.data;
+  if (m && m.type === 'focus' && m.accountId) focusAccount(m.accountId);
+});
+
+// Opened from the Director with ?account=<id> -> focus that account's session.
+(async () => {
+  const want = new URLSearchParams(location.search).get('account');
+  if (want) {
+    // Only switch if this console is not already on that account. Asking every
+    // time meant a tab left open on the wrong ?account= re-switched the console
+    // on every reload, generating a fresh login each time.
+    const cur = await fetch('/api/session').then((r) => r.json()).catch(() => null);
+    if (cur && cur.account && cur.account.id === want) {
+      // already the right one — nothing to do
+    } else {
+      $('conn').textContent = 'focusing…';
+      const r = await fetch('/api/switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: want }),
+      }).then((x) => x.json()).catch(() => null);
+      if (r && r.ok === false && r.pinned) {
+        alert(r.error);
+        history.replaceState(null, '', location.pathname);   // stop it asking again
+      }
+      S.city = null;
+    }
+  }
+  initResizers();
+  refresh();
+  setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>

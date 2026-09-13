@@ -25,7 +25,8 @@ const PINNED = process.env.ACCOUNT_ID || null;
 (async () => {
   const mine = SESSION.account && SESSION.account.id;
   if (!mine) return;
-  const probes = D.settings.get('probes', [{ probe: 'console', url: 'http://localhost:8711' }]);
+  const probes = (SESSION.org ? SESSION.org.settings : D.settings)
+    .get('probes', [{ probe: 'console', url: 'http://localhost:8711' }]);
   for (const pr of probes) {
     const url = String(pr.url || '').replace(/\/$/, '');
     if (!url || url.endsWith(':' + PORT)) continue;            // that is us
@@ -89,7 +90,7 @@ async function runScan({ names }, log) {
     } catch (e) { log(`  ${name}: ${e.message}`); }
 
     if (info) {
-      const was = D.players.latest(name);
+      const was = ORG.players.latest(name);
       const delta = was ? info.prestige - was.prestige : null;
       const mins = was ? Math.round((now - was.at) / 60000) : null;
       rows.push({
@@ -98,7 +99,7 @@ async function runScan({ names }, log) {
         office: info.office, delta, sinceMin: mins,
         stalled: was ? delta === 0 : null,
       });
-      D.players.record(name, info.prestige, now);
+      ORG.players.record(name, info.prestige, now);
       log(`  ${name}: pres ${info.prestige}` + (delta === null ? ' (first sighting)' : delta === 0 ? `  NOT MOVING for ${mins}m` : `  +${delta}`));
     }
     await new Promise((r) => setTimeout(r, 150));
@@ -114,6 +115,14 @@ const rawBody = (req) => new Promise((resolve) => {
 const server = http.createServer(async (req, res) => {
   // Login gate first: everything below controls live accounts.
   if (await AUTH.guard(req, res, { readBody: rawBody })) return;
+
+  // Signed in is not enough — this console belongs to ONE organization, and a
+  // user from another has no business seeing its bots or its stored password.
+  if (SESSION.orgId && req.org && req.org.id !== SESSION.orgId) {
+    res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: false, error: 'This console belongs to another organization.' }));
+  }
+  const ORG = SESSION.org;
 
   const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type.includes('charset') ? type : type + '; charset=utf-8' }); res.end(data); };
 
@@ -148,7 +157,7 @@ const server = http.createServer(async (req, res) => {
              + `Open the console that runs ${b.accountId} instead of switching this one.`,
       }));
     }
-    const acc = D.accounts.get(b.accountId);
+    const acc = ORG.accounts.get(b.accountId);
     if (!acc) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'unknown account ' + b.accountId }));
     try { const h = await SESSION.switchTo(acc); return send(200, 'application/json', JSON.stringify({ ok: true, ...h })); }
     catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
@@ -207,7 +216,7 @@ const server = http.createServer(async (req, res) => {
     const city = q.get('city') || 'default';
     const kind = q.get('kind') === 'script' ? 'script' : 'goal';
     const acct = SESSION.account && SESSION.account.id;
-    const entry = D.goals.find(acct, [city], kind);
+    const entry = ORG.goals.find(acct, [city], kind);
     return send(200, 'application/json', JSON.stringify({ src: (entry && entry.src) || '' }));
   }
   // ---- manual hero operations (inn + feasting hall) ----
@@ -324,7 +333,7 @@ const server = http.createServer(async (req, res) => {
       server: env.EVONY_SERVER || 'ss71',
       email: env.EVONY_EMAIL || '',
       hasPassword: !!env.EVONY_PASSWORD,
-      names: D.settings.get('watchlist', ['WhoAreYou']),
+      names: ORG.settings.get('watchlist', ['WhoAreYou']),
     }));
   }
 
@@ -339,7 +348,7 @@ const server = http.createServer(async (req, res) => {
     let saved = null;
     if (b.save) {
       const key = String(b.city || 'default').trim() || 'default';
-      D.goals.set(SESSION.account && SESSION.account.id, key, b.kind === 'script' ? 'script' : 'goal', b.src);
+      ORG.goals.set(SESSION.account && SESSION.account.id, key, b.kind === 'script' ? 'script' : 'goal', b.src);
       saved = key;
     }
     return send(200, 'application/json', JSON.stringify({
@@ -390,7 +399,7 @@ const server = http.createServer(async (req, res) => {
     const lines = [];
     const log = (m) => { lines.push(m); console.log('[scan] ' + m); };
     const names = (b.names || []).map((s) => s.trim()).filter(Boolean);
-    D.settings.set('watchlist', names);
+    ORG.settings.set('watchlist', names);
     try {
       const rows = await runScan({ names }, log);
       return send(200, 'application/json', JSON.stringify({ ok: true, rows, log: lines }));

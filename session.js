@@ -28,6 +28,9 @@ class Session {
   //   CONSOLE_PORT=8713 ACCOUNT_ID=a2 node server.js
   // With no ACCOUNT_ID it falls back to the credentials in .env.
   constructor(accountId = process.env.ACCOUNT_ID || null) {
+    // Bootstrap lookup only: the operator names the account on the command line,
+    // which is trusted. Everything AFTER this goes through this.org, scoped to
+    // whichever organization owns that account.
     this.account = accountId ? D.accounts.get(accountId) : null;
     if (accountId && !this.account) throw new Error(`ACCOUNT_ID=${accountId} is not in the database`);
     // Resolve the .env account NOW, not after the first successful login. The
@@ -39,8 +42,9 @@ class Session {
       try { this.account = D.accounts.byEmail(loadEnv().EVONY_EMAIL || '') || null; } catch {}
     }
     // A restart must not forget a stand-down that is already in progress.
+    this.bindOrg();
     try {
-      const saved = D.settings.get('maintPlan:' + (this.account && this.account.id), null);
+      const saved = this.settings().get('maintPlan:' + (this.account && this.account.id), null);
       if (saved && Date.now() < saved.resumeAt + 3600000) this.maint.plan = saved;
     } catch {}
     this.game = null;
@@ -65,6 +69,18 @@ class Session {
 
   // logSeq is monotonic; this.log is a 400-entry ring, so its length plateaus
   // and cannot be used to tell whether anything happened between two samples.
+  // The organization that owns this console's account. Every tenant read and
+  // write below goes through it, so a console cannot reach another org's data
+  // even by id.
+  bindOrg() {
+    this.orgId = (this.account && this.account.orgId) || null;
+    this.org = this.orgId ? D.org(this.orgId) : null;
+    return this.org;
+  }
+  settings() {
+    return this.org ? this.org.settings : { get: (k, d) => d, set: () => {} };
+  }
+
   note(m) { this.logSeq = (this.logSeq || 0) + 1; push(this.log, { t: Date.now(), m: String(m) }); }
 
   get connected() { return !!(this.game && this.game.c && this.game.c.sock && !this.game.c.sock.destroyed); }
@@ -281,7 +297,7 @@ class Session {
     const resumeAt = startsAt + Session.WINDOW_MIN * 60000;
 
     this.maint.plan = { text, announcedAt: Date.now(), startsAt, pauseAt, resumeAt, source: 'announcement' };
-    try { D.settings.set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
+    try { this.settings().set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
     this.note(`maintenance announced ("${text.slice(0, 80)}") — standing down in `
       + `${Math.max(0, Math.round((pauseAt - Date.now()) / 60000))}m, back about `
       + `${new Date(resumeAt).toLocaleTimeString()}`);
@@ -307,7 +323,7 @@ class Session {
       resumeAt: startsAt + Number(windowMin) * 60000,
       source: 'manual',
     };
-    try { D.settings.set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
+    try { this.settings().set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
     this.note(`maintenance planned by hand — standing down at `
       + `${new Date(this.maint.plan.pauseAt).toLocaleTimeString()}, back about `
       + `${new Date(this.maint.plan.resumeAt).toLocaleTimeString()}`);
@@ -317,7 +333,7 @@ class Session {
   clearMaintenancePlan() {
     this.maint.plan = null;
     this.maint.nextLoginAt = 0;
-    try { D.settings.set('maintPlan:' + (this.account && this.account.id), null); } catch {}
+    try { this.settings().set('maintPlan:' + (this.account && this.account.id), null); } catch {}
     this.note('maintenance plan cleared');
   }
 
@@ -446,7 +462,7 @@ class Session {
       if (!this.account) {
         try {
           const mine = D.accounts.byEmail(env.EVONY_EMAIL || '');
-          if (mine) this.account = mine;
+          if (mine) { this.account = mine; this.bindOrg(); }
         } catch {}
       }
       // Keep the city registry honest on every login. This can only ADD
@@ -458,7 +474,7 @@ class Session {
             const xy = (g.castleXY && g.castleXY(c)) || {};
             return { fieldId: c.fieldId, castleId: g.castleId(c), name: c.name, x: xy.x, y: xy.y };
           });
-          const r = D.registry.reconcile(this.account.id, list);
+          const r = this.org.registry.reconcile(this.account.id, list);
           for (const a of r.added) {
             this.note(a.promoted
               ? `city registry: ${a.name} promoted to a buildnpc city (field ${a.fieldId})`
@@ -527,9 +543,9 @@ class Session {
           // wording of the maintenance warning is not documented anywhere, so
           // the log is how we learn it.
           try {
-            D.settings.set('lastSystemMsgs', [
+            this.settings().set('lastSystemMsgs', [
               { at: Date.now(), msg: text },
-              ...(D.settings.get('lastSystemMsgs', []) || []).slice(0, 29),
+              ...(this.settings().get('lastSystemMsgs', []) || []).slice(0, 29),
             ]);
           } catch {}
           this.noteAnnouncement(text);
@@ -681,7 +697,7 @@ class Session {
       const { parseGoals } = require('./goals');
       const { troopPlan } = require('./engine');
       const id = this.game ? this.game.castleId(c) : null;
-      const entry = D.goals.find(this.account && this.account.id, [id, c.name], 'goal');
+      const entry = this.org.goals.find(this.account && this.account.id, [id, c.name], 'goal');
       if (!entry) return null;
       const parsed = parseGoals(entry.src);
       const plan = troopPlan({ castle: c, goals: parsed.goals, config: parsed.config });

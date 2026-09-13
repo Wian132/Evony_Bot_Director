@@ -189,8 +189,30 @@ const PAGE = ({ mode = 'signin', msg = '', email = '', canSignup = true }) => `<
 // On success it hangs {user, org, role} on the request, and every route below
 // reads its tenant from there — never from a query parameter, which the caller
 // controls.
+// The Director polls its own consoles for live status. That is process-to-
+// process, not a person, so it carries a shared secret instead of a cookie.
+// The token is generated once per install and never leaves this machine.
+function internalToken() {
+  let t = D.settings.get('internalToken', null);
+  if (!t) { t = crypto.randomBytes(24).toString('hex'); D.settings.set('internalToken', t); }
+  return t;
+}
+
+function isInternal(req) {
+  const sent = req.headers['x-otto-internal'];
+  if (!sent) return false;
+  const want = Buffer.from(internalToken());
+  const got = Buffer.from(String(sent));
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
 async function guard(req, res, { readBody }) {
   const url = new URL(req.url, 'http://x');
+
+  // Service calls skip the login pages entirely, but only for reads a console
+  // exposes about itself.
+  if (isInternal(req) && url.pathname === '/api/session') return false;
+
   const cookies = cookiesOf(req);
   const ip = ipOf(req);
 
@@ -287,7 +309,7 @@ function bindHost() {
 }
 
 module.exports = {
-  configure, isEnabled, signupOpen, guard, bindHost,
+  configure, isEnabled, signupOpen, guard, bindHost, internalToken, isInternal,
   hashPassword, verifyPassword, register, signIn,
   newSession, resolveSession, validSession, endSession, revokeAll,
   cookiesOf, ipOf, COOKIE, PAGE,

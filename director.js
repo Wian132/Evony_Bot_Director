@@ -160,7 +160,8 @@ function probeList(org) {
 function getJson(url, timeout = 2500) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const req = http.get(url, { timeout }, (res) => {
+    const opts = { timeout, headers: { 'x-otto-internal': AUTH.internalToken() } };
+    const req = http.get(url, opts, (res) => {
       let b = '';
       res.on('data', (c) => (b += c));
       res.on('end', () => {
@@ -231,7 +232,7 @@ async function sampleUptime() {
     const paused = !!(h.maintenance && h.maintenance.paused);
     if (h.account && h.account.id) {
       liveByAccount.set(h.account.id, {
-        at, probe: pr.probe,
+        at, probe: pr.probe, url: String(pr.url || '').replace(/\/$/, ''),
         connected: !!h.connected,
         state: paused ? 'maintenance' : (h.state || null),
         reason: paused ? (h.maintenance.why || 'server maintenance') : (h.reason || null),
@@ -299,6 +300,9 @@ http.createServer(async (req, res) => {
         ...a,
         proxyLabel: (assign.get(a.id) || {}).label || null,
         live: liveByAccount.get(a.id) || null,
+        // Which console process is running this account. Consoles are pinned to
+        // one account each, so this is how the UI knows where to send you.
+        consoleUrl: (liveByAccount.get(a.id) || {}).url || null,
       })),
       polling, gapMs: GAP_MS, processes: procs, log: log.slice(-120),
       proxies: list.map((p) => ({ label: p.label, accounts: counts[p.label] || 0 })),

@@ -477,15 +477,19 @@ const mapCache = {
 
 // ----------------------------------------------------------------- settings
 
+// INSTALL-WIDE settings only — things that belong to the machine, not to a
+// customer, such as the internal service token. Anything a tenant owns lives on
+// org(id).settings, which is keyed by orgId. Both share the table; this one
+// holds the rows whose orgId is ''.
 const settings = {
   get(k, d = null) {
-    const r = one('SELECT v FROM settings WHERE k = ?', k);
+    const r = one("SELECT v FROM settings WHERE orgId = '' AND k = ?", k);
     if (!r) return d;
     try { return JSON.parse(r.v); } catch { return r.v; }
   },
   set(k, v) {
-    run(`INSERT INTO settings (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`,
-      k, JSON.stringify(v));
+    run(`INSERT INTO settings (orgId,k,v) VALUES ('',?,?)
+         ON CONFLICT(orgId,k) DO UPDATE SET v = excluded.v`, k, JSON.stringify(v));
   },
 };
 

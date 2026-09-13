@@ -171,6 +171,71 @@ const server = http.createServer(async (req, res) => {
   }
   // What our own armies are doing right now — the direct answer to "is it
   // actually farming", which the logs only imply.
+  // Diagnostic: the raw shapes the server actually sends, so UI work is built
+  // against reality rather than against the bean definitions, which list only a
+  // subset of what arrives at runtime. Internal token only.
+  if (url.pathname === '/api/debug/city' && AUTH.isInternal(req)) {
+    try {
+      const g = await SESSION.connect();
+      const c = q.get('id') ? g.castles.find((x) => String(g.castleId(x)) === q.get('id')) : g.castle();
+      if (!c) return send(200, 'application/json', JSON.stringify({ error: 'no such city' }));
+      const shape = (v, depth = 0) => {
+        if (v === null || v === undefined) return typeof v;
+        if (Array.isArray(v)) return `array[${v.length}]` + (v.length && depth < 2 ? ' of ' + JSON.stringify(shape(v[0], depth + 1)) : '');
+        if (typeof v === 'object') {
+          if (depth >= 2) return 'object{' + Object.keys(v).slice(0, 12).join(',') + '}';
+          return Object.fromEntries(Object.entries(v).slice(0, 40).map(([k, x]) => [k, shape(x, depth + 1)]));
+        }
+        return typeof v === 'string' ? `"${String(v).slice(0, 24)}"` : String(v);
+      };
+      return send(200, 'application/json', JSON.stringify({
+        castleKeys: Object.keys(c),
+        castle: shape(c),
+        playerKeys: Object.keys(g.player || {}),
+        player: shape(g.player || {}),
+      }, null, 1));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+
+  // Manual valley actions from the Valleys tab.
+  //
+  // `field.giveUpField {fieldId}` releases a valley — irreversible, so it is
+  // only ever accepted for a field this city actually holds, never for an
+  // arbitrary id the caller sends. Founding a city is the same check.
+  if (url.pathname === '/api/valley' && req.method === 'POST') {
+    const b = await body(req);
+    try {
+      const g = await SESSION.connect();
+      const fieldId = Number(b.fieldId);
+      if (!Number.isFinite(fieldId)) throw new Error('no field id');
+
+      const owner = (g.castles || []).find((c) => (c.fields || []).some((f) => Number(f.id) === fieldId));
+      if (!owner) throw new Error('that field is not one of yours');
+      const field = (owner.fields || []).find((f) => Number(f.id) === fieldId);
+
+      if (b.action === 'abandon') {
+        const r = await g.req('field.giveUpField', { fieldId });
+        SESSION.note(`valley ${fieldId} abandoned -> ok=${r && r.ok}`);
+        return send(200, 'application/json', JSON.stringify({ ok: r && r.ok === 1, error: r && r.errorMsg }));
+      }
+
+      if (b.action === 'build') {
+        const C2 = require('./constants');
+        const t = C2.FIELD_TYPES[Number(field.type)] || {};
+        if (!t.buildable) throw new Error(`a ${t.name || 'field'} cannot be built on — only flats can`);
+        const r = await g.req('city.constructCastle', {
+          castleId: g.castleId(owner), fieldId, isTroopBack: true,
+        });
+        SESSION.note(`constructCastle on ${fieldId} -> ok=${r && r.ok}`);
+        return send(200, 'application/json', JSON.stringify({ ok: r && r.ok === 1, error: r && r.errorMsg }));
+      }
+
+      throw new Error('action must be "abandon" or "build"');
+    } catch (e) {
+      return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   if (url.pathname === '/api/marches') {
     const { incomingArmies } = require('./snapshot');
     const out = SESSION.marches();

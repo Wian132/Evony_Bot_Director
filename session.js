@@ -619,6 +619,68 @@ class Session {
       })(),
       troopStage: this.activeTroopStage(c),
       fortifications: forts,
+
+      // ---- general ----
+      // The runtime resource object carries far more than ResourceBean lists:
+      // `support` is loyalty, `texRate` the tax rate, and
+      // usePACIFY_SUCCOUR_OR_PACIFY_PRAY says which comfort action this city is
+      // set to. None of it is in the bean definitions.
+      general: (() => {
+        const p = (this.game && this.game.player) || {};
+        const info = p.playerInfo || {};
+        const STATUS = { 0: 'Normal', 1: 'Truce', 2: 'Under attack', 3: 'Occupied' };
+        const played = info.registerTime ? Date.now() - Number(info.registerTime) : null;
+        return {
+          town: c.name,
+          location: `${xy.x},${xy.y}`,
+          fieldId: c.fieldId,
+          status: STATUS[Number(c.status)] || String(c.status ?? '?'),
+          hasEnemy: !!c.hasEnemy,
+          gates: c.goOutForBattle ? 'Open' : 'Closed',
+          allowAlliance: !!c.allowAlliance,
+          population: Math.round(Number(res.curPopulation || 0)),
+          maxPopulation: Math.round(Number(res.maxPopulation || 0)),
+          idle: Math.max(0, Math.round(Number(res.curPopulation || 0)
+            - Number(res.workPeople || 0) - Number(res.buildPeople || 0))),
+          loyalty: Math.round(Number(res.support || 0)),
+          complaint: Math.round(Number(res.complaint || 0)),
+          // 1 = praying, 2 = disaster relief (PACIFY constants)
+          comfortMode: Number(c.usePACIFY_SUCCOUR_OR_PACIFY_PRAY) === 2 ? 'Disaster relief' : 'Praying',
+          taxRate: Number(res.texRate || 0),
+          taxIncome: Math.round(Number(res.taxIncome || 0)),
+          heroSalary: Math.round(Number(res.herosSalary || 0)),
+          troopUpkeep: Math.round(Number(res.troopCostFood || 0)),
+          prestige: Number(info.prestige || 0),
+          honor: Number(info.honor || 0),
+          rank: Number(info.ranking || 0),
+          title: info.title || info.titleId || null,
+          alliance: info.alliance || null,
+          office: info.office || null,
+          lord: info.userName || null,
+          playedMs: played,
+        };
+      })(),
+
+      // Valleys and flats this city holds. FieldBean: {id, level, name, statu, type}
+      valleys: (c.fields || []).map((f) => {
+        const fxy = C.fieldIdToCoords(Number(f.id));
+        const t = C.FIELD_TYPES[Number(f.type)] || {};
+        return {
+          id: f.id, x: fxy.x, y: fxy.y,
+          level: Number(f.level || 0),
+          type: Number(f.type),
+          kind: t.key || 'unknown',
+          typeName: t.name || ('type ' + f.type),
+          bonus: t.bonus ? `+${(t.base || 0) + (t.rate || 0) * Number(f.level || 0)}% ${t.bonus}` : null,
+          buildable: !!t.buildable,
+          name: f.name || null,
+          status: Number(f.statu || 0),
+          armies: (f.armys || []).length,
+          distance: Math.round(Math.hypot(fxy.x - xy.x, fxy.y - xy.y) * 10) / 10,
+        };
+      }).sort((a, b) => a.distance - b.distance),
+
+      slots: this.game.freeSlots ? this.game.freeSlots(c) : null,
       // Town Hall allocation: labour on each field comes out of population.
       production: ['food', 'wood', 'stone', 'iron'].map((k) => ({
         resource: k,

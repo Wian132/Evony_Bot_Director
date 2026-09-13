@@ -159,6 +159,19 @@
   td.n, th.n { text-align:center; }
   td.l, th.l { text-align:left; }
 
+  /* General tab: label/value pairs that stay readable at a glance. */
+  .kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:0 20px; padding:6px 12px; }
+  .kv .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0;
+             border-bottom:1px solid var(--line-soft); font-size:13.5px; }
+  .kv .row b { font-weight:600; font-variant-numeric:tabular-nums; }
+  .kv .k { color:var(--dim); }
+  .sect { padding:12px 12px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+          color:var(--dim); font-weight:600; }
+  .chip { display:inline-block; padding:2px 9px; border-radius:99px; font-size:11.5px; font-weight:600; }
+  .chip.ok { background:rgba(15,122,74,.14); color:var(--ok); }
+  .chip.bad { background:rgba(194,47,47,.14); color:var(--bad); }
+  .chip.warn { background:rgba(154,100,0,.16); color:var(--amber); }
+
   /* One colour per mission, used everywhere an army is shown. */
   .m-attack    { color:var(--bad); }
   .m-scout     { color:var(--amber); }
@@ -237,15 +250,17 @@
   <!-- top-right: monitors -->
   <div class="cell right" id="cellMon">
     <div class="tabs" id="monTabs">
-      <div class="t active" data-k="resources">Resources</div>
-      <div class="t" data-k="troops">Troops</div>
-      <div class="t" data-k="buildings">Buildings</div>
-      <div class="t" data-k="walls">Walls</div>
+      <div class="t active" data-k="general">🏰 General</div>
+      <div class="t" data-k="resources">📦 Resources</div>
+      <div class="t" data-k="troops">⚔ Troops</div>
+      <div class="t" data-k="valleys">🌿 Valleys</div>
+      <div class="t" data-k="buildings">🏘 Buildings</div>
+      <div class="t" data-k="walls">🧱 Walls</div>
       <div class="t" data-k="armies">⚔ Armies</div>
       <div class="t" data-k="incoming">🛡 Incoming</div>
-      <div class="t" data-k="heroes">Heroes</div>
-      <div class="t" data-k="market">Market</div>
-      <div class="t" data-k="map">Map</div>
+      <div class="t" data-k="heroes">🧑 Feasting Hall</div>
+      <div class="t" data-k="market">💰 Market</div>
+      <div class="t" data-k="map">🗺 Map</div>
     </div>
     <div class="body" id="monBody"><div class="empty">Connect to load city data.</div></div>
   </div>
@@ -379,7 +394,7 @@ function initResizers() {
 window.name = 'evony_console';
 
 const $ = (id) => document.getElementById(id);
-const S = { city: null, edit: 'goals', mon: 'resources', logs: 'log', chat: 'alliance', cityData: null };
+const S = { city: null, edit: 'goals', mon: 'general', logs: 'log', chat: 'alliance', cityData: null };
 
 // connection banner state — ticks down locally between polls
 const CONN = { state: 'offline', reason: null, retryInSec: null, attempt: 0, syncedAt: 0 };
@@ -640,10 +655,119 @@ async function renderArmies(incoming) {
   $('monBody').innerHTML = armyRows(list, r.serverNow || r.now, { incoming });
 }
 
+// ---- general ------------------------------------------------------------
+function renderGeneral(d) {
+  const g = d.general || {};
+  const chip = (text, kind) => `<span class="chip ${kind}">${esc(text)}</span>`;
+  const row = (k, v) => `<div class="row"><span class="k">${k}</span><b>${v}</b></div>`;
+  const pct = g.maxPopulation ? Math.round((g.population / g.maxPopulation) * 100) : 0;
+
+  const city = [
+    row('Town', esc(g.town || '—')),
+    row('Location', `${esc(g.location || '—')} <span style="color:var(--dim)">#${g.fieldId || ''}</span>`),
+    row('Status', g.hasEnemy ? chip('Under attack', 'bad') : chip(g.status || '—', 'ok')),
+    row('Gates', g.gates === 'Open' ? chip('Open', 'warn') : chip('Closed', 'ok')),
+    row('Alliance help', g.allowAlliance ? chip('Allowed', 'ok') : chip('Blocked', 'warn')),
+    row('Loyalty', `${g.loyalty}%` + (g.loyalty < 100 ? ' ' + chip('below 100', 'warn') : '')),
+    row('Comfort action', esc(g.comfortMode || '—')),
+    row('Unrest', String(g.complaint || 0)),
+  ].join('');
+
+  const people = [
+    row('Population', `${fmt(g.population)} / ${fmt(g.maxPopulation)} <span style="color:var(--dim)">(${pct}%)</span>`),
+    row('Idle (free for troops)', `<span style="color:var(--ok)">${fmt(g.idle)}</span>`),
+    row('Tax rate', `${g.taxRate}%`),
+    row('Tax income', fmt(g.taxIncome)),
+    row('Hero salary', `<span style="color:var(--bad)">-${fmt(g.heroSalary)}</span>`),
+    row('Troop upkeep (food/hr)', `<span style="color:var(--bad)">-${fmt(g.troopUpkeep)}</span>`),
+  ].join('');
+
+  const played = g.playedMs ? Math.floor(g.playedMs / 86400000) + ' days' : '—';
+  const lord = [
+    row('Lord', esc(g.lord || '—')),
+    row('Prestige', fmt(g.prestige)),
+    row('Honor', fmt(g.honor)),
+    row('Rank', g.rank ? '#' + fmt(g.rank) : '—'),
+    row('Title', g.title != null ? String(g.title) : '—'),
+    row('Alliance', esc(g.alliance || 'none')),
+    row('Office', esc(g.office || '—')),
+    row('Time played', played),
+  ].join('');
+
+  const sl = d.slots;
+  const build = sl ? [
+    row('Inside free', `${sl.inside.free} <span style="color:var(--dim)">of ${sl.inside.total}</span>`),
+    row('Outside free', `${sl.outside.free} <span style="color:var(--dim)">of ${sl.outside.total}</span>`),
+  ].join('') : '';
+
+  $('monBody').innerHTML =
+      `<div class="sect">City</div><div class="kv">${city}</div>`
+    + `<div class="sect">Population &amp; upkeep</div><div class="kv">${people}</div>`
+    + (build ? `<div class="sect">Building plots</div><div class="kv">${build}</div>` : '')
+    + `<div class="sect">Lord</div><div class="kv">${lord}</div>`;
+}
+
+// ---- valleys ------------------------------------------------------------
+function renderValleys(d) {
+  const list = d.valleys || [];
+  if (!list.length) {
+    $('monBody').innerHTML = '<div class="empty">This city holds no valleys or flats.</div>';
+    return;
+  }
+  const rows = list.map((v) => {
+    const act = v.buildable
+      ? `<button class="vbuild" data-id="${v.id}" data-xy="${v.x},${v.y}">Build city</button> `
+      : '';
+    return `<tr>`
+      + `<td class="l">${esc(v.typeName)}</td>`
+      + `<td class="n">L${v.level}</td>`
+      + `<td class="n">${v.x},${v.y}</td>`
+      + `<td class="n">${v.distance}</td>`
+      + `<td class="l">${esc(v.bonus || (v.buildable ? 'can be built on' : '—'))}</td>`
+      + `<td class="n">${v.armies || 0}</td>`
+      + `<td class="n">${act}<button class="vdrop" data-id="${v.id}" data-xy="${v.x},${v.y}">Abandon</button></td>`
+      + `</tr>`;
+  }).join('');
+  $('monBody').innerHTML =
+    `<table><thead><tr>`
+    + ['Type', 'Level', 'Coords', 'Tiles', 'Bonus', 'Armies', ''].map((h, i) =>
+        `<th class="${i === 0 || i === 4 ? 'l' : 'n'}">${h}</th>`).join('')
+    + `</tr></thead><tbody>${rows}</tbody></table>`
+    + `<div style="padding:9px 12px;color:var(--dim);font-size:11.5px">`
+    + `${list.length} held. Abandoning a valley frees the troops on it and is not reversible.</div>`;
+
+  document.querySelectorAll('.vdrop').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm(`Abandon the valley at ${b.dataset.xy}?\n\nThis cannot be undone.`)) return;
+      b.disabled = true;
+      const r = await fetch('/api/valley', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'abandon', fieldId: Number(b.dataset.id) }),
+      }).then((x) => x.json()).catch(() => ({ ok: false, error: 'request failed' }));
+      alert(r.ok ? `Abandoned ${b.dataset.xy}.` : 'Could not abandon it: ' + (r.error || 'unknown'));
+      refresh();
+    };
+  });
+  document.querySelectorAll('.vbuild').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm(`Found a new city on the flat at ${b.dataset.xy}?`)) return;
+      b.disabled = true;
+      const r = await fetch('/api/valley', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'build', fieldId: Number(b.dataset.id) }),
+      }).then((x) => x.json()).catch(() => ({ ok: false, error: 'request failed' }));
+      alert(r.ok ? `Building a city at ${b.dataset.xy}.` : 'Could not build: ' + (r.error || 'unknown'));
+      refresh();
+    };
+  });
+}
+
 function renderMon() {
   const d = S.cityData;
   if (d && d.troops) for (const t of d.troops) if (t.key && t.name) TROOP_NAME[t.key] = t.name;
   if (!d) { $('monBody').innerHTML = '<div class="empty">Connect to load city data.</div>'; return; }
+  if (S.mon === 'general') { renderGeneral(d); return; }
+  if (S.mon === 'valleys') { renderValleys(d); return; }
   if (S.mon === 'armies') { renderArmies(false); return; }
   if (S.mon === 'incoming') { renderArmies(true); return; }
   if (S.mon === 'resources') {

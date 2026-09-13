@@ -209,9 +209,11 @@ function isInternal(req) {
 async function guard(req, res, { readBody }) {
   const url = new URL(req.url, 'http://x');
 
-  // Service calls skip the login pages entirely, but only for reads a console
-  // exposes about itself.
-  if (isInternal(req) && url.pathname === '/api/session') return false;
+  // Service calls skip the login pages entirely, but only for a named few
+  // read-only routes a console exposes about itself. Never a blanket /api/ pass:
+  // the token is a machine secret, not a second way to drive the bots.
+  const INTERNAL_OK = new Set(['/api/session', '/api/debug/city']);
+  if (isInternal(req) && INTERNAL_OK.has(url.pathname)) return false;
 
   const cookies = cookiesOf(req);
   const ip = ipOf(req);

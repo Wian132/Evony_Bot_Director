@@ -374,6 +374,30 @@ class Game {
   }
 
   researchList(castleId) { return this.req('tech.getResearchList', { castleId }); }
+
+  // Queues: what is actually being made right now, per building.
+  troopQueue(castleId) { return this.req('troop.getProduceQueue', { castleId }); }
+  wallQueue(castleId) { return this.req('fortifications.getProduceQueue', { castleId }); }
+  idleBarracks(castleId) { return this.req('troop.checkIdleBarrack', { castleId }); }
+
+  // Market: our own offers, and purchases still in transit.
+  myTrades(castleId) { return this.req('trade.getMyTradeList', { castleId }); }
+  transitTrades(castleId) { return this.req('trade.getTransingTradeList', { castleId }); }
+
+  // How many plots are left, inside the walls and out. Uses the same slot
+  // ranges as freeSlot() below rather than a second set of assumptions.
+  freeSlots(castle) {
+    const used = new Set((castle.buildings || []).map((b) => Number(b.positionId)));
+    const span = (from, to) => {
+      let free = 0, total = 0;
+      for (let p = from; p <= to; p++) { total++; if (!used.has(p)) free++; }
+      return { free, total, used: total - free };
+    };
+    return {
+      inside: span(C.SLOTS.insideFrom, C.SLOTS.insideTo),
+      outside: span(C.SLOTS.outsideFrom, C.SLOTS.outsideTo),
+    };
+  }
   research(castleId, techId) { return this.req('tech.research', { castleId, techId }); }
 
   findBuildings(castle, typeId) {

@@ -7,6 +7,8 @@ const { EvonyClient, getServerConfig } = require('./evony');
 
 const { Session } = require('./session');
 const D = require('./db');
+const AUTH = require('./auth');
+AUTH.configure();
 
 // One console per account: a second login for the same account gets kicked, so
 // running a second account means a second process on another port.
@@ -105,7 +107,14 @@ async function runScan({ names }, log) {
   return rows;   // shared session stays open
 }
 
+const rawBody = (req) => new Promise((resolve) => {
+  let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b));
+});
+
 const server = http.createServer(async (req, res) => {
+  // Login gate first: everything below controls live accounts.
+  if (await AUTH.guard(req, res, { readBody: rawBody })) return;
+
   const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type.includes('charset') ? type : type + '; charset=utf-8' }); res.end(data); };
 
   const url = new URL(req.url, 'http://x');
@@ -394,4 +403,9 @@ const server = http.createServer(async (req, res) => {
   send(404, 'text/plain', 'not found');
 });
 
-server.listen(PORT, () => console.log(`\n  Evony scanner UI -> http://localhost:${PORT}\n`));
+const HOST = AUTH.bindHost();
+server.listen(PORT, HOST, () => console.log(
+  `
+  Evony console -> http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`
+  + `   auth ${AUTH.isEnabled() ? 'ON' : 'OFF (localhost only)'}
+`));

@@ -17,6 +17,8 @@ const { Game } = require('./game');
 const { buildSnapshot } = require('./snapshot');
 
 const D = require('./db');
+const AUTH = require('./auth');
+AUTH.configure();
 
 const PORT = Number(process.env.DIRECTOR_PORT || 8712);
 const GAP_MS = Number(process.env.POLL_GAP_MS || 25000);   // between accounts
@@ -238,6 +240,8 @@ async function sampleUptime() {
 // which NEAT bots are running on this machine (matches the old Director's view)
 function scanProcesses() {
   return new Promise((resolve) => {
+    // NEAT only runs on Windows; elsewhere there is no bobby.exe and no tasklist.
+    if (process.platform !== 'win32') return resolve([]);
     execFile('tasklist', ['/fi', 'imagename eq bobby.exe', '/fo', 'csv', '/nh'], (err, out) => {
       if (err || !out || /No tasks/i.test(out)) return resolve([]);
       const rows = out.trim().split(/\r?\n/).map((l) => l.split('","').map((s) => s.replace(/^"|"$/g, '')));
@@ -249,7 +253,12 @@ function scanProcesses() {
 // ------------------------------------------------------------------- server
 const body = (req) => new Promise((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { res(JSON.parse(b || '{}')); } catch { res({}); } }); });
 
+const rawBody = (req) => new Promise((resolve) => {
+  let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b));
+});
+
 http.createServer(async (req, res) => {
+  if (await AUTH.guard(req, res, { readBody: rawBody })) return;
   const url = new URL(req.url, 'http://x');
   const send = (code, type, data) => { res.writeHead(code, { 'Content-Type': type + '; charset=utf-8' }); res.end(data); };
 
@@ -393,7 +402,7 @@ http.createServer(async (req, res) => {
   }
 
   send(404, 'text/plain', 'not found');
-}).listen(PORT, () => {
+}).listen(PORT, AUTH.bindHost(), () => {
   const st = D.stats();
   note(`Director on http://localhost:${PORT}  (${st.accounts} account(s), ${GAP_MS / 1000}s between polls)`);
   note(`storage: ${path.basename(D.FILE)} — ${(st.sizeBytes / 1024).toFixed(0)} KB, ${st.snapshots} snapshot(s), ${st.uptime} uptime sample(s)`);

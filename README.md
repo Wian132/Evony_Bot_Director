@@ -86,6 +86,35 @@ recovers on a 5-minute ladder — probing with a bare **TCP handshake**, never a
 Reachability costs a handshake; a login is a scarce, account-scoped resource, and
 spending them against a server in maintenance is believed to be what earns a block.
 
+## Running it on a server
+
+It is portable — the only Windows-specific thing was the NEAT process scan, which
+now short-circuits off Windows. Node 24+ is the only requirement.
+
+**Binding to anything but loopback requires a password.** These pages control every
+bot and the Director's account editor shows stored passwords, so the server refuses
+to start otherwise:
+
+```
+REFUSING TO BIND 0.0.0.0: no password is set.
+```
+
+Set one once (it is stored scrypt-hashed, never in plain text):
+
+```bash
+AUTH_PASSWORD='something long' BIND=0.0.0.0 node director.js
+```
+
+After that `AUTH_PASSWORD` can be dropped; the hash lives in `evony.db`. Sessions are
+32 random bytes, httpOnly + SameSite=Strict, 12h expiry, revocable. Failed logins back
+off exponentially per IP.
+
+**Put TLS in front of it.** The login cookie is only marked `Secure` when a proxy sets
+`X-Forwarded-Proto: https`. Over plain HTTP on the open internet the password and cookie
+travel in clear text. Terminate TLS at Caddy or nginx, or reach it through an SSH tunnel
+(`ssh -L 8712:localhost:8712 host`) and leave it bound to loopback — the tunnel needs no
+password at all and exposes nothing.
+
 ## Storage
 
 One SQLite file, `evony.db` (see `STORAGE.md`). It holds accounts, **snapshot history**,

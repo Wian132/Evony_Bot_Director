@@ -75,7 +75,10 @@ function world({ cities, enemyAtLogin = [] } = {}) {
     buildArmyBean: Game.prototype.buildArmyBean,
     newArmy: async (castleId, bean) => { sent.push(['army.newArmy', { castleId, newArmyBean: bean }]); return { ok: 1 }; },
     req: async (cmd, data) => { sent.push([cmd, data]); return { ok: 1 }; },
-    useCastleItem: async (castleId, itemId) => { sent.push(['useCastleItem', { castleId, itemId }]); return { ok: 1 }; },
+    // defence items take the real routing (game.js useDefenceItem) down to req,
+    // so `sent` shows the command each one goes out as
+    useDefenceItem: Game.prototype.useDefenceItem, useTruce: Game.prototype.useTruce,
+    useItem: Game.prototype.useItem, useCastleItem: Game.prototype.useCastleItem,
     dischargeChief: async (cid) => { sent.push(['dischargeChief', { cid }]); return { ok: 1 }; },
     promoteToChief: async (cid, heroId) => { sent.push(['promoteToChief', { cid, heroId }]); return { ok: 1 }; },
   };
@@ -369,16 +372,20 @@ const BUSY = [
   'gatepolicy 0 1 1 1 0',
 ].join('\n');
 
+// defensepolicy uses only what the account holds (Step 3)
+const DEFENCE_STOCK = () => ['warhorn', 'corselet', 'penicillin'].map((k) => ({ id: C.DEFENSE_ITEMS[k], count: 1 }));
+
 t('comfort and three defence items cannot crowd out the hide march or the gate', async () => {
   resetClock();
   const home = city(101, 'Home', XY.home), refuge = city(202, 'Refuge', XY.refuge);
   const w = world({ cities: [home, refuge] });
+  w.game.player.items = DEFENCE_STOCK();
   const { e } = engineFor(w, { 101: BUSY, 202: 'config hero:0' }, { live: true });
   w.push([army(home, { inMs: 50000 })]);
   const r = await e.focus(home);
   assert.deepStrictEqual(names(w.sent), [
     'army.newArmy', 'army.setArmyGoOut',                   // first, and free
-    'interior.pacifyPeople', 'useCastleItem', 'useCastleItem', // the 3-action budget, unchanged
+    'interior.pacifyPeople', 'shop.useGoods', 'shop.useGoods', // the 3-action budget, unchanged
   ], r.acted.join(' | '));
   assert.strictEqual(w.sent[1][1].isArmyGoOut, true);
   assert.match(r.acted[0], /^hide .* -> ok$/);
@@ -765,24 +772,32 @@ t('the live defensepolicy line: a real attack now brings out the horn, corselet 
   resetClock();
   const home = city(101, 'Home', XY.home);
   const w = world({ cities: [home] });
+  w.game.player.items = DEFENCE_STOCK();
   const { e } = engineFor(w, { 101: A1 });
   w.push([army(home, { inMs: 600000, troop: { archer: '6000' } })]);
   const r = await e.focus(home);
   assert.match(r.defense.note, /loyalty 100, 1 real attack\(s\) inbound/);
   assert.deepStrictEqual(r.defense.actions.map((a) => a.itemId),
     [C.DEFENSE_ITEMS.warhorn, C.DEFENSE_ITEMS.corselet, C.DEFENSE_ITEMS.penicillin]);
-  assert.ok(r.acted.includes('[plan] warhorn (under attack)'), r.acted.join(' | '));
+  assert.ok(r.acted.includes('[plan] War Horn (under attack)'), r.acted.join(' | '));
 });
 
-t('...but a wave under its /junktroop:5000 is junk, and truce/speech wait for low loyalty', async () => {
+// NEAT: a junk attack sets off no defensive measure, defensepolicy included, so
+// even at a loyalty under /usetruce it brings out nothing (Step 3).
+t('...but a wave under its /junktroop:5000 is junk: nothing is used, even at low loyalty', async () => {
   resetClock();
   const home = city(101, 'Home', XY.home);
   const w = world({ cities: [home] });
+  w.game.player.items = [...DEFENCE_STOCK(), { id: C.DEFENSE_ITEMS.truce, count: 1 }];
   const { e } = engineFor(w, { 101: A1 });
   w.push([army(home, { inMs: 600000, troop: { archer: '4000' } })]);
   const r = await e.focus(home);
-  assert.match(r.defense.note, /0 real attack\(s\) inbound \(1 junk ignored\)/);
+  assert.match(r.defense.note, /0 real attack\(s\) inbound \(1 junk under 5000 ignored\)/);
   assert.deepStrictEqual(r.defense.actions, []);
+  home.resource.support = 50;
+  const low = await e.focus(home);
+  assert.deepStrictEqual(low.defense.actions, []);
+  assert.match(low.defense.note, /truce: loyalty 50 <= 79, but not under attack/);
 });
 
 t('defensepolicy counts only the attacks on its own city', async () => {

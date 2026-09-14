@@ -604,6 +604,30 @@ const inRange = (src, cache, level = 5, home = HOME) => I.targetsFor(ctxOf(src),
     eq(I.scanWanted({ npc: 5, mapscan: 2 }), false);
   });
 
+  // goals.js runs a config value through its module's config-kind parser (Step
+  // 9), and a policy line's parser errors make it red: the editor says so as
+  // the goals are read, not only the plan note later.
+  await t('the editor paints bad npc values red as the goals are read; good ones stay blue', () => {
+    const line = (src) => G.parseGoals(src).lines[0];
+    for (const src of ['config smartfarming:5', 'config mapscan:yes', 'config farmingcycle:soon', 'config farmingcyclemin:0',
+      'config npc:11', 'config training:3', 'config training10:2', 'config trainint:2', 'config trainpol:x', 'config ballsused:1.5',
+      'distancepolicy 200', 'distancepolicy 0', 'distancepolicy 1 2 3 4 5 6', 'npcbounds 11 1 2 3 4', 'npcbounds 5 1 2',
+      'farmingpolicy 5 /cycle:soon', 'farmingpolicy 10 /mincycle:1', 'farmingpolicy 5 /level:6', 'farmingpolicy 5 /maxdistance:200',
+      'farmingpolicy 5 /wibble:1', 'npclimits 10']) {
+      eq([src, line(src).status], [src, 'error']);
+    }
+    has(line('config smartfarming:5').msg, 'smartfarming:5 is not 0, 1, 2 or 3');
+    for (const src of ['config npc:0', 'config npc:5,farmingcycle:8.4,farmingcyclemin:1,smartfarming:3,mapscan:0,trainint:1,trainpol:1,training:2,training10:1',
+      'distancepolicy 10 20 5 10 25', 'distancepolicy 10.5', 'npcbounds 5 790 810 95 105', 'npcbounds 200 215 400 415',
+      'farmingpolicy /level:8 /mindistance:1 /maxdistance:5 /farmingcycle:1', 'farmingpolicy 5 /mindistance:1 /maxdistance:7 /mincycle:1',
+      'farmingpolicy 10 /cyclemax:1', 'npclimits a:100k', 'npc10heroes any']) {
+      eq([src, line(src)], [src, { n: 1, status: 'ok', msg: null }]);
+    }
+    const bare = G.parseGoals('farmingcycle 8.4');
+    eq([bare.config.farmingcycle, bare.lines[0].status], [8.4, 'ok'], 'a bare config key reads as the config line it means');
+    eq(G.parseGoals('smartfarming 9').lines[0].status, 'error');
+  });
+
   // ======================================================== the scan planner
   section('background map scan: which blocks (goal-npc scanPlan)');
 

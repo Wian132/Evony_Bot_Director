@@ -412,7 +412,7 @@ const configKeys = ['npc', 'npclimit', 'ballsused', 'training', 'training10', 'f
 // read as text, so `config farmingcycle:soon` would otherwise quietly mean the
 // default: a farming key that is wrong holds farming, with a note that says so.
 const CONFIG_RULES = {
-  npc: { set: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], what: 'the lowest npc level to farm, 1 to 10 (0 is off)' },
+  npc: { set: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], what: 'the lowest npc level to farm, 1 to 10 (0 is off)' },
   npclimit: { atLeast: 0, what: 'a number of days of food' },
   ballsused: { atLeast: 0, whole: true, what: 'a number of ballistas' },
   training: { set: [0, 1, 2], what: '0, 1 or 2' },
@@ -438,6 +438,21 @@ function configProblems(cfg, keys = Object.keys(CONFIG_RULES)) {
     if (!ok) out.push(`config ${k}:${v} is not ${r.what}`);
   }
   return out;
+}
+
+// The same checks when the goals are read: goals.js runs a config key's value
+// through the config-kind parser of the module that reads it (Step 9), so
+// `config farmingcycle:soon` or `smartfarming:5` is red in the editor, and a
+// bare `farmingcycle 8.4` line reads as the config line it means. `value` is what
+// goals.js made of it: a number when it could read one, the text otherwise.
+for (const k of Object.keys(CONFIG_RULES)) {
+  parsers[k] = {
+    kind: 'config', multi: false,
+    parse(value) {
+      if (value === undefined || value === null || value === '') return { value: null, errors: [`${k} needs a value, ${CONFIG_RULES[k].what}`] };
+      return { value, errors: configProblems({ [k]: value }, [k]).map((e) => e.replace(/^config /, '')) };
+    },
+  };
 }
 
 // ------------------------------------------------------------- the map cache

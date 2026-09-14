@@ -500,12 +500,13 @@ t('spamheroes selects the junk heroes by default rule', () => {
   eq(H.spamHeroes(c).map((h) => h.name), ['Junk1', 'Junk2']);
 });
 
+// Step 15: the default is NEAT's 8.4 h (wiki FarmingCycle), read from goal-npc
 t('config training drops the npc cooldown to an hour', () => {
-  eq(H.npcCooldownMs(ctx(ROSTER, { config: {} }), 5), 8 * 3600e3);
+  eq(H.npcCooldownMs(ctx(ROSTER, { config: {} }), 5), 8.4 * 3600e3);
   eq(H.npcCooldownMs(ctx(ROSTER, { config: { training: 1 } }), 5), 3600e3);
   eq(H.npcCooldownMs(ctx(ROSTER, { config: { training: 2 } }), 5), 3600e3);
   eq(H.npcUsesTransports(ctx(ROSTER, { config: { training: 2 } })), false);
-  eq(H.npcCooldownMs(ctx(ROSTER, { config: { training: 1 } }), 10), 8 * 3600e3, 'npc10 has its own switch');
+  eq(H.npcCooldownMs(ctx(ROSTER, { config: { training: 1 } }), 10), 8.4 * 3600e3, 'npc10 has its own switch');
   eq(H.npcCooldownMs(ctx(ROSTER, { config: { training10: 1 } }), 10), 3600e3);
 });
 

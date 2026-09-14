@@ -287,16 +287,8 @@ const GOALS = {
     },
   },
 
-  comfortpolicy: {
-    kind: 'policy', multi: false,
-    parse(args) {
-      const errs = [];
-      const min = parseInt(args[0], 10), max = parseInt(args[1], 10);
-      const mode = args[2] || null;
-      if (Number.isNaN(min) || Number.isNaN(max)) errs.push('expected: comfortpolicy <minMinutes> <maxMinutes> <mode>');
-      return { everyMinMin: min, everyMaxMin: max, mode, errors: errs };
-    },
-  },
+  // comfortpolicy, taxpolicy, production and warehousepolicy live in
+  // goal-upkeep.js (NEAT's options, levies, the tax range).
 
   // defensepolicy [/switches] — NEAT's switches (wiki DefensePolicy), each with
   // the kind of value it takes. A value that cannot be read is an error and the
@@ -340,7 +332,7 @@ const GOALS = {
 };
 
 // ---- goal modules (war, heroes, npc, transfers) contribute their own parsers + config keys ----
-for (const mod of ['./goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer']) {
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -383,7 +375,6 @@ const NOT_IMPLEMENTED = {
     embassy: 'no goal uses the embassy yet',
     trainint: 'no goal hires heroes yet, so nothing reads this key',
     trainpol: 'no goal hires heroes yet, so nothing reads this key',
-    nohealing: 'the bot does not heal troops at all yet, so there is nothing to switch off',
     fortification: 'fortification lines cannot be switched off this way yet',
     fortsusereserved: 'fortification orders do not keep a food reserve yet',
     wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',
@@ -543,8 +534,8 @@ function describe(parsed) {
         + (gr.condition ? ` (only when ${gr.condition})` : '')).join('; ') || '(nothing readable on this line)'}`));
     } else if (name === 'traininghero') {
       for (const g of list) out.push(`traininghero: ${g.hero} stays ${g.minStaySec}s min${g.maxStaySec ? `, ${g.maxStaySec}s max` : ''}${g.npcHits != null ? `, or after ${g.npcHits} npc hits` : ''}, then rotates to the next city`);
-    } else if (name === 'comfortpolicy') {
-      for (const g of list) out.push(`comfortpolicy: ${g.mode} every ${g.everyMinMin}-${g.everyMaxMin} min`);
+    } else if (['comfortpolicy', 'taxpolicy', 'production', 'warehousepolicy'].includes(name)) {
+      for (const g of list) out.push(require('./goal-upkeep').describeGoal(g));
     } else if (name === 'defensepolicy') {
       for (const g of list) out.push(`defensepolicy: ${Object.entries(g.switches).map(([k, v]) => `${k}=${v}`).join(', ')}`);
     } else if (name === 'requestresources' || name === 'requesttroops') {

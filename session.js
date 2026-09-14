@@ -1043,6 +1043,7 @@ class Session {
         foodHours: foodRate < 0 ? food / -foodRate : null,
         gate: ctl.gate, wartown: ctl.wartown,
         trainingHeroes: training.get(id) || [],
+        script: this.scriptLayer(id),          // goals a script set, running over the saved ones
       };
     });
   }
@@ -1590,12 +1591,20 @@ class Session {
   }
 
   // The goals the engine works in one city: the account's prepend goals, the
-  // city's own and the append goals (goallayers.parseLayered), or null. The
-  // console's views read these so they show what the engine does.
+  // city's own, the append goals and any goal lines a script ran there
+  // (goallayers.runningGoals), or null. The console's views read these so they
+  // show what the engine does.
   goalsOf(c) {
-    const { parseLayered } = require('./goallayers');
+    const { runningGoals } = require('./goallayers');
     const id = this.game ? this.game.castleId(c) : null;
-    return parseLayered(this.org.goals.layers(this.account && this.account.id, id, c.name));
+    return runningGoals(this.org.goals, this.account && this.account.id, id, c.name);
+  }
+
+  // A city's script goal layer for the console: how many lines, since when, and
+  // what it stands on — or null when the city runs its saved goals.
+  scriptLayer(castleId) {
+    const L = require('./goallayers').getScriptLayer(this.account && this.account.id, castleId);
+    return L ? { count: L.count, setAt: L.setAt, changedAt: L.changedAt, base: L.base, loaded: L.loaded } : null;
   }
 
   // Which troop-goal stage is this city currently working on?

@@ -685,17 +685,26 @@ const server = http.createServer(async (req, res) => {
     // The editor's colours ask this on every pause in typing: the parse and its
     // per-line standing only. A check never saves, whatever else it is sent.
     if (b.check) return send(200, 'application/json', JSON.stringify({ ok: true, errors: parsed.errors, lines: parsed.lines }));
-    let saved = null;
+    let saved = null, scriptCleared = false;
     if (b.save) {
       const key = String(b.city || 'default').trim() || 'default';
-      ORG.goals.set(SESSION.account && SESSION.account.id, key, b.kind === 'script' ? 'script' : 'goal', b.src);
+      const acct = SESSION.account && SESSION.account.id;
+      ORG.goals.set(acct, key, b.kind === 'script' ? 'script' : 'goal', b.src);
       saved = key;
+      // Saving a city's goals is NEAT's Set Goals, which puts back what a script
+      // changed there (wiki Config): the city's script goal layer ends.
+      if (b.kind !== 'script' && /^\d+$/.test(key) && require('./goallayers').clearScriptLayer(acct, key)) {
+        scriptCleared = true;
+        const g = SESSION.game, c = g && (g.castles || []).find((x) => String(g.castleId(x)) === key);
+        SESSION.note(`script goals cleared: ${(c && c.name) || 'the city'}'s goals were saved`, { city: (c && c.name) || null, kind: 'sys' });
+      }
     }
     return send(200, 'application/json', JSON.stringify({
-      ok: true, errors: parsed.errors, lines: parsed.lines, described: describe(parsed), saved,
-      engineNote: SESSION.userPaused
+      ok: true, errors: parsed.errors, lines: parsed.lines, described: describe(parsed), saved, scriptCleared,
+      engineNote: (SESSION.userPaused
         ? 'Saved. The engine is PAUSED — these take effect when you resume it.'
-        : 'Saved. The engine picks these up on its next tick.',
+        : 'Saved. The engine picks these up on its next tick.')
+        + (scriptCleared ? ' The goals a script had set here were dropped.' : ''),
     }));
   }
 
@@ -717,6 +726,28 @@ const server = http.createServer(async (req, res) => {
         SESSION.note(`${r.label} saved from the console (${G.goalLines(b.src)} line(s))`);
       }
       return send(200, 'application/json', JSON.stringify(r));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+
+  // A city's script goal layer (goallayers.js): goal lines scripts ran there,
+  // held in memory over its saved goals until cleared.
+  //   GET  /api/goals/script?city=<id>          -> { ok, layer: {src, setAt, base, loaded, count} | null }
+  //   POST /api/goals/script {city, clear: true} -> { ok, cleared }
+  if (url.pathname === '/api/goals/script') {
+    const G = require('./goallayers');
+    const acct = SESSION.account && SESSION.account.id;
+    try {
+      const b = req.method === 'POST' ? await body(req) : {};
+      const city = String(b.city ?? q.get('city') ?? '').trim();
+      if (!/^\d+$/.test(city)) throw new Error('script goals belong to a city — open one first');
+      if (req.method !== 'POST') return send(200, 'application/json', JSON.stringify({ ok: true, city, layer: G.getScriptLayer(acct, city) }));
+      if (!b.clear) throw new Error('the console only clears script goals; scripts set them');
+      const cleared = G.clearScriptLayer(acct, city);
+      if (cleared) {
+        const g = SESSION.game, c = g && (g.castles || []).find((x) => String(g.castleId(x)) === city);
+        SESSION.note(`script goals cleared from the console: ${(c && c.name) || 'the city'} runs its saved goals again`, { city: (c && c.name) || null, kind: 'sys' });
+      }
+      return send(200, 'application/json', JSON.stringify({ ok: true, cleared }));
     } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
 

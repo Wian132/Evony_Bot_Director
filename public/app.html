@@ -149,6 +149,7 @@
   .bar .hint .neg { font-weight:bold; }
   #loadSel { max-width:200px; }
   #acctSel { max-width:190px; }
+  #clearScript { white-space:nowrap; flex:0 0 auto; }
 
   /* the row above the editor: editor icons, Gate Control, War Town Mode */
   .ctlrow { display:flex; align-items:flex-end; gap:14px; padding:2px 0 4px; flex:0 0 auto; }
@@ -449,7 +450,8 @@
       <div class="well" id="editWell"><div class="edbox" id="edBox"><div class="edhl" id="edHl" aria-hidden="true"></div><textarea id="editor" spellcheck="false" aria-describedby="edLine"></textarea></div><pre class="out" id="engView" hidden></pre></div>
       <div class="edline" id="edLine"></div>
       <div class="bar">
-        <select id="acctSel" title="This city's own text, or one the whole account shares: the new-city template, the goals every city runs first (prepend) and last (append), the new-city script"></select>
+        <select id="acctSel" title="This city's own text, or one the whole account shares: the new-city template, the goals every city runs first (prepend) and last (append), the new-city script, the goal sets a script loads"></select>
+        <button id="clearScript" title="A script changed the goals this city is running. Clear them to go back to the saved goals" hidden>Clear script goals</button>
         <select id="loadSel" title="This city's script loadouts — every city has its own ten; the first line names one"></select>
         <button id="apply">Apply</button>
         <button id="save">Save</button>
@@ -1083,13 +1085,15 @@ async function loadEditor() {
 // warning stays until the text is edited (or a minute passes).
 function paintEditHint(extra, bad) {
   if (extra) S.hintUntil = Date.now() + (bad ? 60000 : 10000);
+  paintScriptBtn();
   if (!extra && acctWhich()) { $('editHint').innerHTML = acctHint(); return; }
   const h = S.head;
   const city = S.cityData ? esc(S.cityData.name) : 'the open city';
-  const L = loadOf();
+  const L = loadOf(), SL = scriptOf();
   $('editHint').innerHTML = extra ? (bad ? `<span class="neg">&#9888; ${esc(extra)}</span>` : esc(extra))
     : S.edit === 'goals' ? `${city}'s standing intentions, re-evaluated every tick`
       + (String(S.city) in GOALED.drafts ? ' · <b>not saved</b>' : '') + (h && h.paused ? ' · engine <b>PAUSED</b>' : '')
+      + (SL ? scriptHint(SL) : '')
     : S.edit === 'script' ? `runs top to bottom, once, in ${city}${L && L.slot in L.drafts ? ' · <b>not saved</b>' : ''}`
       + (RUNS.has(String(S.city)) ? ' · <b>running here</b>' : '')
     : '';
@@ -1198,9 +1202,12 @@ $('save').onclick = () => (S.edit === 'script' ? saveLoadout() : goalsCall(true)
 // ACCT.goals / ACCT.script is the text open in that tab ('' = the city's own);
 // unsaved edits wait per text, as a city's do.
 const ACCT = { goals: '', script: '', saved: {}, drafts: {}, info: {}, offered: {} };
+// NEAT's numbered goal sets, which a script's `loadgoals N` runs (goallayers.js)
+const GOAL_SETS = Array.from({ length: 9 }, (_, i) => `set${i + 1}`);
 const ACCT_OPTS = {
   goals: [['', 'This city\'s goals'], ['template', 'New-city template'],
-    ['prepend', 'Prepend goals (all cities)'], ['append', 'Append goals (all cities)']],
+    ['prepend', 'Prepend goals (all cities)'], ['append', 'Append goals (all cities)'],
+    ...GOAL_SETS.map((s) => [s, `Goal set ${s.slice(3)}`])],
   script: [['', 'This city\'s loadouts'], ['script', 'New-city script']],
 };
 const ACCT_ABOUT = {
@@ -1208,18 +1215,25 @@ const ACCT_ABOUT = {
   prepend: 'every city runs these before its own goals; a city\'s own lines override them',
   append: 'every city runs these after its own goals; they override the city\'s own lines',
   script: 'runs once in each city founded or captured while this console is connected',
+  ...Object.fromEntries(GOAL_SETS.map((s) => [s, `a script's loadgoals ${s.slice(3)} runs these in place of a city's goals `
+    + '(prepend and append too) until loadgoals, Clear script goals, saving that city\'s goals or a restart'])),
 };
 // how an error's place is named in each (goallayers.js TEXTS)
-const ACCT_WHERE = { template: 'template', prepend: 'prepend', append: 'append', script: 'new-city script' };
+const ACCT_WHERE = { template: 'template', prepend: 'prepend', append: 'append', script: 'new-city script',
+  ...Object.fromEntries(GOAL_SETS.map((s) => [s, `goal set ${s.slice(3)}`])) };
 const acctWhich = () => ((S.edit === 'goals' || S.edit === 'script') ? ACCT[S.edit] : '');
 const acctLabel = (which) => ((Object.values(ACCT_OPTS).flat().find(([v]) => v === which) || [])[1] || which).replace(/ \(.*\)$/, '');
 
 // The selector, and the loadout picker and Run, which belong to a city's scripts.
 function paintAcctSel() {
+  paintScriptBtn();
   const opts = ACCT_OPTS[S.edit];
   $('acctSel').style.display = opts ? '' : 'none';
   if (!opts) return;
-  $('acctSel').innerHTML = opts.map(([v, label]) => `<option value="${v}">${esc(label)}${v && v in ACCT.drafts ? ' *' : ''}</option>`).join('');
+  const opt = ([v, label]) => `<option value="${v}">${esc(label)}${v && v in ACCT.drafts ? ' *' : ''}</option>`;
+  const sets = opts.filter(([v]) => GOAL_SETS.includes(v));
+  $('acctSel').innerHTML = opts.filter(([v]) => !GOAL_SETS.includes(v)).map(opt).join('')
+    + (sets.length ? `<optgroup label="Goal sets a script loads (loadgoals N)">${sets.map(opt).join('')}</optgroup>` : '');
   $('acctSel').value = ACCT[S.edit] || '';
   if (acctWhich()) { $('loadSel').style.display = 'none'; $('runScript').style.display = 'none'; }
 }
@@ -1304,6 +1318,44 @@ async function acctCall(save) {
     ...(r.described || []),
   ].join('\n'));
 }
+
+// ---------- script goals: what a script set in the open city ----------
+// A script's goal lines (config npc:5, goal ..., loadgoals, resetgoals) change the
+// goals a city is RUNNING, in the console's memory, never the saved text shown in
+// the editor (goallayers.js, the script goal layer). /api/session lists them per
+// city; the hint says so, and Clear script goals puts the city back on its saved
+// goals, as NEAT's Set Goals does (saving the city's goals does the same).
+function scriptOf(city = S.city) {
+  return ((S.cities || []).find((c) => String(c.id) === String(city)) || {}).script || null;
+}
+function scriptHint(L) {
+  const at = new Date(L.setAt).toTimeString().slice(0, 5);
+  const what = L.base === 'reset' ? `goals reset by a script at ${at}${L.count ? `, ${L.count} line(s) set since` : ''}`
+    : L.base === 'loaded' ? `${L.loaded} loaded by a script at ${at}${L.count ? `, ${L.count} line(s) added` : ''}`
+    : `${L.count} line(s) set by a script at ${at}`;
+  return ` · <b class="neg">script goals active</b>: ${esc(what)}; they run over these until cleared, and Save drops them`;
+}
+function paintScriptBtn() {
+  $('clearScript').hidden = !(S.edit === 'goals' && !acctWhich() && scriptOf());
+}
+$('clearScript').onclick = async () => {
+  const city = String(S.city);
+  const name = (S.cityData && S.cityData.name) || ((S.cities || []).find((c) => String(c.id) === city) || {}).name || 'this city';
+  const r = await getJSON('/api/goals/script?city=' + encodeURIComponent(city));
+  const L = r && r.layer;
+  if (!L) { refresh(); return paintEditHint(`no script goals are running in ${name}`); }
+  const lines = L.src ? L.src.split('\n') : [];
+  const what = L.base === 'reset' ? 'A script reset the goals here' : L.base === 'loaded' ? `A script loaded ${L.loaded} here` : 'A script set goals here';
+  const detail = `${what}${lines.length ? `: ${lines.slice(0, 6).join('; ')}${lines.length > 6 ? ` … and ${lines.length - 6} more` : ''}` : ''}. `
+    + 'The city goes back to its saved goals on the engine\'s next tick.';
+  if (!await ask(`Clear the goals a script set in ${name}?`, { title: 'Script goals', detail, ok: 'Clear script goals' })) return;
+  const res = await post('/api/goals/script', { city, clear: true });
+  if (res.ok === false) return tell(res.error || 'failed', { title: 'Script goals' });
+  const sc = (S.cities || []).find((c) => String(c.id) === city);
+  if (sc) sc.script = null;                 // gone now, not at the next poll
+  paintEditHint(res.cleared ? `script goals cleared: ${name} runs its saved goals from the next tick` : 'there were no script goals to clear');
+  refresh();
+};
 
 // Always live. A script with errors is refused whole by the server. Runs in
 // different cities go side by side, and each city's Output shows its own run.
@@ -3297,6 +3349,7 @@ async function refresh(force) {
     paintControls();
     if (force) loadExtras(true);
     renderMon(force);
+    paintScriptBtn();                     // a script may have set goals since the last poll
     if (S.edit === 'engine') renderEngineView();
     else if (Date.now() > (S.hintUntil || 0)) paintEditHint();
     renderLogs(); renderChat();

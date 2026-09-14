@@ -134,6 +134,37 @@ const DEFENSE_ITEMS = {
   penicillin: 'player.relive.1',    // Penicillin
 };
 
+// How the client spends each defence item. The command differs by item, and
+// the bot sends exactly what the client sends:
+//   city.setStopWarState {ItemId, passWord}  the Truce Agreement, from Player
+//       Info (StageChangeWin.as:447); the item window will not spend it at all
+//       (UseGoodWin.as:1437-1440). No castleId: it changes the whole account.
+//   shop.useCastleGoods {castleId, itemId}   Speech Text, which works on one
+//       city's loyalty (UseGoodWin.as:1576, SpeedupItemSelector.as:416).
+//   shop.useGoods {castleId, itemId, num}    every other player item, the horns,
+//       corselets and Penicillin included (UseGoodWin.as:1505).
+// `buffs` are the player buff typeIds the item shows up as while it runs
+// (PLayerBuffConstants.as; MainFrame.as:362 lists the truce family), and
+// `lastsMs` is how long it runs, from the item's own description.
+const DEFENSE_ITEM_USE = {
+  'player.peace.1': { key: 'truce', name: 'Truce Agreement', cmd: 'city.setStopWarState', scope: 'account',
+    buffs: ['PlayerPeaceBuff', 'PlayerPeaceUniteServerBuff', 'TruceAgreementBuff'], lastsMs: 12 * 3600000 },
+  'player.heart.1.a': { key: 'speech', name: 'Speech Text', cmd: 'shop.useCastleGoods', scope: 'city', buffs: [], lastsMs: 0 },
+  'player.attackinc.1': { key: 'warhorn', name: 'War Horn', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyAttachBuff'], lastsMs: 24 * 3600000 },
+  'player.attackinc.1.b': { key: 'ivoryhorn', name: 'Ivory Horn', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyAttachBuff'], lastsMs: 7 * 24 * 3600000 },
+  'player.defendinc.1': { key: 'corselet', name: 'Corselet', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyDefenceBuff'], lastsMs: 24 * 3600000 },
+  'player.defendinc.1.b': { key: 'ultracorselet', name: 'Ultra Corselet', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyDefenceBuff'], lastsMs: 7 * 24 * 3600000 },
+  'player.relive.1': { key: 'penicillin', name: 'Penicillin', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['TroopReliveBuff'], lastsMs: 7 * 24 * 3600000 },
+};
+// While truced, and for the cooldown after, the game will not truce again
+// (PlayerInfoWin.as:1845). NEAT calls these m_context.truced / inTruceCooldown.
+const TRUCE_COOLDOWN_BUFFS = ['PlayerPeaceCoolDownBuff'];
+
 // WARNING: two DIFFERENT resource numberings exist.
 // TradeConstants.as -- market commands only:
 const TRADE_RES = { food: 0, wood: 1, stone: 2, iron: 3 };
@@ -262,7 +293,7 @@ module.exports = {
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
   SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
-  TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS,
+  TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS, DEFENSE_ITEM_USE, TRUCE_COOLDOWN_BUFFS,
   MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
   marchFood, marchFoodPerHour,
   ZONES, zoneOf,

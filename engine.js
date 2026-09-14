@@ -1104,7 +1104,15 @@ class Engine {
         try {
           let r = { ok: 1 };
           if (a.kind === 'pacify') { r = await g.req('interior.pacifyPeople', { castleId: g.castleId(castle), typeId: a.typeId }); cityState.lastComfort = Date.now(); cityState.comfortGapMs = 0; }
-          else if (a.kind === 'useItem') { r = await g.useCastleItem(g.castleId(castle), a.itemId); }
+          else if (a.kind === 'defenceItem') {
+            // Each defence item through its own game command (game.js
+            // useDefenceItem). A use counts only once the server says ok.
+            r = await g.useDefenceItem(g.castleId(castle), a.itemId);
+            if (r && r.ok === 1) {
+              const d = (cityState.defence = cityState.defence || {});
+              (d.used = d.used || {})[a.item] = Date.now();
+            }
+          }
           else if (a.kind === 'note') { report.acted.push(a.label); continue; }
           else if (MODULE_EXECUTORS[a.kind]) {
             r = await MODULE_EXECUTORS[a.kind](g, castle, a, cityState);

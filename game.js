@@ -81,6 +81,9 @@ class Game {
         else if (count > 0) this.player.items.push(it);
       }
     });
+    // And the player buffs (truce, horns, corselets...), which defensepolicy
+    // reads to know what is already running. See applyPlayerBuffUpdate.
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.PlayerBuffUpdate') this.applyPlayerBuffUpdate(data); });
 
     // march/load skill params (affects march time)
     try {
@@ -297,6 +300,52 @@ class Game {
   useItem(castleId, itemId, num = 1) { return this.req('shop.useGoods', { castleId, itemId, num }); }
   useCastleItem(castleId, itemId) { return this.req('shop.useCastleGoods', { castleId, itemId }); }
   packageList(castleId) { return this.req('common.getPackageList', { castleId }); }
+
+  // ---- defence items (defensepolicy) ----
+  // Each goes through the command the client uses for it (constants.js
+  // DEFENSE_ITEM_USE). The outcome is kept per item id for the whole account,
+  // so a second city knows a truce or a horn has just gone out, even before the
+  // server's buff push arrives: itemUses[itemId] = {at, ok, castleId, errorMsg}.
+  async useDefenceItem(castleId, itemId) {
+    const how = C.DEFENSE_ITEM_USE[itemId];
+    if (!how) return { ok: 0, errorMsg: `${itemId} is not a defence item` };
+    this.itemUses = this.itemUses || {};
+    const note = (ok, errorMsg) => { this.itemUses[itemId] = { at: Date.now(), ok, castleId, errorMsg: errorMsg || null }; };
+    let r;
+    try {
+      r = how.cmd === 'city.setStopWarState' ? await this.useTruce(itemId)
+        : how.cmd === 'shop.useCastleGoods' ? await this.useCastleItem(castleId, itemId)
+        : await this.useItem(castleId, itemId, 1);
+    } catch (e) { note(null, e.message); throw e; }   // no reply: it may or may not have gone through
+    note(r && r.ok === 1 ? 1 : 0, r && r.errorMsg);
+    return r;
+  }
+
+  // Truce Agreement: city.setStopWarState {ItemId, passWord} — capital I and a
+  // camelCase passWord, exactly as CityCommands.as:134-142 sends them. It has no
+  // castleId because it changes the whole account's status. passWord is the
+  // SHA1 the login sent (evony.js keeps it private); it is never logged.
+  async useTruce(itemId = C.DEFENSE_ITEMS.truce) {
+    const passWord = this.c && typeof this.c.passwordHash === 'function' ? this.c.passwordHash() : null;
+    if (!passWord) return { ok: 0, errorMsg: 'this session never logged in with a password, so it cannot sign a truce' };
+    return this.req('city.setStopWarState', { ItemId: itemId, passWord });
+  }
+
+  // server.PlayerBuffUpdate {updateType, buffBean}, applied the way
+  // Context.onPlayerBuffUpdate does: 0 adds, 1 deletes the first buff of that
+  // typeId, anything else updates it. Without this the login's buff list goes
+  // stale, and a truce or horn already running would look absent.
+  applyPlayerBuffUpdate(data) {
+    const b = data && data.buffBean;
+    if (!b || b.typeId === undefined || b.typeId === null) return;
+    this.player = this.player || {};
+    const list = (this.player.buffs = this.player.buffs || []);
+    if (Number(data.updateType) === 0) { list.push(b); return; }
+    const i = list.findIndex((x) => x && x.typeId === b.typeId);
+    if (i < 0) return;
+    if (Number(data.updateType) === 1) list.splice(i, 1);
+    else list[i] = { ...list[i], ...b };
+  }
 
   // ---- teleporting a city (CityCommands.as) ----
   // Each one spends its item server-side; none goes through shop.useGoods.

@@ -159,14 +159,36 @@ const GOALS = {
     },
   },
 
+  // defensepolicy [/switches] — NEAT's switches (wiki DefensePolicy), each with
+  // the kind of value it takes. A value that cannot be read is an error and the
+  // switch stays unset, rather than becoming NaN or 0 and meaning something else.
   defensepolicy: {
     kind: 'policy', multi: false,
+    SWITCHES: {
+      junktroop: 'troops',                        // attacks under this many troops are junk
+      usetruce: 'loyalty', usespeech: 'loyalty',  // use the item at or below this loyalty
+      usewarhorn: 'flag', useivoryhorn: 'flag', usecorselet: 'flag',
+      useultracorselet: 'flag', usepenicillin: 'flag',
+    },
     parse(args) {
       const errs = [], sw = {};
+      const SW = GOALS.defensepolicy.SWITCHES;
       for (const tok of args) {
         if (!tok.startsWith('/')) { errs.push(`expected /switch:value, got "${tok}"`); continue; }
         const [k, v] = kv(tok.slice(1));
-        sw[k.toLowerCase()] = v === null ? true : (NUM(v) ?? v);
+        const key = k.toLowerCase(), want = SW[key];
+        if (!want) { errs.push(`unknown switch "/${k}" (known: ${Object.keys(SW).map((s) => '/' + s).join(' ')})`); continue; }
+        // a bare on/off switch means on; "/usecorselet:" with nothing after is a slip
+        if (v === null && want === 'flag') { sw[key] = 1; continue; }
+        if (v === null || v === '') {
+          errs.push(`/${key} needs a value, e.g. /${key}:${want === 'troops' ? '1000' : want === 'flag' ? '1' : '50'}`);
+          continue;
+        }
+        const num = NUM(v);
+        if (num === null) { errs.push(`/${key}:${v} — cannot read "${v}" as a number`); continue; }
+        if (want === 'flag' && num !== 0 && num !== 1) { errs.push(`/${key} is 0 (off) or 1 (on), not ${v}`); continue; }
+        if (want === 'loyalty' && num > 100) { errs.push(`/${key} is a loyalty from 0 to 100, not ${v}`); continue; }
+        sw[key] = num;
       }
       return { switches: sw, errors: errs };
     },

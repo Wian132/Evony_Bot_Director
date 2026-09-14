@@ -314,9 +314,9 @@ const capacityOf = (troops, loadSkill) => Object.entries(troops)
 
 // Client-verified (NewArmyWin.as:2852 + :3102): marching food is foodRequest*2 per
 // troop per hour of ONE-WAY march time — i.e. the round trip — and it is carried
-// in the same hold as the loot (leftSpace = loads - portableFood).
-const marchFoodOf = (troops, oneWayMs) => Object.entries(troops)
-  .reduce((s, [k, v]) => s + (C.BY_KEY[k] ? C.BY_KEY[k].food * 2 * n(v) : 0), 0) * (n(oneWayMs) / 3600000);
+// in the same hold as the loot (leftSpace = loads - portableFood). One helper for
+// every goal that marches (C.marchFood), so hiding charges exactly the same.
+const marchFoodOf = (troops, oneWayMs) => C.marchFood(troops, oneWayMs);
 
 const oneWayMsTo = (from, to, troops, marchSkill) =>
   n(C.marchTimeMs(from, to, Object.keys(troops).filter((k) => n(troops[k]) > 0), n(marchSkill) || 100));

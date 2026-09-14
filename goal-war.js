@@ -124,10 +124,11 @@ function parseTroopSpec(s, errs, label) {
 }
 
 // ------------------------------------------------------------------ incoming
-// engine.js flattens each inbound army to {troops:<total>, reachTime, from}, so
-// the per-type breakdown is normally gone by the time we see it. We read
-// whichever shape is present: a raw ArmyBean (troop / troops as an object), or
-// the flattened total. `known` says whether the total can be trusted.
+// engine.js hands each inbound army over with its per-type TroopStrBean kept
+// under `troop` (so a scout bomb can be told from a regular wave) and its total
+// under `troops` (null when unscouted). We read whichever shape is present: a
+// raw ArmyBean (troop / troops as an object), or a bare total. `known` says
+// whether the total can be trusted.
 function normalizeArmy(a, nowMs) {
   const raw = (a && (a.troop || a.troops)) || null;
   let byType = null, total = null, known = false;
@@ -182,18 +183,77 @@ function classify(army, opts) {
   return { ...army, scouts, scoutRatio: r, kind: r >= ratio ? 'scoutbomb' : 'regular' };
 }
 
+// The junk line every defensive goal shares unless it sets its own /junk:
+// defensepolicy's /junktroop, which the wiki says keeps a junk attack from
+// triggering "the attack warning, gatepolicy, hiding, defensepolicy, or other
+// defensive measures" (DefensePolicy). NEAT's default is 1000.
+function defaultJunk(ctx) {
+  const dp = (ctx.goals || []).find((x) => x.name === 'defensepolicy');
+  const v = dp && dp.switches ? dp.switches.junktroop : undefined;
+  const j = v === undefined || v === null || v === true ? NaN : Number(v);
+  return Number.isFinite(j) && j >= 0 ? j : 1000;
+}
+
 // Every plan starts here: the inbound armies worth reacting to, soonest first.
 function threatsOf(ctx, opts = {}) {
   const game = ctx.game;
   const nowMs = game && game.now ? game.now() : Date.now();
   // /junk:0 means "react to everything" and must not fall back to the default
-  const junk = opts.junk === null || opts.junk === undefined ? 1000 : n(opts.junk);
+  const junk = opts.junk === null || opts.junk === undefined ? defaultJunk(ctx) : n(opts.junk);
   const list = (ctx.incoming || [])
     .map((a) => classify(normalizeArmy(a, nowMs), opts))
     .filter((a) => a.msUntil === null || a.msUntil > -60000);   // drop stale entries
   const real = list.filter((a) => a.total === null || a.total >= junk);
   real.sort((a, b) => (a.msUntil ?? Infinity) - (b.msUntil ?? Infinity));
   return { now: nowMs, all: list, real, junk: list.length - real.length };
+}
+
+// The moments (server-epoch ms) at which this city's hiding and gate goals
+// next have something to decide. The engine otherwise asks them once a minute,
+// and NEAT's own examples lead by 30 s (hiding:0.5) and 6 s (gate:0.1), so it
+// runs one extra war-only pass at each of these (Engine.nextWakeAt).
+//   hiding  each wave's reachTime - lead (launch); once troops are out, the
+//           moment the last wave plus /margin has passed (the early recall)
+//   gate    each wave's reachTime - lead (it enters the window), a few seconds
+//           after its reachTime (it has left it), and the end of a /mintoggle
+//           hold after a flip
+// Past moments are returned too: the engine keeps the ones it has not looked
+// at since. A wave with no known arrival time is left to the regular tick.
+//
+// Never right at impact: our idea of the server clock can be a few hundred ms
+// out, and a gate flipped a moment early lets the wave meet the other setting.
+// The army list push that follows the battle usually brings the look sooner
+// anyway (Engine.noteHostile), and that one comes from the server.
+const GATE_SETTLE_MS = 3000;
+function warMoments(ctx, state) {
+  const out = [];
+  const st = (state && state.war) || {};
+  const hiding = parsers.hiding.parse(ctx.config && ctx.config.hiding);
+  if (hiding.enabled) {
+    const opt = hidingOptions(ctx);
+    const t = threatsOf(ctx, { junk: opt.junk });
+    const lands = t.real.filter((a) => a.msUntil !== null).map((a) => t.now + a.msUntil);
+    if (st.hide) {
+      if (opt.recall) out.push(Math.max(n(st.hide.forImpactAt), ...lands) + opt.marginMs);
+    } else {
+      for (const at of lands) out.push(at - hiding.leadMs);
+    }
+  }
+  // A manual Open or Closed on the console is held by the regular tick.
+  const manual = ctx.controls && (ctx.controls.gate === 'open' || ctx.controls.gate === 'closed');
+  const gate = parsers.gate.parse(ctx.config && ctx.config.gate);
+  if (gate.enabled && !manual) {
+    const pol = (ctx.goals || []).find((x) => x.name === 'gatepolicy');
+    const sw = (pol && pol.switches) || {};
+    const t = threatsOf(ctx, { junk: sw.junk, scoutratio: sw.scoutratio });
+    for (const a of t.real) {
+      if (a.msUntil !== null) out.push(t.now + a.msUntil - gate.leadMs, t.now + a.msUntil + GATE_SETTLE_MS);
+    }
+    const gs = st.gate || {};
+    // the same hold gatePlan applies (10 s unless /mintoggle says otherwise)
+    if (gs.lastAt) out.push(n(gs.lastAt) + (sw.mintoggle !== undefined ? durationMs(sw.mintoggle, 'sec') : 10000));
+  }
+  return out.filter((x) => Number.isFinite(x));
 }
 
 const hhmmss = (ms) => {
@@ -578,23 +638,25 @@ function buildHideMarch(ctx, opt, t, game) {
   restSec = clamp(restSec, 0, Math.floor(opt.maxRestMs / 1000));
 
   // -- food --------------------------------------------------------------
-  // NewArmyWin.as:3104 + 1717:
-  //   portableFood = upkeepPerHour * oneWayHours
-  //   needFood     = portableFood + upkeepPerHour * restHours
+  // NewArmyWin.as:2852, 3102 + 1717 (C.marchFood, shared with npc farming):
+  //   foodPerHour  = sum of foodRequest * 2 * count      (twice the upkeep)
+  //   portableFood = foodPerHour * oneWayHours
+  //   needFood     = portableFood + foodPerHour * restHours
   // and the client refuses to send when needFood > the city's food. The food
   // also rides in the army's carry capacity, so it eats into what we can hide.
-  const upkeepPerHour = Object.entries(troops).reduce((s, [k, v]) => s + v * C.BY_KEY[k].food, 0);
+  // Counting it once planned camps the city could not feed.
+  const foodPerHour = C.marchFoodPerHour(troops);
   const loads = Object.entries(troops).reduce((s, [k, v]) => s + v * C.BY_KEY[k].load, 0);
   const res = castle.resource || {};
   const foodHave = n(res.food && res.food.amount);
   const foodBudget = Math.floor(foodHave * opt.foodShare);
 
   const oneWayHours = oneWayMs / 3600000;
-  const foodFor = (sec) => Math.ceil(upkeepPerHour * (oneWayHours + sec / 3600));
+  const foodFor = (sec) => Math.ceil(C.marchFood(troops, oneWayMs, sec * 1000));
 
   let clampedByFood = false;
   if (foodFor(restSec) > foodBudget) {
-    const affordable = Math.floor(((foodBudget / Math.max(1, upkeepPerHour)) - oneWayHours) * 3600);
+    const affordable = Math.floor(((foodBudget / Math.max(1, foodPerHour)) - oneWayHours) * 3600);
     restSec = Math.max(0, affordable);
     clampedByFood = true;
   }
@@ -818,10 +880,12 @@ function warRulesPlan(ctx, state, game) {
     return { note: 'warrules: armed, nothing to report', actions: [] };
   }
 
-  // Signature of the current picture: which waves, how big, landing when
-  // (bucketed to a minute so a ticking clock is not "a change").
+  // Signature of the current picture: which waves, how big, landing when. The
+  // landing moment is bucketed to a minute of the CLOCK: bucketing the time
+  // still to go changed the signature every minute on its own, so a quiet
+  // attack posted an "update" every X minutes instead of a reminder every 5X.
   const sig = t.real
-    .map((a) => `${a.armyId ?? a.from}:${a.total ?? '?'}:${Math.round((a.msUntil ?? 0) / 60000)}`)
+    .map((a) => `${a.armyId ?? a.from}:${a.total ?? '?'}:${a.msUntil === null ? '?' : Math.round((t.now + a.msUntil) / 60000)}`)
     .sort().join('|');
 
   const changed = sig !== cs.lastSig;
@@ -1130,5 +1194,7 @@ module.exports = {
   defenceAllowed, noteDefenceUsed,
   healingAllowed,
   // exported for the tests
-  _internals: { durationMs, count, normalizeArmy, classify, threatsOf, buildHideMarch, gateBotChoice, hidingOptions, hhmmss, isAttackHero },
+  _internals: { durationMs, count, normalizeArmy, classify, threatsOf, buildHideMarch, gateBotChoice, hidingOptions, hhmmss, isAttackHero, defaultJunk },
+  // when the hiding and gate goals next need a look (Engine.nextWakeAt)
+  warMoments,
 };

@@ -541,6 +541,14 @@ const mapCache = {
       .map((r) => { try { return JSON.parse(r.json); } catch { return null; } }).filter(Boolean);
   },
 
+  // One tile by its field id (y*800+x), in asJson's shape, or null. The
+  // reportstokeep goal asks it for each report's target (goal-reports.js).
+  tile(fieldId) {
+    const r = one('SELECT json FROM map_cache WHERE id = ?', Number(fieldId));
+    if (!r) return null;
+    try { return JSON.parse(r.json); } catch { return null; }
+  },
+
   // When one map block (the size x size square at x1,y1) was last read, from the
   // tiles it left here: { at, tiles, unleveled } — at 0 when none are cached.
   // `unleveled` counts NPC tiles cached without a level (an old mapscan.js

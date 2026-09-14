@@ -381,8 +381,6 @@ const NOT_IMPLEMENTED = {
     troopincrement: 'troop lines are trained in order, not by increments or ratio yet',
     troopdelbadque: 'badly queued troops are not cancelled yet',
     embassy: 'no goal uses the embassy yet',
-    trainint: 'no goal hires heroes yet, so nothing reads this key',
-    trainpol: 'no goal hires heroes yet, so nothing reads this key',
     nohealing: 'the bot does not heal troops at all yet, so there is nothing to switch off',
     fortification: 'fortification lines cannot be switched off this way yet',
     fortsusereserved: 'fortification orders do not keep a food reserve yet',

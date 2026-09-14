@@ -292,7 +292,14 @@ function defensePlan(ctx, state) {
 // mayor kept by default with no mention of config hero, so the wiki does not
 // settle it and the earlier behaviour stays.
 // Swapping costs a command, so only swap when the desired hero actually differs.
-function mayorPlan(ctx, intent) {
+//
+// wiki TrainPol: with config trainpol:1 the politics hero farms NPCs, and
+// "another hero (attack, normally) will be set as temporary mayor while your
+// politics hero is out farming". `opts.leaving` holds the heroes NPC farming is
+// sending this slice (goal-npc): under trainpol none of them is appointed, so a
+// mayor who is about to leave hands the office to a hero who stays. Once the
+// politics hero is home and not going out again, the rules above bring it back.
+function mayorPlan(ctx, intent, opts = {}) {
   const cfg = ctx.config || {};
   if (cfg.hero !== undefined && cfg.hero !== null && cfg.hero !== '') {
     if (Number(cfg.hero) === 0) return null;
@@ -304,7 +311,9 @@ function mayorPlan(ctx, intent) {
 
   // HeroConstants.as: 0 = free, 1 = chief (mayor). 2 is GARRISON, not mayor.
   const current = heroes.find((h) => Number(h.status) === 1);
-  const pool = heroes.filter((h) => h.status !== undefined && h.status !== null && (Number(h.status) === 0 || Number(h.status) === 1));
+  let pool = heroes.filter((h) => h.status !== undefined && h.status !== null && (Number(h.status) === 0 || Number(h.status) === 1));
+  const leaving = n(cfg.trainpol) === 1 && opts.leaving && opts.leaving.size ? opts.leaving : null;
+  if (leaving) pool = pool.filter((h) => !leaving.has(h.id));
   if (!pool.length) return { note: `mayor: no hero at home to appoint (${heroes.length} away or held)` };
 
   // The attribute field already includes allocated points (HeroProperties.as shows
@@ -321,9 +330,11 @@ function mayorPlan(ctx, intent) {
   if (current && current.id === want.id) {
     return { note: `mayor: ${current.name} already set for ${why}` };
   }
+  const leaves = current && leaving && leaving.has(current.id);
   return {
     note: `mayor: want ${want.name} (${wantAttack ? 'atk ' + val(want, 'power') : 'pol ' + val(want, 'management')}) for ${why}` +
-          (current ? `, currently ${current.name}` : ', currently none'),
+          (current ? `, currently ${current.name}` : ', currently none') +
+          (leaves ? ` — ${current.name} goes NPC farming (trainpol), ${want.name} stands in` : ''),
     actions: [{ kind: 'setMayor', hero: want, current: current ? current.name : null, label: `appoint ${want.name} as mayor (${why})` }],
   };
 }

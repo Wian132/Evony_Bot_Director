@@ -101,6 +101,9 @@ function npcPlan(castle, src, over = {}) {
   const ctx = ctxFor(castle, src, over);
   ctx.mapCache = npcCache(castle);
   ctx.now = NOW;
+  // Step 15: levels 1-5 farm only with the research the wiki FAQ names
+  // (Military Tradition 9, Horseback Riding 13, Archery 14)
+  ctx.techs = ctx.techs || { levels: { 9: 10, 13: 10, 14: 10 } };
   return NPC.plans.npc(ctx, over.state || {}, ctx.game);
 }
 const npcHeroes = (p) => p.actions.map((a) => a.hero.name);

@@ -405,6 +405,9 @@ class Session {
             this.noteConnectOk();
             this.state = 'connected'; this.disconnectReason = null;
             const was = this.maint.plan;
+            // back from maintenance (not a script's logout): NPC farming forgets
+            // its history, as NEAT does after it relogs (goal-npc, wiki Npc)
+            if (!was || was.source !== 'logout') this.maintEndedAt = Date.now();
             this.clearMaintenancePlan();
             this.note(was && was.source === 'logout'
               ? `back online after the script's logout — ${this.game.castles.length} city(ies), ${was.citiesBefore ?? '?'} before it`
@@ -444,6 +447,7 @@ class Session {
             await this.connect();
             this.noteConnectOk();
             this.state = 'connected'; this.disconnectReason = null;
+            this.maintEndedAt = Date.now();          // see the maintenance recovery above
             this.note('back online');
           } catch (e) { this.noteConnectError(e); }
           return;
@@ -723,6 +727,7 @@ class Session {
       // a new or changed attack may need a war pass before the next tick
       this.engine.onHostile = () => this.armWake();
       this.engine.controlsFor = (castle) => this.controls(this.game.castleId(castle));
+      this.engine.maintEndedAt = this.maintEndedAt || 0;
       this.engine.dryRun = false;
       await this.engine.tick({ urgent });
       if (!urgent) {
@@ -737,6 +742,9 @@ class Session {
     }
     if (urgent && this._tickOwed) { this._tickOwed = false; setImmediate(() => this.engineTick()); }
     this.armWake();
+    // a few map blocks around the farming cities, after the tick and outside its
+    // lock, so a war pass is never held up by it (backgroundScan)
+    if (!urgent) this.backgroundScan().catch(() => {});
     return true;
   }
 
@@ -1956,6 +1964,86 @@ class Session {
     }
     tiles.sort((a, b) => a.dist - b.dist);
     return { center: { x: cx, y: cy }, radius, blocks: origins.length, scanned, tiles };
+  }
+
+  // ---- background map scan ----
+  // NPC farming picks its camps from the shared map cache, which used to fill
+  // only while someone browsed the Map tab or ran mapscan.js (a second login,
+  // which kicks this console). So after each regular engine tick the console
+  // reads a few blocks around its farming cities itself, on its own socket:
+  // goal-npc scanPlan picks them (PER_ROUND a round, each block again after
+  // REFRESH_MS, never-read and nearest first) and this only asks. At most one
+  // round per MAP_SCAN_GAP, none while the socket is down, the server is in
+  // maintenance, a stand-down is on or the console is paused. `config mapscan:0`
+  // turns it off in a city. Every castle, camp, flat and valley of a block read
+  // goes into the cache — valleys too, for the valley goals to come.
+  static MAP_SCAN_GAP = 50000;
+
+  async backgroundScan() {
+    if (this._scanBusy) return null;
+    if (!this.connected || this.paused || this.userPaused) return null;
+    if (this.planPhase() === 'standdown') return null;
+    const e = this.engine;
+    if (!e || typeof e.goalsFor !== 'function') return null;
+    if (Date.now() - (this._scanAt || 0) < Session.MAP_SCAN_GAP) return null;
+    this._scanBusy = true;
+    this._scanAt = Date.now();
+    try {
+      const g = this.game;
+      const NPC = require('./goal-npc');
+      const cities = [];
+      for (const c of g.castles || []) {
+        let parsed = null;
+        try { parsed = e.goalsFor(g.castleId(c), c.name); } catch {}
+        if (!parsed) continue;
+        const xy = typeof g.castleXY === 'function' ? g.castleXY(c)
+          : (c.fieldId !== undefined ? C.fieldIdToCoords(Number(c.fieldId)) : null);
+        if (xy) cities.push({ name: c.name, xy, config: parsed.config || {}, goals: parsed.goals || [] });
+      }
+      // When each block was last read: this session's own reads, else what the
+      // cache already holds from any reader (the Map tab, mapscan.js), unless it
+      // cached camps without their level — then it is read again.
+      const world = this.mapStore().world;
+      if (!this._scanSeen || this._scanSeen.world !== world) this._scanSeen = { world, at: new Map() };
+      const seen = this._scanSeen.at;
+      const seenOf = (o) => {
+        const k = o.x + ',' + o.y;
+        if (!seen.has(k)) {
+          let at = 0;
+          try { const b = D.mapCache.blockSeen(o.x, o.y, Session.MAP_BLOCK); at = b.unleveled ? 0 : b.at; } catch {}
+          seen.set(k, at);
+        }
+        return seen.get(k);
+      };
+      const plan = NPC.scanPlan({ cities, seenOf, now: Date.now() });
+      this.mapScan = { at: Date.now(), wanted: plan.wanted, due: plan.due, cities: plan.cities, asked: plan.origins.length, read: 0 };
+      if (!plan.origins.length) return plan;
+
+      await this.fetchMapBlocks(g, plan.origins);
+      const store = this.mapStore();
+      const mine = new Set((g.castles || []).map((c) => Number(c.fieldId)));
+      const tiles = [];
+      let read = 0;
+      for (const o of plan.origins) {
+        const k = o.x + ',' + o.y;
+        const blk = store.blocks.get(k);
+        // no answer: asked again after RETRY_MS, not every round
+        if (!blk) { seen.set(k, Date.now() - NPC.SCAN.REFRESH_MS + NPC.SCAN.RETRY_MS); continue; }
+        read++;
+        seen.set(k, blk.at);
+        // `relation` is how a castle stands to THIS account: not for a shared table
+        for (const { relation, ...t } of this.mapBlockTiles(blk, mine)) if (NPC.keepTile(t)) tiles.push({ ...t, seen: blk.at });
+      }
+      if (tiles.length) D.mapCache.upsertMany(tiles);
+      this.mapScan.read = read;
+      const where = [...new Set(plan.origins.map((o) => o.city).filter(Boolean))].join(', ');
+      this.note(`map scan: ${read}/${plan.origins.length} block(s) read around ${where || 'the farming cities'}, `
+        + `${Math.max(0, plan.due - read)} more due of ${plan.wanted}`, { kind: 'net' });
+      return plan;
+    } catch (err) {
+      this.note('background map scan: ' + err.message, { kind: 'net' });
+      return null;
+    } finally { this._scanBusy = false; }
   }
 
   // Instant lookup from the cache (no login needed).

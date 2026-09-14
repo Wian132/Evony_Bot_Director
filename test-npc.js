@@ -102,11 +102,16 @@ function fakeGame(castle, selfArmys = []) {
   };
 }
 
+// Research the FAQ asks for before levels 1-5 are farmed (Military Tradition
+// 9, Horseback Riding 13, Archery 14 — all at 10 here). Step 15 made the plan
+// read it; test-npc-parity.js tests the rule itself.
+const FULL_RESEARCH = { at: Date.now(), levels: { 9: 10, 13: 10, 14: 10 } };
+
 function makeCtx(src, over = {}) {
   const parsed = parseAll(src);
   const castle = over.castle || fixtureCastle();
   return {
-    ctx: { castle, goals: parsed.goals, config: parsed.config, mapCache: over.cache || fixtureCache(), now: over.now, ...over.ctx },
+    ctx: { castle, goals: parsed.goals, config: parsed.config, mapCache: over.cache || fixtureCache(), now: over.now, techs: FULL_RESEARCH, ...over.ctx },
     parsed, castle,
     game: over.game || fakeGame(castle, over.selfArmys || []),
   };
@@ -142,12 +147,16 @@ t('npctroops rejects a bad code and a bad amount', () => {
   has(p.errors[1].error, 'bad amount "lots"');
 });
 
-t('npclimits needs a level', () => {
+// Step 15: the wiki writes "npclimits [level] troops_to_have" — a line with no
+// level used to be an error; it now covers every level 6-10 without its own.
+t('npclimits takes a level, or none (NEAT [level])', () => {
   const good = parseAll('npclimits 10 a:390k,s:50k');
   eq(good.errors, []);
   eq(good.goals[0], { name: 'npclimits', kind: 'directive', line: 1, raw: 'npclimits 10 a:390k,s:50k', level: 10, troops: { archer: 390000, scouter: 50000 } });
-  const bad = parseAll('npclimits a:390k');
-  has(bad.errors[0].error, 'needs an npc level');
+  const bare = parseAll('npclimits a:390k');
+  eq(bare.errors, []);
+  eq([bare.goals[0].level, bare.goals[0].troops], [null, { archer: 390000 }]);
+  has(parseAll('npclimits 10').errors[0].error, 'needs the troops');
 });
 
 t('npcteams is single valued and last-wins', () => {
@@ -362,16 +371,22 @@ t('npcheroes with a bad hero string is a parse error', () => {
   eq(parseAll('npcheroes !OTTO,any').errors, []);
 });
 
-t('npcheroes !name,any keeps that hero off every level', () => {
-  const { plan } = run([
+// Step 15: wiki NpcHeroes — a line with no level is the older style "for all
+// npcs of level 1-5"; it used to cover every level.
+t('npcheroes !name,any keeps that hero off levels 1-5; a level 10 line keeps it off 10s', () => {
+  const src = [
     'config npc:5', 'distancepolicy 10',
     'npctroops 10 a:90000,wo:2000,w:2000,s:4000,t:2000',
     'npclimits 10 a:100000,s:20000',
     'npcheroes !Strong,any',
-  ].join('\n'));
+  ];
+  const { plan } = run(src.join('\n'));
   ok(plan.actions.length >= 3);
   ok(plan.actions.some((a) => a.level === 10) && plan.actions.some((a) => a.level === 5), 'both levels farmed');
-  ok(!plan.actions.some((a) => a.hero.name === 'Strong'), 'Strong never marches');
+  ok(!plan.actions.some((a) => a.level <= 5 && a.hero.name === 'Strong'), 'Strong never marches to a 5');
+  eq(plan.actions.find((a) => a.level === 10).hero.name, 'Strong', 'no level 10 line: any hero, the strongest first');
+  const both = run([...src, 'npcheroes 10 !Strong,any'].join('\n')).plan;
+  ok(!both.actions.some((a) => a.hero.name === 'Strong'), 'with its own level 10 line Strong never marches');
 });
 
 t('npcheroes 10 any + npcheroes !name,any: that hero farms 10s only', () => {
@@ -436,15 +451,18 @@ t('level 10 runs once npclimits and npctroops are both set', () => {
   ok(plan.actions.findIndex((a) => a.level === 10) === 0, 'highest level is farmed first');
 });
 
-t('npclimits stops the level before the garrison drops below it', () => {
+// Step 15: wiki NpcLimits / FAQ — the troops must be IN the city before a run
+// leaves ("before it will begin or continue farming"). It used to count what
+// stayed behind after the run, so 150k archers with a 90k load sent nothing.
+t('npclimits counts the troops at home before each run leaves', () => {
   const castle = fixtureCastle({ troop: { archer: 150000, scouter: 30000, carriage: 5000, militia: 20000, peasants: 20000 } });
   const { plan } = run([
     'config npc:10', 'distancepolicy 10',
     'npctroops 10 a:90000,wo:2000,w:2000,s:4000,t:2000',
     'npclimits 10 a:100000,s:20000',
   ].join('\n'), { castle });
-  eq(plan.actions.length, 0, '150k archers minus 90k would break the 100k floor');
-  has(plan.note, 'npclimits 10');
+  eq(plan.actions.length, 1, '150k archers at home >= 100k sends one; the 60k left stop the next');
+  has(plan.note, 'npclimits 10: 60,000 Archer at home, needs 100,000');
 });
 
 // ============================================================== concurrency
@@ -543,15 +561,18 @@ t('when the pass is done it waits for the cycle, then starts again at the neares
   eq(next.plan.actions[0].target, { x: 101, y: 100 }, 'and it restarts at the nearest camp');
 });
 
-t('the cycle is 8h by default, /farmingcycle and config farmingcycle override it, training makes it hourly', () => {
+// Step 15: the default is 8.4 h (wiki FarmingCycle, FarmingCycleMin, NpcLimit,
+// SmartFarming, CategoryNpcGoals; 8 h was the older Npc page), and
+// farmingcyclemin is hours of the smart choice, not a floor in minutes.
+t('the cycle is 8.4h by default, /farmingcycle and config farmingcycle override it, training makes it hourly', () => {
   const c = (src, level = 5) => I.cycleMsFor(makeCtx(src).ctx, level) / 3600000;
-  eq(c('config npc:5'), 8);
+  eq(c('config npc:5'), 8.4);
   eq(c('config npc:5,farmingcycle:4'), 4);
   eq(c('config npc:5,farmingcycle:4\nfarmingpolicy 5 /farmingcycle:2'), 2, '/farmingcycle wins over config');
   eq(c('config npc:5,training:1,farmingcycle:4'), 1, 'training beats everything');
   eq(c('config npc:5,training10:1', 10), 1);
-  eq(c('config npc:5,training10:1', 5), 8, 'training10 only speeds up the tens');
-  eq(c('config npc:5,farmingcyclemin:600'), 10, 'farmingcyclemin is a floor in minutes');
+  eq(c('config npc:5,training10:1', 5), 8.4, 'training10 only speeds up the tens');
+  eq(c('config npc:5,farmingcyclemin:1'), 8.4, 'farmingcyclemin is the smart minimum (hours); the most a camp waits stays 8.4h');
 });
 
 t('npclimit parks farming once the city is fat, unless training is on', () => {

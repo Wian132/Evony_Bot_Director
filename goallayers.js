@@ -214,6 +214,13 @@ const SCRIPT_MAX_LINES = 1000;
 const LAYERS = new Map();                     // `${accountId}|${castleId}` -> layer
 const layerKey = (accountId, castleId) => `${accountId || ''}|${castleId}`;
 const splitLines = (text) => String(text ?? '').split(/\r?\n/);
+// NEAT's older script form of a goal line: `techgoals ar:10,ho:10` is the
+// research line `research ar:10,ho:10` (wiki TechGoals: "This command is
+// deprecated, you can now just use research in scripts to modify the research
+// goals"). A script's `research` line (`goal research ar:4,ms:5`, wiki Goal)
+// needs nothing: it is a goal line, and stacks after the others like build.
+const scriptForm = (text) => (/^\s*techgoals\b/im.test(String(text ?? ''))
+  ? splitLines(text).map((l) => l.replace(/^(\s*)techgoals\b/i, '$1research')).join('\n') : text);
 // A line is kept only if it sets something: a goal, or at least one config key.
 // "unknown goal", or a config line whose every pair is bad, is reported to the
 // script and left out, rather than repeating the same error in every plan.
@@ -309,6 +316,7 @@ function getScriptLayer(accountId, castleId) {
 
 // Replace the layer with these goal lines, on top of the saved goals.
 function setScriptLayer(accountId, castleId, src) {
+  src = scriptForm(src);
   const lines = compactInto([], splitLines(src).filter(isGoalLine));
   if (lines.length > SCRIPT_MAX_LINES) return tooLong();
   putLayer(accountId, castleId, lines, { base: 'saved', loaded: null, loadedSrc: null });
@@ -318,6 +326,7 @@ function setScriptLayer(accountId, castleId, src) {
 // Add goal lines to the layer (NEAT's `goal <line>`, a bare `config k:v`, or a
 // multi-line `goal $result`), on top of whatever it stands on.
 function addScriptLine(accountId, castleId, line) {
+  line = scriptForm(line);
   const add = splitLines(line).filter(isGoalLine);
   if (!add.length) return answer(accountId, castleId, line);
   const cur = LAYERS.get(layerKey(accountId, castleId));

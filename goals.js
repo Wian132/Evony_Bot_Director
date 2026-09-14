@@ -40,6 +40,7 @@ const BUILD_ABBR = {
 
 // Research a build ?condition? may test (wiki: Research, Abbreviations). Inside a
 // condition `st` is the Stable, so Stockpile is `sp` there (wiki: Research, Plan).
+// A research line reads these too, and `st` as Stockpile (goal-research.js).
 const TECH_ABBR = {
   ag: 'Agriculture', lu: 'Lumbering', mas: 'Masonry', mi: 'Mining', met: 'Metal Casting',
   in: 'Informatics', ms: 'Military Science', mt: 'Military Tradition', ir: 'Iron Working',
@@ -156,6 +157,12 @@ const GOALS = {
         }
         if (k.toLowerCase() === 'building' && !/^[01]$/.test(v)) {
           errs.push('building is 0 (construction paused) or 1');
+          continue;
+        }
+        // research:0 pauses research; research:1 is implied by a research line
+        // and also has the build lines' research done (goal-research.js)
+        if (k.toLowerCase() === 'research' && !/^[01]$/.test(v)) {
+          errs.push('research is 0 (research paused) or 1');
           continue;
         }
         const value = NUM(v) ?? v;
@@ -331,8 +338,8 @@ const GOALS = {
   rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (upkeep, war, heroes, npc, transfers, market, reports) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade', './goal-reports']) {
+// ---- goal modules (upkeep, war, heroes, npc, transfers, market, reports, research) contribute their own parsers + config keys ----
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade', './goal-reports', './goal-research']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -374,7 +381,6 @@ const NOT_IMPLEMENTED = {
     fortification: 'fortification lines cannot be switched off this way yet',
     fortsusereserved: 'fortification orders do not keep a food reserve yet',
     wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',
-    research: 'no research goal yet (the research script line researches)',
     plan: 'no plan goal yet',
     abandon: 'no goal abandons a city yet',
     abandonflats: 'no goal holds or releases flats yet',
@@ -528,6 +534,10 @@ function describe(parsed) {
       out.push(`build: ${list.length} line(s), worked on in order, moving on while one waits for a free plot`);
       list.forEach((g, i) => out.push(`   ${i + 1}. ${(g.groups || []).map((gr) => gr.targets.map(what).join(', ')
         + (gr.condition ? ` (only when ${gr.condition})` : '')).join('; ') || '(nothing readable on this line)'}`));
+    } else if (name === 'research') {
+      out.push(`research: ${list.length} line(s), worked on in order, one research at a time in this city`);
+      list.forEach((g, i) => out.push(`   ${i + 1}. ${(g.groups || []).map((gr) => gr.targets.map((t) => `${t.name} to L${t.level}`).join(', ')
+        + (gr.condition ? ` (only when ${gr.condition})` : '')).join('; ') || '(nothing readable on this line)'}`));
     } else if (name === 'traininghero') {
       for (const g of list) out.push(`traininghero: ${g.hero} stays ${g.minStaySec}s min${g.maxStaySec ? `, ${g.maxStaySec}s max` : ''}${g.npcHits != null ? `, or after ${g.npcHits} npc hits` : ''}, then rotates to the next city`);
     } else if (['comfortpolicy', 'taxpolicy', 'production', 'warehousepolicy'].includes(name)) {
@@ -556,4 +566,6 @@ function describe(parsed) {
   return out;
 }
 
-module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, TECH_ABBR, MULTI_BUILDINGS, buildingOf, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED };
+module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, TECH_ABBR, MULTI_BUILDINGS, buildingOf, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED,
+  // the research goal (goal-research.js) reads its lines the same way
+  TWO_WORDS, buildCondition };

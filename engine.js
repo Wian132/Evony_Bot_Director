@@ -26,6 +26,11 @@ const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', '
 // NPC farming asks for research levels before it plans (Engine.accountTechs)
 const NPC_MOD = (MODULES.find((m) => m.name === './goal-npc') || {}).mod || null;
 
+// The research goal is planned by focus itself, twice around the builder (see
+// there), so it is not one of the MODULES above.
+let RS = null;
+try { RS = require('./goal-research'); } catch (e) { console.error(`goal module ./goal-research not loaded: ${e.message}`); }
+
 // action.kind -> executor, first module wins
 const MODULE_EXECUTORS = {};
 for (const { mod } of MODULES) {
@@ -623,7 +628,10 @@ function buildPlan(ctx, wallsFor = 0) {
   const noWalls = !live.some((b) => b.typeId === C.WALLS_TYPE);
   const fortsNeedWalls = noWalls && ctx.goals.some((g) => g.name === 'fortification'
     && Object.values(g.forts || {}).some((v) => n(v) > 0));
-  if (!lines.length && !wallsFor && !fortsNeedWalls) return null;
+  // Step 16: the buildings the research goal needs (goal-research.js) are
+  // worked by the builder with no build line at all (resolvePrereqs)
+  const forResearch = ctx.researchBuildWants || [];
+  if (!lines.length && !wallsFor && !fortsNeedWalls && !forResearch.length) return null;
   if (ctx.config && ctx.config.building === 0) {
     return { actions: [], ranked: [], busy: false, paused: true, note: 'build: construction paused by config building:0' };
   }
@@ -807,7 +815,8 @@ function buildPlan(ctx, wallsFor = 0) {
     ranked,                     // in order, even while busy: what comes next
     busy: busy.length > 0,
     line: active || null, lines: lines.length, stop, limits,
-    note: parts.length ? `build: ${parts.join('; ')}` : 'all build targets met',
+    note: parts.length ? `build: ${parts.join('; ')}`
+      : lines.length || !forResearch.length ? 'all build targets met' : 'build: no build lines, only what the research goal needs',
   };
 }
 
@@ -906,10 +915,23 @@ const costText = (cost) => Object.entries(cost).filter(([k]) => k !== 'label')
 //   skipped  orders passed over for research or an item, with why
 //   held     orders held back by the backoff ladder
 //   wants    research the passed-over orders need: {techId, level, have, name, for}
-function resolvePrereqs({ plan, castle, conds, cityState = {}, items = null, techLevels = null }) {
+//   research why a building the research goal needs cannot go now
+//
+// Step 16: `forResearch` [{typeId, level, name, for}] are the buildings the
+// research goal needs (goal-research.js), and they come first — NEAT (wiki
+// Research): "The bot will automatically build and upgrade any buildings
+// necessary to complete research goals"; for machinery "the bot will build and
+// upgrade your academy to level 9 with priority". Each is met the way a
+// prerequisite is (prereqFor, then its own requirements, the same depth and
+// loop guards, the same Michelangelo's Script rule), and waits for resources
+// the same way. But research and build lines run side by side (wiki Plan), so
+// one that cannot go — no plot ("Needs space"), no script held, a building the
+// build lines take down — is noted and the build lines go on.
+function resolvePrereqs({ plan, castle, conds, cityState = {}, items = null, techLevels = null, forResearch = [] }) {
   const out = { pick: null, via: null, chain: [], cost: null, unread: null, spends: null,
-    need: null, needFor: null, hold: null, stop: null, skipped: [], held: [], wants: [] };
-  if (!plan || !plan.ranked || !plan.ranked.length) return out;
+    need: null, needFor: null, hold: null, stop: null, skipped: [], held: [], wants: [], research: [] };
+  forResearch = forResearch || [];
+  if (!plan || ((!plan.ranked || !plan.ranked.length) && !forResearch.length)) return out;
   const all = standing(castle).map(finished).filter((b) => n(b.level) > 0);
   const res = castle.resource || {};
   const { used, townHall } = Game.plotsInUse({ ...castle, buildings: all });
@@ -979,6 +1001,33 @@ function resolvePrereqs({ plan, castle, conds, cityState = {}, items = null, tec
     return { place: a, cost: costOf(e.cond), spends: spends.length ? spends.join(', ') : null };
   };
 
+  for (const w of forResearch) {
+    const def = C.BUILDING_BY_ID[n(w.typeId)];
+    if (!def || topOf(def.typeId) >= n(w.level)) continue;       // stands, or will once the work on it is done
+    const what = `research ${w.for || 'goal'}`;
+    const needs = `${what} needs ${def.name} L${n(w.level)}`;
+    const p = prereqFor({ typeId: def.typeId, need: n(w.level), name: def.name }, needs,
+      `${what} (it needs ${def.name} L${n(w.level)})`, new Set(), []);
+    if (!p.action) { out.research.push(p.skip || p.stop); continue; }
+    const k = buildKey(p.action);
+    if (blocked(cityState, k)) { out.held.push(`${buildLabel(p.action)}, ${blockedFor(cityState, k)}`); continue; }
+    const claimed = new Set(p.action.kind === 'new' ? [n(p.action.positionId)] : []);
+    const r = evaluate(p.action, claimed, 1, []);
+    const via = (x) => (x === p.action ? null : p.action);
+    if (r.need) return Object.assign(out, { need: r.need, needFor: p.action });
+    if (r.place) {
+      const pk = buildKey(r.place);
+      if (r.place !== p.action && blocked(cityState, pk)) {
+        out.held.push(`${buildLabel(r.place)}, which ${buildLabel(p.action)} needs first, ${blockedFor(cityState, pk)}`);
+        continue;
+      }
+      return Object.assign(out, { pick: r.place, via: via(r.place), chain: r.chain || [], cost: r.cost || null,
+        unread: r.unread || null, spends: r.spends || null, forResearch: w });
+    }
+    if (r.hold) return Object.assign(out, { hold: { ...r.hold, via: via(r.hold.action) }, chain: r.chain || [], forResearch: w });
+    out.research.push(`${buildLabel(p.action)}: ${r.stop || r.skip}`);
+  }
+
   const ranked = plan.ranked;
   for (let i = 0; i < ranked.length; i++) {
     const a = ranked[i];
@@ -1008,6 +1057,7 @@ function resolvePrereqs({ plan, castle, conds, cityState = {}, items = null, tec
 // What a resolution adds to the build plan's note.
 function prereqNotes(r) {
   const out = [];
+  if (r.pick && r.forResearch && !r.via) out.push(`for the research goal first: ${buildLabel(r.pick)}`);
   if (r.pick && r.via) out.push(`prerequisite first: ${buildLabel(r.pick)}${r.chain.length > 1 ? ` (${r.chain.join('; ')})` : ''}`);
   if (r.pick && r.unread) out.push(`${buildLabel(r.pick)}: its requirements could not be read (${r.unread}), so it goes unchecked`);
   if (r.pick && r.spends) out.push(`${buildLabel(r.pick)} spends ${r.spends} (the NEAT wiki warns its bot spends Michelangelo's Scripts too)`);
@@ -1020,6 +1070,7 @@ function prereqNotes(r) {
   if (r.stop) out.push(r.stop);
   if (r.need) out.push(`checking what ${buildLabel(r.needFor)} needs (next slice)`);
   if (r.skipped.length) out.push(`passed over: ${r.skipped.slice(0, 3).join('; ')}${r.skipped.length > 3 ? ` (+${r.skipped.length - 3} more)` : ''}`);
+  if ((r.research || []).length) out.push(`for the research goal, not now: ${r.research.join('; ')}`);
   return out;
 }
 
@@ -1041,7 +1092,10 @@ async function readCondition(g, cid, a) {
 // fortification goal needs takes a Walls queue read that only a tick makes. The
 // research levels a ?condition? tests are the engine's last reading.
 function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}, techs = null }) {
-  const plan = buildPlan({ castle, goals: goals || [], config: config || {}, techs: techs || cityState.techs || null }, wallsFor);
+  // the buildings the research goal asked for on the engine's last pass
+  const forResearch = cityState.researchBuildWants || [];
+  const plan = buildPlan({ castle, goals: goals || [], config: config || {}, techs: techs || cityState.techs || null,
+    researchBuildWants: forResearch }, wallsFor);
   if (!plan) return { next: null, idle: 'no build goals for this city' };
   if (plan.paused) return { next: null, held: [], idle: 'nothing: construction paused by config building:0', note: plan.note };
   const held = [];
@@ -1060,18 +1114,20 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}
       : hold > 0 ? `the server says the builder is busy, asking again in ${dur(hold / 1000)}` : null,
     held,
     idle: plan.ranked.length ? null
-      : plan.note === 'all build targets met' ? 'nothing: all build targets met' : `nothing to place: ${plan.note.replace(/^build: /, '')}`,
+      : forResearch.length ? `the buildings the research goal needs (${forResearch.map((w) => `${w.name || (C.BUILDING_BY_ID[w.typeId] || {}).name} L${w.level}`).join(', ')}), once the engine has checked them`
+        : plan.note === 'all build targets met' ? 'nothing: all build targets met' : `nothing to place: ${plan.note.replace(/^build: /, '')}`,
     note: plan.note,
   };
   // The engine's last word on requirements (Engine.resolveBuild), while the
   // buildings still stand as it saw them: a prerequisite first, a wait for
   // resources, orders passed over for research or an item.
   const pre = cityState.prereq;
-  if (pre && !plan.busy && plan.ranked.length && pre.sig === buildingsSig(castle) && Date.now() - n(pre.at) < COND_TTL) {
+  if (pre && !plan.busy && (plan.ranked.length || forResearch.length) && pre.sig === buildingsSig(castle) && Date.now() - n(pre.at) < COND_TTL) {
     out.next = pre.next;
     if (pre.wait && !(hold > 0)) out.wait = pre.wait;
     held.push(...(pre.passed || []));
     if (!pre.next) out.idle = `nothing to place: ${pre.stop || 'every order is passed over or held back'}`;
+    else out.idle = null;
   }
   return out;
 }
@@ -1530,12 +1586,19 @@ class Engine {
   // and kept in the city's state so the console's outlook tests the same
   // levels. A level once researched stays, so an older reading is still a safe
   // floor when a read fails.
-  async readTechs(castle, cityState = {}) {
+  //
+  // Step 16: the research goal reads the same list through readResearch, with
+  // `beans` (it wants each tech's whole bean, kept here in memory only: the
+  // city's state keeps the levels), its own `maxAge`, and `force` once what was
+  // running here has ended. `until` is the end of the research the list shows
+  // running in this city, `tops` the city's building levels it was read against.
+  async readTechs(castle, cityState = {}, { maxAge = TECH_TTL, beans: whole = false, force = false } = {}) {
     const g = this.game;
     const cid = g.castleId(castle);
     this.techLevels = this.techLevels || {};
     const had = this.techLevels[cid] || cityState.techs || null;
-    if (had && Date.now() - n(had.at) < TECH_TTL) return had;
+    // a read that failed is not asked again sooner than a good one would be
+    if (!force && had && Date.now() - n(had.at) < maxAge && (!whole || had.beans || had.error)) return had;
     let out;
     try {
       const r = await g.req('tech.getResearchList', { castleId: cid });
@@ -1545,13 +1608,45 @@ class Engine {
       if (typeof g.noteResearchList === 'function') g.noteResearchList(cid, r);
       const levels = {};
       for (const t of beans) levels[Number(t.typeId)] = n(t.level);
-      out = { at: Date.now(), levels };
+      const here = beans.find((t) => t && t.upgradeing && Number(t.castleId) === Number(cid));
+      // the buildings it was read against: one of them raised since makes its
+      // answer out of date for the research goal (RS.raisedSince)
+      out = { at: Date.now(), levels, beans, academyCount: r.academyCount, until: here ? n(here.endTime) || 1 : 0,
+        tops: RS ? RS.topsOf(castle) : null };
     } catch (e) {
-      out = { at: Date.now(), levels: (had && had.levels) || null, error: `research list unreadable: ${e.message}` };
+      // the last beans stay for the buildings they ask for; nothing starts on them
+      out = { at: Date.now(), levels: (had && had.levels) || null, beans: (had && had.beans) || null,
+        error: `research list unreadable: ${e.message}` };
     }
     this.techLevels[cid] = out;
-    cityState.techs = out;
+    cityState.techs = { at: out.at, levels: out.levels, ...(out.error ? { error: out.error } : {}) };
     return out;
+  }
+
+  // Step 16: the research list for the research goal (goal-research.js), read
+  // only when a decision is due. While a research runs here there is none to
+  // make, and nothing is read. Once what ran here (by the list, or started by
+  // the engine) has ended, the list is out of date and is read again; so it is
+  // once a building a target waited for has gone up. Otherwise it is read at
+  // most every RESEARCH_TTL while a target is open, every COND_TTL while only a
+  // ?condition? naming research holds one back, and not at all once every
+  // target is met (RS.readEvery). `fresh` asks for a list read within the last
+  // minute: a start goes on nothing older.
+  async readResearch(castle, cityState, ctx, { fresh = false } = {}) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    const had = this.techLevels && this.techLevels[cid];
+    const now = typeof g.now === 'function' ? g.now() : Date.now();
+    const running = RS.runningLive(typeof g.runningResearch === 'function' ? g.runningResearch(cid) : null, now);
+    const ended = !!(had && had.until && !running);
+    if (!fresh && !ended && had && had.beans) {
+      // running (a script's or the console's start too): read again once it ends
+      if (running) { had.until = had.until || 1; return had; }
+      const every = RS.readEvery(ctx, had, cityState);
+      if (every === null || Date.now() - n(had.at) < every) return had;
+      return this.readTechs(castle, cityState, { beans: true, force: true });
+    }
+    return this.readTechs(castle, cityState, { maxAge: fresh ? RS.START_FRESH : RS.RESEARCH_TTL, beans: true, force: ended });
   }
 
   // Step 11: what the builder's next order needs, read before it is placed,
@@ -1565,8 +1660,13 @@ class Engine {
   //   cityState.prereq         {at, sig, next, wait, stop, passed}
   async resolveBuild(ctx, castle, cityState, plan) {
     ctx.buildReserve = null;
-    const waiting = plan && !plan.paused && plan.ranked.length && (plan.busy || n(cityState.builderHeld) > Date.now());
-    if (!plan || plan.paused || !plan.ranked.length || waiting) {
+    // Step 16: the buildings the research goal needs go first (resolvePrereqs);
+    // ctx.researchBuildBlocked says which of them cannot go now, and why
+    ctx.researchBuildBlocked = [];
+    const forResearch = (plan && !plan.paused && ctx.researchBuildWants) || [];
+    const work = !!plan && !plan.paused && (plan.ranked.length > 0 || forResearch.length > 0);
+    const waiting = work && (plan.busy || n(cityState.builderHeld) > Date.now());
+    if (!work || waiting) {
       // while the builder works the last word stands; with nothing to build it is gone
       if (!waiting) { delete cityState.researchWants; delete cityState.prereq; }
       ctx.researchWants = cityState.researchWants || [];
@@ -1589,7 +1689,7 @@ class Engine {
     let r;
     try {
       for (let reads = 0; ; reads++) {
-        r = resolvePrereqs({ plan, castle, conds, cityState, items, techLevels });
+        r = resolvePrereqs({ plan, castle, conds, cityState, items, techLevels, forResearch });
         if (!r.need || reads >= PREREQ_READS) break;
         const got = await readCondition(g, cid, r.need);
         cache.beans.set(condKey(r.need), { at: Date.now(), cond: got.cond || null, error: got.error || null });
@@ -1608,6 +1708,7 @@ class Engine {
     if (r.wants.length) cityState.researchWants = r.wants.map((w) => ({ ...w, at }));
     else delete cityState.researchWants;
     ctx.researchWants = cityState.researchWants || [];
+    ctx.researchBuildBlocked = r.research || [];
     const notes = prereqNotes(r);
     cityState.prereq = {
       at, sig,
@@ -1617,6 +1718,8 @@ class Engine {
       passed: r.skipped.slice(0, 5),
     };
     return { ...plan, pick: r.pick, held: r.held, reserve, researchWants: ctx.researchWants,
+      // with no build line, the research goal's building is the only order
+      actions: plan.actions.length ? plan.actions : r.pick ? [r.pick] : [],
       note: notes.length ? `${plan.note}; ${notes.join('; ')}` : plan.note };
   }
 
@@ -1729,12 +1832,48 @@ class Engine {
     if (parsed.config.building !== 0 && parsed.goals.some((x) => x.name === 'build' && x.needsTech)) {
       ctx.techs = await this.readTechs(castle, cityState);
     }
+    // Step 16: the research goal (goal-research.js), planned twice around the
+    // builder. First for the buildings it needs, which the builder takes on
+    // before its own lines (resolveBuild), with the techs the build lines asked
+    // for last slice; its list is read only when a decision is due
+    // (readResearch), and its levels serve the build lines' conditions and NPC
+    // farming's research check below too. Every one of these reads goes through
+    // readTechs, into the one cache (this.techLevels) accountTechs looks in.
+    let research = null;
+    if (RS) {
+      ctx.researchWants = cityState.researchWants || [];
+      if (RS.listNeeded(parsed, cityState)) {
+        ctx.research = await this.readResearch(castle, cityState, ctx);
+        if (ctx.research && ctx.research.levels) ctx.techs = ctx.research;
+      }
+      research = RS.researchPlan(ctx, cityState, g);
+      ctx.researchBuildWants = (research && research.buildWants) || [];
+    }
     // NPC farming at levels 1-5 needs them too (wiki FAQ: Military Tradition,
     // Archery, Horseback Riding — goal-npc researchCheck).
     if (!ctx.techs && NPC_MOD && NPC_MOD.needsResearch(parsed.config)) ctx.techs = await this.accountTechs(castle, cityState);
     // The builder's next order, its requirements read and any prerequisite put
     // first; its cost stays out of the troop and wall batches sized below.
     const build = await this.resolveBuild(ctx, castle, cityState, buildPlan(ctx, (fort && fort.wallsFor) || 0));
+    // ...then for the research itself, now the builder has said what it keeps
+    // in the bank and which techs its own orders need (ctx.researchWants). A
+    // start goes on a list read within the minute: tech.research names no
+    // level, so a level another city finished since the last read would be
+    // researched past its goal. What the research takes or waits for stays out
+    // of the troop and wall batches too.
+    if (RS && (research || (ctx.researchWants || []).length)) {
+      research = RS.researchPlan(ctx, cityState, g);
+      if (research && research.actions.length && !RS.freshForStart(ctx.research)) {
+        ctx.research = await this.readResearch(castle, cityState, ctx, { fresh: true });
+        if (ctx.research && ctx.research.levels) ctx.techs = ctx.research;
+        research = RS.researchPlan(ctx, cityState, g);
+      }
+      // still no list read within the minute: nothing starts this slice
+      if (research && research.actions.length && !RS.freshForStart(ctx.research)) research.actions = [];
+      if (research && research.reserve) ctx.buildReserve = RS.mergeReserve(ctx.buildReserve, research.reserve);
+    }
+    if (research && research.buildWants && research.buildWants.length) cityState.researchBuildWants = research.buildWants;
+    else delete cityState.researchBuildWants;
     if (ctx.buildReserve && fort && fort.orders && fort.orders.length) {
       ctx.fortCosts = await this.readFortCosts(castle);
       fort = fortPlan(ctx);
@@ -1746,6 +1885,7 @@ class Engine {
       defense: M.defensePlan(ctx, cityState),
       acted: urgent.acted,
     };
+    if (research) report.research = research;
     const globalsNote = layerNote(parsed);
     if (globalsNote) report.globals = { note: globalsNote };
     report.acted.push(...freeFirst.acted);
@@ -1829,7 +1969,7 @@ class Engine {
     // are made before anything in this slice is sent, so the book has the last
     // word. Hiding carries no `rally`: getting the army out is never held.
     // Hiding and the gate already ran, first and outside the budget (urgentWar).
-    const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
+    const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'research', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
     for (const [key, p] of Object.entries(report)) {
       if (OWN_BLOCKS.has(key)) continue;
       if (!p || typeof p !== 'object' || !p.actions) continue;
@@ -1924,6 +2064,24 @@ class Engine {
         }
       }
       report.build.note += heldBack(report.build.held || []);
+    }
+
+    // Step 16: one research start a slice, in its own slot like construction:
+    // a city researches one thing at a time, and three troop batches must not
+    // crowd it out. A refusal goes on the backoff ladder for that tech, and the
+    // list is read again for the next decision.
+    if (report.research && report.research.actions && report.research.actions.length) {
+      const a = report.research.actions[0];
+      if (this.dryRun) report.acted.push(`[plan] ${a.label}`);
+      else {
+        let r;
+        try { r = (await RS.executors.research(g, castle, a, cityState)) || {}; } catch (e) { r = { ok: 0, errorMsg: e.message }; }
+        const ok = r.ok === 1;
+        report.acted.push(`${a.label} -> ${ok ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
+        recordResult(cityState, RS.backoffKey(a.techId), ok, r.errorMsg || ('ok=' + r.ok));
+        const list = this.techLevels && this.techLevels[g.castleId(castle)];
+        if (list) { if (ok) list.until = n(r.tech && r.tech.endTime) || 1; else list.at = 0; }
+      }
     }
 
     // ...and again now: the construction this slice started is finished in the
@@ -2057,4 +2215,6 @@ class Engine {
 }
 
 module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN,
-  inboundArmy, incomingByCity, WAKE_SLACK_MS, resolvePrereqs, PREREQ_READS, COND_TTL };
+  inboundArmy, incomingByCity, WAKE_SLACK_MS, resolvePrereqs, PREREQ_READS, COND_TTL,
+  // the research goal tests its ?condition? the way a build line does (goal-research.js)
+  conditionFails };

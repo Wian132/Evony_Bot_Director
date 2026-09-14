@@ -89,6 +89,8 @@ class Game {
     // Each city's own buffs (a forced gate, slowed marches...): castle.buffs.
     // See applyCastleBuffUpdate.
     this.c.on('cmd', (cmd, data) => { if (cmd === 'server.CastleBuffUpdate') this.applyCastleBuffUpdate(data); });
+    // And the end of a research (applyResearchComplete).
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.ResearchCompleteUpdate') this.applyResearchComplete(data); });
 
     // march/load skill params (affects march time)
     try {
@@ -773,10 +775,11 @@ class Game {
 
   // What each city is researching, as the last research list or research reply
   // showed it. The server pushes the END of a research (server.ResearchCompleteUpdate,
-  // which carries only the castleId) but never its start, and the free finish
-  // must not read the list every tick to look for one, so every read and every
-  // start leaves its answer here: the console's Research tab, the script's
-  // `research` line, any research goal that reads the list.
+  // which carries only the castleId, and clears the city here: connect) but
+  // never its start, and the free finish must not read the list every tick to
+  // look for one, so every read and every start leaves its answer here: the
+  // console's Research tab, the script's `research` line, the research goal
+  // (goal-research.js, which also asks it what the other cities research).
   noteResearch(castleId, bean) {
     const map = (this._research = this._research || new Map());
     const cid = Number(castleId);
@@ -807,6 +810,16 @@ class Game {
 
   runningResearch(castleId) {
     return (this._research && this._research.get(Number(castleId))) || null;
+  }
+
+  // A research has ended in that city: server.ResearchCompleteUpdate carries
+  // only its castleId (ResearchCompleteUpdate.as), and the client's research
+  // window reads the list again on it (Technology.onResearchComplete). Nothing
+  // runs there now, so the research goal reads the list for its next decision
+  // rather than waiting out the end time.
+  applyResearchComplete(data) {
+    if (!data || data.castleId === undefined || data.castleId === null) return;
+    this.noteResearch(data.castleId, null);
   }
 
   findBuildings(castle, typeId) {

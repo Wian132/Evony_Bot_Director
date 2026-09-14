@@ -1596,11 +1596,14 @@ function renderValleys(d) {
 
 // ---- Inn -------------------------------------------------------------------
 let INN = null;       // { city, heroes, error, busy }
-async function loadInn(refreshInn) {
+async function loadInn(refreshInn, force) {
   const city = S.city;
   INN = { city, heroes: INN && INN.city === city ? INN.heroes : [], busy: true };
   renderMon(true);
-  if (refreshInn) await post('/api/hero', { city, action: 'refreshinn' });
+  if (refreshInn) {
+    const rr = await post('/api/hero', { city, action: 'refreshinn', force: !!force });
+    if (!rr.ok) tell(rr.error || (rr.result && rr.result.errorMsg) || 'unknown', { title: 'Refresh inn failed' });
+  }
   const r = await getJSON('/api/inn?city=' + city);
   if (S.city !== city) return;
   INN = { city, heroes: (r && r.heroes) || [], error: r && r.error, busy: false };
@@ -1646,11 +1649,14 @@ function renderHeroes(d) {
     const boosted = ['attack', 'politics', 'intel'].some((k) => Number(h[k + 'Buff']));
     const name = boosted ? `<span class="buffed" title="${esc(buffTip)}">${esc(h.name)}</span>` : esc(h.name);
     // Out marching (3) or defending a valley (2): the Feasting Hall offers only
-    // a recall, and so does this.
-    const st = Number(h.status), away = st === 2 || st === 3;
-    const act = away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
+    // a recall, and so does this. A prisoner we hold (4) is not ours to promote,
+    // build or fire — the client offers it only Release/Persuade — so it gets no
+    // buttons here. Only an idle hero (0) can be promoted (the client's mayor window).
+    const st = Number(h.status), away = st === 2 || st === 3, prisoner = st === 4;
+    const act = prisoner ? '<span class="muted" title="A prisoner you hold. The bot never releases one; release &lt;name&gt; in a script does.">prisoner</span>'
+      : away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
       : (mayor ? `<button class="sm" data-act="unmayor" data-hero="${esc(h.name)}">Demote</button>`
-        : `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>`)
+        : st === 0 ? `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>` : '')
       + (h.unspent ? ` <button class="sm" data-act="points" data-hero="${esc(h.name)}">+Pts</button>` : '')
       // Holy Water only for a hero at home (idle or mayor), as waterhero allows
       + (st === 0 || st === 1 ? ` <button class="sm" data-act="water" data-hero="${esc(h.name)}" title="Holy Water: reset its points and spend them again">Reset</button>` : '')
@@ -1955,7 +1961,20 @@ $('monBody').addEventListener('click', async (e) => {
   if (act === 'armiesall') { S.armiesAll = el.checked; return renderMon(true); }
   if (act === 'mktrefresh') { fetchMarket(true); return renderMarket(); }
   if (act === 'innload') return loadInn(false);
-  if (act === 'innrefresh') return loadInn(true);
+  // A refresh spends a Hero Hunting when one is held, and game coins when not
+  // (the client asks the same way, Tavern.as:473-528), so say which first.
+  if (act === 'innrefresh') {
+    const p = await post('/api/hero', { city, action: 'refreshinnpreview' });
+    const held = p && p.ok && typeof p.held === 'number' ? p.held : null;
+    const item = held > 0;
+    if (!await ask('Refresh the inn?', {
+      title: 'Refresh inn', ok: item ? 'Use 1 Hero Hunting' : 'Pay game coins', danger: !item,
+      detail: item ? `This spends 1 Hero Hunting — you hold ${held}.`
+        : held === 0 ? 'You hold no Hero Hunting, so the server charges game coins for this refresh instead.'
+          : 'The inventory has not loaded, so this cannot tell whether it spends a Hero Hunting or game coins.',
+    })) return;
+    return loadInn(true, !item);
+  }
   if (act === 'points') return openPoints(hero);
   if (act === 'water') return openWater(hero);
   if (act === 'vdrop' || act === 'vbuild') {

@@ -1052,15 +1052,21 @@ class Engine {
 
     let budget = this.maxActionsPerSlice;
 
-    // mayor first — it changes the speed of everything that follows this slice
+    // mayor first — it changes the speed of everything that follows this slice.
+    // Promoted straight over the sitting mayor, as the client does
+    // (CastleChief.as:377-394): discharging first and then having the promotion
+    // refused used to leave the city with no mayor at all. A refusal backs off
+    // on the retry ladder rather than being asked again every slice.
     let newMayor = false;
     if (report.mayor && report.mayor.actions) {
       for (const a of report.mayor.actions) {
+        const mkey = `mayor:${a.hero.id}`;
+        if (blocked(cityState, mkey)) { report.mayor.note += `; held back: ${a.label}, ${blockedFor(cityState, mkey)}`; continue; }
         if (this.dryRun) { report.acted.push(`[plan] ${a.label}`); continue; }
         try {
-          if (a.hadMayor) await g.dischargeChief(g.castleId(castle));
           const r = await g.promoteToChief(g.castleId(castle), a.hero.id);
           if (r.ok === 1) newMayor = true;
+          recordResult(cityState, mkey, r.ok === 1, r.errorMsg || ('ok=' + r.ok));
           report.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
         } catch (e) { report.acted.push(`${a.label} -> ${e.message}`); }
       }
@@ -1263,6 +1269,8 @@ class Engine {
         try {
           const hero = (a.from.heros || []).find((h) => (h.name || '').toLowerCase() === String(a.heroName).toLowerCase());
           if (!hero) { this.line(`${a.label} -> hero vanished`, { city, kind: 'act' }); continue; }
+          // only a hero at home moves — idle, or the mayor — checked again here
+          if (Number(hero.status) !== 0 && Number(hero.status) !== 1) { this.line(`${a.label} -> ${hero.name} is not at home (status ${hero.status}), not moving`, { city, kind: 'act' }); continue; }
           // a mayor cannot march, so stand him down first
           const chiefed = (a.from.heros || []).some((h) => h.id === hero.id && Number(h.status) === 1);
           if (chiefed) await g.dischargeChief(g.castleId(a.from));

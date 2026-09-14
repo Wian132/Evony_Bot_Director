@@ -18,18 +18,20 @@ const num = (x) => Number(x || 0);
 
 // ---------------------------------------------------------------- fixtures
 // power = attack, management = politics, stratagem = intel.
-// *Added is the slice of the attribute that came from spent points, so
-// base = attribute - added.
+// Shaped like the live roster: the attribute already includes the points
+// spent on it, and the *Added fields are 0 on every hired hero (game.js:
+// Griselda, L26, power 87, powerAdded 0). base = top attribute - level +
+// unspent points (Game.heroBase).
 const hero = (o) => Object.assign({
   id: 0, name: '?', level: 1, status: 0,
   power: 0, powerAdded: 0, management: 0, managementAdded: 0, stratagem: 0, stratagemAdded: 0,
   loyalty: 100, experience: 0, upgradeExp: 0, remainPoint: 0,
 }, o);
 
-const ATLAS = hero({ id: 1, name: 'Atlas', level: 120, power: 300, powerAdded: 220, management: 40, stratagem: 30 });
-const POLLY = hero({ id: 2, name: 'Polly', level: 60, status: H.STATUS.MAYOR, management: 200, managementAdded: 130, power: 35, stratagem: 30 });
-const SMARTY = hero({ id: 3, name: 'Smarty', level: 80, stratagem: 180, stratagemAdded: 110, power: 40, management: 35 });
-const JUNK1 = hero({ id: 4, name: 'Junk1', level: 5, power: 20, management: 12, stratagem: 14 });
+const ATLAS = hero({ id: 1, name: 'Atlas', level: 120, power: 200, management: 40, stratagem: 30 });                        // base 80
+const POLLY = hero({ id: 2, name: 'Polly', level: 60, status: H.STATUS.MAYOR, management: 130, power: 35, stratagem: 30 });  // base 70
+const SMARTY = hero({ id: 3, name: 'Smarty', level: 80, stratagem: 150, power: 40, management: 35 });                       // base 70
+const JUNK1 = hero({ id: 4, name: 'Junk1', level: 5, power: 25, management: 12, stratagem: 14 });                          // base 20
 const JUNK2 = hero({ id: 5, name: 'Junk2', level: 3, power: 15, management: 10, stratagem: 11 });
 const RIDER = hero({ id: 6, name: 'Rider', level: 4, status: H.STATUS.MARCHING, power: 18, management: 9, stratagem: 8 });
 
@@ -64,10 +66,11 @@ t('none matches nobody', () => eq(names(H.matchHeroes(ALL, 'none')), []));
 t('a bare name matches case-insensitively', () => eq(names(H.matchHeroes(ALL, 'atlas')), ['Atlas']));
 t('a comma list matches each name', () => eq(names(H.matchHeroes(ALL, 'Junk1,Junk2')), ['Junk1', 'Junk2']));
 t('level filter', () => eq(names(H.matchHeroes(ALL, 'any:level>=80')), ['Atlas', 'Smarty']));
-t('base filter uses attribute minus added', () => {
-  eq(H.heroBase(ATLAS), 80, 'Atlas base');           // 300-220
-  eq(H.heroBase(POLLY), 70, 'Polly base');           // 200-130
-  eq(H.heroBase(JUNK1), 20, 'Junk1 base');
+t('base is the top attribute less the level, plus unspent points (Game.heroBase)', () => {
+  eq(H.heroBase(ATLAS), 80, 'Atlas base');           // 200-120
+  eq(H.heroBase(POLLY), 70, 'Polly base');           // 130-60
+  eq(H.heroBase(JUNK1), 20, 'Junk1 base');           // 25-5
+  eq(H.heroBase(hero({ level: 10, power: 70, remainPoint: 4 })), 64, 'unspent points are still base');
   eq(names(H.matchHeroes(ALL, 'any:base>=70')), ['Atlas', 'Polly', 'Smarty']);
 });
 t('alternatives are OR-ed with |', () =>
@@ -143,8 +146,17 @@ t('config hero:1 is level-and-reward only, never fire', () => {
   eq(H.plans.keepheroes(c, {}).actions, []);
 });
 
-t('fires the worst attack hero when the hall is short of space', () => {
+// Changed on purpose (step 8): feastinghallspace is where hiring stops (wiki
+// FeastingHallSpace), so a hall short of it no longer fires anyone.
+t('a hall short of feastinghallspace fires nobody', () => {
   const c = ctx(ROSTER, { goals: [goal('keepheroes', 'any:level>=50')], config: { hero: 10, feastinghallspace: 1 } });
+  const p = H.plans.keepheroes(c, {});
+  eq(p.actions, []);
+  ok(/none needs to go/.test(p.note), p.note);
+});
+
+t('/always fires the worst attack hero no rule protects', () => {
+  const c = ctx(ROSTER, { goals: [goal('keepheroes', '/always', 'any:level>=50')], config: { hero: 10 } });
   const p = H.plans.keepheroes(c, {});
   eq(p.actions.length, 1);
   eq(p.actions[0].kind, 'fireHero');
@@ -155,8 +167,9 @@ t('fires the worst attack hero when the hall is short of space', () => {
 t('the mayor is never fired, even when nothing protects it', () => {
   const lowMayor = hero({ id: 2, name: 'Polly', level: 5, status: H.STATUS.MAYOR, management: 40, power: 1 });
   const roster = [ATLAS, lowMayor, JUNK1, JUNK2, RIDER, SMARTY];
-  const c = ctx(roster, { goals: [goal('keepheroes', 'any:level>=100')], config: { hero: 10, feastinghallspace: 1 } });
+  const c = ctx(roster, { goals: [goal('keepheroes', '/always', '/max:9', 'any:level>=100')], config: { hero: 10 } });
   const p = H.plans.keepheroes(c, {});
+  ok(p.actions.length >= 1, 'something unprotected is fired');
   ok(p.actions.every((a) => a.heroName !== 'Polly'), 'mayor must not be in the fire list');
   ok(p.actions.every((a) => a.heroStatus === H.STATUS.IDLE), 'only idle heroes may be fired');
 });
@@ -196,7 +209,7 @@ t('/always fires everything unprotected, /max caps how many per pass', () => {
 });
 
 t('the fire cooldown holds the next one back', () => {
-  const c = ctx(ROSTER, { goals: [goal('keepheroes', 'any:level>=50')], config: { hero: 10, feastinghallspace: 1 } });
+  const c = ctx(ROSTER, { goals: [goal('keepheroes', '/always', 'any:level>=50')], config: { hero: 10 } });
   const p = H.plans.keepheroes(c, { lastFireAt: Date.now() - 1000 });
   eq(p.actions, []);
   ok(/cooldown/.test(p.note), p.note);
@@ -236,7 +249,7 @@ t('an unknown hall size means no firing for space', () => {
 });
 
 t('with no keepheroes goal the NEAT default protects level 50+ and base 69+', () => {
-  const c = ctx(ROSTER, { config: { hero: 10, feastinghallspace: 1 } });
+  const c = ctx(ROSTER, { goals: [goal('keepheroes', '/always')], config: { hero: 10 } });
   const p = H.plans.keepheroes(c, {});
   ok(/default/.test(p.note), p.note);
   eq(p.actions.map((a) => a.heroName), ['Junk2']);
@@ -248,7 +261,7 @@ t('herofirelimit N is read as keepheroes any:level>=N', () => {
   eq(g.parseErrors, []);
   eq(g.spec.src, 'any:level>=100');
   // Polly (L60) is now unprotected where the default would have kept her
-  const c = ctx(ROSTER, { goals: [g], config: { hero: 10, feastinghallspace: 1 } });
+  const c = ctx(ROSTER, { goals: [g, goal('keepheroes', '/always')], config: { hero: 10 } });
   const p = H.plans.keepheroes(c, {});
   ok(p.fireable.some((h) => h.name === 'Smarty'), 'L80 Smarty is below the limit and idle');
   eq(p.actions.map((a) => a.heroName), ['Junk2']);
@@ -282,7 +295,7 @@ t('keepcapturedheroes governs heroes recorded as captured', () => {
 });
 
 t('captured heroes are judged by keepcapturedheroes, everyone else by keepheroes', () => {
-  const goodBase = { level: 60, power: 100, powerAdded: 25, management: 20 };   // base 75
+  const goodBase = { level: 60, power: 135, management: 20 };   // base 75
   const taken = hero(Object.assign({ id: 21, name: 'Taken' }, goodBase));
   const hired = hero(Object.assign({ id: 22, name: 'Hired' }, goodBase));
   const goals = [
@@ -302,8 +315,8 @@ t('a switches-only keepheroes line sets the cap without adding a rule', () => {
 });
 
 t('/reset drops the keep rules collected before it', () => {
-  const goals = [goal('keepheroes', 'any:level>=1'), goal('keepheroes', '/reset'), goal('keepheroes', 'any:level>=100')];
-  const c = ctx(ROSTER, { goals, config: { hero: 10, feastinghallspace: 1 } });
+  const goals = [goal('keepheroes', 'any:level>=1'), goal('keepheroes', '/reset'), goal('keepheroes', '/always', 'any:level>=100')];
+  const c = ctx(ROSTER, { goals, config: { hero: 10 } });
   const p = H.plans.keepheroes(c, {});
   ok(/any:level>=100/.test(p.note) && !/any:level>=1\b/.test(p.note), p.note);
   eq(p.actions.length, 1);
@@ -514,9 +527,11 @@ t('the parsers drop straight into goals.js GOALS and parse a goal file', () => {
   eq(parsed.config, { hero: 10, feastinghallspace: 1 });
   eq(parsed.goals.map((g) => g.name),
      ['keepheroes', 'keepheroes', 'keepcapturedheroes', 'herofirelimit', 'heropoints', 'nolevelheroes', 'homeheroes', 'spamheroes']);
-  // and the plans run off exactly that
+  // and the plans run off exactly that (nothing needs a slot, so nobody goes)
   const c = { game: null, castle: castle(ROSTER), goals: parsed.goals, config: parsed.config, fortifications: {}, incoming: [] };
-  ok(H.plans.keepheroes(c, {}).actions.length >= 1, 'a plan comes out the other end');
+  const p = H.plans.keepheroes(c, {});
+  ok(p && /keep: any:level>=100\|any:base>=69/.test(p.note), 'a plan comes out the other end');
+  eq(p.actions, []);
 });
 
 t('goals.js reports bad hero goal lines instead of silently ignoring them', () => {

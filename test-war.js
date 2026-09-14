@@ -233,7 +233,7 @@ test('gatepolicy with an out-of-range value -> error', () => {
 });
 test('gatepolicy switches parse alongside the positionals', () => {
   const r = W.parsers.gatepolicy.parse('0 0 0 0 0 /junk:5000 /strongarchers:250000'.split(' '));
-  assert.strictEqual(r.switches.junk, '5000');
+  assert.strictEqual(r.switches.junk, 5000);      // a number now (Step 9: k/m in switches)
   assert.deepStrictEqual(r.errors, []);
 });
 test('gatepolicy rejects an unknown switch', () => {

@@ -119,6 +119,91 @@ const WALL_BY_TYPE = Object.fromEntries(WALLS.map((w) => [w.typeId, w]));
 // fortifications both take from it (Wall.as countSpace).
 const WALL_SPACE = [0, 1000, 3000, 6000, 10000, 15000, 21000, 28000, 36000, 45000, 55000];
 
+// ------------------------------------------------------------------ goal words
+// The words a goal line may use for a troop, a fortification or a resource. ONE
+// table, read by every goal parser (goals.js troop and fortification,
+// goal-npc.js, goal-transfer.js, goal-war.js hidingpolicy /keep), so a spelling
+// that works in one goal works in all of them. Matching ignores case, spaces,
+// "_" and "-", and a plural of four letters or more also finds its singular.
+//
+// NEAT's list is the wiki's Abbreviations page: warrior w, worker wo, scout s,
+// pikemen p, swordsmen sw, archer a, cavalry c, cataphract cata, transport t,
+// ballista b, battering ram ram/br/r, catapult cp/pult. The Troop page and
+// NEAT's own !NewCityGoals.txt add warr, cav, phract, arch, trans; the rest are
+// the full names, the protocol keys (TroopStrBean) and what our parsers took
+// before this table existed (ball, balls, cat, pike, sword, worker...).
+// Note cata is the CATAPHRACT; the catapult is cp, cat or pult.
+const TROOP_WORDS = {
+  peasants:     ['wo', 'work', 'worker', 'workers', 'peasant', 'peasants'],
+  militia:      ['w', 'warr', 'warrior', 'warriors', 'militia'],
+  scouter:      ['s', 'scout', 'scouts', 'scouter', 'scouters'],
+  pikemen:      ['p', 'pike', 'pikes', 'pikeman', 'pikemen'],
+  swordsmen:    ['sw', 'sword', 'swords', 'swordsman', 'swordsmen'],
+  archer:       ['a', 'arch', 'archer', 'archers'],
+  carriage:     ['t', 'trans', 'transport', 'transports', 'transporter', 'transporters', 'carriage', 'carriages'],
+  lightCavalry: ['c', 'cav', 'cavs', 'cavalry', 'lightcavalry'],
+  heavyCavalry: ['cata', 'phract', 'phracts', 'cataphract', 'cataphracts', 'heavycavalry'],
+  ballista:     ['b', 'ball', 'balls', 'ballista', 'ballistas', 'ballistae'],
+  batteringRam: ['r', 'br', 'ram', 'rams', 'batteringram', 'batteringrams'],
+  catapult:     ['cp', 'cat', 'cats', 'pult', 'pults', 'catapult', 'catapults'],
+};
+
+// Fortifications, keyed by WALLS code. NEAT's goal codes (FortificationGoal,
+// Abbreviations) are tra, ab, at, r and tre; its "defenders:" status line
+// prints tr, rl and dt (InLineCommands), and !NewCityGoals.txt writes trap and
+// rock. NEAT's TREBUCHET is our Rock Fall, type 18: the client renames
+// "Rockfall" to "Defensive Trebuchet" everywhere it shows it
+// (CastleDefTypeUI.as:474-476, DescribeTooltip.as:183-186), and the wiki's
+// Fortification page counts trebs with city.fortification.rockfall.
+// "r" is rolling logs HERE and a battering ram in a troop list, as in NEAT.
+// "ro" stays unknown: the wiki never uses it and it could mean either.
+const FORT_WORDS = {
+  trap:   ['tra', 'tr', 'trap', 'traps'],
+  abatis: ['ab', 'abatis'],
+  tower:  ['at', 'tower', 'towers', 'arrowtower', 'arrowtowers', 'archertower', 'archertowers'],
+  logs:   ['r', 'rl', 'log', 'logs', 'rollinglog', 'rollinglogs'],
+  rocks:  ['tre', 'treb', 'trebs', 'trebuchet', 'trebuchets', 'dt', 'defensivetrebuchet', 'defensivetrebuchets',
+           'rf', 'rock', 'rocks', 'rockfall', 'rockfalls'],
+};
+
+// Resources (wiki Abbreviations: gold g, food f, wood w, stone s, iron i; NEAT's
+// own pages also say lumber).
+const RES_WORDS = {
+  food: ['f', 'food'], wood: ['w', 'wood', 'l', 'lumber'], stone: ['s', 'stone'],
+  iron: ['i', 'iron'], gold: ['g', 'gold'],
+};
+
+const wordKey = (s) => String(s == null ? '' : s).toLowerCase().replace(/[\s_-]+/g, '');
+const invert = (words) => {
+  const out = {};
+  for (const [key, list] of Object.entries(words)) for (const w of list) out[w] = key;
+  return out;
+};
+const TROOP_KEY_BY_WORD = invert(TROOP_WORDS);
+const FORT_CODE_BY_WORD = invert(FORT_WORDS);
+const RES_KEY_BY_WORD = invert(RES_WORDS);
+const lookupWord = (table, tok) => {
+  const k = wordKey(tok);
+  if (Object.prototype.hasOwnProperty.call(table, k)) return table[k];
+  // "archers", "ballistas": a plural of a word the table has. Short words are
+  // left alone so "ws" or "cs" can never turn into a code by accident.
+  const one = k.length >= 4 && k.endsWith('s') ? k.slice(0, -1) : null;
+  return one && Object.prototype.hasOwnProperty.call(table, one) ? table[one] : null;
+};
+
+// The TROOPS entry for a word, or null.
+function troopByWord(tok) {
+  const key = lookupWord(TROOP_KEY_BY_WORD, tok);
+  return key ? TROOPS.find((t) => t.key === key) : null;
+}
+// The WALLS entry for a word, or null.
+function fortByWord(tok) {
+  const code = lookupWord(FORT_CODE_BY_WORD, tok);
+  return code ? WALLS.find((w) => w.code === code) : null;
+}
+// 'food' | 'wood' | 'stone' | 'iron' | 'gold', or null.
+const resourceByWord = (tok) => lookupWord(RES_KEY_BY_WORD, tok);
+
 // interior.pacifyPeople typeId -- view/module/office/PacifyPeopleView.as switch
 const PACIFY = {
   relief: 1,     // 赈灾  +5 loyalty, -15 complaint
@@ -328,6 +413,7 @@ const FREE_SPEED = {
 
 module.exports = {
   MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
+  TROOP_WORDS, FORT_WORDS, RES_WORDS, troopByWord, fortByWord, resourceByWord,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
   SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,

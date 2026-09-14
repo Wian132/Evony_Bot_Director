@@ -68,11 +68,13 @@ const march = (from, to, missionType, extra = {}) => ({
 });
 
 // Everyone shares one goal file unless a city is given its own, as Lord02's
-// cities share "default".
-const LORD02 = `requestresources any wood 100000 2000000 500000 200000
-requestresources any stone 5000000 50000000 5000000 10000000
-requestresources any iron 50000000 500000000 20000000 100000000
-requestresources any food 500000000 5000000000 50000000 1000000000`;
+// cities share "default". These are Lord02's saved lines as
+// migrate-goals-transfer.js rewrites them into NEAT's order (Step 9); the
+// lines in this file were all converted with that same mapping.
+const LORD02 = `requestresources any wood 2000000 200000 * 500000 /below:100000
+requestresources any stone 50000000 10000000 * 5000000 /below:5000000
+requestresources any iron 500000000 100000000 * 20000000 /below:50000000
+requestresources any food 5000000000 1000000000 * 50000000 /below:500000000`;
 
 function plan(here, castles, src, { selfArmys = [], own = {}, book = null } = {}) {
   const game = fakeGame(castles, selfArmys);
@@ -93,20 +95,21 @@ const food = (a) => a.resources.food;
     const p = parseGoals(LORD02);
     assert.deepStrictEqual(p.errors, []);
     const f = p.goals.find((g) => g.type === 'food');
-    assert.deepStrictEqual([f.target, f.amounts, f.slots], ['any', [500e6, 5e9, 50e6, 1e9], 1]);
+    assert.deepStrictEqual([f.target, f.local, f.remote, f.minBatch, f.maxBatch, f.below, f.slots], ['any', 5e9, 1e9, null, 50e6, 500e6, 1]);
   });
 
   await t('* for any amount, /slots, the t flag, and NEAT city lists', () => {
-    const p = parseGoals('requestresources !HubCity|484,619 food * 1b * 100m t /slots:3');
+    const p = parseGoals('requestresources !HubCity|484,619 food 1b 100m * * t /below:* /slots:3');
     assert.deepStrictEqual(p.errors, []);
     const g = p.goals[0];
-    assert.deepStrictEqual([g.target, g.amounts, g.flag, g.slots], ['!HubCity|484,619', [null, 1e9, null, 100e6], 't', 3]);
-    has(describe(p).join('\n'), 'food from !HubCity|484,619 when under *, up to 1,000,000,000, * per send, senders keep 100,000,000, 3 missions at a time');
+    assert.deepStrictEqual([g.target, g.local, g.remote, g.minBatch, g.maxBatch, g.carrier, g.below, g.slots],
+      ['!HubCity|484,619', 1e9, 100e6, null, null, 'carriage', null, 3]);
+    has(describe(p).join('\n'), 'food from !HubCity|484,619, while under 1,000,000,000, never past it, senders keep 100,000,000, any batch size, 3 missions at a time');
   });
 
   await t('mistakes are reported, not guessed at', () => {
-    assert.match(parseGoals('requestresources any food 1m 2m').errors[0].error, /4 needed/);
-    assert.match(parseGoals('requestresources any food 1m 2m 1m 1m cavalry').errors[0].error, /only transports/);
+    assert.match(parseGoals('requestresources any food 1m').errors[0].error, /localAmount and remoteAmount are required/);
+    assert.match(parseGoals('requestresources any food 1m 2m 1m 1m dragons').errors[0].error, /unknown troop "dragons"/);
     assert.match(parseGoals('requestresources any rubies 1m 2m 1m 1m').errors[0].error, /unknown resource/);
     assert.match(parseGoals('requestresources any food 1m 2m lots 1m').errors[0].error, /not an amount/);
     assert.match(parseGoals('requesttroops any dragons 1k 2k 1k 1k').errors[0].error, /unknown troop/);
@@ -169,30 +172,30 @@ const food = (a) => a.resources.food;
   await t('a transport on its way in counts; one heading home does not', () => {
     const f = fleet();
     const going = march(f.nine, f.fla, C.MISSION.transport, { resource: { food: 450e6 } });
-    let p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b', { selfArmys: [going] }).plan;
+    let p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: [going] }).plan;
     assert.strictEqual(p.actions.length, 0);
     has(p.note, 'nothing short');
 
     // ArmyBean still lists the load on the way back, but it has been delivered
     const back = { ...going, direction: 2 };
-    p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b', { selfArmys: [back] }).plan;
+    p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: [back] }).plan;
     assert.strictEqual(p.actions.length, 1);
   });
 
   await t('market purchases in transit count too', () => {
     const f = fleet({ fla: { transingTrades: [{ resType: 0, amount: 450e6 }] } });
-    const p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b').plan;
+    const p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m').plan;
     assert.strictEqual(p.actions.length, 0);
   });
 
   await t('one mission at a time between two cities, going or coming back; /slots allows more', () => {
     const f = fleet();
     const out = march(f.five, f.fla, C.MISSION.transport, { direction: 2, resource: { stone: 1e6 } });
-    let p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b', { selfArmys: [out] }).plan;
+    let p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: [out] }).plan;
     assert.strictEqual(p.actions.length, 0, '5 already has a transport out to Fla, and 8 is 57 tiles farther');
     has(p.note, 'waiting for 5 (2.2 tiles), its last one to here not back yet');
 
-    p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b /slots:2', { selfArmys: [out] }).plan;
+    p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m /slots:2', { selfArmys: [out] }).plan;
     assert.strictEqual(p.actions[0].from.name, '5');
     assert.strictEqual(p.actions[0].rally.pairLimit, 2);
   });
@@ -200,7 +203,7 @@ const food = (a) => a.resources.food;
   await t('a nearer city busy with this one is waited for only if it would be the one to send', () => {
     const f = fleet({ five: { food: 1.02e9 } });          // 5 could send only part
     const out = march(f.five, f.fla, C.MISSION.transport, { direction: 2 });
-    const p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b', { selfArmys: [out] }).plan;
+    const p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: [out] }).plan;
     assert.strictEqual(p.actions[0].from.name, '8', '8 can send it all; 5 could not have');
   });
 
@@ -211,19 +214,19 @@ const food = (a) => a.resources.food;
     const f = fleet({ five: { rally: 2 } });
     const elsewhere = { fieldId: C.coordsToFieldId(10, 10) };
     const busy = [march(f.five, elsewhere, C.MISSION.attack), march(f.five, elsewhere, C.MISSION.scout)];
-    let p = plan(f.fla, Object.values(f), 'requestresources any food 500m 5b 50m 1b', { selfArmys: busy }).plan;
+    let p = plan(f.fla, Object.values(f), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: busy }).plan;
     assert.strictEqual(p.actions[0].from.name, '8');
 
     const g = fleet();
     const one = [march(g.five, elsewhere, C.MISSION.transport)];
-    p = plan(g.fla, Object.values(g), 'requestresources any food 500m 5b 50m 1b', { selfArmys: one, own: { 5: 'rallypolicy r:1' } }).plan;
+    p = plan(g.fla, Object.values(g), 'requestresources any food 5b 1b * 50m /below:500m', { selfArmys: one, own: { 5: 'rallypolicy r:1' } }).plan;
     assert.strictEqual(p.actions[0].from.name, '8');
   });
 
   await t('nobody able to send says why', () => {
     const f = fleet({ five: { rally: 1 } });
     const elsewhere = { fieldId: C.coordsToFieldId(10, 10) };
-    const p = plan(f.fla, [f.fla, f.five], 'requestresources 5 food 500m 5b 50m 1b',
+    const p = plan(f.fla, [f.fla, f.five], 'requestresources 5 food 5b 1b * 50m /below:500m',
       { selfArmys: [march(f.five, elsewhere, C.MISSION.attack)] }).plan;
     assert.strictEqual(p.actions.length, 0);
     has(p.note, 'no sender — 5 rally spot L1: 1/1 busy');
@@ -231,23 +234,23 @@ const food = (a) => a.resources.food;
 
   await t('a quarter of the sender\'s transports stay home for farming', () => {
     const f = fleet({ five: { troop: { carriage: 100 } } });
-    const p = plan(f.fla, Object.values(f), 'requestresources 5 food 500m 5b 50m 1b').plan;
+    const p = plan(f.fla, Object.values(f), 'requestresources 5 food 5b 1b * 50m /below:500m').plan;
     assert.strictEqual(food(p.actions[0]), 75 * 5000);
     assert.strictEqual(p.actions[0].carriages, 75);
   });
 
-  await t('a sender is never taken below its own <min>, so nothing ping-pongs', () => {
+  await t('a sender is never taken below its own trigger (/below), so nothing ping-pongs', () => {
     const f = fleet({ five: { gold: 1.1e6 } });
-    const line = 'requestresources 5 gold 1m 2m 500k 200k';
+    const line = 'requestresources 5 gold 2m 200k * 500k /below:1m';
     const p = plan(f.fla, Object.values(f), line).plan;          // 5 has the same line
     assert.strictEqual(p.actions[0].resources.gold, 100e3, 'only what is over its own 1m');
     const q = plan(f.fla, Object.values(f), line, { own: { 5: '' } }).plan;
-    assert.strictEqual(q.actions[0].resources.gold, 500e3, 'without that line, only <keep> holds it');
+    assert.strictEqual(q.actions[0].resources.gold, 500e3, 'without that line, only remoteAmount holds it');
   });
 
   await t('what a sender sent moments ago is not offered again', () => {
     const f = fleet({ five: { food: 1.1e9 } });
-    const p = plan(f.fla, Object.values(f), 'requestresources 5 food 500m 5b 50m 1b', {
+    const p = plan(f.fla, Object.values(f), 'requestresources 5 food 5b 1b * 50m /below:500m', {
       book: (game, goalsOf) => {
         const b = R.rallyBook({ game, goalsOf, pending: [] });
         b.record({ from: f.five, kind: 'r', missionType: C.MISSION.transport, targetFieldId: f.eight.fieldId, resources: { food: 80e6 }, troops: { carriage: 16000 } });
@@ -263,7 +266,7 @@ const food = (a) => a.resources.food;
 
   await t('the nearest city with the whole batch over its keep reinforces', async () => {
     const f = fleet({ fla: { troop: { archer: 20e3 } }, five: { troop: { archer: 30e3 } }, eight: { troop: { archer: 500e3, scouter: 90e3 } } });
-    const { plan: p, game } = plan(f.fla, Object.values(f), 'requesttroops any archer 100k 200k 50k 10k\nrequesttroops any scout 50k 80k 40k 10k');
+    const { plan: p, game } = plan(f.fla, Object.values(f), 'requesttroops any archer 200k 10k * 50k /below:100k\nrequesttroops any scout 80k 10k * 40k /below:50k');
     assert.strictEqual(p.actions.length, 1, 'archers and scouts from 8 ride together');
     const a = p.actions[0];
     assert.deepStrictEqual([a.kind, a.from.name, a.troops], ['reinforceTroops', '8', { archer: 50e3, scouter: 40e3 }]);
@@ -278,7 +281,7 @@ const food = (a) => a.resources.food;
   await t('troops out that come back count, troops sent away to stay do not', () => {
     const f = fleet({ fla: { troop: { archer: 60e3 } }, eight: { troop: { archer: 500e3 } } });
     const camp = { fieldId: C.coordsToFieldId(490, 620) };
-    const line = 'requesttroops any archer 100k 200k 50k 10k';
+    const line = 'requesttroops any archer 200k 10k * 50k /below:100k';
     // 60k home + 50k out attacking = 110k: not short
     let p = plan(f.fla, Object.values(f), line, { selfArmys: [march(f.fla, camp, C.MISSION.attack, { troop: { archer: 50e3 } })] }).plan;
     assert.strictEqual(p.actions.length, 0);
@@ -305,7 +308,7 @@ const food = (a) => a.resources.food;
   await t('two cities asking one sender in the same tick: rallypolicy r:1 lets one march go', async () => {
     const f = fleet();
     const other = city('X', 480, 610, { food: 10e6 });
-    const ask = 'requestresources 5 food 500m 5b 50m 1b';
+    const ask = 'requestresources 5 food 5b 1b * 50m /below:500m';
     const { e, game } = engineFor([f.fla, other, f.five], { Fla: ask, X: ask, 5: 'rallypolicy r:1' });
     await e.tick();
     assert.strictEqual(game.sent.length, 1, `${game.sent.length} marches went`);
@@ -316,7 +319,7 @@ const food = (a) => a.resources.food;
 
   await t('the next tick does not send again while the first is still on its way', async () => {
     const f = fleet();
-    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 500m 5b 50m 1b /slots:1' });
+    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 5b 1b * 50m /below:500m /slots:1' });
     await e.tick();
     assert.strictEqual(game.sent.length, 1);
     // the server has not listed it yet: the book still has it
@@ -333,7 +336,7 @@ const food = (a) => a.resources.food;
     const f = fleet({ five: { rally: 10 } });
     const elsewhere = { fieldId: C.coordsToFieldId(10, 10) };
     const busy = Array.from({ length: 8 }, () => march(f.five, elsewhere, C.MISSION.attack));
-    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 500m 5b 50m 1b', 5: 'rallypolicy max:8' }, busy);
+    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 5b 1b * 50m /below:500m', 5: 'rallypolicy max:8' }, busy);
     await e.tick();
     assert.strictEqual(game.sent.length, 0, 'a goal march took the 9th slot');
     has(e.lastReport[f.fla.castleId].transfer.note, 'rallypolicy max:8 (8 busy)');
@@ -344,7 +347,7 @@ const food = (a) => a.resources.food;
   await t('the engine holds a march the plan thought had room', async () => {
     const f = fleet({ five: { rally: 1 } });
     const elsewhere = { fieldId: C.coordsToFieldId(10, 10) };
-    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 500m 5b 50m 1b' },
+    const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 5b 1b * 50m /below:500m' },
       [march(f.five, elsewhere, C.MISSION.attack)]);
     const real = T.plans.transfer;
     T.plans.transfer = (ctx, st, g) => real({ ...ctx, rally: R.rallyBook({ game: g, armies: [] }) }, st, g);

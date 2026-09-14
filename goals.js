@@ -117,14 +117,21 @@ function buildCondition(src) {
   return { terms, errors };
 }
 
-// fortification abbreviations used by the `fortification` goal
-const FORT_ABBR = { ab: 'abatis', tra: 'trap', at: 'tower', rl: 'logs', rf: 'rocks' };
+// One code per fortification, the one NEAT's FortificationGoal page uses. The
+// console shows it beside each fortification (session.js). The parser reads
+// every spelling in constants.js FORT_WORDS, not just these.
+const FORT_ABBR = { tra: 'trap', ab: 'abatis', at: 'tower', r: 'logs', tre: 'rocks' };
 
 const CONFIG_KEYS = new Set([
   'npc', 'buildnpc', 'comfort', 'hero', 'troop', 'trade', 'valley', 'hunting',
   'troopsusepopmax', 'troopsusereserved', 'troopqueuetime', 'troopidlequeuetime',
   'warrules', 'wartown', 'keepatthome', 'reservedbarrack', 'feastinghallspace',
   'troopincrement', 'attackgap', 'embassy', 'farmingcycle', 'troopslot',
+  // The rest of the 46 keys the NEAT wiki documents (CategoryConfigGoals and
+  // each key's own page), so a pasted NEAT config line never reads as a typo.
+  // The ones nothing acts on yet are in NOT_IMPLEMENTED.config below.
+  'abandon', 'abandonflats', 'acquireflats', 'fortification', 'fortsusereserved',
+  'plan', 'research', 'troopdelbadque', 'valleyfarming', 'valleymin', 'wallqueuetime',
 ]);
 // config building:0 pauses construction; building:1 is implied by any build line (wiki: Build)
 CONFIG_KEYS.add('building');
@@ -151,7 +158,15 @@ const GOALS = {
           errs.push('building is 0 (construction paused) or 1');
           continue;
         }
-        out[k.toLowerCase()] = NUM(v) ?? v;
+        const value = NUM(v) ?? v;
+        // A key a goal module reads through its own config parser (goal-war's
+        // hiding, gate, wartown...) is checked by that parser now, so
+        // `wartown:5` or `hiding:soon` is an error here and not a silent default.
+        const own = GOALS[k.toLowerCase()];
+        if (own && own.kind === 'config' && k.toLowerCase() !== 'config') {
+          for (const e of own.parse(value).errors || []) errs.push(e);
+        }
+        out[k.toLowerCase()] = value;
       }
       return { values: out, errors: errs };
     },
@@ -171,7 +186,7 @@ const GOALS = {
         for (const part of tok.split(',')) {
           if (!part.trim()) continue;
           const [code, amt] = kv(part.trim());
-          const t = C.BY_CODE[code.toLowerCase()] || ALIAS[code.toLowerCase()];
+          const t = C.troopByWord(code);          // constants.js TROOP_WORDS
           if (!t) { errs.push(`unknown troop code "${code}"`); continue; }
           const n = NUM(amt);
           if (n === null) { errs.push(`bad amount "${amt}" for ${code}`); continue; }
@@ -189,8 +204,7 @@ const GOALS = {
       for (const tok of args) for (const part of tok.split(',')) {
         if (!part.trim()) continue;
         const [code, amt] = kv(part.trim());
-        const key = FORT_ABBR[code.toLowerCase()] || code.toLowerCase();
-        const w = C.WALL_BY_CODE[key];
+        const w = C.fortByWord(code);             // constants.js FORT_WORDS
         if (!w) { errs.push(`unknown fortification "${code}"`); continue; }
         const n = NUM(amt);
         if (n === null) { errs.push(`bad amount "${amt}" for ${code}`); continue; }
@@ -341,13 +355,6 @@ for (const k of ['nomayor', 'feastinghallspace', 'hero', 'trainint', 'trainpol',
 // free finishes (speedups.js): config freespeedup:0 turns them off in a city
 for (const k of require('./speedups').configKeys) CONFIG_KEYS.add(k);
 
-// a few troop aliases NEAT accepts that differ from our codes
-const ALIAS = {
-  warr: C.BY_CODE.w, cav: C.BY_CODE.c, ram: C.BY_CODE.r, trans: C.BY_CODE.t,
-  arch: C.BY_CODE.a, pike: C.BY_CODE.p, sword: C.BY_CODE.sw, scout: C.BY_CODE.s,
-  phract: C.BY_CODE.cata, worker: C.BY_CODE.wo,
-};
-
 // ---- accepted, but nothing acts on it yet ----
 // These parse without an error, yet no plan does anything with them. The console's
 // editor paints them red with the reason below, not blue: NEAT's editor did the
@@ -357,30 +364,44 @@ const ALIAS = {
 // monitorarmy is deliberately absent: the NEAT wiki says it never did anything on
 // NEAT or YAEB either, so a line that does nothing is working as documented.
 const NOT_IMPLEMENTED = {
-  // config <key>:<value> — no plan reads these keys
+  // config <key>:<value> — no plan reads these keys. Every key the NEAT wiki
+  // documents is accepted (CONFIG_KEYS), so a pasted NEAT file says here, line
+  // by line, which of its switches do nothing yet.
   config: {
     trade: 'no goal trades on the market yet (the buy and sell script lines do)',
     valley: 'no goal captures or farms valleys yet',
+    valleyfarming: 'no goal captures or farms valleys yet',
+    valleymin: 'no goal captures or farms valleys yet',
     hunting: 'no goal hunts medals yet',
     troopsusepopmax: 'training uses idle population only, so nothing reads this key',
-    troopsusereserved: 'nothing reads this key yet',
+    troopsusereserved: 'troop training does not keep a resource reserve yet',
     troopqueuetime: 'nothing reads this key yet (a batch is sized by config troopslot or troop /slot)',
-    troopidlequeuetime: 'nothing reads this key yet',
-    reservedbarrack: 'nothing reads this key yet',
-    troopincrement: 'nothing reads this key yet',
-    embassy: 'nothing reads this key yet',
-    trainint: 'nothing reads this key yet',
-    trainpol: 'nothing reads this key yet',
+    troopidlequeuetime: 'nothing reads this key yet (a batch is sized by config troopslot or troop /slot)',
+    reservedbarrack: 'troop training does not hold a barracks back yet',
+    troopincrement: 'troop lines are trained in order, not by increments or ratio yet',
+    troopdelbadque: 'badly queued troops are not cancelled yet',
+    embassy: 'no goal uses the embassy yet',
+    trainint: 'no goal hires heroes yet, so nothing reads this key',
+    trainpol: 'no goal hires heroes yet, so nothing reads this key',
     fasthero: 'no goal hires heroes yet, so nothing reads this key',
     nohealing: 'the bot does not heal troops at all yet, so there is nothing to switch off',
+    fortification: 'fortification lines cannot be switched off this way yet',
+    fortsusereserved: 'fortification orders do not keep a food reserve yet',
+    wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',
+    research: 'no research goal yet (the research script line researches)',
+    plan: 'no plan goal yet',
+    abandon: 'no goal abandons a city yet',
+    abandonflats: 'no goal holds or releases flats yet',
+    acquireflats: 'no goal holds or releases flats yet',
   },
   // goal lines whose plan only reports
   goals: {
     spamheroes: 'it only reports, and no spam or loyalty-attack goal uses these heroes yet',
   },
-  // War settings are config keys. Written as a line of their own (`wartown 1`) they
-  // parse into the goal list, where no plan looks; every plan reads ctx.config.
-  bare: ['hiding', 'gate', 'warrules', 'wartown', 'keepatthome', 'attackgap', 'defensecooldown', 'nohealing'],
+  // War settings written as a line of their own (`wartown 1`) used to parse into
+  // the goal list, where no plan looks. Since Step 9 parseGoals reads such a line
+  // as the config it means and says so on the line, so none is left here.
+  bare: [],
 };
 
 // What a line that reads fine comes to, if nothing acts on it. `seen` is the
@@ -402,6 +423,10 @@ function idleNote(seen) {
   }
   return null;
 }
+
+// The note on a line parseGoals read differently from how it was written (a
+// bare war setting read as config). describe() lists these too.
+const READ_AS = /^read as "config /;
 
 // Each source line's standing, for the console editor's colours:
 //   ok       the engine acts on it (msg may still say something, e.g. what it replaced)
@@ -426,9 +451,11 @@ function lineStatus(src, errors, seen, dropped) {
     if (!s && !msgs.length) return { n, status: 'comment', msg: null };
     if (dropped.has(n)) msgs.push(`${s.name} is written again on line ${dropped.get(n).line}, and the later line wins, so this one does nothing`);
     const idle = s ? idleNote(s) : null;
-    if (msgs.length) return { n, status: 'error', msg: [...msgs, ...(idle ? [idle] : [])].join('; ') };
-    if (idle) return { n, status: 'idle', msg: idle };
-    return { n, status: 'ok', msg: later.has(n) ? `replaces line ${later.get(n)}` : null };
+    const note = s && s.note ? [s.note] : [];       // how the line was read, when that differs
+    if (msgs.length) return { n, status: 'error', msg: [...msgs, ...(idle ? [idle] : []), ...note].join('; ') };
+    if (idle) return { n, status: 'idle', msg: [idle, ...note].join('; ') };
+    const said = [...(later.has(n) ? [`replaces line ${later.get(n)}`] : []), ...note];
+    return { n, status: 'ok', msg: said.length ? said.join('; ') : null };
   });
 }
 
@@ -447,6 +474,27 @@ function parseGoals(text) {
     const name = tok[0].toLowerCase();
     const def = GOALS[name];
     if (!def) { errors.push({ line: i + 1, text: raw.trim(), error: `unknown goal "${tok[0]}"` }); return; }
+
+    // A config key written as its own line ("wartown 1", "hiding 5", "gate 3").
+    // goal-war's config parsers sit in GOALS, so such a line used to parse with
+    // no error and then do nothing, since every plan reads ctx.config. It is
+    // read as the config line it was meant to be, and the line's note says so.
+    if (def.kind === 'config' && name !== 'config') {
+      const value = tok.slice(1).join(' ');
+      if (!value) {
+        // monitorarmy does nothing in NEAT or here, with or without a value
+        if (def.parse().noop) { seen[i] = { name, args: [], keys: null }; return; }
+        errors.push({ line: i + 1, text: raw.trim(), error: `${name} is a config key and needs a value — write it as config ${name}:<value>` });
+        seen[i] = { name, args: [], keys: null };
+        return;
+      }
+      const cfg = GOALS.config.parse([`${name}:${value}`]);
+      for (const e of cfg.errors || []) errors.push({ line: i + 1, text: raw.trim(), error: `CONFIG: ${e}` });
+      Object.assign(config, cfg.values);
+      seen[i] = { name: 'config', args: [`${name}:${value}`], keys: Object.keys(cfg.values),
+        note: `read as "config ${name}:${value}" — ${name} is a config key, so write it that way` };
+      return;
+    }
 
     const parsed = def.parse(tok.slice(1), line);
     for (const e of parsed.errors || []) errors.push({ line: i + 1, text: raw.trim(), error: `${name.toUpperCase()}: ${e}` });
@@ -471,6 +519,10 @@ function parseGoals(text) {
 
 function describe(parsed) {
   const out = [];
+  for (const l of parsed.lines || []) {
+    const said = String(l.msg || '').split('; ').find((m) => READ_AS.test(m));
+    if (said) out.push(`note: line ${l.n} ${said}`);
+  }
   const cfg = Object.entries(parsed.config);
   if (cfg.length) out.push(`config: ${cfg.map(([k, v]) => `${k}=${v}`).join(', ')}`);
   const byName = {};
@@ -497,12 +549,8 @@ function describe(parsed) {
     } else if (name === 'defensepolicy') {
       for (const g of list) out.push(`defensepolicy: ${Object.entries(g.switches).map(([k, v]) => `${k}=${v}`).join(', ')}`);
     } else if (name === 'requestresources' || name === 'requesttroops') {
-      const amt = (v) => (v == null ? '*' : v.toLocaleString('en-US'));
-      for (const g of list) {
-        const [min, max, batch, keep] = g.amounts || [];
-        out.push(`${name}: ${g.type || g.troop} from ${g.target} when under ${amt(min)}, up to ${amt(max)}, `
-          + `${amt(batch)} per send, senders keep ${amt(keep)}${g.slots > 1 ? `, ${g.slots} missions at a time` : ''}`);
-      }
+      const { describeRequest } = require('./goal-transfer');
+      for (const g of list) out.push(describeRequest(g));
     } else if (name === 'rallypolicy') {
       for (const g of list) {
         const parts = [...Object.entries(g.caps || {}).map(([k, v]) => `${k}:${v}`),

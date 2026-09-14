@@ -71,16 +71,9 @@ const DEFAULT_RADIUS = 20;        // INFERRED: DistancePolicy's default is unrea
 const HERO_ATTACK_FLOOR = 50;     // wiki: attack < 50 forces the safe ballista count
 const MAX_NPC_LEVEL = 10;
 
-// NEAT troop codes that differ from ours (mirrors the ALIAS map in goals.js).
-const TROOP_ALIAS = {
-  warr: 'w', cav: 'c', ram: 'r', trans: 't', arch: 'a', pike: 'p', sword: 'sw',
-  scout: 's', phract: 'cata', worker: 'wo', ball: 'b', balls: 'b', cat: 'cp',
-};
-
-const troopDef = (code) => {
-  const k = String(code || '').toLowerCase();
-  return C.BY_CODE[k] || C.BY_CODE[TROOP_ALIAS[k]] || C.BY_KEY[k] || null;
-};
+// Troop codes and names: the one table every goal parser shares
+// (constants.js TROOP_WORDS).
+const troopDef = (code) => C.troopByWord(code);
 
 function parseTroopSpec(text, errs) {
   const out = {};

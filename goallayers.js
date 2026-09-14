@@ -34,15 +34,16 @@ const TEXTS = {
 //   troop a:1,warr:1,wo:1,p:1,sw:1,cav:1,cata:1,ram:1,cp:1,s:1
 //   fortification trap:10,ab:10,at:1,r:10,rock:10
 //
-// Offered to an account that has no template yet, in the codes OTTObot reads
-// today. The one change: the rolling logs and rock falls are rl and rf here
-// (r and rock are not read yet). `build c:1` stays as NEAT wrote it: a build
+// Offered to an account that has no template yet, word for word: every code in
+// it is read the NEAT way since Step 9 (constants.js FORT_WORDS: r is rolling
+// logs and rock the rock fall, NEAT's trebuchet, in a fortification line).
+// `build c:1` stays as NEAT wrote it: a build
 // line is a target (engine.js buildPlan), so it asks for at least one cottage
 // and never demolishes one, in a captured city either. NEAT wants that cottage
 // so a city holding only its Town Hall is not abandoned on restart.
 const NEW_CITY_GOALS = [
   '// New-city template: a city founded or captured gets a copy of this as its',
-  '// own goals, once. NEAT\'s default !NewCityGoals.txt, in OTTObot\'s codes.',
+  '// own goals, once. NEAT\'s default !NewCityGoals.txt, in NEAT\'s own codes.',
   'config comfort:1,gate:1',
   '',
   '// config trade:1',
@@ -52,8 +53,8 @@ const NEW_CITY_GOALS = [
   '',
   'troop a:1,warr:1,wo:1,p:1,sw:1,cav:1,cata:1,ram:1,cp:1,s:1',
   '',
-  '// NEAT writes the last two r:10,rock:10; OTTObot calls them rl and rf.',
-  'fortification trap:10,ab:10,at:1,rl:10,rf:10',
+  '// r is rolling logs and rock the rock fall (NEAT\'s trebuchet)',
+  'fortification trap:10,ab:10,at:1,r:10,rock:10',
   '',
 ].join('\n');
 

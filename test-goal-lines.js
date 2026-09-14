@@ -53,7 +53,7 @@ t('a // or # line, indented or not, is a comment', () => {
 
 t('a line the engine acts on is ok, with no message', () => {
   for (const src of ['troop b:5k,t:5k', 'fortification ab:5000', 'build f:10:37', 'comfortpolicy 15 16 popraise',
-    'config comfort:1,hero:1,npc:5', 'requestresources any wood 100000 2000000 500000 200000', 'npcheroes !OTTO,any',
+    'config comfort:1,hero:1,npc:5', 'requestresources any wood 2000000 200000 * 500000 /below:100000', 'npcheroes !OTTO,any',
     'traininghero OTTO 30 60', 'distancepolicy 15', 'npcteams 3', 'farmingpolicy 5 /distance:10',
     'defensepolicy /usetruce:79 /usespeech:2 /junktroop:5000', 'gatepolicy 0 0 0 0 0', 'rallypolicy n:3 r:2']) {
     assert.deepStrictEqual(line(src), { n: 1, status: 'ok', msg: null }, src);
@@ -152,15 +152,20 @@ t('each report-only goal line is idle', () => {
   }
 });
 
-t('a war setting written as a line of its own is idle and says how to write it', () => {
+// Step 9: a war setting written as a line of its own is read as the config it
+// means, so it works (blue), and the line says how it was read.
+t('a war setting written as a line of its own is read as config, and says how to write it', () => {
+  assert.deepStrictEqual(NOT_IMPLEMENTED.bare, [], 'none is left doing nothing');
   const val = { hiding: '5', attackgap: '3', defensecooldown: '10' };
-  for (const k of NOT_IMPLEMENTED.bare) {
-    const l = line(`${k} ${val[k] || '1'}`);
-    assert.strictEqual(l.status, 'idle', `${k}: ${l.msg}`);
-    assert.ok(l.msg.includes(`config ${k}:${val[k] || '1'}`), l.msg);
+  for (const k of ['hiding', 'gate', 'warrules', 'wartown', 'keepatthome', 'attackgap', 'defensecooldown', 'nohealing']) {
+    const v = val[k] || '1';
+    const l = line(`${k} ${v}`);
+    assert.strictEqual(l.status, NOT_IMPLEMENTED.config[k] ? 'idle' : 'ok', `${k}: ${l.msg}`);
+    assert.ok(l.msg.endsWith(`read as "config ${k}:${v}" — ${k} is a config key, so write it that way`), l.msg);
+    assert.strictEqual(parseGoals(`${k} ${v}`).config[k], Number(v), `${k} reaches config`);
   }
-  assert.strictEqual(parseGoals('wartown 1').config.wartown, undefined, 'and it still never reaches config');
-  assert.strictEqual(line('wartown 5').status, 'error', 'a bad value is still an error first');
+  assert.strictEqual(line('wartown 5').status, 'error', 'a bad value is still an error');
+  assert.strictEqual(line('wartown').status, 'error', 'and so is no value');
 });
 
 t('the table is the one switch: a key taken off it turns ok with nothing else changed', () => {
@@ -205,7 +210,9 @@ t('config, goals and errors are what the engine always had; lines is the only ne
 section('the live goals: blue, except what does nothing yet');
 
 // As saved for the live cities on 2026-09-14 (Lord22's city, a Lord02 city,
-// Lord02's default); Lord02's other cities hold the same text.
+// Lord02's default); Lord02's other cities hold the same text. The
+// requestresources lines are as migrate-goals-transfer.js rewrites them into
+// NEAT's argument order (Step 9); test-neat-compat.js covers the rewrite.
 const LIVE = {
   lord22: `// Lord22 build-up
 config comfort:1,hero:1,troopsusepopmax:1
@@ -251,17 +258,17 @@ distancepolicy 15
 npcteams 3
 
 // --- resource sharing between the four cities ----------------------------
-// requestresources <donor> <type> <min> <max> <batch> <keep>
+// requestresources <donor> <type> <max> <keep> * <batch> /below:<min>
 //   pull when this city drops below <min>, top up toward <max>, at most
 //   <batch> per run, and never take a donor below <keep>.
 // Wood is the binding constraint on this account — every city is sitting on
 // billions of food and iron but only tens of thousands of lumber — so the wood
 // rule is the one that will actually fire once farming builds a surplus.
-requestresources any gold 1000000 2000000 500000 200000
-requestresources any wood 100000 2000000 500000 200000
-requestresources any stone 5000000 50000000 5000000 10000000
-requestresources any iron 50000000 500000000 20000000 100000000
-requestresources any food 500000000 5000000000 50000000 1000000000
+requestresources any gold 2000000 200000 * 500000 /below:1000000
+requestresources any wood 2000000 200000 * 500000 /below:100000
+requestresources any stone 50000000 10000000 * 5000000 /below:5000000
+requestresources any iron 500000000 100000000 * 20000000 /below:50000000
+requestresources any food 5000000000 1000000000 * 50000000 /below:500000000
 traininghero OTTO 30 60
 // OTTO is the traininghero: it rotates between towns and must never be out
 // on an npc run when it is due to move. Every other hero may still farm.
@@ -288,10 +295,10 @@ troop a:100k,s:100k
 fortification ab:5000
 distancepolicy 15
 npcteams 3
-requestresources any wood 100000 2000000 500000 200000
-requestresources any stone 5000000 50000000 5000000 10000000
-requestresources any iron 50000000 500000000 20000000 100000000
-requestresources any food 500000000 5000000000 50000000 1000000000
+requestresources any wood 2000000 200000 * 500000 /below:100000
+requestresources any stone 50000000 10000000 * 5000000 /below:5000000
+requestresources any iron 500000000 100000000 * 20000000 /below:50000000
+requestresources any food 5000000000 1000000000 * 50000000 /below:500000000
 farmingpolicy 10 /distance:5
 farmingpolicy 5 /distance:10
 `,

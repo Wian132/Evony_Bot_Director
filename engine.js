@@ -301,7 +301,13 @@ function troopPlan(ctx) {
   const room = tr ? tr.barracks.map((b) => ({ positionId: b.positionId, free: b.capacity - b.items.length })) : null;
 
   const orders = [], cannot = [];
-  let popLeft = popBudget, held = '';
+  // Step 11: the construction the builder takes on next — placed this slice
+  // after the batches, or waited for — keeps its cost in the bank
+  // (ctx.buildReserve, Engine.resolveBuild). Batches used to be sized from the
+  // whole bank first, so a troop ladder could spend what the next building
+  // needed and hold construction up for good.
+  const reserve = ctx.buildReserve || null;
+  let popLeft = Math.max(0, popBudget - n(reserve && reserve.population)), held = '';
   // Resources are a SHARED, running budget, exactly like population. Sizing each
   // troop type against the full untouched pool means the first order drains the
   // bank and every later one is rejected outright ("Insufficient resources.
@@ -313,6 +319,7 @@ function troopPlan(ctx) {
     stone: n(res.stone && res.stone.amount),
     iron: n(res.iron && res.iron.amount),
   };
+  if (reserve) for (const k of RES_KEYS) pool[k] = Math.max(0, pool[k] - n(reserve[k]));
   // One batch per troop type per tick, in the order the stage lists them, each
   // into the barracks with the most room.
   for (const [key, deficit] of Object.entries(active.missing)) {
@@ -340,6 +347,7 @@ function troopPlan(ctx) {
   let note = head;
   if (cannot.length) note += `; not trainable here yet: ${cannot.join(', ')}`;
   if (!orders.length && held) note += `; waiting on ${held}`;
+  if (reserve && costText(reserve)) note += `; leaving ${costText(reserve)} in the bank for ${reserve.label || 'the next construction'}`;
   return { ...base, orders, popBudget, slotMin: slotSec / 60, note };
 }
 
@@ -393,14 +401,31 @@ function fortPlan(ctx) {
   let left = Math.max(0, capacity - used);
   let room = Math.max(0, level - (walls.queue || []).length);
 
+  // Step 11: the construction the builder takes on next keeps its cost in the
+  // bank (ctx.buildReserve), so while there is one a batch is also sized
+  // against what is left, from what one of each type costs here
+  // (ctx.fortCosts, Engine.readFortCosts). Costs not read: nothing is ordered
+  // rather than spend it. With no reserve the space decides alone, as before.
+  const reserve = ctx.buildReserve || null;
+  const bank = (ctx.castle && ctx.castle.resource) || {};
+  const pool = reserve ? Object.fromEntries(['food', 'wood', 'stone', 'iron']
+    .map((k) => [k, Math.max(0, n(bank[k] && bank[k].amount) - n(reserve[k]))])) : null;
+
   // One batch per short type per tick, the whole shortfall or as much as fits.
   const orders = [];
   let held = '';
   for (const [code, deficit] of Object.entries(active.missing)) {
     const wall = C.WALL_BY_CODE[code];
     if (room <= 0) { held = held || (level ? `a free wall queue slot (${level} at Walls L${level})` : 'Walls'); break; }
-    const num = Math.min(deficit, Math.floor(left / wall.space));
+    let num = Math.min(deficit, Math.floor(left / wall.space));
     if (num <= 0) { held = held || 'fortified space'; continue; }
+    if (pool) {
+      const cost = ctx.fortCosts && ctx.fortCosts[wall.typeId];
+      if (!cost) { held = held || `the fortification costs (unread), with ${costText(reserve)} kept for ${reserve.label || 'the next construction'}`; continue; }
+      num = Math.min(num, ...Object.keys(pool).map((k) => (n(cost[k]) > 0 ? Math.floor(pool[k] / n(cost[k])) : Infinity)));
+      if (num <= 0) { held = held || `resources, with ${costText(reserve)} kept for ${reserve.label || 'the next construction'}`; continue; }
+      for (const k of Object.keys(pool)) pool[k] -= num * n(cost[k]);
+    }
     orders.push({ wall, num });
     left -= num * wall.space;
     room--;
@@ -572,6 +597,19 @@ function typeOrders(def, w, have, claim) {
   return out;
 }
 
+// Field plots taken once what the lines so far want is done: each field type
+// the lines name at what they want of it (what is kept after demolitions, or
+// built up to), the others as they stand.
+function outsideWanted(all, want) {
+  let total = 0;
+  for (const def of C.BUILDINGS.filter((d) => d.outside)) {
+    const have = all.filter((b) => b.typeId === def.typeId).length;
+    const w = want.get(def.typeId);
+    total += w ? Math.max(Math.min(have, w.cap), Math.max(0, ...w.floors.map((f) => f.qty))) : have;
+  }
+  return total;
+}
+
 function buildPlan(ctx, wallsFor = 0) {
   const lines = ctx.goals.filter((g) => g.name === 'build');
   const live = standing(ctx.castle);
@@ -608,6 +646,9 @@ function buildPlan(ctx, wallsFor = 0) {
 
   const ranked = [], summary = [], skipped = [], conflicts = [];
   let room = [];
+  const TOWN_HALL_DEF = C.BUILDING_BY_ID[C.TOWN_HALL];
+  // Field plots the Town Hall opens at a level: 13 at L1, 3 more a level, 40 at L10.
+  const fieldsAt = (lv) => C.plotRange(true, lv).to - C.SLOTS.outsideFrom + 1;
 
   // 1. The Walls a fortification goal needs, first, so they keep their place
   // even when a build line also names the Walls.
@@ -678,14 +719,33 @@ function buildPlan(ctx, wallsFor = 0) {
         if (!MULTI_BUILDINGS.has(def.typeId)) needsSpace = needsSpace || def.name;
       }
     }
+    // Step 11: fields the Town Hall has not opened plots for. It opens 13 + 3
+    // per level (all 40 at L10), so when the fields the lines so far want
+    // cannot all fit, the Town Hall goes up a level in place of the new fields
+    // that have no plot — what a player would do. NEAT's wiki does not say it
+    // does this (only "space permitting"). It is raised no further than the
+    // fields need, and never while a demolition in the lines will free enough.
+    const fieldsWanted = outsideWanted(all, want);
+    if (lineRoom.some((r) => r.kind === 'outside') && townHall < 10 && fieldsWanted > fieldsAt(townHall)) {
+      let to = townHall;
+      while (to < 10 && fieldsAt(to) < fieldsWanted) to++;
+      const th = all.find((b) => b.typeId === C.TOWN_HALL);
+      if (th && claim(th.positionId)) {
+        orders.push({ kind: 'upgrade', def: TOWN_HALL_DEF, positionId: th.positionId, from: n(th.level), to, plots: true,
+          why: `field plots (Town Hall L${to} opens ${fieldsAt(to)})`, rank: -1 });
+        lineSum.push(`Town Hall to L${to} for field plots`);
+      }
+    }
     if (!unmet) {                                // this line is met: on to the next
       if (waits.length && !active) skipped.push(`${tag} waits: ${waits.join('; ')}`);
       continue;
     }
 
     // demolitions first, the weakest first; then a new building (L0->L1), then
-    // upgrades from the lowest level up — the fastest work first
-    const speed = (o) => (o.kind === 'demolish' ? n(o.level) : 100 + (o.kind === 'new' ? 1 : n(o.from) + 1));
+    // upgrades from the lowest level up — the fastest work first. The Town Hall
+    // raised for field plots stands in for the new fields that have no plot,
+    // so it comes after the ones that do.
+    const speed = (o) => (o.kind === 'demolish' ? n(o.level) : o.plots ? 101.5 : 100 + (o.kind === 'new' ? 1 : n(o.from) + 1));
     orders.sort((a, b) => speed(a) - speed(b) || a.rank - b.rank || n(a.positionId) - n(b.positionId));
     const clean = orders.map(({ rank, ...o }) => o);
 
@@ -733,11 +793,15 @@ function buildPlan(ctx, wallsFor = 0) {
   parts.push(...skipped);
   if (stop) parts.push(stop);
   parts.push(...new Set(conflicts));
+  // What the lines take down (a cap on how many, or a top level), so a
+  // prerequisite is never built only for the lines to demolish it again.
+  const limits = {};
+  for (const [typeId, w] of want) if (w.cap < Infinity || w.top < Infinity) limits[typeId] = { cap: w.cap, top: w.top };
   return {
     actions: busy.length ? [] : ranked,
     ranked,                     // in order, even while busy: what comes next
     busy: busy.length > 0,
-    line: active || null, lines: lines.length, stop,
+    line: active || null, lines: lines.length, stop, limits,
     note: parts.length ? `build: ${parts.join('; ')}` : 'all build targets met',
   };
 }
@@ -756,6 +820,214 @@ function buildLabel(a) {
 // The backoff key for a construction candidate. New buildings share one per
 // type: the plot they would go on changes as others fill.
 const buildKey = (a) => (a.kind === 'new' ? `build:new:${a.def.typeId}:new` : `build:${a.kind}:${a.def.typeId}:${a.positionId}`);
+
+// ------------------------------------------------------------ prerequisites
+// NEAT (wiki: Build): "If a building upgrade requires a prerequisite building
+// to be completed, the bot will automatically build and upgrade the
+// prerequisite building with priority; e.g., to upgrade a cottage to level 9,
+// you need townhall level 8 first." A stable needs a L5 farm, and with no farm
+// and no room for one "it will say 'Needs space: farm' and stop there until
+// you fix the problem".
+//
+// The game says what an order needs in its ConditionBean (ConditionBean.as):
+// buildings[] {typeId, level, curLevel, successFlag}, techs[] {id, level,
+// curLevel, successFlag}, items[] {id, num, curNum, successFlag}, and the
+// cost: food, wood, stone, iron, gold, population. The client reads it before
+// it offers the button (BuildingInfoWin.sendCheckRequest; UIUtil
+// .isConditionMatch, .isResourceConditionMatch), and the engine now reads it
+// before it places the builder's next order (Engine.resolveBuild):
+//   a building short   that building goes first: the one of its type closest
+//                      to the level is raised (the fewest upgrades meet it — the
+//                      wiki does not say which), or a new one goes on a free
+//                      plot. Its own needs are read the same way, a few deep at
+//                      most. A field with no plot left gets one from the Town
+//                      Hall; anything else with no plot: "Needs space: Farm",
+//                      and the builder stops, as NEAT's does.
+//   research short     a research want for the city (cityState.researchWants,
+//                      for a research goal to take up); the order is passed
+//                      over, with no backoff
+//   an item short      Michelangelo's Script for a L10: with none held the
+//                      order is passed over, no backoff; with one held it goes
+//                      and the server spends it — as NEAT does, which its wiki
+//                      warns about (Research)
+//   resources or idle population short
+//                      the builder waits for them, no backoff, and troop and
+//                      wall batches leave that cost in the bank (ctx.buildReserve)
+// Only a refusal the ConditionBean did not predict goes on the backoff ladder.
+const PREREQ_DEPTH = 4;           // a prerequisite's prerequisite's ... this deep at most
+const PREREQ_READS = 2;           // requirement reads per city per slice
+const COND_TTL = 5 * 60e3;        // a requirement read is trusted this long
+const COND_ERROR_TTL = 60e3;      // one that could not be read is asked again after this
+const COST_KEYS = ['food', 'wood', 'stone', 'iron', 'gold'];
+
+// Requirements go by type and level, not by plot: every L8 farm needs the same
+// for L9, so one read serves them all.
+const condKey = (a) => (a.kind === 'new' ? `new:${a.def.typeId}` : `up:${a.def.typeId}:${n(a.from)}`);
+
+// The city's buildings in one short string. When it changes (a construction
+// starts or ends, a push lands) every requirement read before is read again.
+const buildingsSig = (castle) => require('crypto').createHash('sha1').update(standing(castle)
+  .map((b) => `${b.positionId}:${b.typeId}:${n(b.level)}:${n(b.status)}`).sort().join('|')).digest('hex').slice(0, 16);
+
+// 120000 -> "120k", 2500000 -> "2.5m"
+function shortNum(x) {
+  const v = Math.round(n(x));
+  const cut = (d, s) => `${Math.round((v / d) * 10) / 10}${s}`;
+  return v >= 1e9 ? cut(1e9, 'b') : v >= 1e6 ? cut(1e6, 'm') : v >= 1e4 ? cut(1e3, 'k') : fmt(v);
+}
+
+// "Cottage L9", "a new Stable": what an order brings about
+const orderWhat = (a) => (a.kind === 'new' ? `a new ${a.def.name}` : `${a.def.name} L${n(a.from) + 1}`);
+
+// What an order takes from the bank, and the words for it.
+function costOf(cond) {
+  const out = {};
+  for (const k of COST_KEYS) if (n(cond[k]) > 0) out[k] = n(cond[k]);
+  if (n(cond.population) > 0) out.population = n(cond.population);
+  return out;
+}
+const costText = (cost) => Object.entries(cost).filter(([k]) => k !== 'label')
+  .map(([k, v]) => `${shortNum(v)} ${k === 'population' ? 'idle population' : k}`).join(', ');
+
+// The builder's next order, given the ranked plan and what is known of each
+// order's requirements. Pure: `conds(key)` is a cache lookup, and an order not
+// read yet comes back as `need` for the engine to read and ask again. Returns
+//   pick     the order to place now (it may be a prerequisite; `via` is the
+//            plan's order it is for, `chain` says why)
+//   hold     {action, short, cost}: the builder waits for resources
+//   stop     "Needs space: ..." — nothing is placed, as NEAT stops
+//   need     an order whose requirements must be read first (`needFor` the
+//            plan's order it belongs to)
+//   skipped  orders passed over for research or an item, with why
+//   held     orders held back by the backoff ladder
+//   wants    research the passed-over orders need: {techId, level, have, name, for}
+function resolvePrereqs({ plan, castle, conds, cityState = {}, items = null, techLevels = null }) {
+  const out = { pick: null, via: null, chain: [], cost: null, unread: null, spends: null,
+    need: null, needFor: null, hold: null, stop: null, skipped: [], held: [], wants: [] };
+  if (!plan || !plan.ranked || !plan.ranked.length) return out;
+  const all = standing(castle).map(finished).filter((b) => n(b.level) > 0);
+  const res = castle.resource || {};
+  const { used, townHall } = Game.plotsInUse({ ...castle, buildings: all });
+  const limits = plan.limits || {};
+  const topOf = (typeId) => Math.max(0, ...all.filter((b) => b.typeId === typeId).map((b) => n(b.level)));
+  const freePlot = (outside, claimed) => {
+    const { from, to } = C.plotRange(outside, townHall);
+    for (let p = from; p <= to; p++) if (!used.has(p) && !claimed.has(p)) return p;
+    return null;
+  };
+  const want = (m, a) => {
+    const had = out.wants.find((w) => w.techId === m.id);
+    if (!had) out.wants.push({ techId: m.id, level: m.need, have: m.have, name: m.name, for: orderWhat(a) });
+    else if (m.need > had.level) Object.assign(had, { level: m.need, for: orderWhat(a) });
+  };
+
+  // The order that meets building requirement m, or why there is none.
+  const prereqFor = (m, needs, why, claimed, chain) => {
+    const def = C.BUILDING_BY_ID[m.typeId];
+    if (!def) return { skip: `${needs}, a building type unknown here` };
+    const lim = limits[m.typeId];
+    if (lim && (lim.cap === 0 || lim.top < m.need)) return { skip: `${needs}, which the build lines take down` };
+    const b = all.filter((x) => x.typeId === m.typeId)
+      .sort((x, y) => n(y.level) - n(x.level) || n(x.positionId) - n(y.positionId))[0];
+    if (b) return { action: { kind: 'upgrade', def, positionId: b.positionId, from: n(b.level), to: m.need, why, prereq: true } };
+    if (m.typeId === C.TOWN_HALL) return { skip: `${needs}, and the city has no Town Hall` };
+    if (m.typeId === C.WALLS_TYPE) return { action: { kind: 'new', def, positionId: WALLS_POS, why, prereq: true } };
+    const pos = freePlot(!!def.outside, claimed);
+    if (pos !== null) return { action: { kind: 'new', def, positionId: pos, why, prereq: true } };
+    // a field with no plot: the Town Hall opens more
+    const th = all.find((x) => x.typeId === C.TOWN_HALL);
+    if (def.outside && th && townHall < 10 && !chain.includes(C.TOWN_HALL)) {
+      return { action: { kind: 'upgrade', def: C.BUILDING_BY_ID[C.TOWN_HALL], positionId: th.positionId,
+        from: n(th.level), to: n(th.level) + 1, why: `a field plot (${needs})`, prereq: true } };
+    }
+    return { stop: `Needs space: ${def.name} (${needs})` };
+  };
+
+  const evaluate = (a, claimed, depth, chain) => {
+    if (a.kind === 'demolish') return { place: a };
+    const e = conds(condKey(a));
+    if (!e) return { need: a };
+    if (e.error || !e.cond) return { place: a, unread: e.error || null };
+    const lacks = Game.unmetOf(e.cond, { resource: res, items });
+    const techs = lacks.filter((m) => m.kind === 'tech' && !(techLevels && n(techLevels[m.id]) >= m.need));
+    for (const m of techs) want(m, a);
+    for (const m of lacks.filter((x) => x.kind === 'building')) {
+      if (topOf(m.typeId) >= m.need) continue;        // it stands already: finished since the read
+      const needs = `${orderWhat(a)} needs ${m.name} L${m.need}`;
+      if (m.typeId === a.def.typeId || chain.includes(m.typeId)) return { skip: `${needs}, which needs it back`, chain: [needs] };
+      if (depth >= PREREQ_DEPTH) return { skip: `${needs}: prerequisites nest deeper than ${PREREQ_DEPTH}`, chain: [needs] };
+      const p = prereqFor(m, needs, `${orderWhat(a)} (it needs ${m.name} L${m.need})`, claimed, [...chain, a.def.typeId]);
+      if (!p.action) return { ...p, chain: [needs] };
+      const mine = p.action.kind === 'new' ? new Set([...claimed, n(p.action.positionId)]) : claimed;
+      const r = evaluate(p.action, mine, depth + 1, [...chain, a.def.typeId]);
+      return { ...r, chain: [needs, ...(r.chain || [])] };
+    }
+    if (techs.length) return { skip: `needs research ${techs.map((m) => `${m.name} L${m.need}`).join(', ')} (a research goal will pick this up)` };
+    const scarce = lacks.filter((m) => m.kind === 'item');
+    if (scarce.length) return { skip: `needs ${scarce.map((m) => `${m.need} ${m.name}, ${m.have ? `only ${m.have} held` : 'none held'}`).join('; ')}` };
+    const short = lacks.filter((m) => m.kind === 'resource' || m.kind === 'population');
+    if (short.length) return { hold: { action: a, short, cost: costOf(e.cond) } };
+    const spends = (e.cond.items || []).map((it) => {
+      const held = items ? Game.countOf(items, it.id) : null;
+      return `${Math.max(1, n(it.num))} ${Game.itemName(it.id)}${held !== null ? ` (${held} held)` : ''}`;
+    });
+    return { place: a, cost: costOf(e.cond), spends: spends.length ? spends.join(', ') : null };
+  };
+
+  const ranked = plan.ranked;
+  for (let i = 0; i < ranked.length; i++) {
+    const a = ranked[i];
+    const k = buildKey(a);
+    if (blocked(cityState, k)) { out.held.push(`${buildLabel(a)}, ${blockedFor(cityState, k)}`); continue; }
+    // the plots the plan's new buildings up to this one take are theirs
+    const claimed = new Set(ranked.slice(0, i + 1).filter((x) => x.kind === 'new').map((x) => n(x.positionId)));
+    const r = evaluate(a, claimed, 0, []);
+    const via = (x) => (x === a ? null : a);
+    if (r.need) return Object.assign(out, { need: r.need, needFor: a });
+    if (r.place) {
+      const pk = buildKey(r.place);
+      if (r.place !== a && blocked(cityState, pk)) {
+        out.held.push(`${buildLabel(r.place)}, which ${orderWhat(a)} needs first, ${blockedFor(cityState, pk)}`);
+        continue;
+      }
+      return Object.assign(out, { pick: r.place, via: via(r.place), chain: r.chain || [], cost: r.cost || null,
+        unread: r.unread || null, spends: r.spends || null });
+    }
+    if (r.hold) return Object.assign(out, { hold: { ...r.hold, via: via(r.hold.action) }, chain: r.chain || [] });
+    if (r.stop) return Object.assign(out, { stop: r.stop, chain: r.chain || [] });
+    out.skipped.push(`${buildLabel(a)}: ${r.skip}`);
+  }
+  return out;
+}
+
+// What a resolution adds to the build plan's note.
+function prereqNotes(r) {
+  const out = [];
+  if (r.pick && r.via) out.push(`prerequisite first: ${buildLabel(r.pick)}${r.chain.length > 1 ? ` (${r.chain.join('; ')})` : ''}`);
+  if (r.pick && r.unread) out.push(`${buildLabel(r.pick)}: its requirements could not be read (${r.unread}), so it goes unchecked`);
+  if (r.pick && r.spends) out.push(`${buildLabel(r.pick)} spends ${r.spends} (the NEAT wiki warns its bot spends Michelangelo's Scripts too)`);
+  if (r.hold) {
+    const short = r.hold.short.map((m) => (m.kind === 'population'
+      ? `${shortNum(m.need)} idle population (${shortNum(m.have)} idle)` : `${shortNum(m.need)} ${m.key} (${shortNum(m.have)} held)`));
+    out.push(`waiting for ${short.join(', ')} to ${buildLabel(r.hold.action)}${r.hold.via ? `, which ${orderWhat(r.hold.via)} needs first` : ''}`
+      + `; troop and wall batches leave ${costText(r.hold.cost)} in the bank for it`);
+  }
+  if (r.stop) out.push(r.stop);
+  if (r.need) out.push(`checking what ${buildLabel(r.needFor)} needs (next slice)`);
+  if (r.skipped.length) out.push(`passed over: ${r.skipped.slice(0, 3).join('; ')}${r.skipped.length > 3 ? ` (+${r.skipped.length - 3} more)` : ''}`);
+  return out;
+}
+
+// One order's requirements through the game (Game.constructionCondition), or
+// through the same two commands on a stand-in game that only has `req`.
+async function readCondition(g, cid, a) {
+  const fn = typeof g.constructionCondition === 'function' ? g.constructionCondition : Game.prototype.constructionCondition;
+  try {
+    return (await fn.call(g, cid, { kind: a.kind, typeId: a.def.typeId, positionId: a.positionId })) || { error: 'no reply' };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
 
 // What the builder takes on next in one city — the console's Buildings tab.
 // Pure: the live building list, the goals and the city's engine state; nothing
@@ -776,7 +1048,7 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}
     break;
   }
   const hold = n(cityState.builderHeld) - Date.now();
-  return {
+  const out = {
     next: next ? buildLabel(next) : null,
     // why it is not being placed this minute, if it is not
     wait: plan.busy ? 'once the builder is free'
@@ -786,6 +1058,17 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}
       : plan.note === 'all build targets met' ? 'nothing: all build targets met' : `nothing to place: ${plan.note.replace(/^build: /, '')}`,
     note: plan.note,
   };
+  // The engine's last word on requirements (Engine.resolveBuild), while the
+  // buildings still stand as it saw them: a prerequisite first, a wait for
+  // resources, orders passed over for research or an item.
+  const pre = cityState.prereq;
+  if (pre && !plan.busy && plan.ranked.length && pre.sig === buildingsSig(castle) && Date.now() - n(pre.at) < COND_TTL) {
+    out.next = pre.next;
+    if (pre.wait && !(hold > 0)) out.wait = pre.wait;
+    held.push(...(pre.passed || []));
+    if (!pre.next) out.idle = `nothing to place: ${pre.stop || 'every order is passed over or held back'}`;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ inbound armies
@@ -1266,6 +1549,99 @@ class Engine {
     return out;
   }
 
+  // Step 11: what the builder's next order needs, read before it is placed,
+  // and any prerequisite put first (resolvePrereqs). At most PREREQ_READS
+  // reads a slice; each is kept COND_TTL, and all of a city's are dropped the
+  // moment its buildings change (buildingsSig). Nothing is read while the
+  // builder is busy. Sets ctx.buildReserve — the cost troop and wall batches
+  // leave in the bank — and ctx.researchWants, and keeps the wants and the
+  // outcome in the city's state for a research goal and the console:
+  //   cityState.researchWants  [{techId, level, have, name, for, at}]
+  //   cityState.prereq         {at, sig, next, wait, stop, passed}
+  async resolveBuild(ctx, castle, cityState, plan) {
+    ctx.buildReserve = null;
+    const waiting = plan && !plan.paused && plan.ranked.length && (plan.busy || n(cityState.builderHeld) > Date.now());
+    if (!plan || plan.paused || !plan.ranked.length || waiting) {
+      // while the builder works the last word stands; with nothing to build it is gone
+      if (!waiting) { delete cityState.researchWants; delete cityState.prereq; }
+      ctx.researchWants = cityState.researchWants || [];
+      return plan;
+    }
+    const g = this.game;
+    const cid = g.castleId(castle);
+    const sig = buildingsSig(castle);
+    this.conditions = this.conditions || {};
+    let cache = this.conditions[cid];
+    if (!cache || cache.sig !== sig) cache = this.conditions[cid] = { sig, beans: new Map() };
+    const conds = (k) => {
+      const e = cache.beans.get(k);
+      return e && Date.now() - e.at < (e.error ? COND_ERROR_TTL : COND_TTL) ? e : undefined;
+    };
+    const items = g.player && Array.isArray(g.player.items) ? g.player.items : null;
+    // research levels the engine has read (Engine.readTechs): a level once
+    // reached stays, so they can only show a tech done since a read
+    const techLevels = (ctx.techs && ctx.techs.levels) || (cityState.techs && cityState.techs.levels) || null;
+    let r;
+    try {
+      for (let reads = 0; ; reads++) {
+        r = resolvePrereqs({ plan, castle, conds, cityState, items, techLevels });
+        if (!r.need || reads >= PREREQ_READS) break;
+        const got = await readCondition(g, cid, r.need);
+        cache.beans.set(condKey(r.need), { at: Date.now(), cond: got.cond || null, error: got.error || null });
+      }
+    } catch (e) {
+      // A fault here must not stop construction: the first order not backed
+      // off goes, unchecked, as it did before requirements were read.
+      const first = plan.ranked.find((a) => !blocked(cityState, buildKey(a))) || null;
+      return { ...plan, pick: first, held: [], note: `${plan.note}; requirements not checked (${e.message})` };
+    }
+    const at = Date.now();
+    const next = r.pick || (r.hold && r.hold.action) || null;
+    const reserve = r.hold ? { ...r.hold.cost, label: buildLabel(r.hold.action) }
+      : r.pick && r.cost && Object.keys(r.cost).length ? { ...r.cost, label: buildLabel(r.pick) } : null;
+    ctx.buildReserve = reserve;
+    if (r.wants.length) cityState.researchWants = r.wants.map((w) => ({ ...w, at }));
+    else delete cityState.researchWants;
+    ctx.researchWants = cityState.researchWants || [];
+    const notes = prereqNotes(r);
+    cityState.prereq = {
+      at, sig,
+      next: next ? buildLabel(next) : r.need ? buildLabel(r.needFor) : null,
+      wait: r.hold ? notes.find((x) => x.startsWith('waiting for')) || null : r.need ? 'its requirements are read next slice' : null,
+      stop: r.stop || null,
+      passed: r.skipped.slice(0, 5),
+    };
+    return { ...plan, pick: r.pick, held: r.held, reserve, researchWants: ctx.researchWants,
+      note: notes.length ? `${plan.note}; ${notes.join('; ')}` : plan.note };
+  }
+
+  // What one of each fortification costs in this city, per unit
+  // (fortifications.getFortificationsProduceList -> fortList[] {typeId,
+  // conditionBean}; CastleDefProduce multiplies it by the batch,
+  // ProduceBuildingResourceData.reCalcDataArray). Read only while the next
+  // construction's cost is kept in the bank, at most every 10 minutes.
+  async readFortCosts(castle) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    this.fortCostCache = this.fortCostCache || {};
+    const had = this.fortCostCache[cid];
+    if (had && Date.now() - had.at < UNIT_TIME_TTL) return had.costs;
+    try {
+      const r = await g.req('fortifications.getFortificationsProduceList', { castleId: cid });
+      const list = (r && r.ok === 1 && r.fortList) || [];
+      if (!list.length) return null;
+      const costs = {};
+      for (const f of list) {
+        const c = f.conditionBean || {};
+        costs[Number(f.typeId)] = { food: n(c.food), wood: n(c.wood), stone: n(c.stone), iron: n(c.iron) };
+      }
+      this.fortCostCache[cid] = { at: Date.now(), costs };
+      return costs;
+    } catch {
+      return null;
+    }
+  }
+
   async focus(castle) {
     const g = this.game;
     // State and reports are kept by castle id (see migrateStateKeys); the name
@@ -1334,9 +1710,16 @@ class Engine {
     if (parsed.config.building !== 0 && parsed.goals.some((x) => x.name === 'build' && x.needsTech)) {
       ctx.techs = await this.readTechs(castle, cityState);
     }
+    // The builder's next order, its requirements read and any prerequisite put
+    // first; its cost stays out of the troop and wall batches sized below.
+    const build = await this.resolveBuild(ctx, castle, cityState, buildPlan(ctx, (fort && fort.wallsFor) || 0));
+    if (ctx.buildReserve && fort && fort.orders && fort.orders.length) {
+      ctx.fortCosts = await this.readFortCosts(castle);
+      fort = fortPlan(ctx);
+    }
     const report = {
       city: label,
-      troop: troopPlan(ctx), fort, build: buildPlan(ctx, (fort && fort.wallsFor) || 0),
+      troop: troopPlan(ctx), fort, build,
       comfort: M.comfortPlan(ctx, cityState),
       defense: M.defensePlan(ctx, cityState),
       acted: urgent.acted,
@@ -1492,18 +1875,19 @@ class Engine {
 
     // One construction command per slice: the builder takes one at a time, so
     // once one is sent (placed or refused) the rest wait for the next slice.
+    // It has its own slot, outside the three actions above (Step 11): three
+    // troop batches used to leave no construction at all that slice. What is
+    // placed is the order resolveBuild picked — maybe a prerequisite — and
+    // only a refusal it did not see coming goes on the backoff ladder.
     if (report.build && report.build.actions && report.build.actions.length) {
-      const held = [];
       const hold = n(cityState.builderHeld) - Date.now();
       if (hold > 0) {
         report.build.note += `; the server says the builder is busy, asking again in ${dur(hold / 1000)}`;
-      } else {
-        for (const a of report.build.actions) {
-          const line = buildLabel(a);
-          const fkey = buildKey(a);
-          if (blocked(cityState, fkey)) { held.push(`${line}, ${blockedFor(cityState, fkey)}`); continue; }
-          if (budget-- <= 0) break;
-          if (this.dryRun) { report.acted.push(`[plan] ${line}`); break; }
+      } else if (report.build.pick) {
+        const a = report.build.pick;
+        const line = buildLabel(a);
+        if (this.dryRun) report.acted.push(`[plan] ${line}`);
+        else {
           const cid = g.castleId(castle);
           const r = a.kind === 'upgrade' ? await g.upgradeBuilding(cid, a.positionId)
             : a.kind === 'demolish' ? await g.destructBuilding(cid, a.positionId)
@@ -1512,11 +1896,10 @@ class Engine {
           report.acted.push(`${line} -> ${ok ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
           // Busy is the builder's state, not this building's fault: no backoff.
           if (!ok && BUILDER_BUSY.test(r.errorMsg || '')) cityState.builderHeld = Date.now() + BUILDER_HOLD;
-          else recordResult(cityState, fkey, ok, r.errorMsg || ('ok=' + r.ok));
-          break;
+          else recordResult(cityState, buildKey(a), ok, r.errorMsg || ('ok=' + r.ok));
         }
       }
-      report.build.note += heldBack(held);
+      report.build.note += heldBack(report.build.held || []);
     }
 
     // ...and again now: the construction this slice started is finished in the
@@ -1650,4 +2033,4 @@ class Engine {
 }
 
 module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN,
-  inboundArmy, incomingByCity, WAKE_SLACK_MS };
+  inboundArmy, incomingByCity, WAKE_SLACK_MS, resolvePrereqs, PREREQ_READS, COND_TTL };

@@ -399,11 +399,16 @@ t('a research reply without the tech still notes it, with the level unknown', ()
 
 section('through the engine');
 
+// Construction orders and speed-ups. Since Step 11 the engine also reads an
+// order's requirements first (castle.checkOutUpgrade / getAvailableBuildingBean);
+// those reads change nothing, so they are left out here.
+const ORDERS = /^castle\.(?!checkOutUpgrade$|getAvailableBuildingBean$)/;
+
 t('the slice\'s own construction is finished in the same slice', async () => {
   const w = world([standingBean(FARM, 1001, 1)]);
   const e = engine(w, 'config hero:0\nbuild f:4:1');
   const r = await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./).map((s) => [s.cmd, s.data.positionId]),
+  assert.deepStrictEqual(w.server.cmds(ORDERS).map((s) => [s.cmd, s.data.positionId]),
     [['castle.upgradeBuilding', 1001], ['castle.speedUpBuildCommand', 1001]]);
   assert.deepStrictEqual([w.home.buildings[0].level, w.home.buildings[0].status], [2, 0]);
   assert.ok(r.acted.includes('free finish Farm (pos 1001) L1->L2 (preset 1m) -> ok'), r.acted.join(' | '));
@@ -414,7 +419,7 @@ t('free finishes do not count against the slice\'s three actions', async () => {
   const e = engine(w, 'config hero:0\nbuild f:4:1');
   e.maxActionsPerSlice = 1;
   await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./).map((s) => s.cmd), ['castle.upgradeBuilding', 'castle.speedUpBuildCommand']);
+  assert.deepStrictEqual(w.server.cmds(ORDERS).map((s) => s.cmd), ['castle.upgradeBuilding', 'castle.speedUpBuildCommand']);
 });
 
 t('a job started elsewhere is finished before the plan, and the builder takes the next one in the same slice', async () => {
@@ -422,7 +427,7 @@ t('a job started elsewhere is finished before the plan, and the builder takes th
   w.home.buildings.push(liveBean(w.g, COTTAGE, 5, 0));        // a script's `build cottage` since the last slice
   const e = engine(w, 'config hero:0\nbuild c:3:1');
   const r = await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./).map((s) => [s.cmd, s.data.positionId]),
+  assert.deepStrictEqual(w.server.cmds(ORDERS).map((s) => [s.cmd, s.data.positionId]),
     [['castle.speedUpBuildCommand', 5], ['castle.upgradeBuilding', 5], ['castle.speedUpBuildCommand', 5]]);
   assert.strictEqual(w.home.buildings[0].level, 2);
   assert.strictEqual(r.acted[0], 'free finish Cottage (pos 5) L0->L1 (preset 1m 15s) -> ok', 'the first pass is logged first');
@@ -432,11 +437,11 @@ t('a start pushed after the slice has moved on is finished first thing next slic
   const w = world([standingBean(FARM, 1001, 1)], { startPushMs: 20 });
   const e = engine(w, 'config hero:0\nbuild f:4:1');
   await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./).map((s) => s.cmd), ['castle.upgradeBuilding'], 'nothing to see yet');
+  assert.deepStrictEqual(w.server.cmds(ORDERS).map((s) => s.cmd), ['castle.upgradeBuilding'], 'nothing to see yet');
   await new Promise((r) => setTimeout(r, 40));                // the push lands between slices
   w.server.sent = [];
   await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./).map((s) => [s.cmd, s.data.positionId]),
+  assert.deepStrictEqual(w.server.cmds(ORDERS).map((s) => [s.cmd, s.data.positionId]),
     [['castle.speedUpBuildCommand', 1001], ['castle.upgradeBuilding', 1001]]);
   await new Promise((r) => setTimeout(r, 40));
   w.server.sent = [];
@@ -475,7 +480,7 @@ t('a long job gets nothing through the engine; near its end the note says why', 
   w.home.buildings.push(farm);
   const e = engine(w, 'config hero:0\nbuild f:10:1');
   const r = await e.focus(w.home);
-  assert.deepStrictEqual(w.server.cmds(/castle\./), []);
+  assert.deepStrictEqual(w.server.cmds(ORDERS), []);
   assert.match(r.speedup.note, /^free finish: no free finish for Farm \(pos 1001\) L5->L6 \(3m 20s left\)/);
 });
 
@@ -603,8 +608,11 @@ t('Lord22: the farm going up and the farm the slice starts are both finished fre
 t('Lord22: a farm\'s first four levels are free, its fifth is not', async () => {
   // Every open plot farmed, so no new farm comes first; upgrades go lowest
   // level first, so the one farm at L1 is next every slice until it passes L5.
+  // Since Step 11 a Town Hall that opens fewer plots than the 37 farms goes up
+  // first, so here it opens all 37 (L9).
   const w = lord22([standingBean(FARM, 1001, 1)]);
-  for (let pos = 1002; pos <= 1013; pos++) w.home.buildings.push(standingBean(FARM, pos, 5));
+  w.home.buildings.find((b) => b.typeId === TOWN_HALL).level = 9;
+  for (let pos = 1002; pos <= 1037; pos++) w.home.buildings.push(standingBean(FARM, pos, 5));
   const e = engine(w, A1);
   for (let slice = 0; slice < 4; slice++) await e.focus(w.home);
   const ups = w.server.cmds(/castle\.(upgradeBuilding|speedUpBuildCommand)/).map((s) => [s.cmd.slice(7), s.data.positionId]);

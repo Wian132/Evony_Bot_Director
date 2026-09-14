@@ -111,9 +111,26 @@ t('fasthero:0 (the default) is off; a value that is not a number is refused, not
   const off = plan(game, c, 'config hero:10,fasthero:0');
   eq(off.actions, []);
   has(off.note, /config fasthero:0 — automatic hiring off/);
-  const bad = plan(game, c, 'config hero:10,fasthero:lots');
+  // goals.js refuses the line (next test); should such a value reach the plan
+  // anyway, it still hires nothing
+  const bad = H.plans.fasthero({ game, castle: c, goals: [], config: { hero: 10, fasthero: 'lots' } }, justRead());
   eq(bad.actions, []);
   has(bad.note, /config fasthero:lots is not a number — no hiring/);
+});
+
+t('the editor: config fasthero takes a number 0 or more — "abc" or "-5" is an error (red), a bare "fasthero 65" reads as config', () => {
+  for (const src of ['config fasthero:abc', 'config fasthero:-5', 'config hero:10,fasthero:lots']) {
+    const p = parseGoals(src);
+    eq(p.lines[0].status, 'error', src);
+    has(p.errors[0].error, /CONFIG: fasthero is the hero base to hire at, a number 0 \(off\) or more — e\.g\. fasthero:65/, src);
+  }
+  for (const src of ['config fasthero:0', 'config fasthero:65', 'config fasthero:120', 'config hero:21,fasthero:70,feastinghallspace:2']) {
+    eq(parseGoals(src).errors, [], src);
+  }
+  const bare = parseGoals('fasthero 65');
+  eq([bare.config.fasthero, bare.lines[0].status], [65, 'ok']);
+  has(bare.lines[0].msg, /read as "config fasthero:65"/);
+  has(parseGoals('fasthero').errors[0].error, /fasthero is a config key and needs a value/);
 });
 
 t('it needs config hero:10 or higher (wiki Hero): hero:1, hero:0 and hero unset hire nothing and read no inn', () => {
@@ -821,6 +838,7 @@ troop b:5k,t:5k
 troop wo:10k,w:10k,s:10k,p:10k,sw:10k,a:10k,t:10k,c:10k,cata:10k,b:10k
 troop a:100k,s:100k
 fortification ab:5000`;
+// (its requestresources line as Step 9's migrate-goals-transfer.js leaves it)
 const LIVE_A2 = `config comfort:1,hero:1,troopsusepopmax:1,npc:5
 comfortpolicy 15 16 popraise
 build fh:1
@@ -828,7 +846,7 @@ build f:10:37
 troop b:5k,t:5k
 distancepolicy 15
 npcteams 3
-requestresources any gold 1000000 2000000 500000 200000
+requestresources any gold 2000000 200000 * 500000 /below:1000000
 traininghero OTTO 30 60
 npcheroes !OTTO,any
 farmingpolicy 5 /distance:10`;

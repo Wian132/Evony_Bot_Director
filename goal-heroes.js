@@ -314,6 +314,23 @@ function heroStringGoal(name) {
 }
 
 const parsers = {
+  // config fasthero:<base>   (wiki FastHero; hirePlan reads it). goals.js checks
+  // a config key's value through its module's config parser, so a base that is
+  // not a number 0 or more is an error in the editor, not hiring left off
+  // without a word. `value` is what goals.js made of it: a number when NUM could
+  // read it, the text otherwise.
+  fasthero: {
+    kind: 'config', multi: false,
+    parse(value) {
+      const errors = [];
+      const n = typeof value === 'number' ? value : NaN;
+      if (!Number.isFinite(n) || n < 0) {
+        errors.push(`fasthero is the hero base to hire at, a number 0 (off) or more — e.g. fasthero:65, or 120+ to judge attack + intel - level; got "${value === undefined ? '' : value}"`);
+      }
+      return { base: Number.isFinite(n) && n >= 0 ? n : null, errors };
+    },
+  },
+
   // keepheroes <hero-string> [/always] [/max:<n>] [/reset]
   //   Heroes matching the string are never fired. /always lets the bot fire
   //   everything that does NOT match (default: only fire to free a slot).

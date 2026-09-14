@@ -1,34 +1,57 @@
 'use strict';
 // requestresources / requesttroops — top a city up from your other cities.
+// NEAT's syntax and NEAT's meaning (wiki: RequestResources, RequestTroops, and
+// SendResources/SendTroops, which they mirror):
 //
-//   requestresources <from> <type>  <min> <max> <batch> <keep> [t] [/slots:N]
-//   requesttroops    <from> <troop> <min> <max> <batch> <keep>     [/slots:N]
+//   requestresources <from> <type>  <localAmount> <remoteAmount> [minBatch] [maxBatch] [troopType] [/slots:N]
+//   requesttroops    <from> <troop> <localAmount> <remoteAmount> [minBatch] [maxBatch]             [/slots:N]
 //
-//   <from>   any, a city name (!Name also works) or x,y — several joined by |
-//   <min>    ask once this city holds less than this, counting what is on its way
-//   <max>    never fill it past this
-//   <batch>  at most this much per send
-//   <keep>   never take a sending city below this
-//   * in place of any of the four means "doesn't matter".
+//   <from>          any, a city name or x,y of your own cities — several joined
+//                   by |. The wiki writes names as !HubCity: that "!" is only
+//                   its markup (MoinMoin's no-link mark), and the wiki says a
+//                   city cannot be excluded with !name, so !Name means Name.
+//   localAmount     ask only while this city holds LESS than this, counting
+//                   what is already on its way, and never fill it past it.
+//   remoteAmount    never take a sending city below this.
+//   minBatch        do not send less than this; wait until a batch this big
+//                   fits under localAmount and over remoteAmount. Ignored when
+//                   the city is critically low: 50% of localAmount or less. (The
+//                   page says "of the remoteAmount": its text is SendResources',
+//                   where that is the RECEIVING city's amount, i.e. ours here.)
+//   maxBatch        at most this much per send. ONE batch number is maxBatch.
+//   troopType       what carries the resources (default transports), e.g.
+//                   `requestresources HubCity wood 25m 40m 5m * cavalry`.
+//   * in place of any amount means "doesn't matter". Up to the two amounts the
+//   line needs, then the batches, then the carrier.
 //
-// The argument ORDER is this tool's, not NEAT's: the wiki's version reads
-// <local> <remote> <minBatch> <maxBatch>. Saved goals are written in this order,
-// so it stays, and requesttroops reads the same way as its sibling.
+// OTTObot's own switch, for a trigger below the fill level:
+//   /below:<amount>  only START a request once the city holds less than this;
+//                    it then still fills to localAmount. Lines saved in this
+//                    tool's old order (<min> <max> <batch> <keep>) became
+//                    `<max> <keep> * <batch> /below:<min>` (migrate-goals-transfer.js),
+//                    which does exactly what they did before.
 //
-// Who sends, line by line (wiki: RequestResources, RequestTroops):
+// Who sends, line by line:
 //   * what is already on its way here counts: our own transports and
-//     reinforcements heading in, and market purchases in transit.
+//     reinforcements heading in, and market purchases in transit (wiki: "takes
+//     into account resources that will be arriving before the transport
+//     could"). All of it counts, even what would land after our send: that
+//     only ever asks for less.
 //   * the NEAREST city that can send the whole batch sends it — enough over
-//     <keep>, enough spare transports, a free rally slot. When no city can send
-//     it all, the one that can send the most does.
+//     remoteAmount, enough spare carriers, a free rally slot. When no city can
+//     send it all, the one that can send the most does.
 //   * one mission at a time between a sender and this city, going or coming
 //     back, as NEAT does; /slots:N on a line allows more. While the city that
 //     would be chosen is still busy with this one, the line waits for it
 //     rather than calling on a city farther away.
 //   * lines one sender serves ride in ONE march: food, wood and stone from the
-//     same city is one transport and one rally slot, not three.
-//   * a sender is never taken below its own <min> for the same thing either,
-//     so two cities cannot hand the same resources back and forth.
+//     same city is one march and one rally slot, not three.
+//   * a quarter of the sender's carriers (at most 2,000) stay home: NPC farming
+//     rides on the same transports.
+//   * a sender is never taken below the level at which its own line for the
+//     same thing would ask for more (its /below, else its localAmount), so two
+//     cities cannot hand the same resources back and forth. The wiki is silent
+//     on this; it only ever sends less than NEAT's rule alone would.
 //   * the SENDING city's rallypolicy r: / t: / max: and its rally spot are
 //     honoured (rally.js).
 const C = require('./constants');
@@ -52,34 +75,28 @@ const NUM = (s) => {
 };
 
 const RES_KEYS = ['food', 'wood', 'stone', 'iron', 'gold'];
-const RES_WORD = {
-  food: 'food', f: 'food', wood: 'wood', lumber: 'wood', w: 'wood', l: 'wood',
-  stone: 'stone', s: 'stone', iron: 'iron', i: 'iron', gold: 'gold', g: 'gold',
-};
 
-// NEAT troop names and codes, as goals.js and goal-npc.js read them
-const TROOP_ALIAS = {
-  warr: 'w', cav: 'c', ram: 'r', trans: 't', transport: 't', arch: 'a', pike: 'p', sword: 'sw',
-  scout: 's', phract: 'cata', worker: 'wo', ball: 'b', balls: 'b', cat: 'cp',
-};
-const BY_LOWER_KEY = Object.fromEntries(C.TROOPS.map((t) => [t.key.toLowerCase(), t]));
-const BY_NAME = Object.fromEntries(C.TROOPS.map((t) => [t.name.toLowerCase().replace(/\s+/g, ''), t]));
-function troopDef(tok) {
-  const k = String(tok || '').toLowerCase();
-  const one = k.replace(/s$/, '');
-  return C.BY_CODE[k] || C.BY_CODE[TROOP_ALIAS[k]] || C.BY_CODE[TROOP_ALIAS[one]]
-    || BY_LOWER_KEY[k] || BY_LOWER_KEY[one] || BY_NAME[k] || BY_NAME[one] || null;
-}
+// Troop and resource words: the one table every goal parser shares
+// (constants.js TROOP_WORDS / RES_WORDS).
+const troopDef = (tok) => C.troopByWord(tok);
 const TROOP_BY_TYPE = Object.fromEntries(C.TROOPS.map((t) => [t.typeId, t]));
+const troopName = (k) => (C.BY_KEY[k] ? C.BY_KEY[k].name : k);
 
-// A transport carries its base load. Logistics research raises it, but the
-// flat figure is what has gone through live, and the slack covers march food.
+// A carrier holds its base load (constants.js TROOPS). Logistics research
+// raises it, but the flat figure is what has gone through live with
+// transports, and the slack covers march food.
 const LOAD = C.BY_KEY.carriage.load;
+const loadOf = (key) => (C.BY_KEY[key] || C.BY_KEY.carriage).load;
 // Transports are shared with NPC farming, which rides on the same carriages:
-// a transfer leaves a quarter of them home, never more than 2,000.
+// a transfer leaves a quarter of them home, never more than 2,000. Another
+// carrier (troopType) is held back the same way. The wiki says nothing on
+// this; holding some back only ever sends less.
 const reserveOf = (carriages) => Math.min(2000, Math.ceil(carriages * 0.25));
 
 // ------------------------------------------------------------------- parsers
+
+const AMOUNT_HELP = '5m, 200k, 1b, or * for "doesn\'t matter"';
+const isAmount = (t) => t === '*' || NUM(t) !== null;
 
 function parseRequest(args, troops) {
   const errs = [], sw = {}, rest = [];
@@ -89,46 +106,104 @@ function parseRequest(args, troops) {
     rest.push(String(tok));
   }
   const usage = troops
-    ? 'expected: requesttroops <from> <troop> <min> <max> <batch> <keep> [/slots:N]'
-    : 'expected: requestresources <from> <type> <min> <max> <batch> <keep> [t] [/slots:N]';
-  const [target, what, ...nums] = rest;
-  const out = { target: target || null, flag: null, slots: 1 };
-
-  if (!what) { errs.push(usage); return { ...out, amounts: [], errors: errs }; }
-  if (troops) {
-    const def = troopDef(what);
-    if (!def) errs.push(`unknown troop "${what}"`);
-    out.troop = def ? def.key : String(what).toLowerCase();
-  } else {
-    out.type = RES_WORD[String(what).toLowerCase()] || null;
-    if (!out.type) { errs.push(`unknown resource "${what}" — food, wood, stone, iron or gold`); out.type = String(what).toLowerCase(); }
-  }
-
-  if (!troops && nums.length === 5) {
-    out.flag = nums.pop();
-    if (!/^(t|trans|transports?|transporters?)$/i.test(out.flag)) errs.push(`only transports carry resources here — drop "${out.flag}"`);
-  }
-  if (nums.length !== 4) errs.push(`${usage} — ${nums.length} amount(s) given, 4 needed (* for "doesn't matter")`);
-  out.amounts = [0, 1, 2, 3].map((i) => {
-    const t = nums[i];
-    if (t === undefined || t === '*') return null;
+    ? 'expected: requesttroops <from> <troop> <localAmount> <remoteAmount> [minBatch] [maxBatch] [/slots:N]'
+    : 'expected: requestresources <from> <type> <localAmount> <remoteAmount> [minBatch] [maxBatch] [troopType] [/slots:N]';
+  const [target, what, ...tail] = rest;
+  const out = {
+    target: target || null, local: null, remote: null, minBatch: null, maxBatch: null, slots: 1,
+    ...(troops ? {} : { carrier: 'carriage' }),
+  };
+  // An amount, or null for *. A word that is not an amount is an error, and
+  // the line is then marked not to run (ok:false): reading it as * would mean
+  // "no limit", which is the one wrong guess that drains a city.
+  const amount = (t, label) => {
+    if (t === '*') return null;
     const v = NUM(t);
-    if (v === null) errs.push(`"${t}" is not an amount (5m, 200k, 1b or *)`);
+    if (v === null) errs.push(`${label} "${t}" is not an amount (${AMOUNT_HELP})`);
     return v;
-  });
+  };
+
+  if (troops) {
+    const def = what === undefined ? null : troopDef(what);
+    if (what !== undefined && !def) errs.push(`unknown troop "${what}"`);
+    out.troop = def ? def.key : String(what || '').toLowerCase();
+  } else {
+    out.type = what === undefined ? null : C.resourceByWord(what);
+    if (what !== undefined && !out.type) errs.push(`unknown resource "${what}" — food, wood, stone, iron or gold`);
+    if (!out.type) out.type = String(what || '').toLowerCase();
+  }
+
+  // wiki: "The city to request from, resource type, local amount, and remote
+  // amount are required."
+  if (tail.length < 2) {
+    errs.push(`${usage} — the city, the ${troops ? 'troop' : 'resource'}, localAmount and remoteAmount are required`);
+  }
+  const [localTok, remoteTok, ...more] = tail;
+  if (localTok !== undefined) out.local = amount(localTok, 'localAmount');
+  if (remoteTok !== undefined) out.remote = amount(remoteTok, 'remoteAmount');
+
+  // Then up to two batch sizes and, for resources, the troop that carries them.
+  if (!troops && more.length && !isAmount(more[more.length - 1])) {
+    const tok = more.pop();
+    const def = troopDef(tok);
+    if (!def) errs.push(`unknown troop "${tok}" to carry the resources (transports by default, or e.g. cavalry)`);
+    else out.carrier = def.key;
+  }
+  const words = more.filter((tok) => !isAmount(tok));
+  if (words.length) {
+    for (const w of words) {
+      errs.push(`"${w}" is not an amount (${AMOUNT_HELP})`
+        + `${troops && troopDef(w) ? ' — requesttroops moves the troops themselves and takes no troopType' : ''}`);
+    }
+  } else if (more.length > 2) {
+    errs.push(`${usage} — ${more.length} batch sizes given, at most two (minBatch maxBatch)`);
+  } else if (more.length === 1) {
+    out.maxBatch = amount(more[0], 'maxBatch');   // wiki: a single batch number is the MAXIMUM
+  } else if (more.length === 2) {
+    out.minBatch = amount(more[0], 'minBatch');
+    out.maxBatch = amount(more[1], 'maxBatch');
+  }
+  if (out.minBatch != null && out.maxBatch != null && out.minBatch > out.maxBatch) {
+    errs.push(`minBatch ${short(out.minBatch)} is more than maxBatch ${short(out.maxBatch)}`);
+  }
 
   for (const [k, v] of Object.entries(sw)) {
-    if (k !== 'slots') { errs.push(`unknown switch /${k} — only /slots:N`); continue; }
-    if (!/^\d+$/.test(String(v)) || Number(v) < 1) errs.push('/slots needs a whole number, 1 or more');
-    else out.slots = Number(v);
+    if (k === 'slots') {
+      if (!/^\d+$/.test(String(v)) || Number(v) < 1) errs.push('/slots needs a whole number, 1 or more');
+      else out.slots = Number(v);
+    } else if (k === 'below') {
+      // OTTObot's: start asking only under this. * is "doesn't matter".
+      if (v === '*') out.below = null;
+      else if (v === true || NUM(v) === null) errs.push(`/below needs an amount (${AMOUNT_HELP}), e.g. /below:5m`);
+      else out.below = NUM(v);
+    } else {
+      errs.push(`unknown switch /${k} — /slots:N or /below:<amount>`);
+    }
   }
-  return { ...out, errors: errs };
+  return { ...out, ok: errs.length === 0, errors: errs };
 }
 
 const parsers = {
   requestresources: { kind: 'directive', multi: true, parse: (args) => parseRequest(args, false) },
   requesttroops: { kind: 'directive', multi: true, parse: (args) => parseRequest(args, true) },
 };
+
+// One line for the editor's "what these goals mean" list (goals.js describe).
+function describeRequest(g) {
+  const amt = (v) => (v == null ? '*' : Number(v).toLocaleString('en-US'));
+  const what = g.name === 'requesttroops' ? troopName(g.troop) : g.type;
+  const bits = [g.local == null ? 'whatever this city holds' : `while under ${amt(g.local)}, never past it`];
+  if (g.below != null) bits.push(`starting only under ${amt(g.below)}`);
+  bits.push(`senders keep ${amt(g.remote)}`);
+  const lowNote = g.local != null ? ` (less once under half of ${amt(g.local)})` : '';
+  if (g.minBatch == null && g.maxBatch == null) bits.push('any batch size');
+  else if (g.minBatch == null) bits.push(`at most ${amt(g.maxBatch)} per send`);
+  else if (g.maxBatch == null) bits.push(`at least ${amt(g.minBatch)} per send${lowNote}`);
+  else bits.push(`${amt(g.minBatch)} to ${amt(g.maxBatch)} per send${lowNote}`);
+  if (g.carrier && g.carrier !== 'carriage') bits.push(`carried by ${troopName(g.carrier)}`);
+  if (g.slots > 1) bits.push(`${g.slots} missions at a time`);
+  return `${g.name || 'request'}: ${what} from ${g.target}, ${bits.join(', ')}${g.ok === false ? ' — NOT RUN, the line has errors' : ''}`;
+}
 
 // ------------------------------------------------------------------- helpers
 
@@ -137,7 +212,9 @@ const resOf = (castle, key) => {
   return key === 'gold' ? n(r.gold) : n(r[key] && r[key].amount);
 };
 
-// "any", "5", "!HubCity", "484,619", or several of those joined by |
+// "any", "5", "!HubCity", "484,619", or several of those joined by |. A leading
+// ! is dropped: on the wiki it is markup that stops a CamelCase name becoming a
+// page link, and the wiki says outright that !name excludes nothing.
 function sendersFor(spec, others, game) {
   const parts = String(spec || 'any').split('|').map((s) => s.trim()).filter(Boolean);
   if (!parts.length || parts.some((p) => p.toLowerCase() === 'any')) return others;
@@ -186,6 +263,10 @@ function troopsHeld(here, book, training) {
 
 const goalsNamed = (goals, name) => (goals || []).filter((g) => g.name === name);
 
+// Where a line starts asking: its /below when it has one (/below:* = no level
+// of its own), else its localAmount.
+const triggerOf = (g) => (g.below !== undefined ? g.below : g.local);
+
 // ---------------------------------------------------------------------- plan
 
 function transferPlan(ctx, state, game) {
@@ -231,10 +312,11 @@ function transferPlan(ctx, state, game) {
   };
   const plannedFrom = (s) => (s.march.r ? 1 : 0) + (s.march.t ? 1 : 0);
 
-  // A sender's own <min> for the same thing: taking it under that would only
-  // have it ask for the lot back.
-  const ownMin = (s, goal, key, keyOf) => Math.max(0, ...goalsNamed(s.goals, goal)
-    .filter((g) => keyOf(g) === key && g.amounts && g.amounts[0] != null).map((g) => g.amounts[0]));
+  // The level at which a sender's own line for the same thing would start
+  // asking for more: its /below, else its localAmount (* = none). Taking it
+  // under that would only have it ask for the lot back.
+  const ownFloor = (s, goal, key, keyOf) => Math.max(0, ...goalsNamed(s.goals, goal)
+    .filter((g) => keyOf(g) === key).map(triggerOf).filter((v) => v != null));
 
   // One pass over one goal's lines. `spec` says what is being moved.
   function serve(rules, spec) {
@@ -242,14 +324,30 @@ function transferPlan(ctx, state, game) {
     const planned = {};           // what earlier lines already have coming
     for (const g of rules) {
       const key = spec.keyOf(g);
-      const [min, max, batch, keep] = g.amounts || [];
+      // A line with a mistake in it could only be guessed at, and a guess about
+      // amounts is how a city gets drained. It does nothing until it is fixed.
+      if (g.ok === false) { lines.push(`line ${g.line || '?'} not run — it has errors`); continue; }
       const home = spec.have(key);
       const coming = spec.coming(key) + n(planned[key]);
       const have = home + coming;
-      if (min != null && have >= min) continue;
-      const want = Math.floor(Math.min((max == null ? Infinity : max) - have, batch == null ? Infinity : batch));
+      // wiki: "You must have BELOW this amount in order to have a request sent"
+      if (g.local != null && have >= g.local) continue;
+      if (g.below != null && have >= g.below) continue;        // /below: not yet
+      // never past localAmount, and no more than maxBatch at a time
+      const want = Math.floor(Math.min(g.local == null ? Infinity : g.local - have, g.maxBatch == null ? Infinity : g.maxBatch));
       if (!(want > 0)) continue;
-      const head = `${spec.name(key)} ${short(home)}${coming ? ` + ${short(coming)} coming` : ''}${min != null ? ` < ${short(min)}` : ''}`;
+      // wiki: 50% or less of what the city should hold is critically low, and
+      // then the minimum batch no longer holds a smaller send back
+      const critical = g.local != null && have <= g.local / 2;
+      const minBatch = g.minBatch != null && !critical ? g.minBatch : 0;
+      const trigger = triggerOf(g);
+      const head = `${spec.name(key)} ${short(home)}${coming ? ` + ${short(coming)} coming` : ''}${trigger != null ? ` < ${short(trigger)}` : ''}`
+        + `${critical && g.minBatch != null ? ' (critically low)' : ''}`;
+      // wiki: a minimum batch that would put this city over localAmount waits
+      if (minBatch > want) {
+        lines.push(`${head}: waiting — only ${short(want)} fits under ${short(g.local)}, the minimum batch is ${short(minBatch)}`);
+        continue;
+      }
 
       const cands = [], why = [];
       const pool = sendersFor(g.target, others, game);
@@ -267,12 +365,19 @@ function transferPlan(ctx, state, game) {
           const r = busy ? null : book.room(c, spec.kind, { planned: { total: plannedFrom(s) } });
           if (r && r.room <= 0) { why.push(`${c.name} ${r.why}`); continue; }
         }
-        const floor = Math.max(keep == null ? 0 : keep, ownMin(s, spec.goal, key, spec.keyOf));
+        // wiki: "The bot will not put the sending city below the remote amount"
+        const floor = Math.max(g.remote == null ? 0 : g.remote, ownFloor(s, spec.goal, key, spec.keyOf));
         const spare = Math.floor(spec.stock(s, key) - floor);
         if (spare <= 0) { why.push(`${c.name} holds ${short(spec.stock(s, key))}, keeps ${short(floor)}`); continue; }
-        const carry = spec.carry(s);
-        if (carry <= 0) { why.push(`${c.name} has no spare transports`); continue; }
-        cands.push({ s, busy, deliver: Math.min(want, spare, carry) });
+        const carry = spec.carry(s, g);
+        if (carry <= 0) { why.push(`${c.name} has no spare ${spec.carrierName(g)}`); continue; }
+        const deliver = Math.min(want, spare, carry);
+        // wiki: a minimum batch that would put the sender under remoteAmount waits
+        if (deliver < minBatch) {
+          why.push(`${c.name} can send ${short(deliver)}, under the ${short(minBatch)} minimum batch`);
+          continue;
+        }
+        cands.push({ s, busy, deliver });
       }
       // the nearest that can send it all; failing that, whoever can send most
       const full = cands.filter((x) => x.deliver >= want).sort((a, b) => a.s.dist - b.s.dist)[0];
@@ -287,8 +392,9 @@ function transferPlan(ctx, state, game) {
         continue;
       }
       const s = best.s;
-      const m = (s.march[spec.kind] = s.march[spec.kind] || { load: {}, slots: g.slots });
+      const m = (s.march[spec.kind] = s.march[spec.kind] || { load: {}, carried: {}, slots: g.slots });
       m.load[key] = n(m.load[key]) + best.deliver;
+      if (spec.carrierOf) { const ck = spec.carrierOf(g); m.carried[ck] = n(m.carried[ck]) + best.deliver; }
       spec.take(s, key, best.deliver);
       planned[key] = n(planned[key]) + best.deliver;
       lines.push(`${head}: ${short(best.deliver)} from ${s.castle.name} (${s.dist.toFixed(1)} tiles${full ? '' : ', all it can spare'})`);
@@ -307,20 +413,26 @@ function transferPlan(ctx, state, game) {
       coming: (k) => n(coming[k]),
       stock: (s, k) => s.stock[k],
       take: (s, k, v) => { s.stock[k] -= v; },
-      // what the sender's spare transports still hold, after this pass's load
-      carry: (s) => {
-        const have = n(s.troops.carriage);
-        const loaded = s.march.r ? Object.values(s.march.r.load).reduce((a, b) => a + b, 0) : 0;
-        return (have - reserveOf(have)) * LOAD - loaded;
+      // transports unless the line names another troopType
+      carrierOf: (g) => g.carrier || 'carriage',
+      carrierName: (g) => (!g.carrier || g.carrier === 'carriage' ? 'transports' : troopName(g.carrier)),
+      // what the sender's spare carriers of this line's kind still hold, after
+      // what this pass has loaded on them already
+      carry: (s, g) => {
+        const k = g.carrier || 'carriage';
+        const have = n(s.troops[k]);
+        const loaded = s.march.r ? n(s.march.r.carried[k]) : 0;
+        return (have - reserveOf(have)) * loadOf(k) - loaded;
       },
     });
     notes.push(`requestresources: ${lines.length ? lines.join('; ') : 'nothing short'}`);
   }
-  // transports that go with this pass's resources are not there to be requested
+  // carriers that go with this pass's resources are not there to be requested
   for (const s of senders.values()) {
     if (!s.march.r) continue;
-    const total = Object.values(s.march.r.load).reduce((a, b) => a + b, 0);
-    s.troops.carriage = Math.max(0, n(s.troops.carriage) - Math.ceil(total / LOAD));
+    for (const [k, amount] of Object.entries(s.march.r.carried)) {
+      s.troops[k] = Math.max(0, n(s.troops[k]) - Math.ceil(amount / loadOf(k)));
+    }
   }
 
   if (troopRules.length) {
@@ -333,6 +445,7 @@ function transferPlan(ctx, state, game) {
       coming: () => 0,
       stock: (s, k) => n(s.troops[k]),
       take: (s, k, v) => { s.troops[k] = n(s.troops[k]) - v; },
+      carrierName: () => 'troops',
       carry: () => Infinity,
     });
     notes.push(`requesttroops: ${lines.length ? lines.join('; ') : 'nothing short'}`);
@@ -343,16 +456,23 @@ function transferPlan(ctx, state, game) {
     const dist = s.dist.toFixed(1);
     if (s.march.r) {
       const resources = s.march.r.load;
-      const total = Object.values(resources).reduce((a, b) => a + b, 0);
-      const carriages = Math.ceil(total / LOAD);
+      // each carrier kind takes what its lines loaded, a whole unit at a time
+      const troops = {};
+      for (const [k, amount] of Object.entries(s.march.r.carried)) {
+        if (amount > 0) troops[k] = Math.ceil(amount / loadOf(k));
+      }
+      const carriages = n(troops.carriage);
+      const carriers = Object.keys(troops).length === 1 && carriages
+        ? `${fmt(carriages)} transports`
+        : Object.entries(troops).map(([k, v]) => `${fmt(v)} ${k === 'carriage' ? 'transports' : troopName(k)}`).join(' + ');
       actions.push({
-        kind: 'transport', from: s.castle, to: here, resources, carriages, distance: s.dist,
+        kind: 'transport', from: s.castle, to: here, resources, carriages, troops, distance: s.dist,
         rally: {
           from: s.castle, kind: 'r', missionType: C.MISSION.transport, targetFieldId: here.fieldId,
-          pairLimit: s.march.r.slots, resources, troops: { carriage: carriages },
+          pairLimit: s.march.r.slots, resources, troops,
         },
         label: `pull ${Object.entries(resources).map(([k, v]) => `${fmt(v)} ${k}`).join(' + ')} from ${s.castle.name} `
-          + `(${dist} tiles, ${fmt(carriages)} transports)`,
+          + `(${dist} tiles, ${carriers})`,
       });
     }
     if (s.march.t) {
@@ -374,12 +494,14 @@ function transferPlan(ctx, state, game) {
 // ----------------------------------------------------------------- executors
 
 const executors = {
-  // army.newArmy, missionType 1: the transports unload and come home
+  // army.newArmy, missionType 1: the carriers unload and come home. Every troop
+  // in a march carries its load (NewArmyWin.as:2849-3003 adds each type's
+  // load x (1 + loadSkillParam/100)), so another troopType just rides in `troops`.
   async transport(game, castle, a) {
     const xy = game.castleXY(a.to);
     const bean = game.buildArmyBean({
       missionType: C.MISSION.transport, targetPoint: C.coordsToFieldId(xy.x, xy.y),
-      troops: { carriage: a.carriages }, resources: a.resources,
+      troops: a.troops || { carriage: a.carriages }, resources: a.resources,
     });
     return game.newArmy(game.castleId(a.from), bean);
   },
@@ -398,5 +520,6 @@ module.exports = {
   plans: { transfer: transferPlan },
   executors,
   configKeys: [],
-  _internals: { parseRequest, troopDef, sendersFor, resourcesComing, troopsHeld, reserveOf, LOAD, short },
+  describeRequest,
+  _internals: { parseRequest, troopDef, sendersFor, resourcesComing, troopsHeld, reserveOf, triggerOf, LOAD, short },
 };

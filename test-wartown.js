@@ -144,7 +144,10 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     const junk = W.parsers.wartown.parse('yes');
     assert.ok(junk.errors.length);
     assert.strictEqual(junk.enabled, false);
-    const p = W.plans.wartown(ctxFor(city('A', 100, 100), 'config wartown:5'), {});
+    // Step 9: goals.js runs the key's own parser too, so the editor shows it red
+    const bad = parseGoals('config wartown:5');
+    has(bad.errors[0].error, 'wartown must be 0');
+    const p = W.plans.wartown({ ...ctxFor(city('A', 100, 100), ''), goals: bad.goals, config: bad.config }, {});
     has(p.note, 'wartown must be 0');
   });
 
@@ -407,7 +410,7 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     const here = city('Here', 100, 100, { resource: { food: { amount: 1e6 } } });
     const near = city('Near', 102, 100), far = city('Far', 130, 100);
     const game = fakeGame([here, near, far]);
-    const parsed = parseGoals('requestresources any food 500m 5b 50m 100m');
+    const parsed = parseGoals('requestresources any food 5b 100m * 50m /below:500m');
     const ctx = { game, castle: here, goals: parsed.goals, config: parsed.config, goalsOf: () => [], selfArmies: [] };
     const free = T.plans.transfer(ctx, {}, game);
     assert.strictEqual(free.actions[0].from.name, 'Near');
@@ -422,7 +425,7 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     const here = city('Here', 100, 100, { resource: { food: { amount: 1e6 } } });
     const near = city('Near', 102, 100);
     const game = fakeGame([here, near]);
-    const parsed = parseGoals('config wartown:2\nrequestresources any food 500m 5b 50m 100m');
+    const parsed = parseGoals('config wartown:2\nrequestresources any food 5b 100m * 50m /below:500m');
     const ctx = { game, castle: here, goals: parsed.goals, config: parsed.config, goalsOf: () => [], selfArmies: [],
       warTownOf: (c) => (c.name === 'Here' ? 2 : 0) };
     assert.strictEqual(T.plans.transfer(ctx, {}, game).actions.length, 1);
@@ -431,16 +434,16 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
   await t('engine: a sending city at war (config or console) sends no transport', async () => {
     const mk = () => [city('Fla', 100, 100, { resource: { food: { amount: 1e6 } } }), city('5', 102, 100)];
     let [fla, five] = mk();
-    let r = engineFor([fla, five], { Fla: 'requestresources 5 food 500m 5b 50m 100m', 5: 'config wartown:1' });
+    let r = engineFor([fla, five], { Fla: 'requestresources 5 food 5b 100m * 50m /below:500m', 5: 'config wartown:1' });
     await r.e.tick();
     assert.strictEqual(r.game.sent.length, 0, 'the war town sent a transport');
     has(r.e.lastReport[fla.castleId].transfer.note, '5 is a war town (1)');
     [fla, five] = mk();
-    r = engineFor([fla, five], { Fla: 'requestresources 5 food 500m 5b 50m 100m' }, { controls: { 5: { wartown: 2 } } });
+    r = engineFor([fla, five], { Fla: 'requestresources 5 food 5b 100m * 50m /below:500m' }, { controls: { 5: { wartown: 2 } } });
     await r.e.tick();
     assert.strictEqual(r.game.sent.length, 0, 'the console war town sent a transport');
     [fla, five] = mk();
-    r = engineFor([fla, five], { Fla: 'requestresources 5 food 500m 5b 50m 100m' });
+    r = engineFor([fla, five], { Fla: 'requestresources 5 food 5b 100m * 50m /below:500m' });
     await r.e.tick();
     assert.strictEqual(r.game.sent.length, 1, 'and without war town it does send');
   });
@@ -738,7 +741,8 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
   section('the saved goals behave as before');
 
   // Lord02's city goals (live-goals.txt, comments dropped): no war goal, so
-  // nothing may change for them.
+  // nothing may change for them. The requestresources lines are in NEAT's order,
+  // as migrate-goals-transfer.js rewrites them (Step 9).
   const LORD02 = `config comfort:1,hero:1,troopsusepopmax:1,npc:5
 comfortpolicy 15 16 popraise
 defensepolicy /usetruce:79 /usespeech:2 /junktroop:5000 /usewarhorn:1 /usecorselet:1 /usepenicillin:1
@@ -751,11 +755,11 @@ troop a:100k,s:100k
 fortification ab:5000
 distancepolicy 15
 npcteams 3
-requestresources any gold 1000000 2000000 500000 200000
-requestresources any wood 100000 2000000 500000 200000
-requestresources any stone 5000000 50000000 5000000 10000000
-requestresources any iron 50000000 500000000 20000000 100000000
-requestresources any food 500000000 5000000000 50000000 1000000000
+requestresources any gold 2000000 200000 * 500000 /below:1000000
+requestresources any wood 2000000 200000 * 500000 /below:100000
+requestresources any stone 50000000 10000000 * 5000000 /below:5000000
+requestresources any iron 500000000 100000000 * 20000000 /below:50000000
+requestresources any food 5000000000 1000000000 * 50000000 /below:500000000
 traininghero OTTO 30 60
 npcheroes !OTTO,any
 farmingpolicy 10 /distance:5

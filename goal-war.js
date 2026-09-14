@@ -80,10 +80,11 @@ const HERO = { FREE: 0, CHIEF: 1, GUARD: 2, SEND: 3, SEIZED: 4, BACK: 5, FARM: 8
 // as the raw string instead, so "30s" / "90sec" / "2h" survive intact and are
 // the way to ask for a sub-minute lead time today. Plain numbers mean MINUTES.
 // (Do NOT write "2m" — NUM reads m as the millions multiplier.)
+const DURATION = /^([\d.]+)\s*(ms|s|sec|secs|seconds?|min|mins|minutes?|h|hr|hours?)?$/i;
 function durationMs(v, unit = 'min') {
   if (v === null || v === undefined || v === '') return 0;
   if (typeof v === 'number') return unit === 'sec' ? v * 1000 : v * 60000;
-  const m = String(v).trim().match(/^([\d.]+)\s*(ms|s|sec|secs|seconds?|min|mins|minutes?|h|hr|hours?)?$/i);
+  const m = String(v).trim().match(DURATION);
   if (!m) return 0;
   const q = parseFloat(m[1]);
   if (!isFinite(q)) return 0;
@@ -123,17 +124,60 @@ function parseSwitches(args, errs, known) {
   return sw;
 }
 
-// "a:50000,s:10" -> {archer: 50000, scouter: 10}
+// The goals number grammar (goals.js NUM): 5000, 5k, 1.5m, 1b. goals.js loads
+// this module, so it cannot be required from here; this is the same grammar.
+const NUM = (s) => {
+  const m = String(s).trim().match(/^([\d.]+)\s*([kmbd])?$/i);
+  if (!m) return null;
+  const v = parseFloat(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9, d: 1e9 }[(m[2] || '').toLowerCase()] || 1);
+  if (!isFinite(v)) return null;
+  return Number.isInteger(v) ? v : (v >= 1 ? Math.round(v * 1000) / 1000 : v);
+};
+
+// Switch values arrive as the raw text after the colon. Numbers are read with
+// the goals grammar, so a k/m suffix means what it says: before this,
+// /keepres:100k hid no resources at all and /junk:5k turned the junk filter
+// inside out. Anything unreadable is an error and the default stands.
+function numSwitch(sw, key, errs, def, { min = null, max = null, what = 'a number, e.g. 5000, 5k or 1.5m' } = {}) {
+  if (sw[key] === undefined) return def;
+  const v = NUM(sw[key]);
+  if (v === null || (min !== null && v < min) || (max !== null && v > max)) {
+    errs.push(`/${key} needs ${what} — got "${sw[key]}"`);
+    return def;
+  }
+  return v;
+}
+// 0 or 1 (a bare /switch means 1).
+function flagSwitch(sw, key, errs, def) {
+  if (sw[key] === undefined) return def;
+  const v = NUM(sw[key]);
+  if (v !== 0 && v !== 1) { errs.push(`/${key} is 0 or 1 — got "${sw[key]}"`); return def; }
+  return v === 1;
+}
+// Durations keep their own grammar (a bare number is `unit`; 30s, 2min, 1h).
+function durationSwitch(sw, key, errs, unit, def) {
+  if (sw[key] === undefined) return def;
+  const v = sw[key];
+  if (typeof v !== 'number' && !DURATION.test(String(v).trim())) {
+    errs.push(`/${key} needs a duration (${unit === 'sec' ? 'seconds' : 'minutes'}, or with a unit: 30s, 5min, 1h) — got "${v}"`);
+    return def;
+  }
+  return durationMs(v, unit);
+}
+
+// "a:50000,s:10" -> {archer: 50000, scouter: 10}. Troop words from the table
+// every goal shares (constants.js TROOP_WORDS); amounts in the goals grammar,
+// so a:20k keeps 20,000 (parseInt used to make that 20).
 function parseTroopSpec(s, errs, label) {
   const out = {};
   for (const part of String(s).split(',')) {
     const p = part.trim();
     if (!p) continue;
     const [code, amt] = kv(p);
-    const t = C.BY_CODE[code.toLowerCase()] || C.BY_KEY[code];
+    const t = C.troopByWord(code);
     if (!t) { errs.push(`${label}: unknown troop code "${code}"`); continue; }
-    const q = parseInt(String(amt).replace(/[,\s]/g, ''), 10);
-    if (!isFinite(q)) { errs.push(`${label}: bad amount "${amt}" for ${code}`); continue; }
+    const q = amt === null ? null : NUM(amt);
+    if (q === null) { errs.push(`${label}: bad amount "${amt}" for ${code}`); continue; }
     out[t.key] = q;
   }
   return out;
@@ -465,6 +509,22 @@ const parsers = {
       const switches = parseSwitches(args.filter((a) => String(a).startsWith('/')), errs, new Set([
         'junk', 'scoutratio', 'strongarchers', 'weakarchers', 'loyaltyattack', 'defenceratio', 'defenseratio', 'mintoggle',
       ]));
+      // Numbers go to the plan as numbers (5k = 5000). One it cannot read is
+      // an error and is dropped, so the plan's default applies rather than NaN.
+      const ratio = { what: 'a multiple of the wave, e.g. 5' };
+      const numeric = {
+        junk: {}, strongarchers: {}, weakarchers: {}, loyaltyattack: {}, defenceratio: ratio, defenseratio: ratio,
+        scoutratio: { max: 1, what: 'the share of the wave that is scouts, 0 to 1, e.g. 0.9' },
+      };
+      for (const [key, opt] of Object.entries(numeric)) {
+        if (switches[key] === undefined) continue;
+        const v = numSwitch(switches, key, errs, undefined, opt);
+        if (v === undefined) delete switches[key]; else switches[key] = v;
+      }
+      // /mintoggle stays a duration (seconds, or 30s / 2min) for the plan to read
+      if (switches.mintoggle !== undefined && durationSwitch(switches, 'mintoggle', errs, 'sec', null) === null) {
+        delete switches.mintoggle;
+      }
       if (positional.length !== 5) {
         errs.push('expected: gatepolicy <noattack> <regular> <scoutbomb> <mixed> <maintenance>  (five values, each 0=bot 1=open 2=close)');
       }
@@ -507,7 +567,7 @@ const parsers = {
       }
 
       const keep = sw.keep !== undefined ? parseTroopSpec(sw.keep, errs, '/keep') : {};
-      const maxRestMs = sw.maxrest !== undefined ? durationMs(sw.maxrest, 'min') : 8 * 3600000;
+      const maxRestMs = durationSwitch(sw, 'maxrest', errs, 'min', 8 * 3600000);
       // NewArmyWin.as:1707 clamps the encamp input at 24h, so never ask for more.
       if (maxRestMs > 24 * 3600000) errs.push('/maxrest is capped at 24h by the game client');
 
@@ -515,23 +575,18 @@ const parsers = {
         target,
         missionType,
         keep,
-        keepRes: sw.keepres !== undefined ? n(sw.keepres) : 0,
-        sendResources: sw.resources === undefined ? true : n(sw.resources) === 1,
-        sendGold: n(sw.gold) === 1,                       // off by default: gold is wanted at home
-        needHero: sw.needhero === undefined ? true : n(sw.needhero) === 1,
-        junk: sw.junk !== undefined ? n(sw.junk) : null,
+        keepRes: numSwitch(sw, 'keepres', errs, 0),
+        sendResources: flagSwitch(sw, 'resources', errs, true),
+        sendGold: flagSwitch(sw, 'gold', errs, false),          // off by default: gold is wanted at home
+        needHero: flagSwitch(sw, 'needhero', errs, true),
+        junk: numSwitch(sw, 'junk', errs, null),
         maxRestMs: clamp(maxRestMs, 0, 24 * 3600000),
-        marginMs: sw.margin !== undefined ? durationMs(sw.margin, 'min') : 5 * 60000,
-        minLeadMs: sw.minlead !== undefined ? durationMs(sw.minlead, 'sec') : 4000,
-        horizonMs: sw.horizon !== undefined ? durationMs(sw.horizon, 'min') : 60 * 60000,
-        maxMarches: sw.maxmarches !== undefined ? n(sw.maxmarches) : 0,   // 0 = do not check
-        recall: sw.recall === undefined ? true : n(sw.recall) === 1,
-        foodShare: (() => {
-          if (sw.foodshare === undefined) return 0.9;
-          const f = parseFloat(sw.foodshare);
-          if (!isFinite(f)) { errs.push(`/foodshare must be a fraction between 0.05 and 1 — got "${sw.foodshare}"`); return 0.9; }
-          return clamp(f, 0.05, 1);
-        })(),
+        marginMs: durationSwitch(sw, 'margin', errs, 'min', 5 * 60000),
+        minLeadMs: durationSwitch(sw, 'minlead', errs, 'sec', 4000),
+        horizonMs: durationSwitch(sw, 'horizon', errs, 'min', 60 * 60000),
+        maxMarches: numSwitch(sw, 'maxmarches', errs, 0, { what: 'a whole number of marches' }),   // 0 = do not check
+        recall: flagSwitch(sw, 'recall', errs, true),
+        foodShare: numSwitch(sw, 'foodshare', errs, 0.9, { min: 0.05, max: 1, what: 'a fraction between 0.05 and 1' }),
         errors: errs,
       };
     },

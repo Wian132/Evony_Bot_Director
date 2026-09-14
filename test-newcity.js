@@ -316,15 +316,16 @@ t('an override across layers is not an error; a repeat within one text still is'
 });
 
 t('errors say which text they are in: "append line 3", "prepend line 1", and plain "line N" in the city', () => {
-  const m = layered('bogus thing', 'troop zz:1', 'config comfort:1\n\nfortification r:10');
+  // r is NEAT's rolling logs since Step 9; ro is still no fortification at all
+  const m = layered('bogus thing', 'troop zz:1', 'config comfort:1\n\nfortification ro:10');
   assert.deepStrictEqual(m.errors.map((e) => `${e.where}: ${e.error}`), [
     'prepend line 1: unknown goal "bogus"',
     'line 1: TROOP: unknown troop code "zz"',
-    'append line 3: FORTIFICATION: unknown fortification "r"',
+    'append line 3: FORTIFICATION: unknown fortification "ro"',
   ]);
   const note = G.layerNote(m);
   has(note, 'global goals: 2 line(s) skipped, not understood');
-  has(note, 'prepend line 1: unknown goal "bogus"; append line 3: FORTIFICATION: unknown fortification "r"');
+  has(note, 'prepend line 1: unknown goal "bogus"; append line 3: FORTIFICATION: unknown fortification "ro"');
   assert.ok(!note.includes('troop code'), 'the city\'s own error was reported as a global one');
 });
 
@@ -367,7 +368,8 @@ t('with no global goals a city\'s goals are exactly what they were (the live goa
     'build f:10:37,s:0:0,i:0:0,q:0:0', 'troop b:5k,t:5k',
     'troop wo:10k,w:10k,s:10k,p:10k,sw:10k,a:10k,t:10k,c:10k,cata:10k,b:10k', 'troop a:100k,s:100k', '',
     'fortification ab:5000', '', 'distancepolicy 15', 'npcteams 3', 'traininghero OTTO 30 60', 'npcheroes !OTTO,any',
-    'requestresources any wood 100000 2000000 500000 200000', 'farmingpolicy 10 /distance:5', 'farmingpolicy 5 /distance:10',
+    // in NEAT's order, as migrate-goals-transfer.js rewrites the saved line (Step 9)
+    'requestresources any wood 2000000 200000 * 500000 /below:100000', 'farmingpolicy 10 /distance:5', 'farmingpolicy 5 /distance:10',
   ].join('\r\n');
   const plain = parseGoals(live);
   const m = layered(null, live, null);
@@ -492,9 +494,10 @@ t('an account with no template is offered NEAT\'s default, unsaved', () => {
   assert.strictEqual(a.goals.exact(k.id, 'default', 'goal'), null, 'the suggestion was saved without being asked');
 });
 
-t('NEAT\'s default reads cleanly in OTTObot\'s codes, NEAT\'s build c:1 included', () => {
+t('NEAT\'s default reads cleanly in NEAT\'s own codes, its build c:1 and r:10,rock:10 included', () => {
   const p = parseGoals(G.NEW_CITY_GOALS);
   assert.deepStrictEqual(p.errors, []);
+  assert.ok(G.NEW_CITY_GOALS.includes('fortification trap:10,ab:10,at:1,r:10,rock:10'), 'the wiki\'s line, word for word (Step 9)');
   assert.deepStrictEqual(p.config, { comfort: 1, gate: 1 });
   assert.deepStrictEqual(p.goals.filter((x) => x.name === 'build').map((x) => x.raw), ['build c:1']);
   const troop = p.goals.find((x) => x.name === 'troop');
@@ -534,7 +537,8 @@ t('prepend and append save, read back, and report errors with their text\'s name
   assert.deepStrictEqual(r.errors.map((e) => `${e.where}: ${e.error}`), ['prepend line 2: unknown goal "nosuchgoal"']);
   has(r.note, 'before its own goals');
   assert.strictEqual(G.readText(a.goals, k.id, 'prepend').src, 'config comfort:1\nnosuchgoal 1');
-  r = G.saveText(a.goals, k.id, { which: 'append', src: 'troop s:1\n\nfortification rock:1', save: false });
+  // rock is NEAT's rock fall (Step 9); ro is still no fortification at all
+  r = G.saveText(a.goals, k.id, { which: 'append', src: 'troop s:1\n\nfortification ro:1', save: false });
   assert.deepStrictEqual(r.errors.map((e) => e.where), ['append line 3']);
   assert.strictEqual(r.saved, null);
   assert.strictEqual(a.goals.exact(k.id, 'append', 'goal'), null, 'Apply saved it');

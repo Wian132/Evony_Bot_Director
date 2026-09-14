@@ -292,6 +292,40 @@ function marchFoodPerHour(troops) {
 const marchFood = (troops, oneWayMs, restMs = 0) =>
   marchFoodPerHour(troops) * ((Number(oneWayMs) || 0) + (Number(restMs) || 0)) / 3600000;
 
+// The free speed-up. castle.speedUpBuildCommand and tech.speedUpResearch with
+// this item finish a job at no cost, but only a job whose PRESET time is five
+// minutes or less: the base time the client's tables give that level, before
+// research and the mayor shorten it. The client compares that base time, not
+// the time left, with the limit (SpeedUpCheckOut.as:18-28, from
+// BuildingBar.onBuildingSpeedUp and TechReseachingUI.onSpeedUp), and says so
+// when it works: "Presetted Constructing Time less than 5 minutes. Free
+// speed-up finished." (Lang 生产时间低于5分钟免费加速).
+const FREE_SPEED = {
+  item: 'free.speed',     // CommonConstants.FREE_SPEED_ITEM_ID
+  limitSec: 300,          // CommonConstants.FREE_SPEED_TIME_LIMIT
+  // Base seconds of the jobs within the limit, by the level the job starts
+  // from (levelData level N is the job from N to N+1; a new building starts at
+  // 0), from the client's building and tech tables (GetDataXML_XMLBuilding,
+  // GetDataXML_XMLTech). Every later level, and every type not listed here,
+  // takes longer than 300 s.
+  building: {
+    1: [75, 150, 300],        // Cottage
+    2: [300],                 // Barracks
+    4: [45, 90, 180],         // Sawmill
+    5: [60, 120, 240],        // Quarry
+    6: [90, 180],             // Ironmine
+    7: [30, 60, 120, 240],    // Farm
+    20: [270],                // Stable
+    21: [240],                // Inn
+    22: [180],                // Forge
+    27: [300],                // Feasting Hall
+    29: [150, 300],           // Rally Spot
+  },
+  research: {
+    7: [300],                 // Informatics
+  },
+};
+
 module.exports = {
   MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
@@ -301,4 +335,5 @@ module.exports = {
   MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
   marchFood, marchFoodPerHour,
   ZONES, zoneOf,
+  FREE_SPEED,
 };

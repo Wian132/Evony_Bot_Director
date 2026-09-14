@@ -11,6 +11,7 @@ const { parseGoals } = require('./goals');
 const { parseLayered, layerNote } = require('./goallayers');
 const M = require('./goalmods');
 const R = require('./rally');
+const S = require('./speedups');
 
 // War / hero / NPC / transfer goals live in their own modules, each exporting
 // { parsers, plans, executors }. parsers are merged by goals.js; plans and
@@ -1251,6 +1252,8 @@ class Engine {
       const r = await g.req('tech.getResearchList', { castleId: cid });
       const beans = r && (r.acailableResearchBeans || r.availableResearchBeans);
       if (!r || r.ok !== 1 || !Array.isArray(beans)) throw new Error((r && r.errorMsg) || 'no research list');
+      // the same list says what is being researched, for the free finish (speedups.js)
+      if (typeof g.noteResearchList === 'function') g.noteResearchList(cid, r);
       const levels = {};
       for (const t of beans) levels[Number(t.typeId)] = n(t.level);
       out = { at: Date.now(), levels };
@@ -1311,6 +1314,11 @@ class Engine {
     };
     // Hiding and the gate first, ahead even of the reads below (urgentWar).
     const urgent = await this.urgentWar(ctx, castle, cityState, book);
+    // Free finishes next (speedups.js): a job started since the last slice
+    // that the game finishes for free is done before the plans look at the city,
+    // so the builder is free for this slice's plan.
+    const freeSeen = new Set();
+    const freeFirst = await this.freeSpeed(castle, parsed.config, cityState, freeSeen);
     if (parsed.goals.some((x) => x.name === 'troop') && parsed.config.troop !== 0) {
       ctx.training = await this.readTraining(castle);
     }
@@ -1333,6 +1341,7 @@ class Engine {
     };
     const globalsNote = layerNote(parsed);
     if (globalsNote) report.globals = { note: globalsNote };
+    report.acted.push(...freeFirst.acted);
 
     // war / hero / npc module plans — each is pure and may return null
     for (const { name, mod } of MODULES) {
@@ -1499,6 +1508,12 @@ class Engine {
       report.build.note += heldBack(held);
     }
 
+    // ...and again now: the construction this slice started is finished in the
+    // same slice rather than the next. The notes are the city as it ends the slice.
+    const freeAfter = await this.freeSpeed(castle, parsed.config, cityState, freeSeen);
+    report.acted.push(...freeAfter.acted);
+    if (freeAfter.notes.length) report.speedup = { note: `free finish: ${freeAfter.notes.join('; ')}` };
+
     // MERGE, never replace. Plans and executors write their own bookkeeping into
     // cityState during this slice — npc runs/hits/cycles, comfort timers, defence
     // and hero state. Assigning a fresh object here threw all of it away every
@@ -1514,6 +1529,22 @@ class Engine {
     report.dryRun = this.dryRun;
     this.lastReport[key] = report;
     return report;
+  }
+
+  // Free finishes in one city (speedups.js): what is running there now and
+  // qualifies, sent at once. Outside the action budget: a free finish spends
+  // nothing, and each job is asked once at most.
+  async freeSpeed(castle, config, cityState, seen) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    const plan = S.freeSpeedPlan({
+      castle, config,
+      research: typeof g.runningResearch === 'function' ? g.runningResearch(cid) : null,
+      // end times are the server's clock
+      now: typeof g.now === 'function' ? g.now() : Date.now(),
+    }, cityState, seen);
+    const acted = await S.runFreeSpeed(g, castle, plan, cityState, { dryRun: this.dryRun, seen });
+    return { notes: plan.notes, acted };
   }
 
   // A city with no goals but a manual gate on the console: hold the gate and

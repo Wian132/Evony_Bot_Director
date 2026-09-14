@@ -482,7 +482,12 @@ class Game {
     return entry ? entry.conditionBean : null;
   }
 
-  researchList(castleId) { return this.req('tech.getResearchList', { castleId }); }
+  // Every list read also notes what is being researched (noteResearchList).
+  async researchList(castleId) {
+    const r = await this.req('tech.getResearchList', { castleId });
+    this.noteResearchList(castleId, r);
+    return r;
+  }
 
   // Queues: what is actually being made right now, per building.
   troopQueue(castleId) { return this.req('troop.getProduceQueue', { castleId }); }
@@ -531,7 +536,68 @@ class Game {
       outside: span(C.plotRange(true, townHall)),
     };
   }
-  research(castleId, techId) { return this.req('tech.research', { castleId, techId }); }
+  // The reply carries the tech as it now stands (ResearchResponse.tech).
+  async research(castleId, techId) {
+    const r = await this.req('tech.research', { castleId, techId });
+    if (r && r.ok === 1) this.noteResearch(castleId, { typeId: techId, ...(r.tech || {}), upgradeing: true });
+    return r;
+  }
+
+  // ---- free finishes and speed-ups (speedups.js) ----
+  // castle.speedUpBuildCommand {castleId, positionId, itemId} (CastleCommands.as:175-187)
+  // and tech.speedUpResearch {castleId, itemId} (TechCommand.as:84-95). The
+  // itemId C.FREE_SPEED.item costs nothing on a job whose preset time is five
+  // minutes or less. Neither reply names the city or the job, so each command
+  // waits in its own lane.
+  speedUpBuild(castleId, positionId, itemId) {
+    return this.lane('castle.speedUpBuildCommand',
+      () => this.req('castle.speedUpBuildCommand', { castleId, positionId, itemId }));
+  }
+
+  async speedUpResearch(castleId, itemId) {
+    const r = await this.lane('tech.speedUpResearch', () => this.req('tech.speedUpResearch', { castleId, itemId }));
+    // Finished, or still running with a new end time (ResearchResponse.tech).
+    if (r && r.ok === 1) this.noteResearch(castleId, r.tech && r.tech.upgradeing ? r.tech : null);
+    return r;
+  }
+
+  // What each city is researching, as the last research list or research reply
+  // showed it. The server pushes the END of a research (server.ResearchCompleteUpdate,
+  // which carries only the castleId) but never its start, and the free finish
+  // must not read the list every tick to look for one, so every read and every
+  // start leaves its answer here: the console's Research tab, the script's
+  // `research` line, any research goal that reads the list.
+  noteResearch(castleId, bean) {
+    const map = (this._research = this._research || new Map());
+    const cid = Number(castleId);
+    if (!bean || !bean.upgradeing) { map.delete(cid); return; }
+    const level = bean.level === undefined || bean.level === null || bean.level === '' ? null : Number(bean.level);
+    map.set(cid, {
+      typeId: Number(bean.typeId), level: Number.isFinite(level) ? level : null,
+      // on the server's clock, like the start and end times
+      startTime: Number(bean.startTime || 0), endTime: Number(bean.endTime || 0), seenAt: this.now(),
+    });
+  }
+
+  // The list names, on the one tech being researched in a city, that city
+  // (AvailableResearchListBean.castleId; BottomToolBar.onRefreshResearchList
+  // shows the one whose castleId is the city in view). A list that shows none
+  // for the city it was read for means nothing runs there.
+  noteResearchList(castleId, r) {
+    if (!r || (r.ok !== undefined && r.ok !== 1)) return;
+    const beans = r.acailableResearchBeans || r.availableResearchBeans || [];
+    let here = null;
+    for (const b of beans) {
+      if (!b || !b.upgradeing || b.castleId === undefined || b.castleId === null) continue;
+      if (Number(b.castleId) === Number(castleId)) here = b;
+      else this.noteResearch(b.castleId, b);
+    }
+    this.noteResearch(castleId, here);
+  }
+
+  runningResearch(castleId) {
+    return (this._research && this._research.get(Number(castleId))) || null;
+  }
 
   findBuildings(castle, typeId) {
     return (castle.buildings || []).filter((b) => b.typeId === typeId);

@@ -208,6 +208,21 @@ t('warehousepolicy food% lumber% stone% iron%: the four add up to 100 at most', 
   assert.strictEqual(p.goals[0].valid, false);
 });
 
+t('config comfort is checked when the goals are read: 0 and 1 are blue, anything else red', () => {
+  assert.deepStrictEqual(parseGoals('config comfort:1').lines[0], { n: 1, status: 'ok', msg: null });
+  assert.deepStrictEqual(parseGoals('config comfort:0').lines[0], { n: 1, status: 'ok', msg: null });
+  for (const v of ['2', 'yes', '0.5']) {
+    const p = parseGoals(`config comfort:${v},npc:5`);
+    assert.strictEqual(p.lines[0].status, 'error', v);
+    assert.match(p.lines[0].msg, /comfort is 0 \(off\) or 1 \(on\)/, v);
+  }
+  // a line of its own reads as the config it means (Step 9), with a note
+  const bare = parseGoals('comfort 1');
+  assert.deepStrictEqual(bare.config, { comfort: 1 });
+  assert.match(bare.lines[0].msg, /read as "config comfort:1"/);
+  assert.strictEqual(parseGoals('comfort 3').lines[0].status, 'error');
+});
+
 t('config nohealing is off the not-built list: config nohealing:1 comes out blue', () => {
   assert.ok(!('nohealing' in NOT_IMPLEMENTED.config));
   assert.deepStrictEqual(parseGoals('config nohealing:1').lines[0], { n: 1, status: 'ok', msg: null });
@@ -317,6 +332,20 @@ t('not enough food: the comfort waits and the note says what it costs', () => {
   const { p } = comfort(city({ resource: { support: 50, food: { amount: 50000 } } }), 'config comfort:1');
   assert.deepStrictEqual(p.actions, []);
   assert.match(p.note, /praying needs 100,000 food \(has 50,000\)/);
+});
+
+t('comforts leave the next construction\'s food and gold in the bank (Step 11\'s reserve)', () => {
+  resetClocks();
+  const c = city({ resource: { support: 50, food: { amount: 400000 } } });
+  const ctx = ctxFor(c, 'config comfort:1\ncomfortpolicy 15 20 popraise');
+  ctx.buildReserve = { food: 350000, wood: 1e6, label: 'Cottage L9' };
+  const p = M.comfortPlan(ctx, {});
+  assert.deepStrictEqual(p.actions, [], 'both the prayer (100,000) and the popraise (300,000) would eat into it');
+  assert.match(p.note, /praying needs 100,000 food \(has 400,000, 350,000 of it kept for Cottage L9\)/);
+  assert.match(p.note, /popraise: needed, but it costs 300,000 food \(has 400,000, 350,000 of it kept for Cottage L9\)/);
+  const rich = ctxFor(city({ resource: { gold: 20000 } }), 'comfortpolicy 15 20 bless');
+  rich.buildReserve = { gold: 15000, label: 'Academy L3' };
+  assert.match(M.comfortPlan(rich, {}).note, /bless: it costs 6,000 gold \(has 20,000, 15,000 of it kept for Academy L3\)/);
 });
 
 t('one comfort, then a two-minute wait for the city to show it; a refusal waits on the ladder', async () => {
@@ -638,6 +667,17 @@ t('short of gold under the default policy: the tax rises, and the note says why'
   assert.match(p.note, /gold 50,000 is under a day of hero salary \(10,000\/h\)/);
 });
 
+t('gold the next construction needs does not count as banked salary (Step 11\'s reserve)', () => {
+  const c = city({ resource: { texRate: 0, gold: 300000, curPopulation: 100000 } });   // 30 h of 10,000/h
+  const ctx = ctxFor(c, 'config comfort:1');
+  assert.deepStrictEqual(U.plans.tax(ctx, {}).actions, [], 'a day and more is banked');
+  ctx.buildReserve = { gold: 200000, label: 'Town Hall L9' };
+  const p = U.plans.tax(ctx, {});
+  // 100,000 left: 10,000 + (240,000 - 100,000) / 24 = 15,834/h at 1,000 a point -> 16%
+  assert.deepStrictEqual(p.actions.map((a) => a.rate), [16]);
+  assert.match(p.note, /gold 100,000 is under a day of hero salary .*with 200,000 gold kept for Town Hall L9/);
+});
+
 // ================================================================== 5. healing
 section('the medic camp: healed unless config nohealing:1');
 
@@ -659,6 +699,30 @@ t('wounded and the gold to cure them: army.cureInjuredTroop {castleId}, and the 
   const after = U.plans.heal(ctx, state);
   assert.deepStrictEqual(after.actions, []);
   assert.match(after.note, /heal: cured 1 s ago/);
+});
+
+t('the cure keeps the same day of salaries the rewards keep: level x 20 a hero when the bean has no herosSalary', () => {
+  const H = require('./goal-heroes');
+  const c = city({ resource: { gold: 100000 }, heros: [{ id: 1, name: 'A', level: 50, status: 0 }, { id: 2, name: 'B', level: 50, status: 0 }] });
+  delete c.resource.herosSalary;
+  assert.strictEqual(H.salaryReserve(c).reserve, 2 * 50 * 20 * 24);          // 48,000: goal-heroes' own figure
+  assert.strictEqual(I.RESERVE_H, H.REWARD_RESERVE_HOURS);
+  const ok = heal(c, 'troop a:1k', {}, { game: campGame(c, { goldNeed: 50000, total: 10 }) });
+  assert.strictEqual(ok.actions.length, 1, '100,000 - 50,000 leaves more than 48,000');
+  const thin = heal(c, 'troop a:1k', {}, { game: campGame(c, { goldNeed: 60000, total: 10 }) });
+  assert.deepStrictEqual(thin.actions, []);
+  assert.match(thin.note, /under a day of hero salary \(48,000 gold\)/);
+});
+
+t('the cure leaves the next construction\'s gold in the bank too (Step 11\'s reserve)', () => {
+  const c = city({ resource: { gold: 500000 } });                // a day of 10,000/h is 240,000
+  const game = campGame(c, { goldNeed: 100000, total: 10 });
+  const ctx = ctxFor(c, 'troop a:1k', { game });
+  assert.strictEqual(U.plans.heal(ctx, {}).actions.length, 1);
+  ctx.buildReserve = { gold: 200000, food: 1e6, label: 'Town Hall L8' };
+  const p = U.plans.heal(ctx, {});
+  assert.deepStrictEqual(p.actions, []);
+  assert.match(p.note, /under a day of hero salary \(240,000 gold\) and 200,000 gold for Town Hall L8/);
 });
 
 t('the cure checks the city\'s gold again as it sends, as the client does', async () => {

@@ -50,7 +50,16 @@
 //   army.cureInjuredTroop {castleId} heals the whole camp; the client sends it
 //     only when goldNeed is within the city's gold   (HospitalWin.as:490-504)
 //     Wounded left there "will gradually die" (Lang 伤兵在校场的伤兵营中等待治疗).
+//
+// Two things the other goals keep, respected here:
+//   a day of hero salaries — goal-heroes.salaryReserve, the same figure the
+//     rewards keep back (the server's herosSalary an hour, else level x 20 a
+//     hero): the tax's gold emergency and the gold a cure may not touch.
+//   the next construction's cost — ctx.buildReserve (Engine.resolveBuild): a
+//     comfort's food or gold, a cure's gold, and the gold the tax counts as
+//     banked all leave it where it is.
 const W = require('./goal-war');
+const H = require('./goal-heroes');
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -101,11 +110,12 @@ function levyTypeOf(word) {
 }
 
 // ------------------------------------------------------------------ timings
-// NEAT's gold emergency: under 24 hours of hero salary (wiki TradePolicy). A tax
+// NEAT's gold emergency: under 24 hours of hero salary (wiki TradePolicy) — the
+// same day the rewards keep back (goal-heroes REWARD_RESERVE_HOURS). A tax
 // raised for gold comes back down once two days of salary are banked, so it
 // does not flip at the line every slice.
-const RESERVE_H = 24;
-const RELEASE_H = 48;
+const RESERVE_H = H.REWARD_RESERVE_HOURS || 24;
+const RELEASE_H = 2 * RESERVE_H;
 const TAX_SETTLE_MS = 3 * 60000;         // after a change, until the city shows it
 const UPKEEP_GAP_MS = 2 * 60000;         // between two loyalty/grievance comforts
 const RETRY_MS = 2 * 60000;              // a comfortpolicy action whose reply was lost
@@ -166,6 +176,20 @@ function fourRates(name, words, args, errs) {
 }
 
 const parsers = {
+  // config comfort:<0|1> (wiki Comfort: "Switch: 0 = off, 1 = on", default 1).
+  // goals.js runs a config-kind parser on its key when the goals are read, so
+  // `comfort:2` shows red there; comfortSwitch below leaves such a city's
+  // comfort off. (A line of its own, `comfort 1`, reads as config comfort:1.)
+  comfort: {
+    kind: 'config', multi: false,
+    parse(value) {
+      const errs = [];
+      const set = value !== undefined && value !== null && value !== '';
+      if (set && !/^[01]$/.test(String(value).trim())) errs.push(`comfort is 0 (off) or 1 (on), not "${value}"`);
+      return { on: !set || String(value).trim() === '1', errors: errs };
+    },
+  },
+
   // taxpolicy min_rate max_rate [war_rate]   (wiki TaxPolicy; defaults 0 and 100)
   taxpolicy: {
     kind: 'policy', multi: false,
@@ -231,17 +255,24 @@ const parsers = {
 };
 
 // ------------------------------------------------------------------ the city
-// What the castle bean says, each value null when it is not there.
+// What the castle bean says, each value null when it is not there. The hero
+// salary is goal-heroes' figure, so the tax, the cure and the rewards all keep
+// back the same day of it.
 function cityFacts(ctx) {
   const res = (ctx.castle && ctx.castle.resource) || {};
   const bank = (k) => val(res[k] && typeof res[k] === 'object' ? res[k].amount : res[k]);
   return {
     loyalty: val(res.support), grievance: val(res.complaint), tax: val(res.texRate),
     population: val(res.curPopulation), limit: val(res.maxPopulation),
-    income: val(res.taxIncome), salary: val(res.herosSalary),
+    income: val(res.taxIncome), salary: H.salaryReserve(ctx.castle).perHour,
     gold: bank('gold'), food: bank('food'), wood: bank('wood'), stone: bank('stone'), iron: bank('iron'),
   };
 }
+
+// What the next construction needs kept in the bank (Engine.resolveBuild sets
+// ctx.buildReserve), or nothing.
+const keptFor = (ctx) => (ctx && ctx.buildReserve) || null;
+const keptWhat = (keep) => (keep && keep.label) || 'the next construction';
 
 // config comfort: on unless 0 (wiki Comfort: "Default: config comfort:1").
 // Anything but 0 or 1 is not understood, and leaves comfort off.
@@ -266,10 +297,13 @@ function comfortCost(ctx, type, f) {
   return { food: Math.min(Math.floor((prestige / 10) * count * mult), 10e6) };
 }
 const costText = (cost) => (cost ? Object.entries(cost).map(([k, v]) => `${fmt(v)} ${k}`).join(' and ') : 'an unknown amount');
-// the first thing the city holds too little of, or null (unknown banks are left to the server)
-function shortOf(cost, f) {
+// The first thing the city holds too little of once the next construction's
+// share is left in the bank, or null (unknown banks are left to the server).
+function shortOf(cost, f, keep = null) {
   for (const [k, v] of Object.entries(cost || {})) {
-    if (f[k] !== null && f[k] !== undefined && f[k] < v) return `${fmt(v)} ${k} (has ${fmt(f[k])})`;
+    if (f[k] === null || f[k] === undefined) continue;
+    const held = n(keep && keep[k]);
+    if (f[k] - held < v) return `${fmt(v)} ${k} (has ${fmt(f[k])}${held ? `, ${fmt(held)} of it kept for ${keptWhat(keep)}` : ''})`;
   }
   return null;
 }
@@ -304,7 +338,7 @@ function upkeepStep(ctx, state, f, roundComforts, now) {
   const f0 = heldBack(st);
   if (f0) return { notes: [`${head}: ${PACIFY_NAME[type]} ${failText(f0)}`], actions: [] };
   const cost = comfortCost(ctx, type, f);
-  const short = shortOf(cost, f);
+  const short = shortOf(cost, f, keptFor(ctx));
   if (short) return { notes: [`${head}: ${PACIFY_NAME[type]} needs ${short}`], actions: [] };
   return {
     notes: [`${head}: ${PACIFY_NAME[type]} (${type === 'pray' ? '+25 loyalty, -5 grievance' : '+5 loyalty, -15 grievance'}, costs ${costText(cost)})`],
@@ -357,7 +391,7 @@ function roundStep(ctx, state, policy, f, war, now) {
       if (f.population === null || f.limit === null) return skip('population unknown');
       if (!popNeeded) return skip(`not needed, population ${fmt(f.population)} is at its limit`);
       const cost = comfortCost(ctx, 'popraise', f);
-      const short = shortOf(cost, f);
+      const short = shortOf(cost, f, keptFor(ctx));
       if (short) return skip(`needed, but it costs ${short}`);
       return act({ kind: 'upkeepComfort', type: 'popraise', typeId: PACIFY.popraise },
         `population raising (${fmt(f.population)} of ${fmt(f.limit)}, +${fmt(Math.min(Math.floor(f.limit * 0.05), f.limit - f.population))} for ${costText(cost)})`);
@@ -371,7 +405,7 @@ function roundStep(ctx, state, policy, f, war, now) {
       return act({ kind: 'upkeepLevy', type: o.type, typeId: LEVY[o.type] }, `levy ${o.type}${gets} (-${LEVY_LOYALTY_COST} loyalty)`);
     }
     const cost = comfortCost(ctx, o.type, f);
-    const short = shortOf(cost, f);
+    const short = shortOf(cost, f, keptFor(ctx));
     if (short) return skip(`it costs ${short}`);
     if (o.type === 'pray' || o.type === 'relief') comforts = true;
     return act({ kind: 'upkeepComfort', type: o.type, typeId: PACIFY[o.type] }, `${PACIFY_NAME[o.type]} (every round, costs ${costText(cost)})`);
@@ -486,9 +520,14 @@ function taxPlan(ctx, state) {
   st.seen = cur;
   if (st.sent === cur) st.sent = null;            // arrived
   const war = W.underAttack(ctx, state);
+  // gold the next construction needs is spoken for: it does not pay salaries
+  const keep = keptFor(ctx);
+  const keptGold = n(keep && keep.gold);
+  const gold = f.gold === null ? null : Math.max(0, f.gold - keptGold);
   const t = taxTarget({ cur, min: pol.min, max: pol.max, war: pol.war, underAttack: war.on, manual: st.manual, raised: st.raised,
-    gold: f.gold, salary: f.salary, income: f.income, population: f.population });
+    gold, salary: f.salary, income: f.income, population: f.population });
   st.raised = t.raised;
+  if (t.raised && keptGold) t.why += `, with ${fmt(keptGold)} gold kept for ${keptWhat(keep)}`;
   const range = `${pol.from === 'taxpolicy' ? 'taxpolicy' : 'comfort, taxpolicy default'} ${pol.min}-${pol.max}${pol.war !== null ? `, war ${pol.war}` : ''}`;
   const head = `tax ${cur}% (${range}${st.manual !== null && st.manual !== undefined ? `; ${st.manual}% was set by hand and is kept` : ''})`;
   if (t.rate === cur) return { note: `${head}: holds — ${t.why}`, actions: [] };
@@ -509,7 +548,8 @@ function taxPlan(ctx, state) {
 // read with army.getInjuredTroop once an attack on the city has landed, and
 // hourly. The wiki says nothing of attacks: this bot holds the cure while a
 // real wave is still marching in, when the healed troops would only meet it,
-// and never spends the gold the heroes' next day of salary needs.
+// and never spends the gold the heroes' next day of salary needs, nor what the
+// next construction needs.
 function healPlan(ctx, state) {
   const game = ctx.game || {};
   const cid = game.castleId ? Number(game.castleId(ctx.castle)) : null;
@@ -527,9 +567,14 @@ function healPlan(ctx, state) {
     const head = `heal: ${fmt(wounded)} wounded in the medic camp, ${fmt(need)} gold to cure`;
     if (war.inbound > 0) return { note: `${head} — held while ${war.inbound} real attack(s) march in`, actions: [] };
     if (f.gold !== null && need > f.gold) return { note: `${head} — the city has ${fmt(f.gold)}`, actions: [] };
-    const keep = f.salary > 0 ? RESERVE_H * f.salary : 0;
-    if (f.gold !== null && keep && f.gold - need < keep) {
-      return { note: `${head} — it would leave the city under a day of hero salary (${fmt(keep)} gold)`, actions: [] };
+    // a day of hero salaries (the rewards keep the same), and the next construction's gold
+    const day = f.salary > 0 ? RESERVE_H * f.salary : 0;
+    const keep = keptFor(ctx);
+    const keptGold = n(keep && keep.gold);
+    if (f.gold !== null && (day || keptGold) && f.gold - need < day + keptGold) {
+      const what = [day ? `a day of hero salary (${fmt(day)} gold)` : null,
+        keptGold ? `${fmt(keptGold)} gold for ${keptWhat(keep)}` : null].filter(Boolean).join(' and ');
+      return { note: `${head} — it would leave the city under ${what}`, actions: [] };
     }
     const f0 = heldBack(st, now);
     if (f0) return { note: `${head} — ${failText(f0)}`, actions: [] };

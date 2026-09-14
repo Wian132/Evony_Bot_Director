@@ -66,12 +66,16 @@
 // What rests on the book because someone took the level first is ours; it is
 // counted as coming (a buy) or gone (a sell) and cancelled after 20 minutes
 // (its fee is lost, and the note says so). Nothing else is ever cancelled.
+// Purchases in transit and our own transports heading to the city count as
+// coming too, so a city that also requests resources never buys what a
+// transport is bringing.
 //
 // holidaysnipe (holiday-snipe.js) runs on the same market: while it is buying
 // a dump of a resource nobody trades that resource here, a city with its buy
 // orders open is left alone, and a resource it keeps a sell offer listed for
 // in a city is not sold there.
 const C = require('./constants');
+const R = require('./rally');
 const HS = require('./holiday-snipe');
 
 const RESOURCES = ['food', 'wood', 'stone', 'iron'];
@@ -577,12 +581,18 @@ function tradePlan(ctx, cityState, game) {
     }
   }
 
-  // what the city holds, counting what is on its way to it
+  // what the city holds, counting what is on its way to it: purchases in
+  // transit, our own resting bids, and our transports heading here (a city
+  // that also requests resources does not buy what a transport is bringing)
   const res = here.resource || {};
   const have = {};
   for (const r of RESOURCES) have[r] = n(res[r] && res[r].amount);
   for (const t of here.transingTrades || []) { const r = RES_BY_TYPE[Number(t.resType)]; if (r) have[r] += n(t.amount); }
   for (const o of resting) if (o.side === 'buy') have[o.res] += o.left;
+  const book = ctx.rally || R.rallyBook({ game, armies: ctx.selfArmies || null });
+  for (const m of book.arriving(here.fieldId, C.MISSION.transport)) {
+    for (const r of RESOURCES) have[r] += n(m.resources && m.resources[r]);
+  }
   const gold = n(res.gold);
   const salary = res.herosSalary === undefined || res.herosSalary === null ? null : n(res.herosSalary);
   const upkeep = res.troopCostFood === undefined || res.troopCostFood === null ? null : n(res.troopCostFood);

@@ -784,6 +784,18 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     has(p.note, 'wood 5m < 20m min: waiting for fresh wood prices');
   });
 
+  await t('what our transports are bringing counts too: a city that also requests wood does not buy it', async () => {
+    const c = trader({ wood: 5e6 });
+    const hub = city('Hub', 110, 100);
+    const going = march(hub, c, C.MISSION.transport, { resource: { wood: 15e6 } });
+    const g = marketGame([c, hub], {}, { selfArmys: [going] });
+    const p = await tplan(c, g, 'config trade:1');
+    assert.strictEqual(act(p, 'marketBuy', 'wood'), undefined, p.note);
+    // on its way home it has delivered: then it is bought
+    going.direction = 2;
+    assert.ok(act(await tplan(c, g, 'config trade:1'), 'marketBuy', 'wood'));
+  });
+
   await t('hero salary unknown: the gold floor can\'t be worked out, so nothing is bought', async () => {
     const c = trader({ wood: 5e6, salary: null }); const g = marketGame([c]);
     const p = await tplan(c, g, 'config trade:1');

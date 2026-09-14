@@ -424,7 +424,12 @@ function expand(raw) {
   return out;
 }
 
-function parse(text) {
+// opts.check: parse to find the errors only (the editor's colours). Counts over 2
+// in `repeat N` / `loop N` are read as 2 — expanding `repeat 100000000` on every
+// pause in typing would hang the console, and 2 already raises every error the
+// full count would: they are about the lines themselves, and what follows a
+// logout is the same from the second pass on.
+function parse(text, opts = {}) {
   const raw = [];
   // NEAT's replacement variables: `set target 111,222`, then %target% in any
   // later line reads 111,222. Plain text, swapped in before the line is read.
@@ -448,12 +453,34 @@ function parse(text) {
       if (a) raw.push({ ...a, line: i + 1, raw: line.trim() });
     } catch (e) { raw.push({ cmd: 'error', line: i + 1, raw: line.trim(), error: e.message }); }
   });
-  const out = expand(raw);
+  const few = (a) => ((a.cmd === 'repeat' || a.cmd === 'loop') && a.times > 2 ? { ...a, times: 2 } : a);
+  const out = expand(opts.check ? raw.map(few) : raw);
   // After a logout there is no game to run anything against (logout.js).
   const lo = out.findIndex((a) => a.cmd === 'logout');
   const after = lo === -1 ? null : out.slice(lo + 1).find((a) => a.cmd !== 'error');
   if (after) out.push({ cmd: 'error', line: after.line, raw: after.raw, error: 'nothing can run after logout — the console is off the game from then on' });
   return out;
+}
+
+// Each line's standing for the console editor's colours, in the shape goals.js
+// gives goals ({ n, status: ok|error|comment|blank, msg }), plus the errors as
+// Apply lists them. Only // is a comment in a script.
+function lineStatus(text) {
+  const errs = new Map();
+  for (const a of parse(String(text || ''), { check: true })) {
+    if (a.cmd !== 'error') continue;
+    if (!errs.has(a.line)) errs.set(a.line, new Set());
+    errs.get(a.line).add(a.error);
+  }
+  const lines = String(text || '').split(/\r?\n/).map((given, i) => {
+    const n = i + 1;
+    if (errs.has(n)) return { n, status: 'error', msg: [...errs.get(n)].join('; ') };
+    if (!given.trim()) return { n, status: 'blank', msg: null };
+    if (!given.replace(/\/\/.*$/, '').trim()) return { n, status: 'comment', msg: null };
+    return { n, status: 'ok', msg: null };
+  });
+  const errors = [...errs].flatMap(([line, set]) => [...set].map((error) => ({ line, error })));
+  return { lines, errors };
 }
 
 // ---------------------------------------------------------------- executor
@@ -1024,4 +1051,4 @@ async function run(game, actions, log, opts = {}) {
   return done;
 }
 
-module.exports = { parse, parseLine, run, parseTroops, parseResources, parseLandTime, parseDuration, nextOccurrence };
+module.exports = { parse, parseLine, lineStatus, run, parseTroops, parseResources, parseLandTime, parseDuration, nextOccurrence };

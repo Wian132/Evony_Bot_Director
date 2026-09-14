@@ -168,10 +168,25 @@ t('the table is the one switch: a key taken off it turns ok with nothing else ch
   delete NOT_IMPLEMENTED.config.trade;
   try { assert.deepStrictEqual(line('config trade:1'), { n: 1, status: 'ok', msg: null }); }
   finally { NOT_IMPLEMENTED.config.trade = was; }
-  const g = NOT_IMPLEMENTED.goals.homeheroes;
-  delete NOT_IMPLEMENTED.goals.homeheroes;
-  try { assert.strictEqual(line('homeheroes 3').status, 'ok'); }
-  finally { NOT_IMPLEMENTED.goals.homeheroes = g; }
+  const g = NOT_IMPLEMENTED.goals.spamheroes;
+  delete NOT_IMPLEMENTED.goals.spamheroes;
+  try { assert.strictEqual(line('spamheroes any').status, 'ok'); }
+  finally { NOT_IMPLEMENTED.goals.spamheroes = g; }
+});
+
+// Step 4 made these work (War Town, KeepAttHome, HomeHeroes, AttackGap,
+// DefenseCooldown, WarTownPolicy): they are off the table and come out blue.
+t('war town, keep-home and the defence timings are blue; wartownpolicy too', () => {
+  for (const k of ['wartown', 'keepatthome', 'attackgap', 'defensecooldown']) {
+    assert.ok(!(k in NOT_IMPLEMENTED.config), `${k} is still on the table`);
+  }
+  assert.ok(!('homeheroes' in NOT_IMPLEMENTED.goals), 'homeheroes is still on the table');
+  for (const src of ['config wartown:2', 'config wartown:1,keepatthome:1', 'config attackgap:3,defensecooldown:10',
+    'homeheroes 2', 'wartownpolicy 06:00 12:00', 'wartownpolicy 22:00 02:00 5:00 7:30']) {
+    assert.deepStrictEqual(line(src), { n: 1, status: 'ok', msg: null }, src);
+  }
+  assert.strictEqual(line('wartownpolicy 06:00').status, 'error', 'a start with no end is an error');
+  assert.strictEqual(line('wartownpolicy 6 12').status, 'error', 'so is a time that is not hh:mm');
 });
 
 // ---------------------------------------------------------------------------
@@ -396,7 +411,7 @@ t('/api/goals check: the statuses only, and never a save — even when told to s
 });
 
 t('/api/goals Apply returns the statuses with the description, and saves nothing', async () => {
-  const r = await call('/api/goals', { src: 'troop a:2k\nhomeheroes 2', city: '101', save: false });
+  const r = await call('/api/goals', { src: 'troop a:2k\nspamheroes any', city: '101', save: false });
   assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['ok', 'idle']);
   assert.ok(Array.isArray(r.body.described) && r.body.described.length);
   assert.strictEqual(r.body.saved, null);

@@ -13,6 +13,7 @@ const W = require('./goal-war');
 const NPC = require('./goal-npc');
 const T = require('./goal-transfer');
 const B = require('./goal-buildnpc');
+const M = require('./goalmods');
 const { parseGoals } = require('./goals');
 const { Engine } = require('./engine');
 const { Game } = require('./game');
@@ -49,7 +50,7 @@ const hero = (id, name, power, extra = {}) => ({ id, name, power, powerAdded: 0,
 function fakeGame(castles, selfArmys = []) {
   const g = {
     castles, player: { playerInfo: { userName: 'T' }, selfArmys, enemyArmys: [], items: [] },
-    sent: [], reqs: [], discharged: [],
+    sent: [], reqs: [], discharged: [], promoted: [],
     marchSkillParam: 100, loadSkillParam: 100,
     now: () => NOW,
     castleId: (c) => c.castleId,
@@ -58,6 +59,7 @@ function fakeGame(castles, selfArmys = []) {
     newArmy: async (castleId, bean) => { g.sent.push({ castleId, bean }); return { ok: 1 }; },
     req: async (cmd, data) => { g.reqs.push([cmd, data]); return { ok: 1 }; },
     dischargeChief: async (cid) => { g.discharged.push(cid); return { ok: 1 }; },
+    promoteToChief: async (cid, heroId) => { g.promoted.push([cid, heroId]); return { ok: 1 }; },
   };
   return g;
 }
@@ -582,6 +584,25 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     assert.strictEqual(W.plans.hiding(ctx, {}).actions[0].heroId, 2, 'homeheroes holds heroes back from farming, not from evading');
   });
 
+  // Step 2 sends the hide march first in the slice and holds the mayor swap in
+  // the slice it took a hero. The keep-home pick goes through the same path.
+  await t("engine: the hide march takes keepatthome's hero when nobody else is in, and the mayor swap waits", async () => {
+    const home = city('Home', 200, 300, { heros: [hero(1, 'Strong', 150, { management: 300 }), hero(2, 'OldMayor', 40, { status: 1, management: 50 })] });
+    const refuge = city('Refuge', 210, 305);
+    const game = fakeGame([home, refuge]);
+    game.player.enemyArmys = [{ ...wave(90000, 1), direction: 1, targetFieldId: home.fieldId }];
+    const e = new Engine(game, () => {});
+    e.dryRun = false;
+    e.state = {};
+    e.goalsFor = (id, name) => parseGoals(name === 'Home' ? 'config hiding:2,keepatthome:1' : 'config hero:0');
+    const r = await e.focus(home);
+    assert.strictEqual(game.sent.length, 1, r.acted.join(' | '));
+    assert.strictEqual(game.sent[0].bean.heroId, 1, 'Strong led the hide march');
+    has(r.hiding.note, 'led by Strong, the keepatthome hero, as nobody else is home');
+    assert.deepStrictEqual([game.discharged, game.promoted], [[], []], 'the mayor was swapped for the hero that just marched out');
+    has(r.mayor.note, 'held this slice');
+  });
+
   await t('the constraints note names the kept hero, and a stand-in while it is out', () => {
     const heros = [hero(1, 'Strong', 150, { status: 3 }), hero(2, 'Middling', 80)];
     const p = W.plans.constraints(ctxFor(city('A', 100, 100, { heros }), 'config keepatthome:1'), {});
@@ -688,6 +709,20 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     const quiet = {};
     assert.strictEqual(W.plans.constraints(ctxFor(c, 'config comfort:1'), quiet), null, 'quiet and unset: no note');
     assert.strictEqual(quiet.war, undefined, 'and nothing written into a quiet city\'s state');
+  });
+
+  await t("one window: defensepolicy's items and the defensecooldown note read the same record", () => {
+    const c = city('A', 100, 100);
+    const state = {};
+    const ctx = ctxFor(c, 'config defensecooldown:10\ndefensepolicy /usewarhorn:1', { incoming: [wave(60000, 1)] });
+    M.defensePlan(ctx, state);                     // sees the wave coming
+    NOW += 120000; ctx.incoming = [];              // it landed a minute ago
+    const p = M.defensePlan(ctx, state);
+    const note = W.plans.constraints(ctx, state).note;
+    NOW = at(8);
+    has(p.note, 'under attack for another 9 min (defensecooldown)');
+    has(note, 'under attack for another 09:00');
+    assert.strictEqual(state.defence.attackSeen, undefined, 'no second, private window');
   });
 
   await t('defensecooldown no longer holds the gate (gatepolicy /mintoggle paces it)', () => {

@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const C = require('./constants');
+const W = require('./goal-war');
 
 const n = (x) => Number(x || 0);
 
@@ -43,7 +44,8 @@ function comfortPlan(ctx, state) {
 //   the horns, corselets and Penicillin are used while under attack (default off).
 // "Under attack" is a real attack marching at this city, or one that landed or
 // was recalled less than `config defensecooldown` minutes ago (NEAT's default
-// 30). The truce needs that window: the game will not truce while any army is
+// 30) — the one window every goal shares, kept by goal-war.js underAttack. The
+// truce needs that window: the game will not truce while any army is
 // marching at you (the item's own text), so it can only go in the gap after a
 // wave lands.
 //
@@ -54,7 +56,6 @@ function comfortPlan(ctx, state) {
 // is already running, and a use only counts once the server has said ok — the
 // engine's executor stamps state.defence.used, never this plan.
 const DEF_JUNK = 1000;
-const DEF_WINDOW_MIN = 30;             // NEAT's config defensecooldown default
 const DEF_RETRY_MS = 2 * 60000;        // after a refusal or a lost reply
 const DEF_SPEECH_MS = 2 * 60000;       // after a Speech Text, until the city shows loyalty 100
 const DEF_BUFF_GROUPS = [              // items that make the same buff: the first held is used
@@ -62,17 +63,6 @@ const DEF_BUFF_GROUPS = [              // items that make the same buff: the fir
   [['usecorselet', 'corselet'], ['useultracorselet', 'ultracorselet']],
   [['usepenicillin', 'penicillin']],
 ];
-
-// config defensecooldown in ms: minutes, or "30s"/"2h" (goal-war.js reads it
-// the same way). Unset or unreadable is NEAT's 30 minutes.
-function defenceWindowMs(v) {
-  if (v === undefined || v === null || v === '') return DEF_WINDOW_MIN * 60000;
-  if (typeof v === 'number') return isFinite(v) && v >= 0 ? v * 60000 : DEF_WINDOW_MIN * 60000;
-  const m = String(v).trim().match(/^([\d.]+)\s*(s|sec|secs|seconds?|min|mins|minutes?|h|hr|hours?)?$/i);
-  if (!m || !isFinite(parseFloat(m[1]))) return DEF_WINDOW_MIN * 60000;
-  const q = parseFloat(m[1]), u = (m[2] || 'min').toLowerCase();
-  return u[0] === 's' ? q * 1000 : u[0] === 'h' ? q * 3600000 : q * 60000;
-}
 
 // An inbound army's size, from the engine's flat total or a raw TroopStrBean.
 // An unscouted army sends "?" per type, so its size is UNKNOWN (null), and
@@ -151,10 +141,13 @@ function defensePlan(ctx, state) {
     return !(rt > 1e12 && rt < serverNow - 60000);
   });
   const real = fresh.filter((a) => { const s = armySize(a); return s === null || s >= junk; });
-  if (real.length) def.attackSeen = now;
-  const windowMs = defenceWindowMs(ctx.config && ctx.config.defensecooldown);
-  const quietFor = def.attackSeen ? now - n(def.attackSeen) : Infinity;
-  const underAttack = real.length > 0 || quietFor < windowMs;
+  // NEAT's DefenseCooldown window, the same one every goal reads (goal-war.js
+  // underAttack): it starts when the wave lands or is recalled, not when it
+  // was last seen marching. A defence.attackSeen left in saved state by an
+  // earlier build means nothing now.
+  delete def.attackSeen;
+  const win = W.underAttack(ctx, state);
+  const underAttack = win.on;
 
   // Armies marching at ANY of the account's cities: the game refuses a truce
   // while there are any, junk included — it knows nothing of /junktroop.
@@ -267,7 +260,7 @@ function defensePlan(ctx, state) {
   const jn = fresh.length - real.length;
   const head = `defense: loyalty ${loyalty === null ? '?' : loyalty}, ${real.length} real attack(s) inbound`
     + (jn ? ` (${jn} junk under ${junk} ignored)` : '')
-    + (!real.length && underAttack ? `; under attack for another ${span(windowMs - quietFor)} (defensecooldown)` : '');
+    + (!real.length && underAttack ? `; under attack for another ${span(win.leftMs)} (defensecooldown)` : '');
   return { note: [head, ...notes].join('; '), actions };
 }
 

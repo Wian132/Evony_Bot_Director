@@ -151,11 +151,12 @@ t('a bare war setting (hiding 2, read as config) is compacted like a config line
 
 t('script lines get the same per-line standing as a city\'s goals (the editor\'s colours)', () => {
   const id = acct();
-  const text = '// from a script\nconfig trade:1,npc:5\nhiding 2\ntroop zz:1\nbogus 3\n\ntroop a:1k';
+  // (Step 14 built config trade, so the idle key is valley, which still does nothing)
+  const text = '// from a script\nconfig valley:1,npc:5\nhiding 2\ntroop zz:1\nbogus 3\n\ntroop a:1k';
   const r = GL.addScriptLine(id, 8, text);
   assert.deepStrictEqual(r.lines, parseGoals(text).lines, 'the answer differs from what /api/goals gives this text');
   assert.deepStrictEqual(r.lines.map((l) => l.status), ['comment', 'idle', 'ok', 'error', 'error', 'blank', 'ok']);
-  has(r.lines[1].msg, 'trade does nothing yet');
+  has(r.lines[1].msg, 'valley does nothing yet');
   has(r.lines[2].msg, 'read as "config hiding:2"');
   assert.deepStrictEqual(GL.setScriptLayer(id, 8, text).lines, parseGoals(text).lines);
   D.goals.set(id, 'set4', 'goal', text);

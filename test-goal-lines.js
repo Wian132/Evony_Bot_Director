@@ -126,20 +126,21 @@ t('each listed config key on its own config line is idle and names the key', () 
   }
 });
 
+// (Step 14 built config trade, so these use valley, which still does nothing.)
 t('a config line with one idle key among working ones is red, naming the idle key and the ones that work', () => {
-  const l = line('config comfort:1,hero:1,trade:1');
+  const l = line('config comfort:1,hero:1,valley:1');
   assert.strictEqual(l.status, 'idle');
-  assert.strictEqual(l.msg, `trade does nothing yet: ${NOT_IMPLEMENTED.config.trade} (comfort and hero on this line work)`);
-  assert.match(line('config trade:1,npc:5').msg, /\(npc on this line works\)$/);
-  assert.match(line('config trade:1,valley:1').msg, /^trade does nothing yet: .*; valley does nothing yet: /);
+  assert.strictEqual(l.msg, `valley does nothing yet: ${NOT_IMPLEMENTED.config.valley} (comfort and hero on this line work)`);
+  assert.match(line('config valley:1,npc:5').msg, /\(npc on this line works\)$/);
+  assert.match(line('config valley:1,hunting:1').msg, /^valley does nothing yet: .*; hunting does nothing yet: /);
   // the values still reach the engine, exactly as before
-  assert.deepStrictEqual(parseGoals('config comfort:1,hero:1,trade:1').config, { comfort: 1, hero: 1, trade: 1 });
+  assert.deepStrictEqual(parseGoals('config comfort:1,hero:1,valley:1').config, { comfort: 1, hero: 1, valley: 1 });
 });
 
 t('an unknown key and an idle key on one line: an error, saying both, and never calling the unknown key working', () => {
-  const l = line('config foo:1,trade:1');
+  const l = line('config foo:1,valley:1');
   assert.strictEqual(l.status, 'error');
-  assert.match(l.msg, /unknown config key "foo"; trade does nothing yet/);
+  assert.match(l.msg, /unknown config key "foo"; valley does nothing yet/);
   assert.ok(!/foo on this line works/.test(l.msg), l.msg);
 });
 
@@ -169,10 +170,10 @@ t('a war setting written as a line of its own is read as config, and says how to
 });
 
 t('the table is the one switch: a key taken off it turns ok with nothing else changed', () => {
-  const was = NOT_IMPLEMENTED.config.trade;
-  delete NOT_IMPLEMENTED.config.trade;
-  try { assert.deepStrictEqual(line('config trade:1'), { n: 1, status: 'ok', msg: null }); }
-  finally { NOT_IMPLEMENTED.config.trade = was; }
+  const was = NOT_IMPLEMENTED.config.valley;
+  delete NOT_IMPLEMENTED.config.valley;
+  try { assert.deepStrictEqual(line('config valley:1'), { n: 1, status: 'ok', msg: null }); }
+  finally { NOT_IMPLEMENTED.config.valley = was; }
   const g = NOT_IMPLEMENTED.goals.spamheroes;
   delete NOT_IMPLEMENTED.goals.spamheroes;
   try { assert.strictEqual(line('spamheroes any').status, 'ok'); }
@@ -409,7 +410,7 @@ const saved = () => (ORG.goals.own(acc.id, 101, 'North', 'goal') || {}).src;
 
 t('/api/goals check: the statuses only, and never a save — even when told to save', async () => {
   ORG.goals.set(acc.id, '101', 'goal', 'troop a:1k');
-  const r = await call('/api/goals', { src: 'config trade:1\nbogus\n// c\ntroop a:1k', city: '101', save: true, check: true });
+  const r = await call('/api/goals', { src: 'config valley:1\nbogus\n// c\ntroop a:1k', city: '101', save: true, check: true });
   assert.strictEqual(r.code, 200);
   assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['idle', 'error', 'comment', 'ok']);
   assert.deepStrictEqual(r.body.errors.map((e) => e.line), [2]);
@@ -426,10 +427,10 @@ t('/api/goals Apply returns the statuses with the description, and saves nothing
 });
 
 t('/api/goals Save returns the statuses and saves, as before', async () => {
-  const r = await call('/api/goals', { src: 'troop a:3k\nconfig trade:1', city: '101', save: true });
+  const r = await call('/api/goals', { src: 'troop a:3k\nconfig valley:1', city: '101', save: true });
   assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['ok', 'idle']);
   assert.strictEqual(r.body.saved, '101');
-  assert.strictEqual(saved(), 'troop a:3k\nconfig trade:1');
+  assert.strictEqual(saved(), 'troop a:3k\nconfig valley:1');
 });
 
 t('/api/script parseOnly + lines: the statuses only; nothing runs and nothing is logged', async () => {

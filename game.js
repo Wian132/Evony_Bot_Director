@@ -885,9 +885,22 @@ class Game {
     return this.lane('trade.newTrade', () => this.req('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) }));
   }
 
-  searchTrades(resource) {
-    return this.lane('trade.searchTrades', () => this.req('trade.searchTrades', { resType: C.TRADE_RES[resource] }));
+  // The top of one resource's book (the client shows five a side: Market.as
+  // "the five highest buy offers" / "the five lowest sell offers"). Every read,
+  // whoever asks — the console's Market panel, holidaysnipe, goal-trade — leaves
+  // its answer in marketBook(), so the market goals can price a plan without a
+  // read of their own each time.
+  async searchTrades(resource) {
+    const d = await this.lane('trade.searchTrades', () => this.req('trade.searchTrades', { resType: C.TRADE_RES[resource] }));
+    if (d && (d.ok === undefined || d.ok === 1) && (Array.isArray(d.sellers) || Array.isArray(d.buyers))) {
+      this._books = this._books || {};
+      this._books[resource] = { at: Date.now(), sellers: d.sellers || [], buyers: d.buyers || [] };
+    }
+    return d;
   }
+
+  // { at, sellers, buyers } as the last read found it, or null.
+  marketBook(resource) { return (this._books && this._books[resource]) || null; }
 
   myTrades(castleId) {
     return this.lane('trade.getMyTradeList', () => this.req('trade.getMyTradeList', { castleId }));

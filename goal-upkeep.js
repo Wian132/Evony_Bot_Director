@@ -786,6 +786,42 @@ async function holdExec(state, key, a, read, parse, set) {
   return r;
 }
 
+// ------------------------------------------------------------------ what upkeep keeps
+// What the upkeep goals need left in a city, for the goals that take
+// resources out of it (goal-trade's sales and bids, goal-transfer's pushes),
+// so a sale or a send never leaves the city short of them. Both are floors:
+// the city keeps at least this much.
+//   perHour, day  the hero salary an hour and a day of it
+//                 (goal-heroes.salaryReserve): NEAT's gold emergency line
+//   gold  that day — the tax rises under it and a cure never spends into it —
+//         and a blessing's gold when comfortpolicy blesses
+//   food  while comfort is on: one prayer or disaster relief (the same food,
+//         what upkeepStep spends when loyalty or grievance slips), and what
+//         comfortpolicy's population raising (under the limit) and blessing cost
+//   text  { gold, food }: the same in words, for the plans' notes
+// A cost the city's beans cannot give counts as nothing, as comfort itself
+// then leaves it to the server (shortOf).
+function upkeepFloor(ctx) {
+  const sal = H.salaryReserve(ctx.castle);
+  const out = { perHour: sal.perHour, day: sal.reserve, gold: sal.reserve, food: 0, text: { gold: [], food: [] } };
+  if (sal.reserve > 0) out.text.gold.push('a day of hero salary');
+  if (comfortSwitch(ctx.config).on) {
+    const f = cityFacts(ctx);
+    const add = (type, what) => {
+      const cost = comfortCost(ctx, type, f);
+      for (const k of ['gold', 'food']) if (cost && n(cost[k]) > 0) { out[k] += n(cost[k]); out.text[k].push(what); }
+    };
+    add('pray', 'a prayer');
+    const policy = (ctx.goals || []).find((g) => g.name === 'comfortpolicy');
+    const opts = new Set(((policy && policy.valid && policy.options) || []).map((o) => o.type));
+    if (opts.has('popraise') && f.population !== null && f.limit !== null && f.population < f.limit) add('popraise', 'population raising');
+    if (opts.has('bless')) add('bless', 'a blessing');
+  }
+  out.text.gold = out.text.gold.join(' + ');
+  out.text.food = out.text.food.join(' + ');
+  return out;
+}
+
 // ------------------------------------------------------------------ describe
 // One readable line per goal, for the console (goals.js describe).
 function describeGoal(g) {
@@ -815,6 +851,8 @@ module.exports = {
   configKeys: [],
   comfortPlan,
   describeGoal,
+  // what the market and push goals leave in a city for the upkeep goals
+  upkeepFloor,
   // for the script commands comfort / levy / healtroops / settaxrate
   PACIFY, LEVY, comfortTypeOf, levyTypeOf,
   // exported for the tests

@@ -21,7 +21,9 @@
 //     The button sends `city.constructCastle {castleId, fieldId, isTroopBack}`
 //     (:1934), which founds the city.
 //   * `city.giveupCastle {password, castleId}` abandons it, and the server later
-//     re-seeds an NPC on the vacated tile.
+//     re-seeds an NPC on the vacated tile. The password goes as SHA1.hash of the
+//     text, as the client's abandon window sends it (GiveupCastle.as:417) — never
+//     the plain text, which would cross the socket and any proxy in the clear.
 //
 // THE DANGER
 // ----------
@@ -41,6 +43,7 @@
 // for good.
 const C = require('./constants');
 const D = require('./db');
+const { passwordHash } = require('./evony');
 const W = require('./goal-war');
 const R = require('./rally');
 const V = require('./goal-valley');
@@ -684,7 +687,7 @@ const executors = {
     const acc = D.accounts.get(accountId);
     if (!acc || !acc.password) return { ok: 0, errorMsg: 'no stored password for this account' };
 
-    const res = await game.req('city.giveupCastle', { password: acc.password, castleId: verdict.castleId });
+    const res = await game.req('city.giveupCastle', { password: passwordHash(acc.password), castleId: verdict.castleId });
     if (res && res.ok === 1) {
       D.registry.markAbandoned(accountId, verdict.fieldId);
       st.abandons = st.abandons || [];

@@ -15,8 +15,9 @@ const S = require('./speedups');
 
 // War / hero / NPC / transfer goals live in their own modules, each exporting
 // { parsers, plans, executors }. parsers are merged by goals.js; plans and
-// executors are wired here.
-const MODULES = ['./goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer'].map((p) => {
+// executors are wired here. City upkeep (tax, healing, production, warehouse)
+// goes first: its rare, cheap actions come right after defensepolicy's.
+const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer'].map((p) => {
   try { return { name: p, mod: require(p) }; }
   catch (e) { console.error(`goal module ${p} not loaded: ${e.message}`); return null; }
 }).filter(Boolean);
@@ -1820,8 +1821,7 @@ class Engine {
         }
         try {
           let r = { ok: 1 };
-          if (a.kind === 'pacify') { r = await g.req('interior.pacifyPeople', { castleId: g.castleId(castle), typeId: a.typeId }); cityState.lastComfort = Date.now(); cityState.comfortGapMs = 0; }
-          else if (a.kind === 'defenceItem') {
+          if (a.kind === 'defenceItem') {
             // Each defence item through its own game command (game.js
             // useDefenceItem). A use counts only once the server says ok.
             r = await g.useDefenceItem(g.castleId(castle), a.itemId);

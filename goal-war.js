@@ -485,9 +485,9 @@ const parsers = {
   },
 
   // ------------------------------------------------ config nohealing:<0|1>
-  // INFERRED. 1 means never heal wounded troops, i.e. never send
-  // army.cureInjuredTroop (ArmyCommands.as:160). Nothing in this bot heals
-  // today, so this only records the intent for whatever adds healing later.
+  // wiki NoHealing (default 0): 1 means never heal wounded troops, i.e. never
+  // send army.cureInjuredTroop (ArmyCommands.as:174). goal-upkeep.js heals
+  // the medic camp unless this says 1 (healingAllowed below).
   nohealing: {
     kind: 'config', multi: false,
     parse(value) {
@@ -1410,7 +1410,7 @@ function constraintsPlan(ctx, state) {
                errs(parsers.defensecooldown.parse(cfg.defensecooldown).errors));
   }
   if (cfg.nohealing !== undefined && !healingAllowed(ctx)) {
-    lines.push('nohealing: wounded troops are left wounded (nothing in this bot heals yet, so nothing to suppress)');
+    lines.push('nohealing: wounded troops are left in the medic camp');
   }
 
   return lines.length ? { note: lines.join(' | '), actions: [] } : null;

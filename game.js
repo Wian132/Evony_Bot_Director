@@ -84,6 +84,8 @@ class Game {
     // And the player buffs (truce, horns, corselets...), which defensepolicy
     // reads to know what is already running. See applyPlayerBuffUpdate.
     this.c.on('cmd', (cmd, data) => { if (cmd === 'server.PlayerBuffUpdate') this.applyPlayerBuffUpdate(data); });
+    // And each city's medic camp, which the healing goal reads (goal-upkeep.js).
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.InjuredTroopUpdate') this.applyInjuredUpdate(data); });
 
     // march/load skill params (affects march time)
     try {
@@ -533,6 +535,60 @@ class Game {
     return this.req('interior.modifyCommenceRate', { castleId, foodrate: food, woodrate: wood, stonerate: stone, ironrate: iron });
   }
   setTax(castleId, tax) { return this.req('interior.modifyTaxRate', { castleId, tax }); }
+
+  // ---- town hall: comforting and levies (goal-upkeep.js) ----
+  // interior.pacifyPeople {castleId, typeId}: 1 disaster relief, 2 praying,
+  // 3 blessing, 4 population raising (InteriorCommands.as:87-98, the
+  // PacifyPeopleView.as combo box and comChange :443-472).
+  pacify(castleId, typeId) { return this.req('interior.pacifyPeople', { castleId, typeId }); }
+  // interior.taxation {castleId, typeId} is the Levy window: 1 gold, 2 food,
+  // 3 lumber, 4 stone, 5 iron, and every levy costs the city 20 loyalty
+  // (InteriorCommands.as:41-52, CollectionMaterialsView.as:398-414 and 835).
+  levy(castleId, typeId) { return this.req('interior.taxation', { castleId, typeId }); }
+
+  // ---- warehouse protection (goal-upkeep.js warehousepolicy) ----
+  // city.getStoreList {castleId} -> {totalCap, storeBeans: [{storeTypeId, storePercent, ...}]},
+  // storeTypeId 1 food, 2 lumber, 3 stone, 4 iron; city.modifyStorePercent sends
+  // the four percentages together (CityCommands.as:55-69 and 122-132;
+  // WareHouse.as:556 and 884-941).
+  storeList(castleId) { return this.req('city.getStoreList', { castleId }); }
+  setStorePercent(castleId, { food = 0, wood = 0, stone = 0, iron = 0 }) {
+    return this.req('city.modifyStorePercent', { castleId, foodrate: food, woodrate: wood, stonerate: stone, ironrate: iron });
+  }
+
+  // ---- the medic camp (goal-upkeep.js healing) ----
+  // army.getInjuredTroop {castleId} answers with a bare CommandResponse; the
+  // camp itself comes as a server.InjuredTroopUpdate push {castleId, goldNeed,
+  // troop} (ArmyCommands.as:118-128; HospitalWin.as:228-252 and 557). Every
+  // push is kept here, asked for or not: injured[castleId] = {at, goldNeed,
+  // troop, total}, `at` on this machine's clock.
+  applyInjuredUpdate(data) {
+    if (!data || data.castleId === undefined || data.castleId === null) return;
+    const troop = data.troop && typeof data.troop === 'object' ? data.troop : {};
+    let total = 0;
+    for (const v of Object.values(troop)) { const x = Number(v); if (Number.isFinite(x) && x > 0) total += x; }
+    this.injured = this.injured || {};
+    this.injured[Number(data.castleId)] = { at: Date.now(), goldNeed: Number(data.goldNeed || 0), troop, total };
+  }
+
+  // Ask for a city's camp and wait a moment for the push, which may trail the
+  // reply. camp is null when no push came: the server said nothing about any
+  // wounded there.
+  async readInjured(castleId, graceMs = 2000) {
+    const cid = Number(castleId);
+    const asked = Date.now();
+    const fresh = () => { const c = this.injured && this.injured[cid]; return c && c.at >= asked ? c : null; };
+    const r = await this.req('army.getInjuredTroop', { castleId: cid });
+    if (!r || r.ok !== 1) return r || { ok: 0, errorMsg: 'no reply to army.getInjuredTroop' };
+    // a reply that carries the camp itself counts the same as the push
+    if (r.troop && typeof r.troop === 'object') this.applyInjuredUpdate({ ...r, castleId: cid });
+    while (!fresh() && Date.now() - asked < graceMs) await new Promise((res) => setTimeout(res, 100));
+    return { ok: 1, camp: fresh() };
+  }
+
+  // army.cureInjuredTroop {castleId} heals the whole camp. The client sends it
+  // only when goldNeed is within the city's gold (HospitalWin.as:490-504).
+  cureInjured(castleId) { return this.req('army.cureInjuredTroop', { castleId }); }
 
   // ---- construction ----
   async req(cmd, data, ms = 12000) {

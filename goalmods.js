@@ -8,30 +8,12 @@ const W = require('./goal-war');
 
 const n = (x) => Number(x || 0);
 
-// ------------------------------------------------------------- comfortpolicy
-// comfortpolicy <minMinutes> <maxMinutes> <mode>   e.g. "comfortpolicy 15 16 popraise"
-// Fires interior.pacifyPeople on a jittered interval between min and max.
-function comfortPlan(ctx, state) {
-  const g = ctx.goals.find((x) => x.name === 'comfortpolicy');
-  if (!g && ctx.config.comfort !== 1) return null;
-  const mode = (g && g.mode) || 'popraise';
-  const typeId = C.PACIFY[mode];
-  if (!typeId) return { note: `comfort: unknown mode "${mode}"` };
-
-  const minM = g ? g.everyMinMin : 15;
-  const maxM = g ? g.everyMaxMin : 20;
-  const last = n(state.lastComfort);
-  // pick (and remember) a target gap so it isn't perfectly periodic
-  if (!state.comfortGapMs) state.comfortGapMs = (minM + Math.random() * Math.max(0, maxM - minM)) * 60000;
-  const due = last + state.comfortGapMs;
-  const waitMs = due - Date.now();
-  if (last && waitMs > 0) return { note: `comfort (${mode}): next in ${Math.ceil(waitMs / 60000)} min` };
-
-  return {
-    note: `comfort (${mode}): due now`,
-    actions: [{ kind: 'pacify', typeId, mode, label: `comfort: ${mode}` }],
-  };
-}
+// ------------------------------------------------------- comfort / comfortpolicy
+// config comfort (NEAT's default on) and comfortpolicy <min> <max> [options],
+// the NEAT way: loyalty and grievance kept up, popraise only when needed,
+// levies and bless/pray/relief each round. It lives in goal-upkeep.js; the
+// engine still plans it here, in the slot ahead of defensepolicy.
+const { comfortPlan } = require('./goal-upkeep');
 
 // ------------------------------------------------------------- defensepolicy
 // defensepolicy [/junktroop:n] [/usetruce:loyalty] [/usespeech:loyalty]

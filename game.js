@@ -544,8 +544,33 @@ class Game {
   // Conditions for constructing a NEW building of this type.
   async buildConditions(castleId, typeId) {
     const d = await this.req('castle.getAvailableBuildingBean', { castleId, typeId });
-    const entry = (d.builingList || []).find((x) => x.typeId === typeId) || (d.builingList || [])[0];
+    const entry = (d.builingList || []).find((x) => Number(x.typeId) === Number(typeId)) || (d.builingList || [])[0];
     return entry ? entry.conditionBean : null;
+  }
+
+  // What one construction order needs, read the way the client's own windows
+  // read it before they offer the button (CastleCommands.as:103-127):
+  //   a new building   castle.getAvailableBuildingBean {castleId, typeId}
+  //                    -> builingList[] (sic) {typeId, conditionBean}
+  //   the next level   castle.checkOutUpgrade {castleId, positionId}
+  //                    -> conditionBean (BuildingInfoWin.sendCheckRequest)
+  // Returns { cond } — null when the reply names none — or { error }. Only
+  // `req` is used, so the goal engine can run it on a stand-in game too.
+  async constructionCondition(castleId, { kind, typeId, positionId }) {
+    try {
+      if (kind === 'upgrade') {
+        const r = await this.req('castle.checkOutUpgrade', { castleId, positionId });
+        if (!r || r.ok !== 1) return { error: (r && r.errorMsg) || 'no reply' };
+        return { cond: r.conditionBean || null };
+      }
+      const r = await this.req('castle.getAvailableBuildingBean', { castleId, typeId });
+      if (!r || r.ok !== 1) return { error: (r && r.errorMsg) || 'no reply' };
+      const list = r.builingList || [];
+      const entry = list.find((x) => Number(x.typeId) === Number(typeId)) || (list.length === 1 ? list[0] : null);
+      return { cond: (entry && entry.conditionBean) || null };
+    } catch (e) {
+      return { error: e.message };
+    }
   }
 
   // Every list read also notes what is being researched (noteResearchList).
@@ -677,21 +702,83 @@ class Game {
     return null;
   }
 
-  // Turn a conditionBean into readable "what's missing" lines.
-  unmet(cond) {
+  // Turn a conditionBean into readable "what's missing" lines. Give the castle
+  // and the bank is checked too, as the client's build window does before it
+  // enables the button (UIUtil.isConditionMatch + isResourceConditionMatch).
+  unmet(cond, castle = null) {
+    const items = this.player && Array.isArray(this.player.items) ? this.player.items : null;
+    return Game.unmetOf(cond, { resource: castle ? castle.resource || null : null, items });
+  }
+
+  // The same, pure. ConditionBean.as: buildings[] {typeId, level, curLevel,
+  // successFlag}; techs[] {id, level, curLevel, successFlag} — the tech's key
+  // is `id`, not typeId (ConditionDependTechBean.as:32-34), which is why this
+  // used to print "tech undefined"; items[] {id, num, curNum, successFlag}
+  // (ConditionDependItemBean.as); and the cost: food, wood, stone, iron, gold,
+  // population. `items` is the inventory (player.items, kept current by
+  // server.ItemUpdate) and beats the bean's flag, which is as old as the read;
+  // without it the flag decides. The bank is checked only when `resource`
+  // (castle.resource) is given: food/wood/stone/iron are {amount}, gold a number.
+  static unmetOf(cond, { resource = null, items = null } = {}) {
     if (!cond) return [];
     const out = [];
+    const num = (x) => Number(x || 0);
+    const fmt = (x) => Math.round(num(x)).toLocaleString('en-US');
     for (const b of cond.buildings || []) {
       if (b.successFlag) continue;
-      const name = (C.BUILDING_BY_ID[b.typeId] || {}).name || `building ${b.typeId}`;
-      out.push({ kind: 'building', typeId: b.typeId, need: b.level, have: b.curLevel, text: `${name} level ${b.level} (you have ${b.curLevel})` });
+      const typeId = num(b.typeId);
+      const name = (C.BUILDING_BY_ID[typeId] || {}).name || `building ${typeId}`;
+      out.push({ kind: 'building', typeId, name, need: num(b.level), have: num(b.curLevel), text: `${name} level ${num(b.level)} (you have ${num(b.curLevel)})` });
     }
     for (const t of cond.techs || []) {
       if (t.successFlag) continue;
-      const name = (C.TECH_BY_ID[t.typeId] || {}).name || `tech ${t.typeId}`;
-      out.push({ kind: 'tech', typeId: t.typeId, need: t.level, have: t.curLevel, text: `${name} level ${t.level} (you have ${t.curLevel})` });
+      const id = num(t.id ?? t.typeId);
+      const name = (C.TECH_BY_ID[id] || {}).name || `tech ${id}`;
+      out.push({ kind: 'tech', id, typeId: id, name, need: num(t.level), have: num(t.curLevel), text: `research ${name} level ${num(t.level)} (you have ${num(t.curLevel)})` });
+    }
+    for (const it of cond.items || []) {
+      const need = Math.max(1, num(it.num));
+      const held = items ? Game.countOf(items, it.id) : (it.successFlag ? need : num(it.curNum));
+      if (held >= need) continue;
+      const name = Game.itemName(it.id);
+      out.push({ kind: 'item', id: String(it.id), name, need, have: held, text: `${need} ${name} (you have ${held})` });
+    }
+    if (resource) {
+      for (const key of ['food', 'wood', 'stone', 'iron', 'gold']) {
+        const need = num(cond[key]);
+        const have = Game.bankOf(resource, key);
+        if (need > 0 && need > have) out.push({ kind: 'resource', key, need, have, text: `${key} ${fmt(need)} (you have ${fmt(have)})` });
+      }
+      // what is free once the fields and the builder are staffed, as troop
+      // training counts it (engine.js idleOf)
+      const pop = num(cond.population);
+      const idle = Math.max(0, num(resource.curPopulation) - num(resource.workPeople) - num(resource.buildPeople));
+      if (pop > 0 && idle < pop) out.push({ kind: 'population', need: pop, have: idle, text: `idle population ${fmt(pop)} (you have ${fmt(idle)})` });
     }
     return out;
+  }
+
+  // castle.resource: food/wood/stone/iron are ResourceOutputBeans {amount, ...};
+  // gold is a plain number (UIUtil.isResourceConditionMatch reads both so).
+  static bankOf(resource, key) {
+    const v = resource && resource[key];
+    return Number((v && typeof v === 'object' ? v.amount : v) || 0);
+  }
+
+  static countOf(items, id) {
+    const it = (items || []).find((x) => x && String(x.id) === String(id));
+    return it ? Number(it.count || 0) : 0;
+  }
+
+  // An item's name from the catalogue (items.js), or the few the engine talks
+  // about itself, or its id.
+  static ITEM_NAMES = { 'consume.blueprint.1': "Michelangelo's Script" };
+  static itemName(id) {
+    try {
+      const d = require('./items').catalogue().get(String(id));
+      if (d && d.name) return d.name;
+    } catch { /* no catalogue */ }
+    return Game.ITEM_NAMES[id] || String(id);
   }
 
   // ---- market ----

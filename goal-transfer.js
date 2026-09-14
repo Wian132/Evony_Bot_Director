@@ -203,6 +203,12 @@ function transferPlan(ctx, state, game) {
   const goalsOf = ctx.goalsOf || (() => null);
   const book = ctx.rally || R.rallyBook({ game, armies: ctx.selfArmies, goalsOf });
   const hereXY = game.castleXY(here);
+  // wiki WarTown: a war town sends no resource or troop transports (NEAT holds
+  // KeepResource/SendResource/KeepTroop/SendTroop there). The engine answers
+  // for any city, its console War Town Mode included. This city being a war
+  // town stops nothing here: what it asks for comes IN, which is what a city
+  // at war needs, and NEAT does not hold its RequestResources/RequestTroops.
+  const warTownOf = ctx.warTownOf || (() => 0);
 
   // What each possible sender has to give this pass, less what it sent
   // moments ago that its own counts may not show yet.
@@ -248,6 +254,8 @@ function transferPlan(ctx, state, game) {
       const cands = [], why = [];
       const pool = sendersFor(g.target, others, game);
       for (const c of pool) {
+        const war = warTownOf(c);
+        if (war) { why.push(`${c.name} is a war town (${war})`); continue; }
         const s = senderOf(c);
         let busy = 0;
         if (!s.march[spec.kind]) {

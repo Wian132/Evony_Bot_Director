@@ -34,6 +34,9 @@ const PASSWORD = 'correct horse battery staple';
 const HASH = crypto.createHash('sha1').update(PASSWORD, 'utf8').digest('hex');
 const ID = C.DEFENSE_ITEMS;
 const MIN = 60000;
+// "The last real wave landed `ago` ms ago": the under-attack record every goal
+// shares (goal-war.js underAttack, config defensecooldown).
+const landed = (ago, extra = {}) => ({ war: { defense: { waves: {}, lastEndAt: Date.now() - ago } }, ...extra });
 
 const policy = (line) => {
   const p = parseGoals(line);
@@ -177,14 +180,14 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('an army at ANOTHER city of the account also holds the truce back', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const p = M.defensePlan(planCtx({ loyalty: 60, byCastle: { 11: 0, 22: 2 } }), st);
     assert.ok(!items(p).includes('truce'), labels(p).join(' | '));
     assert.match(p.note, /held while 2 army\(ies\) march at the account/);
   });
 
   await t('after the wave lands, inside defensecooldown: the truce goes, the buffs wait for it', async () => {
-    const st = { defence: { attackSeen: Date.now() - 5 * MIN } };
+    const st = landed(5 * MIN);
     const p = M.defensePlan(planCtx({ loyalty: 60 }), st);
     assert.deepStrictEqual(items(p), ['truce']);
     assert.strictEqual(p.actions[0].itemId, 'player.peace.1');
@@ -194,20 +197,20 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('the window is config defensecooldown (NEAT default 30 min)', async () => {
-    const st = () => ({ defence: { attackSeen: Date.now() - 31 * MIN } });
+    const st = () => landed(31 * MIN);
     assert.deepStrictEqual(M.defensePlan(planCtx({ loyalty: 60 }), st()).actions, []);
     const ctx = planCtx({ loyalty: 60, config: { defensecooldown: 45 } });
     assert.deepStrictEqual(items(M.defensePlan(ctx, st())), ['truce']);
     const short = planCtx({ loyalty: 60, config: { defensecooldown: '30s' } });
-    assert.deepStrictEqual(M.defensePlan(short, { defence: { attackSeen: Date.now() - MIN } }).actions, []);
+    assert.deepStrictEqual(M.defensePlan(short, landed(MIN)).actions, []);
   });
 
   await t('seeing a real attack starts the window; a junk one does not', async () => {
     const st = {};
     M.defensePlan(planCtx({ incoming: [army(4000)] }), st);
-    assert.ok(!st.defence.attackSeen, 'a 4000-troop army under /junktroop:5000 started the window');
+    assert.ok(!(st.war && st.war.defense), 'a 4000-troop army under /junktroop:5000 started the window');
     M.defensePlan(planCtx({ incoming: [army(6000)] }), st);
-    assert.ok(Date.now() - st.defence.attackSeen < 1000);
+    assert.strictEqual(Object.keys(st.war.defense.waves).length, 1, 'the real attack is not being watched');
   });
 
   await t('junk under /junktroop is ignored entirely and said so', async () => {
@@ -238,7 +241,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('speech: at or below its loyalty, under attack, and it does not wait for the truce', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     assert.deepStrictEqual(items(M.defensePlan(planCtx({ loyalty: 2 }), st)), ['truce', 'speech']);
     assert.ok(!items(M.defensePlan(planCtx({ loyalty: 3 }), st)).includes('speech'));
     // with the truce held back by an inbound army, speech still goes
@@ -248,7 +251,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('unknown loyalty is not loyalty 0: no truce, no speech', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const p = M.defensePlan(planCtx({ loyalty: null }), st);
     assert.ok(!items(p).includes('truce') && !items(p).includes('speech'), labels(p).join(' | '));
     assert.match(p.note, /loyalty \?/);
@@ -259,7 +262,7 @@ function engineFor(g, line = LIVE, logs = []) {
   section('only what is held, only what is not running');
 
   await t('a Truce Agreement that is not held is not used, and the note says so', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const p = M.defensePlan(planCtx({ loyalty: 50, items: stock({ [ID.truce]: 0 }) }), st);
     assert.ok(!items(p).includes('truce'));
     assert.match(p.note, /truce: loyalty 50 <= 79, but no Truce Agreement is held/);
@@ -301,7 +304,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('in truce: no truce, no speech, no buffs — no attack can land', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const buffs = [{ typeId: 'PlayerPeaceBuff', endTime: Date.now() + 10 * 3600000 }];
     const p = M.defensePlan(planCtx({ loyalty: 2, buffs }), st);
     assert.deepStrictEqual(p.actions, []);
@@ -310,7 +313,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('in truce cooldown (trailing space and all): the game allows no new truce', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const buffs = [{ typeId: 'PlayerPeaceCoolDownBuff ', endTime: Date.now() + 3600000 }];
     const p = M.defensePlan(planCtx({ loyalty: 50, buffs }), st);
     assert.ok(!items(p).includes('truce'));
@@ -321,7 +324,7 @@ function engineFor(g, line = LIVE, logs = []) {
   section('cooldowns: stamped only once the server said ok');
 
   await t('planning stamps nothing; the old plan-time def_* stamps are dropped', async () => {
-    const st = { def_truce: Date.now(), def_warhorn: Date.now(), defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN, { def_truce: Date.now(), def_warhorn: Date.now() });
     const p = M.defensePlan(planCtx({ loyalty: 50 }), st);
     assert.deepStrictEqual(items(p), ['truce'], 'an old plan-time stamp still held the truce back');
     assert.deepStrictEqual(st.defence.used, {});
@@ -331,7 +334,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('after an ok, the same item waits as long as it runs, even with no buff push', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN, used: { warhorn: Date.now() - 3600000 } } };
+    const st = landed(MIN, { defence: { used: { warhorn: Date.now() - 3600000 } } });
     const p = M.defensePlan(planCtx({ incoming: [army(20000)] }), st);
     assert.deepStrictEqual(items(p), ['corselet', 'penicillin']);
     assert.match(p.note, /War Horn: went out 1 h 0 min ago/);
@@ -349,7 +352,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('speech waits 2 minutes after an ok, for the city to show loyalty 100', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN, used: { speech: Date.now() - MIN } } };
+    const st = landed(MIN, { defence: { used: { speech: Date.now() - MIN } } });
     const line = 'defensepolicy /usespeech:5';
     assert.deepStrictEqual(M.defensePlan(planCtx({ line, loyalty: 3 }), st).actions, []);
     st.defence.used.speech = Date.now() - 3 * MIN;
@@ -360,7 +363,7 @@ function engineFor(g, line = LIVE, logs = []) {
   section('one truce for the whole account');
 
   await t('a truce another city sent this session holds this city back, and says where it came from', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const uses = { [ID.truce]: { at: Date.now() - 20000, ok: 1, castleId: 22 } };
     const p = M.defensePlan(planCtx({ loyalty: 50, uses }), st);
     assert.ok(!items(p).includes('truce'));
@@ -368,7 +371,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('a truce another city was refused holds this city back too (the reason is account-wide)', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const uses = { [ID.truce]: { at: Date.now() - 20000, ok: 0, castleId: 22, errorMsg: 'troops out' } };
     const p = M.defensePlan(planCtx({ loyalty: 50, uses }), st);
     assert.ok(!items(p).includes('truce'));
@@ -376,7 +379,7 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('our own marches out: the truce is still tried, and the note warns the game may refuse', async () => {
-    const st = { defence: { attackSeen: Date.now() - MIN } };
+    const st = landed(MIN);
     const p = M.defensePlan(planCtx({ loyalty: 50, selfArmies: [{}, {}, {}] }), st);
     assert.deepStrictEqual(items(p), ['truce']);
     assert.match(p.note, /3 of our own march\(es\) are out, and the item text says the game refuses a truce then/);
@@ -483,7 +486,7 @@ function engineFor(g, line = LIVE, logs = []) {
     const e = engineFor(g);
     pushHostile(c, [wireArmy(g.castles[0], { archer: '20000' })]);
     await e.focus(g.castles[0]);                        // inbound: buffs, the truce held
-    assert.ok(e.state.Home.defence.attackSeen > 0, 'the real attack did not open the defensecooldown window');
+    assert.strictEqual(Object.keys(e.state.Home.war.defense.waves).length, 1, 'the real attack did not open the defensecooldown window');
     assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 0);
     pushHostile(c, []);                                 // the wave has landed: the list is empty
     const r = await e.focus(g.castles[0]);
@@ -497,14 +500,14 @@ function engineFor(g, line = LIVE, logs = []) {
     pushHostile(c, [wireArmy(g.castles[0], { archer: '4999' })]);
     const r = await e.focus(g.castles[0]);
     assert.deepStrictEqual(sent.filter((s) => /stopWar|useGoods|useCastleGoods/.test(s.cmd)), []);
-    assert.ok(!e.state.Home.defence.attackSeen);
+    assert.ok(!(e.state.Home.war && e.state.Home.war.defense));
     assert.match(r.defense.note, /\(1 junk under 5000 ignored\)/);
   });
 
   await t('the live line, after the wave, loyalty 60: one truce, signed with the password hash', async () => {
     const { g, sent } = await wireGame();
     const e = engineFor(g);
-    e.state.Home = { defence: { attackSeen: Date.now() - 2 * MIN } };
+    e.state.Home = landed(2 * MIN);
     const r = await e.focus(g.castles[0]);
     const truce = sent.filter((s) => s.cmd === 'city.setStopWarState');
     assert.deepStrictEqual(truce, [{ cmd: 'city.setStopWarState', data: { ItemId: 'player.peace.1', passWord: HASH } }]);
@@ -515,7 +518,7 @@ function engineFor(g, line = LIVE, logs = []) {
   await t('a refused truce stamps no cooldown, and the server\'s reason is in the log', async () => {
     const { g } = await wireGame({ replies: { 'city.setStopWarState': { ok: -1, errorMsg: 'You have troops marching' } } });
     const e = engineFor(g);
-    e.state.Home = { defence: { attackSeen: Date.now() - 2 * MIN } };
+    e.state.Home = landed(2 * MIN);
     const r = await e.focus(g.castles[0]);
     assert.ok(r.acted.some((a) => /-> You have troops marching/.test(a)), r.acted.join(' | '));
     assert.strictEqual(e.state.Home.defence.used.truce, undefined, 'a refused truce was stamped as used');
@@ -529,8 +532,8 @@ function engineFor(g, line = LIVE, logs = []) {
     const { g, sent } = await wireGame({ castles });
     const logs = [];
     const e = engineFor(g, LIVE, logs);
-    e.state.Home = { defence: { attackSeen: Date.now() - MIN } };
-    e.state.Other = { defence: { attackSeen: Date.now() - MIN } };
+    e.state.Home = landed(MIN);
+    e.state.Other = landed(MIN);
     await e.tick();
     assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 1);
     assert.ok(logs.some((l) => /\[Other\].*a Truce Agreement went out \d+ s ago from Home and covers every city/.test(l)), logs.join('\n'));
@@ -544,7 +547,7 @@ function engineFor(g, line = LIVE, logs = []) {
     const { g, sent } = await wireGame();
     const e = engineFor(g);
     e.dryRun = true;
-    e.state.Home = { defence: { attackSeen: Date.now() - MIN } };
+    e.state.Home = landed(MIN);
     const r = await e.focus(g.castles[0]);
     assert.ok(r.acted.includes('[plan] Truce Agreement for the whole account (loyalty 60 <= 79)'), r.acted.join(' | '));
     assert.deepStrictEqual(sent, []);
@@ -554,7 +557,7 @@ function engineFor(g, line = LIVE, logs = []) {
   await t('a Truce Agreement not held: nothing is sent', async () => {
     const { g, sent } = await wireGame({ items: stock({ [ID.truce]: 0 }) });
     const e = engineFor(g);
-    e.state.Home = { defence: { attackSeen: Date.now() - MIN } };
+    e.state.Home = landed(MIN);
     await e.focus(g.castles[0]);
     assert.deepStrictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState'), []);
   });
@@ -562,7 +565,7 @@ function engineFor(g, line = LIVE, logs = []) {
   await t('neither the password nor its hash reaches a log line, the report or the saved state', async () => {
     const { g, logs } = await wireGame();
     const e = engineFor(g, LIVE, logs);
-    e.state.Home = { defence: { attackSeen: Date.now() - MIN } };
+    e.state.Home = landed(MIN);
     await e.tick();
     const everything = [logs.join('\n'), JSON.stringify(e.state), JSON.stringify(e.lastReport),
       util.inspect(g, { depth: 8 }), util.inspect(e, { depth: 8 })].join('\n');

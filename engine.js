@@ -446,7 +446,8 @@ function fortPlan(ctx) {
 // A city has ONE builder: the server takes one construction at a time ("One
 // building allowed to be built at a time."). So the plan is a ranked list of
 // candidates and the engine places the first that goes through:
-//   1. the Walls level a fortification goal needs for space (fortPlan.wallsFor)
+//   1. the Walls a fortification goal needs for space (fortPlan.wallsFor), or
+//      the first Walls of all when the city has none
 //   2. the current line's orders
 //   3. the later lines' orders. The engine only gets this far while every order
 //      above is held back after a refusal, so a line the server keeps refusing
@@ -459,6 +460,7 @@ function fortPlan(ctx) {
 // what it names next is what the builder really takes on next: the same
 // building's next level down, or the plot a finished demolition opens.
 const { MULTI_BUILDINGS } = require('./goals');
+const WALLS_POS = -2;             // BuildingConstants.POSITION_WALL; the Town Hall is -1
 // Research levels are re-read at most this often, and only while a build
 // ?condition? names one (Engine.readTechs).
 const TECH_TTL = 10 * 60e3;
@@ -565,7 +567,12 @@ function typeOrders(def, w, have, claim) {
 function buildPlan(ctx, wallsFor = 0) {
   const lines = ctx.goals.filter((g) => g.name === 'build');
   const live = standing(ctx.castle);
-  if (!lines.length && !wallsFor) return null;
+  // A fortification goal can place nothing without Walls, whatever the wall
+  // queue read said, so no Walls at all means build them.
+  const noWalls = !live.some((b) => b.typeId === C.WALLS_TYPE);
+  const fortsNeedWalls = noWalls && ctx.goals.some((g) => g.name === 'fortification'
+    && Object.values(g.forts || {}).some((v) => n(v) > 0));
+  if (!lines.length && !wallsFor && !fortsNeedWalls) return null;
   if (ctx.config && ctx.config.building === 0) {
     return { actions: [], ranked: [], busy: false, paused: true, note: 'build: construction paused by config building:0' };
   }
@@ -596,12 +603,19 @@ function buildPlan(ctx, wallsFor = 0) {
 
   // 1. The Walls a fortification goal needs, first, so they keep their place
   // even when a build line also names the Walls.
-  if (wallsFor) {
+  const fortWalls = wallsFor || (fortsNeedWalls ? 1 : 0);
+  if (fortWalls) {
     const w = all.find((b) => b.typeId === C.WALLS_TYPE);
-    if (w && n(w.level) < wallsFor && n(w.status) === 0 && claim(w.positionId)) {
-      ranked.push({ kind: 'upgrade', def: WALLS, positionId: w.positionId, from: w.level, to: wallsFor, why: 'fortified space' });
+    if (!w) {
+      claim(WALLS_POS);
+      ranked.push({ kind: 'new', def: WALLS, positionId: WALLS_POS, why: 'fortifications' });
+      summary.push('Walls, new, for the fortifications');
+    } else {
+      if (n(w.level) < fortWalls && n(w.status) === 0 && claim(w.positionId)) {
+        ranked.push({ kind: 'upgrade', def: WALLS, positionId: w.positionId, from: w.level, to: fortWalls, why: 'fortified space' });
+      }
+      summary.push(`Walls to L${fortWalls} for fortified space`);
     }
-    summary.push(`Walls to L${wallsFor} for fortified space`);
   }
 
   // 2 and 3. The lines, in order.
@@ -623,7 +637,7 @@ function buildPlan(ctx, wallsFor = 0) {
     for (const t of on) addWant(want, t, conflicts);
 
     const types = [...new Set(on.map((t) => t.typeId))];
-    const orders = [], lineSum = [], lineRoom = [], fixedMissing = [], shorts = [];
+    const orders = [], lineSum = [], lineRoom = [], shorts = [];
     let unmet = false, needsSpace = null;
     types.forEach((typeId, rank) => {
       const def = C.BUILDING_BY_ID[typeId];
@@ -638,8 +652,13 @@ function buildPlan(ctx, wallsFor = 0) {
     // without it the lines stop ("Needs space"), the others can wait for one.
     shorts.sort((a, b) => MULTI_BUILDINGS.has(a.def.typeId) - MULTI_BUILDINGS.has(b.def.typeId) || a.rank - b.rank);
     for (const { def, rank, missing, have } of shorts) {
-      // The Town Hall and the Walls have fixed places and are never built new here.
-      if (isFixed(def.typeId)) { fixedMissing.push(def.name); continue; }
+      if (def.typeId === C.TOWN_HALL) continue;      // a city always has its Town Hall
+      // 5b: the first Walls go on their own place, -2 (BaseNewBuildingWin.as:236-238)
+      if (def.typeId === C.WALLS_TYPE) {
+        if (claim(WALLS_POS)) orders.push({ kind: 'new', def, positionId: WALLS_POS, rank });
+        lineSum.push('Walls, new');
+        continue;
+      }
       const kind = def.outside ? 'outside' : 'inside';
       const short = Math.max(0, missing - n(planned[def.typeId]));
       const fit = Math.min(short, plots[kind].length);
@@ -688,10 +707,6 @@ function buildPlan(ctx, wallsFor = 0) {
       skipped.push(`${tag} waits for a plot: ${[...new Set(lineRoom.map(roomText))].join('; ')}`);
       continue;
     }
-    if (fixedMissing.length) {
-      skipped.push(`${tag}: no ${fixedMissing.join(', ')} to raise`);
-      continue;
-    }
     // what it needs is already under way (the Walls above, a queued building)
     skipped.push(`${tag}: waiting on work already under way`);
   }
@@ -720,14 +735,14 @@ function buildPlan(ctx, wallsFor = 0) {
 }
 
 // "upgrade Farm (pos 1003) L6->L7, goal L10", "new Farm (pos 1031)",
-// "demolish Sawmill (pos 1032) L10->L9"
+// "demolish Sawmill (pos 1032) L10->L9", "new Walls (pos -2) for fortifications"
 function buildLabel(a) {
   if (a.kind === 'upgrade') {
     return `upgrade ${a.def.name} (pos ${a.positionId}) L${n(a.from)}->L${n(a.from) + 1}`
       + (a.why ? ` for ${a.why}` : n(a.to) > n(a.from) + 1 ? `, goal L${a.to}` : '');
   }
   if (a.kind === 'demolish') return `demolish ${a.def.name} (pos ${a.positionId}) L${n(a.level)}->L${n(a.level) - 1}`;
-  return `new ${a.def.name} (pos ${a.positionId})`;
+  return `new ${a.def.name} (pos ${a.positionId})${a.why ? ` for ${a.why}` : ''}`;
 }
 
 // The backoff key for a construction candidate. New buildings share one per

@@ -1,5 +1,5 @@
 'use strict';
-// Step 5: build lines read the NEAT way (wiki: Build).
+// Step 5: build lines read the NEAT way (wiki: Build), and the first Walls.
 //
 // Offline: fake castles made of building beans ({typeId, level, positionId,
 // status}), the planner run over them, and the engine against a stub game.
@@ -639,6 +639,54 @@ const A2 = [
     const second = await e.readTechs(castle, {});
     assert.deepStrictEqual(second.levels, { 5: 10 });
     assert.match(second.error, /timeout/);
+  });
+
+  // ================================================================ 5b: first Walls
+  console.log('\nthe first Walls: castle.newBuilding at position -2\n');
+
+  // src: BaseNewBuildingWin.onNewBuildingButtonClick sends positionId
+  // BuildingConstants.POSITION_WALL (-2) for TYPE_WALL (32); NewWallBuilding asks
+  // for the Walls' bean with TYPE_WALL; WallBuilding.onClick opens it when the
+  // city has no Walls bean.
+  await t('w:10 in a city without Walls builds them at -2, then raises them', async () => {
+    const castle = town({ walls: 0 });
+    const p = plan('build w:10', castle);
+    assert.deepStrictEqual(kinds(p.ranked), [['new', 'Walls', -2]]);
+    assert.strictEqual(buildLabel(p.ranked[0]), 'new Walls (pos -2)');
+    settle('build w:10', castle);
+    assert.deepStrictEqual(levels(castle, TY.walls), [10]);
+  });
+
+  await t('a fortification goal in a city without Walls builds them', async () => {
+    const castle = town({ walls: 0 });
+    const p = buildPlan({ goals: goalsOf('fortification ab:100'), castle, config: {} });
+    assert.deepStrictEqual(kinds(p.ranked), [['new', 'Walls', -2]]);
+    assert.strictEqual(buildLabel(p.ranked[0]), 'new Walls (pos -2) for fortifications');
+    const both = buildPlan({ goals: goalsOf('build w:5\nfortification ab:100'), castle, config: {} }, 2);
+    assert.strictEqual(both.ranked.filter((a) => a.def.name === 'Walls').length, 1, 'the Walls were ordered twice');
+    assert.strictEqual(buildPlan({ goals: goalsOf('fortification ab:100'), castle: town({ walls: 1 }), config: {} }), null);
+  });
+
+  await t('through the engine: castle.newBuilding {castleId, positionId: -2, buildingType: 32}', async () => {
+    const castle = town({ walls: 0 });
+    const { e, sent } = engineGame(castle);
+    e.goalsFor = () => parseGoals('config hero:0\nbuild w:5');
+    await e.focus(castle);
+    assert.deepStrictEqual(sent, [['new', -2, C.WALLS_TYPE, 1]]);
+    const { Game } = require('./game');
+    const g = new Game();
+    let got = null;
+    g.req = async (cmd, data) => { got = [cmd, data]; return { ok: 1 }; };
+    await g.newBuilding(1, -2, C.WALLS_TYPE);
+    assert.deepStrictEqual(got, ['castle.newBuilding', { castleId: 1, positionId: -2, buildingType: 32 }]);
+  });
+
+  await t('fortifications alone, the wall queue unreadable: the Walls still go up', async () => {
+    const castle = town({ walls: 0 });
+    const { e, sent } = engineGame(castle, { wallsReply: { ok: -1, errorMsg: 'no walls' } });
+    e.goalsFor = () => parseGoals('config hero:0\nfortification ab:5000');
+    await e.focus(castle);
+    assert.deepStrictEqual(sent, [['new', -2, 32, 1]]);
   });
 
   // ================================================================ live goals

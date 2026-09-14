@@ -252,6 +252,23 @@ class Game {
     return b ? { userName: b.userName, allianceName: b.allianceName } : null;
   }
 
+  // The whole answer, for a goal that is about to march on a valley or flat:
+  // {ok, bean: MapCastleBean {userName, canOccupy, canScout, ...}}. The client
+  // offers Attack only when canOccupy and Scout only when canScout
+  // (FieldInfoWin.as:1127, :1590), and an unowned tile has no userName.
+  fieldInfo(fieldId) { return this.req('field.getOtherFieldInfo', { fieldId }, 8000); }
+
+  // field.giveUpField {fieldId}: let a valley or flat go (FieldCommand.as:25,
+  // the Abandon button in CurFieldView.as:758). No castle id: the server knows
+  // whose it is. Irreversible, so callers check it is one of ours first.
+  giveUpField(fieldId) { return this.req('field.giveUpField', { fieldId }); }
+
+  // troop.disbandTroop {castleId, troopType, num} (TroopCommands.as:72) and
+  // fortifications.destructWallProtect {castleId, typeId, num}
+  // (FortificationsCommands.as:70): both destroy what they name, for good.
+  disbandTroop(castleId, troopType, num) { return this.req('troop.disbandTroop', { castleId, troopType, num }); }
+  destructWall(castleId, typeId, num) { return this.req('fortifications.destructWallProtect', { castleId, typeId, num }); }
+
   // The item catalogue, straight from the server. Item NAMES are not in the
   // decompiled client — it fetches this XML at runtime — so this is the only
   // authoritative answer to "which id is Excalibur".

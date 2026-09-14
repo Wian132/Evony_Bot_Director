@@ -126,23 +126,41 @@ t('each listed config key on its own config line is idle and names the key', () 
   }
 });
 
-// (Step 14 built config trade, so these use valley, which still does nothing.)
-t('a config line with one idle key among working ones is red, naming the idle key and the ones that work', () => {
+// Once every step is in, no config key is left doing nothing (Step 14 built
+// trade, Step 20 the valley keys, Step 19 builds plan). So these tests put
+// accepted keys on the table themselves and take them off again — the table is
+// what makes a line idle, whatever happens to be on it.
+const TEST_REASON = 'a reason put here by this test only';
+async function withIdle(keys, fn) {
+  const had = keys.map((k) => [k, NOT_IMPLEMENTED.config[k]]);
+  for (const k of keys) NOT_IMPLEMENTED.config[k] = TEST_REASON;
+  try { return await fn(); }
+  finally { for (const [k, v] of had) { if (v === undefined) delete NOT_IMPLEMENTED.config[k]; else NOT_IMPLEMENTED.config[k] = v; } }
+}
+
+t('a config line with one idle key among working ones is red, naming the idle key and the ones that work', () => withIdle(['valley', 'hunting'], () => {
   const l = line('config comfort:1,hero:1,valley:1');
   assert.strictEqual(l.status, 'idle');
-  assert.strictEqual(l.msg, `valley does nothing yet: ${NOT_IMPLEMENTED.config.valley} (comfort and hero on this line work)`);
+  assert.strictEqual(l.msg, `valley does nothing yet: ${TEST_REASON} (comfort and hero on this line work)`);
   assert.match(line('config valley:1,npc:5').msg, /\(npc on this line works\)$/);
   assert.match(line('config valley:1,hunting:1').msg, /^valley does nothing yet: .*; hunting does nothing yet: /);
   // the values still reach the engine, exactly as before
   assert.deepStrictEqual(parseGoals('config comfort:1,hero:1,valley:1').config, { comfort: 1, hero: 1, valley: 1 });
+}));
+
+t('Step 20 built the valley keys: off the table, the same line is blue', () => {
+  for (const k of ['valley', 'valleymin', 'valleyfarming', 'hunting', 'abandon', 'abandonflats', 'acquireflats']) {
+    assert.ok(!(k in NOT_IMPLEMENTED.config), `${k} is still on the table`);
+  }
+  assert.deepStrictEqual(line('config comfort:1,hero:1,valley:1'), { n: 1, status: 'ok', msg: null });
 });
 
-t('an unknown key and an idle key on one line: an error, saying both, and never calling the unknown key working', () => {
+t('an unknown key and an idle key on one line: an error, saying both, and never calling the unknown key working', () => withIdle(['valley'], () => {
   const l = line('config foo:1,valley:1');
   assert.strictEqual(l.status, 'error');
   assert.match(l.msg, /unknown config key "foo"; valley does nothing yet/);
   assert.ok(!/foo on this line works/.test(l.msg), l.msg);
-});
+}));
 
 t('each report-only goal line is idle', () => {
   const sample = { homeheroes: 'homeheroes 3', spamheroes: 'spamheroes any', keepcapturedheroes: 'keepcapturedheroes any:level>=200' };
@@ -169,11 +187,9 @@ t('a war setting written as a line of its own is read as config, and says how to
   assert.strictEqual(line('wartown').status, 'error', 'and so is no value');
 });
 
-t('the table is the one switch: a key taken off it turns ok with nothing else changed', () => {
-  const was = NOT_IMPLEMENTED.config.valley;
-  delete NOT_IMPLEMENTED.config.valley;
-  try { assert.deepStrictEqual(line('config valley:1'), { n: 1, status: 'ok', msg: null }); }
-  finally { NOT_IMPLEMENTED.config.valley = was; }
+t('the table is the one switch: a key taken off it turns ok with nothing else changed', async () => {
+  await withIdle(['valley'], () => assert.strictEqual(line('config valley:1').status, 'idle'));
+  assert.deepStrictEqual(line('config valley:1'), { n: 1, status: 'ok', msg: null });
   // Step 18 took spamheroes off (the script's spam attacks use its heroes), so
   // the goals half is shown with an entry put on for the test and taken off again.
   assert.strictEqual(line('spamheroes any').status, 'ok');
@@ -411,7 +427,7 @@ function call(url, body) {
 }
 const saved = () => (ORG.goals.own(acc.id, 101, 'North', 'goal') || {}).src;
 
-t('/api/goals check: the statuses only, and never a save — even when told to save', async () => {
+t('/api/goals check: the statuses only, and never a save — even when told to save', () => withIdle(['valley'], async () => {
   ORG.goals.set(acc.id, '101', 'goal', 'troop a:1k');
   const r = await call('/api/goals', { src: 'config valley:1\nbogus\n// c\ntroop a:1k', city: '101', save: true, check: true });
   assert.strictEqual(r.code, 200);
@@ -419,7 +435,7 @@ t('/api/goals check: the statuses only, and never a save — even when told to s
   assert.deepStrictEqual(r.body.errors.map((e) => e.line), [2]);
   assert.strictEqual(r.body.described, undefined, 'a check skips the description');
   assert.strictEqual(saved(), 'troop a:1k', 'the check saved');
-});
+}));
 
 t('/api/goals Apply returns the statuses with the description, and saves nothing', async () => {
   // spamheroes is blue since Step 18 (it was the report-only line here)
@@ -430,12 +446,12 @@ t('/api/goals Apply returns the statuses with the description, and saves nothing
   assert.strictEqual(saved(), 'troop a:1k');
 });
 
-t('/api/goals Save returns the statuses and saves, as before', async () => {
+t('/api/goals Save returns the statuses and saves, as before', () => withIdle(['valley'], async () => {
   const r = await call('/api/goals', { src: 'troop a:3k\nconfig valley:1', city: '101', save: true });
   assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['ok', 'idle']);
   assert.strictEqual(r.body.saved, '101');
   assert.strictEqual(saved(), 'troop a:3k\nconfig valley:1');
-});
+}));
 
 t('/api/script parseOnly + lines: the statuses only; nothing runs and nothing is logged', async () => {
   const logged = [];

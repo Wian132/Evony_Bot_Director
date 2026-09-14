@@ -1189,13 +1189,19 @@ const SCAN = {
 const SCAN_KEEP = new Set(['flat', 'forest', 'desert', 'hill', 'swamp', 'grassland', 'lake']);
 const keepTile = (t) => !!(t && (t.userName || t.npc || SCAN_KEEP.has(t.kind)));
 
+// The valley and flat goals (goal-valley.js) read the same cache, so a city
+// that captures, farms or hunts valleys, or holds flats, is scanned too, as far
+// as those goals reach. Required when asked: goal-valley requires this module.
+const valleyArea = (ctx) => require('./goal-valley').scanArea(ctx);
+
 // config mapscan:1 scans around the city, 0 never. Unset: cities that farm or
-// build NPCs are scanned, since they need the camps and flats. A value that is
-// not 0 or 1 scans nothing (the npc plan's note says so).
-function scanWanted(cfg) {
+// build NPCs are scanned, since they need the camps and flats, and so are the
+// cities with a valley goal. A value that is not 0 or 1 scans nothing (the npc
+// plan's note says so).
+function scanWanted(cfg, goals) {
   const v = (cfg || {}).mapscan;
   if (v !== undefined && v !== null && v !== '') return v === 1 || v === '1';
-  return n(cfg.npc) >= 1 || n(cfg.buildnpc) >= 1;
+  return n(cfg.npc) >= 1 || n(cfg.buildnpc) >= 1 || !!valleyArea({ config: cfg || {}, goals: goals || [] });
 }
 
 // How far around a city the scan reads: distancepolicy's fifth number — NEAT's
@@ -1220,6 +1226,8 @@ function scanAreaFor(ctx) {
     }
   }
   if (n(cfg.buildnpc) >= 1) radius = Math.max(radius, n(dp.build) || DEFAULT_RADIUS);
+  const valleys = valleyArea(ctx);
+  if (valleys) { radius = Math.max(radius, n(valleys.radius)); points.push(...(valleys.points || [])); }
   return { radius: Math.min(radius, MAX_DISTANCE), points, boxes };
 }
 
@@ -1268,7 +1276,7 @@ function scanPlan({ cities = [], seenOf = () => 0, now = Date.now(), perRound = 
   const per = [];
   for (const c of cities) {
     const cfg = c.config || {};
-    if (!c.xy || !scanWanted(cfg)) continue;
+    if (!c.xy || !scanWanted(cfg, c.goals)) continue;
     const area = scanAreaFor({ config: cfg, goals: c.goals || [] });
     const blocks = blocksFor(c.xy, area);
     per.push({ city: c.name, radius: area.radius, blocks: blocks.length });
@@ -1350,5 +1358,8 @@ module.exports = {
     heroCandidates, heroSpecFor, heroAttack, heroType, bestPoliticsHero, foodDays, capacityOf, marchFoodOf,
     recordSend, troopText, researchCheck, configProblems, fpFor, dpFor, limitsFor, inBox,
     scanWanted, scanAreaFor, blocksFor,
+    // shared with the valley goals (goal-valley.js): the troop and coordinate
+    // grammar of every farming line, and how a duration is written in a note
+    parseTroopSpec, parseCoord, hms,
   },
 };

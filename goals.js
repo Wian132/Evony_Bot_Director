@@ -217,9 +217,13 @@ const GOALS = {
         // A key a goal module reads through its own config parser (goal-war's
         // hiding, gate, wartown...) is checked by that parser now, so
         // `wartown:5` or `hiding:soon` is an error here and not a silent default.
+        // A goal line that shares its name with a config key (valleyfarming:
+        // the miles line, and config valleyfarming:<level>) checks the key
+        // through its configParse.
         const own = GOALS[k.toLowerCase()];
-        if (own && own.kind === 'config' && k.toLowerCase() !== 'config') {
-          for (const e of own.parse(value).errors || []) errs.push(e);
+        const check = own && k.toLowerCase() !== 'config' ? (own.kind === 'config' ? own.parse : own.configParse) : null;
+        if (check) {
+          for (const e of check(value).errors || []) errs.push(e);
         }
         out[k.toLowerCase()] = value;
       }
@@ -405,8 +409,8 @@ const GOALS = {
   rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (upkeep, war, heroes, npc, transfers, market, reports, research) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade', './goal-reports', './goal-research']) {
+// ---- goal modules (upkeep, war, heroes, npc, valleys, transfers, market, reports, research) contribute their own parsers + config keys ----
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-research']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -434,14 +438,7 @@ const NOT_IMPLEMENTED = {
   // documents is accepted (CONFIG_KEYS), so a pasted NEAT file says here, line
   // by line, which of its switches do nothing yet.
   config: {
-    valley: 'no goal captures or farms valleys yet',
-    valleyfarming: 'no goal captures or farms valleys yet',
-    valleymin: 'no goal captures or farms valleys yet',
-    hunting: 'no goal hunts medals yet',
     plan: 'no plan goal yet',
-    abandon: 'no goal abandons a city yet',
-    abandonflats: 'no goal holds or releases flats yet',
-    acquireflats: 'no goal holds or releases flats yet',
   },
   // goal lines whose plan only reports. (spamheroes left in Step 18: its
   // heroes are what the script's spamattack / loyaltyattack send, through

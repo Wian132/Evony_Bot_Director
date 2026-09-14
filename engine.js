@@ -18,7 +18,7 @@ const S = require('./speedups');
 // goals.js; plans and executors are wired here. City upkeep (tax, healing,
 // production, warehouse) goes first: its rare, cheap actions come right after
 // defensepolicy's.
-const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade', './goal-reports'].map((p) => {
+const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports'].map((p) => {
   try { return { name: p, mod: require(p) }; }
   catch (e) { console.error(`goal module ${p} not loaded: ${e.message}`); return null; }
 }).filter(Boolean);

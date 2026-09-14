@@ -577,6 +577,70 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0 }) {
   };
 }
 
+// ------------------------------------------------------------ inbound armies
+// Hostile armies on their way to our cities. server.EnemyArmysUpdate carries
+// the WHOLE account's list and nothing else, no castle id (EnemyArmysUpdate.as
+// has only `armys`), and the client replaces its copy on every push
+// (Context.as:403). Each army names the field it marches on, and that is how
+// the client ties an attack to a city (CastleTooltip.peace: targetFieldId ==
+// castleBean.fieldId). Filing the push under data.castleId put every attack
+// under "undefined", so no city's defence ever saw one.
+//
+// Only armies still on their way count: ArmyConstants.as direction 2 is heading
+// home and 3 is encamped, and neither is about to land. An attack on one of our
+// valleys or flats has that field's id, not the city's, so it is not here.
+function inboundArmy(a) {
+  // ArmyBean names the field `troop` (SINGULAR) and it is a TroopStrBean whose
+  // values are STRINGS — an unscouted army sends "?" per type. Reading
+  // `a.troops` gave undefined, so every inbound army totalled 0 and the junk
+  // filter threw away real attacks.
+  const troop = a.troop || a.troops || {};
+  let total = 0, known = true, any = false;
+  for (const v of Object.values(troop)) {
+    const s = String(v ?? '').trim().replace(/[,\s]/g, '');
+    if (!/^\d+$/.test(s)) { if (v !== undefined && v !== null) known = false; continue; }
+    total += parseInt(s, 10); any = true;
+  }
+  return {
+    armyId: a.armyId, missionType: a.missionType, direction: a.direction,
+    king: a.king, alliance: a.alliance, hero: a.hero,
+    from: a.startPosName, startFieldId: a.startFieldId, targetFieldId: a.targetFieldId,
+    startTime: a.startTime, reachTime: a.reachTime,
+    // the per-type counts as sent: gatepolicy tells a scout bomb by them
+    troop: troop && typeof troop === 'object' ? troop : {},
+    troops: any ? total : null,       // null = genuinely unknown, NOT zero
+    known: any && known,
+    raw: a,
+  };
+}
+
+// castleId -> the hostile armies inbound to that city (every city has a list).
+function incomingByCity(game, armies) {
+  const out = {}, byField = new Map();
+  for (const c of (game && game.castles) || []) {
+    const id = game.castleId(c);
+    out[id] = [];
+    const f = Number(c.fieldId);
+    if (Number.isFinite(f)) byField.set(f, id);
+  }
+  for (const a of armies || []) {
+    if (!a) continue;
+    const d = Number(a.direction);
+    if (d === 2 || d === 3) continue;
+    const id = byField.get(Number(a.targetFieldId));
+    if (id !== undefined) out[id].push(inboundArmy(a));
+  }
+  return out;
+}
+
+const countsOf = (incoming) => Object.fromEntries(Object.entries(incoming || {}).map(([k, v]) => [k, (v || []).length]));
+
+// Hiding and the gate race a wave's arrival (Engine.urgentWar).
+const URGENT_PLANS = ['hiding', 'gate'];
+// A war pass lands this long after the moment it was woken for, so the wave is
+// already inside (or already out of) the window when the plan looks.
+const WAKE_SLACK_MS = 250;
+
 // ---------------------------------------------------------------- the engine
 class Engine {
   constructor(game, log = console.log, accountId = null) {
@@ -591,37 +655,29 @@ class Engine {
     this.dryRun = true;
     this.maxActionsPerSlice = 3;
     this.lastReport = {};
-    this.incoming = {};
+    this.incoming = {};          // castleId -> inbound hostile armies (incomingFor)
     this.unitTimes = {};         // castleId -> { at, unit } — see readTraining
     // Marches sent that the server has not listed back yet (rally.js). They
     // hold their rally slot, troops and load until it does.
     this.pendingMarches = [];
+    // The war clock (nextWakeAt): each city's goals as the last slice read
+    // them, and the server time its hiding and gate were last asked.
+    this.goalsSeen = {};
+    this.warCheckedAt = {};
+    // Set by the console: a changed hostile army list may need a war pass
+    // before the next tick.
+    this.onHostile = null;
 
-    // defensepolicy needs to know what is inbound; the server pushes it
+    // Hostile armies, account-wide (inboundArmy above). defensepolicy, hiding,
+    // the gate and warrules all read them per city through incomingFor.
     if (game && game.c) {
+      this.enemyArmies = [];
       game.c.on('cmd', (cmd, data) => {
         if (cmd !== 'server.EnemyArmysUpdate' || !data) return;
-        const cid = data.castleId ?? data.caslteId;
-        const armies = data.armys || data.armies || [];
-        // ArmyBean names the field `troop` (SINGULAR) and it is a TroopStrBean whose
-        // values are STRINGS — an unscouted army sends "?" per type. Reading
-        // `a.troops` gave undefined, so every inbound army totalled 0 and the
-        // junk filter threw away real attacks.
-        this.incoming[cid] = armies.map((a) => {
-          const raw = a.troop || a.troops || {};
-          let total = 0, known = true, any = false;
-          for (const v of Object.values(raw)) {
-            const s = String(v ?? '').trim().replace(/[,\s]/g, '');
-            if (!/^\d+$/.test(s)) { if (v !== undefined && v !== null) known = false; continue; }
-            total += parseInt(s, 10); any = true;
-          }
-          return {
-            troops: any ? total : null,   // null = genuinely unknown, NOT zero
-            known: any && known,
-            reachTime: a.reachTime, from: a.startPosName, raw: a,
-          };
-        });
-        if (armies.length) this.log(`incoming: ${armies.length} army(ies) toward castle ${cid}`);
+        this.enemyPushed = true;
+        this.enemyArmies = data.armys || data.armies || [];
+        this.noteHostile();
+        if (typeof this.onHostile === 'function') { try { this.onHostile(); } catch {} }
       });
 
       // Our OWN marches. army.newArmy replies without an armyId, so a recall
@@ -652,6 +708,163 @@ class Engine {
     const g = this.game;
     if (this.armiesPushed) return this.selfArmies;
     return (g && g.player && g.player.selfArmys) || this.selfArmies || [];
+  }
+
+  // Hostile armies, account-wide. Until the first push the login's list (kept
+  // current by the console's own push handling) is the only one there is, so
+  // an attack already on its way when we logged in is seen too.
+  hostileArmies() {
+    if (this.enemyPushed) return this.enemyArmies || [];
+    const g = this.game;
+    return (g && g.player && g.player.enemyArmys) || [];
+  }
+
+  // castleId -> the hostile armies inbound to that city, matched by the field
+  // each one marches on (incomingByCity).
+  incomingFor() {
+    this.incoming = incomingByCity(this.game, this.hostileArmies());
+    return this.incoming;
+  }
+
+  // On a hostile push, a city whose inbound armies changed gets one line in
+  // the log — not one per push, which comes whenever any army anywhere on the
+  // account changes — and its war clock is reset, so its hiding and gate are
+  // asked straight away (nextWakeAt): a fast wave can already be inside its
+  // lead window when it first shows up.
+  noteHostile() {
+    const g = this.game;
+    if (!g || !Array.isArray(g.castles)) return;
+    const incoming = this.incomingFor();
+    const seen = (this._hostileSeen = this._hostileSeen || {});
+    const now = g.now ? g.now() : Date.now();
+    for (const c of g.castles) {
+      const id = g.castleId(c);
+      const list = incoming[id] || [];
+      const sig = list.map((a) => `${a.armyId ?? ''}@${a.reachTime ?? ''}`).sort().join(',');
+      if ((seen[id] || '') === sig) continue;
+      seen[id] = sig;
+      delete this.warCheckedAt[id];
+      if (!list.length) continue;
+      const first = Math.min(...list.map((a) => n(a.reachTime) || Infinity));
+      this.line(`incoming: ${list.length} hostile army(ies)${Number.isFinite(first) ? `, the first lands in ${dur((first - now) / 1000)}` : ''}`,
+        { city: c.name || String(id), kind: 'sys' });
+    }
+  }
+
+  // Hiding and the gate race a wave's arrival, so they are planned and sent
+  // first in a city's slice — before the mayor, the barracks reads and every
+  // other goal — and cost none of the slice's action budget: comfort and two
+  // defence items used to spend it in the very tick the hide march was due.
+  // A hide march is booked on the rally spot like any other march, so goals
+  // later in the slice see its slot, troops and load gone.
+  async urgentWar(ctx, castle, cityState, book) {
+    const g = this.game;
+    const out = { plans: {}, acted: [], hid: false };
+    const W = MODULES.find((m) => m.name === './goal-war');
+    if (!W) return out;
+    const at = g.now ? g.now() : Date.now();
+    for (const key of URGENT_PLANS) {
+      const fn = W.mod.plans && W.mod.plans[key];
+      if (!fn) continue;
+      let p;
+      try { p = fn(ctx, cityState, g); } catch (e) {
+        out.plans[key] = null;
+        out.acted.push(`${W.name} plan "${key}" failed: ${e.message}`);
+        continue;
+      }
+      out.plans[key] = p;
+      for (const a of (p && p.actions) || []) {
+        const rally = a.kind === 'hideTroops'
+          ? { from: castle, kind: R.KIND_BY_MISSION[a.missionType] || 'other', missionType: a.missionType,
+              targetFieldId: a.targetPoint, troops: a.troops, resources: a.resources }
+          : null;
+        if (this.dryRun) {
+          out.acted.push(`[plan] ${a.label}`);
+          if (rally && book) book.record(rally, false);
+          continue;
+        }
+        const fx = MODULE_EXECUTORS[a.kind];
+        if (!fx) { out.acted.push(`${a.label} -> no executor for "${a.kind}"`); continue; }
+        try {
+          const r = (await fx(g, castle, a, cityState)) || {};
+          if (r.ok === 1 && rally) { out.hid = true; if (book) book.record(rally); }
+          out.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
+        } catch (e) { out.acted.push(`${a.label} -> ${e.message}`); }
+      }
+    }
+    const cid = g.castleId(castle);
+    this.warCheckedAt[cid] = at;
+    this.goalsSeen[cid] = { goals: ctx.goals, config: ctx.config };
+    return out;
+  }
+
+  // The next moment (local Date.now() ms) any city's hiding or gate goal has
+  // something to decide, or null. The moments come from goal-war's warMoments:
+  // a wave entering a lead window, a wave landing, a hide march that may come
+  // home, a gate hold running out. One that this engine has asked the city
+  // about since is spent, so a launch that failed is not retried in a burst
+  // (the regular tick retries it); one already due comes back as now, and a
+  // change in a city's inbound armies makes all of its moments due again
+  // (noteHostile). The goals are the ones the last slice read.
+  nextWakeAt() {
+    const W = MODULES.find((m) => m.name === './goal-war');
+    const g = this.game;
+    if (!W || typeof W.mod.warMoments !== 'function' || !g || !Array.isArray(g.castles)) return null;
+    const serverNow = g.now ? g.now() : Date.now();
+    const incoming = this.incomingFor();
+    let best = null;
+    for (const castle of g.castles) {
+      const cid = g.castleId(castle);
+      const parsed = this.goalsSeen[cid];
+      if (!parsed) continue;
+      const key = castle.name || String(cid);
+      const ctx = {
+        game: g, castle, goals: parsed.goals, config: parsed.config,
+        controls: (this.controlsFor && this.controlsFor(castle)) || {},
+        incoming: incoming[cid] || [],
+      };
+      const since = n(this.warCheckedAt[cid]);
+      for (const m of W.mod.warMoments(ctx, this.state[key] || {})) {
+        if (m > since && (best === null || m < best)) best = m;
+      }
+    }
+    if (best === null) return null;
+    return Date.now() + Math.max(0, best + WAKE_SLACK_MS - serverNow);
+  }
+
+  // Hiding and the gate alone, in every city with goals: the pass the console
+  // runs between ticks at the moment nextWakeAt names. Nothing else is planned
+  // or sent, and only what was sent (or would be, in a dry run) is logged.
+  async warPass() {
+    const g = this.game;
+    const book = this.rallyBook();
+    const incoming = this.incomingFor();
+    for (const castle of g.castles || []) {
+      const cid = g.castleId(castle);
+      // every city counts as looked at, so no moment can wake us twice
+      this.warCheckedAt[cid] = g.now ? g.now() : Date.now();
+      const parsed = this.goalsFor(cid, castle.name);
+      if (!parsed) { delete this.goalsSeen[cid]; continue; }
+      const key = castle.name || String(cid);
+      const cityState = (this.state[key] = this.state[key] || {});
+      cityState.accountId = this.accountId || null;
+      const ctx = {
+        game: g, castle, goals: parsed.goals, config: parsed.config,
+        controls: (this.controlsFor && this.controlsFor(castle)) || {},
+        accountId: this.accountId || null,
+        incoming: incoming[cid] || [], incomingByCastle: countsOf(incoming),
+        selfArmies: this.liveArmies(), rally: book,
+      };
+      const r = await this.urgentWar(ctx, castle, cityState, book);
+      for (const a of r.acted) this.line(a, { city: key, kind: /^\[plan\]/.test(a) ? 'plan' : 'act' });
+      // the console's engine view shows the latest word from these two
+      const last = this.lastReport[key];
+      if (last) {
+        for (const [k, p] of Object.entries(r.plans)) last[k] = p;
+        if (r.acted.length) last.acted = [...(last.acted || []), ...r.acted];
+      }
+    }
+    saveState(this.state, this.accountId);
   }
 
   // Any city's goals, read once per slice: transfers send FROM other cities,
@@ -771,23 +984,25 @@ class Engine {
     cityState.accountId = this.accountId || null;   // executors read it from here
     const goalsOf = this.goalsLookup();
     const book = this.rallyBook(goalsOf);
+    // the account's hostile armies, grouped by the city each one marches on
+    const incoming = this.incomingFor();
     const ctx = {
       game: g, castle, goals: parsed.goals, config: parsed.config, fortifications,
       controls,
       // buildnpc's registry is keyed by account; without this it stands down
       // rather than guess which account a city belongs to.
       accountId: this.accountId || null,
-      incoming: (this.incoming && this.incoming[g.castleId(castle)]) || [],
+      incoming: incoming[g.castleId(castle)] || [],
       // our own marches, so hiding/wartown can recall by armyId
       selfArmies: this.liveArmies(),
       // rally slots in every city, and any city's goals
       rally: book, goalsOf,
-      // how many armies are inbound to each of our cities — hiding uses this to
-      // avoid running INTO a city that is itself under attack
-      incomingByCastle: Object.fromEntries(
-        Object.entries(this.incoming || {}).map(([k, v]) => [k, (v || []).length]),
-      ),
+      // how many armies are inbound to each of our cities (by castle id) —
+      // hiding uses this to avoid running INTO a city that is itself under attack
+      incomingByCastle: countsOf(incoming),
     };
+    // Hiding and the gate first, ahead even of the reads below (urgentWar).
+    const urgent = await this.urgentWar(ctx, castle, cityState, book);
     if (parsed.goals.some((x) => x.name === 'troop') && parsed.config.troop !== 0) {
       ctx.training = await this.readTraining(castle);
     }
@@ -802,14 +1017,15 @@ class Engine {
       troop: troopPlan(ctx), fort, build: buildPlan(ctx, (fort && fort.wallsFor) || 0),
       comfort: M.comfortPlan(ctx, cityState),
       defense: M.defensePlan(ctx, cityState),
-      acted: [],
+      acted: urgent.acted,
     };
 
     // war / hero / npc module plans — each is pure and may return null
     for (const { name, mod } of MODULES) {
       for (const [key, fn] of Object.entries(mod.plans || {})) {
         try {
-          const p = fn(ctx, cityState, g);
+          // hiding and the gate were planned (and sent) at the top of the slice
+          const p = name === './goal-war' && key in urgent.plans ? urgent.plans[key] : fn(ctx, cityState, g);
           if (p) report[`${key}`] = p;
         } catch (e) {
           report.acted.push(`${name} plan "${key}" failed: ${e.message}`);
@@ -829,6 +1045,10 @@ class Engine {
       || (report.fort && report.fort.orders && report.fort.orders.length)
     );
     report.mayor = M.mayorPlan(ctx, willTrain ? 'train' : willBuild ? 'build' : 'idle');
+    // The mayor plan read the heroes before the hide march took one of them out.
+    if (urgent.hid && report.mayor && report.mayor.actions && report.mayor.actions.length) {
+      report.mayor = { note: `${report.mayor.note}; held this slice — the hide march just left`, actions: [] };
+    }
 
     let budget = this.maxActionsPerSlice;
 
@@ -866,7 +1086,8 @@ class Engine {
     // spot or rallypolicy has no slot for it. The plans already ask, but plans
     // are made before anything in this slice is sent, so the book has the last
     // word. Hiding carries no `rally`: getting the army out is never held.
-    const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'mayor', 'acted', 'city']);
+    // Hiding and the gate already ran, first and outside the budget (urgentWar).
+    const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
     for (const [key, p] of Object.entries(report)) {
       if (OWN_BLOCKS.has(key)) continue;
       if (!p || typeof p !== 'object' || !p.actions) continue;
@@ -997,8 +1218,11 @@ class Engine {
     return report;
   }
 
-  async tick() {
+  // A full pass over every city, or with { urgent: true } the war goals alone
+  // (warPass) — what the console runs between ticks at nextWakeAt.
+  async tick(opts = {}) {
     const g = this.game;
+    if (opts && opts.urgent) return this.warPass();
 
     // per-city goals, round robin (one city has "focus" at a time, as NEAT does)
     for (const castle of g.castles) {
@@ -1048,4 +1272,5 @@ class Engine {
   }
 }
 
-module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN };
+module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN,
+  inboundArmy, incomingByCity, WAKE_SLACK_MS };

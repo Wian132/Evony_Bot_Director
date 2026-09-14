@@ -588,36 +588,87 @@ class Session {
   // ---- goal engine ----
   // One tick per interval while the socket is up. Always live: the console's
   // pause button is the way to stop it acting.
+  //
+  // Between ticks the war goals keep their own time. Hiding and the gate race a
+  // wave's arrival, and NEAT's own examples lead by 30 s (hiding:0.5) and 6 s
+  // (gate:0.1), which a once-a-minute tick would catch about half and a tenth
+  // of the time. So after every pass, and whenever the hostile army list
+  // changes, the engine names the next moment one of them has something to
+  // decide (Engine.nextWakeAt) and one war-only pass is run then (armWake).
   startEngine({ tickMs = Number(process.env.TICK_MS || 60000) } = {}) {
     if (this._engineTimer) return;
-    this._engineTimer = setInterval(async () => {
-      if (this._ticking || !this.connected) return;
-      if (this.paused) return;            // no orders while the server is down
-      if (this.userPaused) return;        // the console's pause button
-      this._ticking = true;
-      try {
-        const { Engine } = require('./engine');
-        const acctId = this.account && this.account.id;
-        // Rebuilt when the socket or the account changes, so it never holds a
-        // dead Game; in-memory timers carry across.
-        if (!this.engine || this.engine.game !== this.game || this.engine.accountId !== acctId) {
-          const prev = this.engine && this.engine.state;
-          this.engine = new Engine(this.game, (m, meta) => this.note(m, meta), acctId);
-          if (prev) this.engine.state = prev;
-        }
-        this.engine.controlsFor = (castle) => this.controls(this.game.castleId(castle));
-        this.engine.dryRun = false;
-        await this.engine.tick();
-        this.lastTickAt = Date.now();
-        this.ticks = (this.ticks || 0) + 1;
-      } catch (e) {
-        this.note('engine tick: ' + e.message);
-      } finally { this._ticking = false; }
-    }, tickMs);
+    this._tickMs = tickMs;
+    this._engineTimer = setInterval(() => { this.engineTick(); }, tickMs);
     this.note(`goal engine loop started (tick ${Math.round(tickMs / 1000)}s, live)`);
   }
 
-  stopEngine() { if (this._engineTimer) { clearInterval(this._engineTimer); this._engineTimer = null; } }
+  // One engine pass: the full tick, or with `urgent` the war goals alone. Not
+  // while another pass runs, the socket is down, the server is in maintenance
+  // or the console has paused the engine. True when it ran.
+  async engineTick({ urgent = false } = {}) {
+    if (this._ticking) {
+      // A war pass is short: the regular tick it held up runs straight after.
+      if (!urgent && this._ticking === 'war') this._tickOwed = true;
+      return false;
+    }
+    if (!this.connected) return false;
+    if (this.paused) return false;            // no orders while the server is down
+    if (this.userPaused) return false;        // the console's pause button
+    this._ticking = urgent ? 'war' : 'tick';
+    try {
+      const { Engine } = require('./engine');
+      const acctId = this.account && this.account.id;
+      // Rebuilt when the socket or the account changes, so it never holds a
+      // dead Game; in-memory timers carry across.
+      if (!this.engine || this.engine.game !== this.game || this.engine.accountId !== acctId) {
+        const prev = this.engine && this.engine.state;
+        this.engine = new Engine(this.game, (m, meta) => this.note(m, meta), acctId);
+        if (prev) this.engine.state = prev;
+      }
+      // a new or changed attack may need a war pass before the next tick
+      this.engine.onHostile = () => this.armWake();
+      this.engine.controlsFor = (castle) => this.controls(this.game.castleId(castle));
+      this.engine.dryRun = false;
+      await this.engine.tick({ urgent });
+      if (!urgent) {
+        this.lastTickAt = Date.now();
+        this.ticks = (this.ticks || 0) + 1;
+      }
+    } catch (e) {
+      this.note(`engine ${urgent ? 'war pass' : 'tick'}: ${e.message}`);
+    } finally {
+      this._ticking = false;
+      if (urgent) this._warPassAt = Date.now();
+    }
+    if (urgent && this._tickOwed) { this._tickOwed = false; setImmediate(() => this.engineTick()); }
+    this.armWake();
+    return true;
+  }
+
+  // (Re)arm the one timer for the engine's next war moment. Never two pending,
+  // never two war passes within WAKE_GAP_MS, and never further out than the
+  // next regular tick, which re-arms it anyway. A wake that finds a pass
+  // running is re-armed when that pass ends; one that finds the socket down or
+  // the engine paused is left to the next regular tick.
+  armWake() {
+    const WAKE_GAP_MS = 1000;
+    if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; }
+    if (!this._engineTimer || !this.engine || typeof this.engine.nextWakeAt !== 'function') return null;
+    let at = null;
+    try { at = this.engine.nextWakeAt(); } catch (e) { this.note('engine wake: ' + e.message); }
+    if (!at) return null;
+    const now = Date.now();
+    const delay = Math.max(0, at - now, (this._warPassAt || 0) + WAKE_GAP_MS - now);
+    if (delay > (this._tickMs || 60000)) return null;
+    this._wakeTimer = setTimeout(() => { this._wakeTimer = null; this.engineTick({ urgent: true }); }, delay);
+    this._wakeAt = now + delay;
+    return this._wakeAt;
+  }
+
+  stopEngine() {
+    if (this._engineTimer) { clearInterval(this._engineTimer); this._engineTimer = null; }
+    if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; }
+  }
 
   // Focus a specific account from the Director (credentials come from accounts.json).
   async switchTo(acc) {

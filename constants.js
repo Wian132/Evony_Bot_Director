@@ -239,6 +239,24 @@ function marchTimeMs(fromXY, toXY, troopKeys, skills = 100) {
   return Math.max(0, ms);
 }
 
+// The food an army takes with it, per hour, the way the client charges it
+// (NewArmyWin.speedFood): every troop costs its upkeep TWICE — costObj =
+// foodRequest * 2 * count (:2852) — for each hour of the ONE-WAY march
+// (portableFood, :3102) and at the same rate for each hour encamped (needFood,
+// :1717). It rides in the army's own hold (leftSpace = loads - needFood, :1719),
+// and the client refuses a march the city cannot feed.
+function marchFoodPerHour(troops) {
+  let perHour = 0;
+  for (const [k, v] of Object.entries(troops || {})) {
+    const x = Number(v);
+    if (BY_KEY[k] && Number.isFinite(x) && x > 0) perHour += BY_KEY[k].food * 2 * x;
+  }
+  return perHour;
+}
+// ...for a march of oneWayMs that then encamps for restMs.
+const marchFood = (troops, oneWayMs, restMs = 0) =>
+  marchFoodPerHour(troops) * ((Number(oneWayMs) || 0) + (Number(restMs) || 0)) / 3600000;
+
 module.exports = {
   MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
@@ -246,5 +264,6 @@ module.exports = {
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
   TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS,
   MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
+  marchFood, marchFoodPerHour,
   ZONES, zoneOf,
 };

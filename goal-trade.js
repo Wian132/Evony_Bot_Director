@@ -28,6 +28,9 @@
 //   emergency  gold under a day of hero salary, or food under 30 minutes of
 //              upkeep: every /min and /batch is ignored, resources are sold
 //              for the gold (and gold spent on the food) to get out of it.
+//              The gold is the city's gold as it stands, as NEAT counts it:
+//              the next construction's gold is not taken off first, or a
+//              builder waiting for gold would set off an emergency sale.
 //   1          gold under its /min: sell what is over /max for gold.
 //   2          a resource under its /min: spend the gold over the floor on it;
 //              failing that sell what others hold over /max; failing both,
@@ -37,18 +40,34 @@
 //              how far under they are. Gold over the floor is NOT spent here —
 //              the wiki spends it only on what is under /min — and when every
 //              resource is at /max the gold is hoarded.
-// A resource with no line keeps the built-in values (wiki: "you cannot turn
-// off trading for a particular resource"): food up to a day of upkeep and at
-// most 990b, wood/stone/iron 20m up to 7.2 trillion; gold's floor is a day of
-// hero salary. A floor in days is never less than 100k. The wiki gives the
-// food and wood/stone/iron maximums and the 20m ("I believe"); the day of
-// food, the day of salary (NEAT's own emergency line, so no bid ever makes
-// one) and the 100k are this bot's choice. resourcelimits sets each of the
-// four to min = max = its amount and gold's floor to a day of salary ("a very
-// low internal gold TradePolicy"); tradepolicy lines after it change the
-// switches they name for their resource, later lines winning.
+// A resource with no line keeps the built-in values. The wiki is explicit that
+// NEAT trades on them: it trades "to achieve the amounts specified in
+// tradepolicy for each resource, or the default amounts if it is not", and
+// "excluding a line for a resource defaults it to built-in values" — so
+// config trade:1 with no line at all trades too, and the plan says so. The
+// values: food up to a day of upkeep and at most 990b, wood/stone/iron 20m up
+// to 7.2 trillion, gold's floor a day of hero salary. The wiki gives the
+// maximums and the 20m ("I believe"); the day of food is this bot's choice.
+// resourcelimits sets each of the four to min = max = its amount and gold's
+// floor to a day of salary ("a very low internal gold TradePolicy");
+// tradepolicy lines after it change the switches they name for their
+// resource, later lines winning.
 // Prices come from the book as it stands; an order is never guessed at a
 // price nobody offers.
+//
+// What the other goals keep, kept here too:
+//   the upkeep goals' floors (goal-upkeep.upkeepFloor):
+//     gold  a day of hero salary — goal-heroes.salaryReserve, the one figure
+//           the rewards, the tax and the cure keep back: the server's
+//           herosSalary an hour, else Game.heroSalary a hero. No bid takes
+//           gold under it, whatever gold's /min says. It is also NEAT's gold
+//           emergency line, so a bid never makes an emergency.
+//     food  while comfort is on, what the next comfort (and comfortpolicy
+//           round) costs: food is never sold under it, an emergency included.
+//   the next construction's cost — ctx.buildReserve (Engine.resolveBuild): its
+//     gold sits on top of the gold floor, and nothing is sold out of its food,
+//     wood, stone or iron — they count as spent, as the troop batches and the
+//     upkeep goals count them. Even an emergency leaves them.
 //
 // How an order is placed — facts learned live (holiday-snipe.js):
 //   * a bid is charged at the BID price plus 0.5%, not the seller's ask, and a
@@ -76,6 +95,7 @@
 // in a city is not sold there.
 const C = require('./constants');
 const R = require('./rally');
+const U = require('./goal-upkeep');
 const HS = require('./holiday-snipe');
 
 const RESOURCES = ['food', 'wood', 'stone', 'iron'];
@@ -102,7 +122,6 @@ const TRADES_PER_PASS = 2;
 const ORDERS_PER_TRADE = 2;              // price levels one buy or sell walks
 const CANCELS_PER_PASS = 2;
 const DEFAULT_BATCH = 100000;
-const GOLD_FLOOR_ATLEAST = 100000;
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -137,7 +156,10 @@ function parseTradePolicy(args) {
   for (const tok of args) {
     const m = String(tok).match(/^\/([a-z]+)(?:[:=](.*))?$/i);
     if (!m) { errs.push(`expected /switch:value, got "${tok}"`); continue; }
-    sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2];
+    const k = m[1].toLowerCase();
+    // one line, one value: which of two was meant can only be guessed
+    if (sw[k] !== undefined) errs.push(`/${k} is given twice on the line`);
+    sw[k] = m[2] === undefined ? true : m[2];
   }
   const known = ['type', 'min', 'max', 'batch', 'allowselltomin', 'donotautosellabovemax'];
   for (const k of Object.keys(sw)) {
@@ -238,12 +260,14 @@ function policyOf(goals) {
   const pol = {
     food: base({ days: 1 }, 990e9),
     wood: base(20e6, 7.2e12), stone: base(20e6, 7.2e12), iron: base(20e6, 7.2e12),
-    gold: { min: null, from: 'built-in' },           // null: a day of salary, never under 100k
+    gold: { min: null, from: 'built-in' },           // null: the upkeep goals' gold (a day of hero salary)
   };
   const skipped = [];
+  let lines = 0;
   for (const g of goals || []) {
     if (g.name !== 'resourcelimits' && g.name !== 'tradepolicy') continue;
     if (g.ok === false) { skipped.push(`${g.name} line ${g.line || '?'}`); continue; }
+    lines++;
     if (g.name === 'resourcelimits') {
       for (const r of RESOURCES) Object.assign(pol[r], { min: g.limits[r], max: g.limits[r], from: `resourcelimits line ${g.line || '?'}` });
       Object.assign(pol.gold, { min: { days: 1 }, from: `resourcelimits line ${g.line || '?'}` });
@@ -251,7 +275,7 @@ function policyOf(goals) {
       Object.assign(pol[g.type], g.set, { from: `tradepolicy line ${g.line || '?'}` });
     }
   }
-  return { pol, skipped };
+  return { pol, skipped, lines };
 }
 
 // Days into amounts. perHour null: not known (the resource bean lacks it).
@@ -385,32 +409,45 @@ const leftOf = (castle, o) => {
 
 // The trades one pass wants, in the wiki's stages. Pure: `s` is a snapshot
 //   have     food..iron held, counting purchases in transit and our own resting buys
-//   gold     gold held;  goldMin its floor (resolved)
+//   gold     gold held;  goldMin its floor (resolved, the upkeep goals' gold
+//            and the next construction's gold included)
 //   pol      each resource { min, max, batch, sellToMin, keepAboveMax } (resolved)
 //   price    each resource { ask, bid } from the book (null when not known)
-//   salary   hero salary per hour; upkeep troop food per hour (null unknown)
+//   salary   hero salary per hour; day the day of it (the emergency line)
+//   upkeep   troop food per hour
+//   hold     what the upkeep goals need left {food}: a floor no sale goes
+//            under, whatever the stage (an emergency included)
+//   keep     the next construction's cost {food, wood, stone, iron, gold}:
+//            counted as spent, so never sold, whatever the stage
 //   proceeds gold from selling what was over /max, not spent yet
 // -> { emergency, trades: [{ res, side, amount, prio, why, ... }], notes }
 function decide(s) {
   const out = { emergency: null, trades: [], notes: [] };
   const P = (r) => s.price[r] || {};
+  const kept = (r) => n(s.keep && s.keep[r]);
+  const held = (r) => n(s.hold && s.hold[r]);
+  // the least a sale may leave of r: `floor`, never under what the upkeep
+  // goals need, and the next construction's share on top
+  const bottom = (r, floor) => Math.max(floor, held(r)) + kept(r);
   const unitBuy = (r) => P(r).ask * (1 + FEE);
   const unitSell = (r) => P(r).bid * (1 - FEE);
-  const excess = (r) => Math.max(0, s.have[r] - s.pol[r].max);
+  // over /max, once the upkeep goals and the next construction have their share
+  const excess = (r) => Math.max(0, s.have[r] - bottom(r, s.pol[r].max));
   const selling = {};                          // amount this pass already sells of each
   const sell = (t) => { selling[t.res] = n(selling[t.res]) + t.amount; out.trades.push({ side: 'sell', ...t }); };
   const buy = (t) => out.trades.push({ side: 'buy', ...t });
 
   // Sell `gold` worth from `pool` (resources in the order given), never taking
-  // one below its floor(r). Returns the gold still not covered.
+  // one below bottom(r, floor(r)). Returns the gold still not covered.
   const raise = (gold, pool, floor, base, { minLot = true } = {}) => {
     for (const r of pool) {
       if (gold <= 0) break;
       if (!(P(r).bid > 0)) continue;
-      const avail = Math.floor(s.have[r] - floor(r) - n(selling[r]));
+      const fl = bottom(r, floor(r));
+      const avail = Math.floor(s.have[r] - fl - n(selling[r]));
       const amount = Math.min(avail, Math.ceil(gold / unitSell(r)));
       if (amount <= 0 || (minLot && amount < s.pol[r].batch)) continue;
-      sell({ ...base, res: r, amount, keep: floor(r) });
+      sell({ ...base, res: r, amount, keep: fl });
       gold -= amount * unitSell(r);
     }
     return gold;
@@ -418,21 +455,24 @@ function decide(s) {
   const byValue = (list, of) => [...list].sort((a, b) => of(b) * n(P(b).bid) - of(a) * n(P(a).bid));
 
   // ---- emergency: all /min and /batch settings are ignored
-  const goldEm = s.salary > 0 && s.gold < 24 * s.salary;
+  const goldEm = s.day > 0 && s.gold < s.day;
   const foodEm = s.upkeep > 0 && s.have.food < 0.5 * s.upkeep;
   if (goldEm || foodEm) {
-    out.emergency = [goldEm && `gold ${short(s.gold)} is under a day of hero salary (${short(24 * s.salary)})`,
+    out.emergency = [goldEm && `gold ${short(s.gold)} is under a day of hero salary (${short(s.day)})`,
       foodEm && `food ${short(s.have.food)} is under 30 minutes of troop upkeep (${short(0.5 * s.upkeep)})`].filter(Boolean).join(' and ');
-    let goldNeed = goldEm ? Math.ceil(25 * s.salary - s.gold) : 0;     // back over a day's salary, an hour spare
+    let goldNeed = goldEm ? Math.ceil(s.day + s.salary - s.gold) : 0;  // back over a day's salary, an hour spare
     if (foodEm && P('food').ask > 0) {
       const want = Math.ceil(s.upkeep - s.have.food);                  // up to an hour of upkeep
-      const affordable = Math.floor(Math.max(0, s.gold) / unitBuy('food'));
-      if (affordable > 0) buy({ res: 'food', amount: Math.min(want, affordable), prio: 0, emergency: true, goldFloor: 0, funding: 'gold', why: 'emergency: food for the troops' });
+      // gold's /min is set aside; the next construction's gold is not
+      const affordable = Math.floor(Math.max(0, s.gold - kept('gold')) / unitBuy('food'));
+      if (affordable > 0) buy({ res: 'food', amount: Math.min(want, affordable), prio: 0, emergency: true, goldFloor: kept('gold'), funding: 'gold', why: 'emergency: food for the troops' });
       if (affordable < want) goldNeed += (want - affordable) * unitBuy('food');
     }
     if (goldNeed > 0) {
       const pool = RESOURCES.filter((r) => !(foodEm && r === 'food'));
-      // what is over its /min goes first, then down to nothing ("as low as necessary")
+      // what is over its /min goes first, then down to nothing ("as low as
+      // necessary") — but never into what the upkeep goals or the next
+      // construction need
       let left = raise(goldNeed, byValue(pool, (r) => s.have[r] - s.pol[r].min), (r) => Math.min(s.have[r], s.pol[r].min),
         { prio: 1, emergency: true, why: 'emergency: gold' }, { minLot: false });
       if (left > 0) left = raise(left, byValue(pool, (r) => s.have[r]), () => 0, { prio: 1, emergency: true, why: 'emergency: gold' }, { minLot: false });
@@ -489,7 +529,7 @@ function decide(s) {
     const unders = RESOURCES.filter((r) => s.have[r] < s.pol[r].max);
     if (unders.length) {
       // not everything is at /max: what is over is sold, whatever the switch says
-      for (const r of overs) sell({ res: r, amount: Math.floor(excess(r) - n(selling[r])), keep: s.pol[r].max, prio: 5, proceeds: true, why: `${r} over its ${short(s.pol[r].max)} max` });
+      for (const r of overs) sell({ res: r, amount: Math.floor(excess(r) - n(selling[r])), keep: bottom(r, s.pol[r].max), prio: 5, proceeds: true, why: `${r} over its ${short(s.pol[r].max)} max` });
       const expected = overs.reduce((sum, r) => sum + excess(r) * unitSell(r), 0);
       const pot = Math.min(n(s.proceeds) + expected, spare);
       const buyable = unders.filter((r) => P(r).ask > 0);
@@ -508,7 +548,7 @@ function decide(s) {
       // everything is at /max: sell what goes over and hoard the gold
       for (const r of overs) {
         if (s.pol[r].keepAboveMax) { out.notes.push(`${r} over its ${short(s.pol[r].max)} max is kept (/donotautosellabovemax)`); continue; }
-        sell({ res: r, amount: Math.floor(excess(r)), keep: s.pol[r].max, prio: 5, why: `${r} over its ${short(s.pol[r].max)} max (every resource is at /max: the gold is kept)` });
+        sell({ res: r, amount: Math.floor(excess(r)), keep: bottom(r, s.pol[r].max), prio: 5, why: `${r} over its ${short(s.pol[r].max)} max (every resource is at /max: the gold is kept)` });
       }
     }
   }
@@ -523,6 +563,9 @@ function tradePlan(ctx, cityState, game) {
   const cfg = parsers.trade.parse(ctx.config && ctx.config.trade);
   const lines = (ctx.goals || []).filter((g) => g.name === 'tradepolicy' || g.name === 'resourcelimits');
   if (!cfg.on) {
+    // a value that is not 0 or 1 is red in the editor, and means off here
+    const set = ctx.config && ctx.config.trade !== undefined && ctx.config.trade !== null && ctx.config.trade !== '';
+    if (set && cfg.errors.length) return { note: `trade: config trade:${ctx.config.trade} is not 0 or 1, so this city does not trade`, actions: [] };
     return lines.length ? { note: `trade: ${lines.length} tradepolicy/resourcelimits line(s) wait for config trade:1`, actions: [] } : null;
   }
   const here = ctx.castle;
@@ -541,8 +584,10 @@ function tradePlan(ctx, cityState, game) {
   const cap = capOf(game, here);
   if (!cap) return { note: 'trade: no Marketplace in this city — nothing to trade with', actions: [] };
 
-  const { pol, skipped } = policyOf(ctx.goals);
+  const { pol, skipped, lines: used } = policyOf(ctx.goals);
   for (const k of skipped) notes.push(`${k} not used — it has errors`);
+  // wiki TradePolicy: with no line NEAT trades on its built-in values
+  if (!used) notes.push('no tradepolicy or resourcelimits line, so NEAT\'s built-in values: wood, stone and iron bought up to 20m, food to a day of upkeep');
 
   // our offers: stale ones go (their fee is lost either way; the slot and the
   // gold or resources come back)
@@ -594,8 +639,19 @@ function tradePlan(ctx, cityState, game) {
     for (const r of RESOURCES) have[r] += n(m.resources && m.resources[r]);
   }
   const gold = n(res.gold);
-  const salary = res.herosSalary === undefined || res.herosSalary === null ? null : n(res.herosSalary);
+  // What the upkeep goals need left (goal-upkeep.upkeepFloor): the hero salary
+  // every goal goes by (goal-heroes.salaryReserve: the server's herosSalary an
+  // hour, else Game.heroSalary a hero), the day of it the rewards, the tax and
+  // the cure keep back, and the next comfort's food.
+  const up = U.upkeepFloor(ctx.game ? ctx : { ...ctx, game });
+  const salary = n(up.perHour), day = n(up.day);
   const upkeep = res.troopCostFood === undefined || res.troopCostFood === null ? null : n(res.troopCostFood);
+  // the next construction's cost stays in the bank (Engine.resolveBuild)
+  const build = ctx.buildReserve || null;
+  const buildName = (build && build.label) || 'the next construction';
+  const keep = {};
+  for (const k of [...RESOURCES, 'gold']) keep[k] = Math.max(0, n(build && build[k]));
+  const hold = { food: n(up.food) };
 
   // settings as amounts
   const resolved = {};
@@ -611,16 +667,19 @@ function tradePlan(ctx, cityState, game) {
       resolved[r].max = resolved[r].min;
     }
   }
-  // The gold floor: an amount as written; days of salary (the built-in value is
-  // one day) never under 100k, so a city with next to no heroes still keeps
-  // gold for its building and research.
-  const days = pol.gold.min == null ? { days: 1 } : pol.gold.min;
-  let goldMin = typeof days === 'object' ? resolve(days, salary) : days;
-  if (goldMin !== null && typeof days === 'object') goldMin = Math.max(GOLD_FLOOR_ATLEAST, goldMin);
-  if (goldMin === null) {
-    notes.push('hero salary unknown, so the gold floor can\'t be worked out — not buying');
-    goldMin = Infinity;
-  }
+  // The gold floor: gold's /min (an amount, or days of hero salary; a day when
+  // there is no line), never under the gold the upkeep goals keep, and the
+  // next construction's gold on top.
+  const set = n(pol.gold.min == null ? day : resolve(pol.gold.min, salary));
+  const goldMin = Math.max(set, n(up.gold)) + keep.gold;
+  const byLine = pol.gold.min != null && set > 0 && set >= n(up.gold);
+  const floorWhy = [byLine ? `gold's /min` : up.text.gold || 'no hero salary to keep',
+    keep.gold ? `+ ${short(keep.gold)} for ${buildName}` : null].filter(Boolean).join(' ');
+  // said only where it can bind: over food's /min, or in an emergency (below)
+  const holdNote = `food never sold under ${short(hold.food)} (${up.text.food})`;
+  if (hold.food > resolved.food.min) notes.push(holdNote);
+  const keptRes = RESOURCES.filter((r) => keep[r] > 0);
+  if (keptRes.length) notes.push(`${keptRes.map((r) => `${short(keep[r])} ${r}`).join(', ')} kept for ${buildName}`);
   // Only fresh prices plan a trade: a resource whose book is old waits for the
   // read this pass makes (each order reads its own book again anyway).
   const price = {};
@@ -631,8 +690,9 @@ function tradePlan(ctx, cityState, game) {
   }
   const proceeds = st.proceeds ? n(st.proceeds.gold) : 0;
 
-  const d = decide({ have, gold, goldMin, pol: resolved, price, salary: salary || 0, upkeep: upkeep || 0, proceeds });
+  const d = decide({ have, gold, goldMin, pol: resolved, price, salary, day, upkeep: upkeep || 0, hold, keep, proceeds });
   if (d.emergency) notes.push(`EMERGENCY: ${d.emergency} — every /min and /batch is set aside`);
+  if (d.emergency && hold.food > 0 && !(hold.food > resolved.food.min)) notes.push(holdNote);
   notes.push(...d.notes);
 
   // what the market lets us do this pass
@@ -672,9 +732,10 @@ function tradePlan(ctx, cityState, game) {
     }
   }
 
-  const stock = `gold ${short(gold)} (floor ${short(goldMin)})`;
+  const stock = `gold ${short(gold)} (floor ${short(goldMin)}: ${floorWhy})`;
   const levels = RESOURCES.map((r) => `${r} ${short(have[r])}`).join(', ');
-  if (!actions.length && !notes.length) notes.push(`all within tradepolicy — ${levels}`);
+  // nothing wanted: say where the city stands (the notes above only say what it keeps)
+  if (!actions.length && !d.trades.length && !d.notes.length) notes.push(`all within ${used ? 'tradepolicy' : 'the built-in values'} — ${levels}`);
   return { note: `trade: ${stock}; ${notes.join('; ')}`, actions };
 }
 

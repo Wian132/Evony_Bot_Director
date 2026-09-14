@@ -95,6 +95,12 @@
 //     more (the same guard as above, the other way round).
 //   * a war town sends nothing (wiki WarTown: KeepResource, SendResource,
 //     KeepTroop and SendTroop are held there).
+//   * what the upkeep goals need stays (goal-upkeep.upkeepFloor): gold never
+//     goes under the day of hero salary the rewards, the tax and the cure keep
+//     back, nor food under what the next comfort costs while comfort is on —
+//     floors, so a line that keeps more already keeps them. And the next
+//     construction's cost (Engine.resolveBuild) is never shipped out of this
+//     city: it counts as spent, on top of whatever the line keeps.
 //   * what this city holds is what is AT HOME: troops out farming do not count
 //     towards what a keep line keeps, so the city never dips under it while
 //     they are out (a requestresources sender is read the same way). The wiki
@@ -102,6 +108,7 @@
 //   * a quarter of the carriers (at most 2,000) stay home, as for requests.
 const C = require('./constants');
 const R = require('./rally');
+const U = require('./goal-upkeep');
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -153,13 +160,42 @@ const reserveOf = (carriages) => Math.min(2000, Math.ceil(carriages * 0.25));
 const AMOUNT_HELP = '5m, 200k, 1b, or * for "doesn\'t matter"';
 const isAmount = (t) => t === '*' || NUM(t) !== null;
 
+// A push line's destination, checked when the line is read: any, a city name
+// (!Name = Name) or x,y on the 800 x 800 map (C.MAP_W; 0-799 each way),
+// several joined by |. A name may be all digits — Lord02's cities are
+// "5", "8" and "9" — so only a part with a comma in it, made of nothing but
+// digits, is taken for coordinates, and must then be x,y on the map. Names
+// cannot be checked until the cities are known; the plan says when one
+// matches none.
+function checkTarget(target, errs) {
+  if (!target) return;
+  const parts = String(target).split('|');
+  if (parts.some((p) => !p.trim())) errs.push(`"${target}" has an empty place between its | marks`);
+  for (const p of parts.map((s) => s.trim()).filter(Boolean)) {
+    if (!p.includes(',') || !/^[\d,()-]+$/.test(p)) continue;        // any, or a name
+    const xy = p.match(/^\(?(\d+),(\d+)\)?$/);
+    if (!xy) errs.push(`"${p}" is not x,y — write the coordinates as 111,222`);
+    else if (Number(xy[1]) >= C.MAP_W || Number(xy[2]) >= C.MAP_W) errs.push(`${p} is off the map — x and y run from 0 to ${C.MAP_W - 1}`);
+  }
+}
+
+// A switch given twice on one push line: which value was meant can only be
+// guessed, so it is an error.
+function noteSwitch(sw, k, errs) {
+  if (sw[k] !== undefined) errs.push(`/${k} is given twice on the line`);
+}
+
 // `push` reads sendresources / sendtroops: the same fields, but the city is
 // where they go (<to>), and /below (a trigger for asking) has no meaning.
 function parseRequest(args, troops, { push = false } = {}) {
   const errs = [], sw = {}, rest = [];
   for (const tok of args) {
     const m = String(tok).match(/^\/([a-z]+)(?:[:=](.*))?$/i);
-    if (m) { sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2]; continue; }
+    if (m) {
+      if (push) noteSwitch(sw, m[1].toLowerCase(), errs);
+      sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2];
+      continue;
+    }
     rest.push(String(tok));
   }
   const verb = push ? 'send' : 'request';
@@ -172,6 +208,7 @@ function parseRequest(args, troops, { push = false } = {}) {
     target: target || null, local: null, remote: null, minBatch: null, maxBatch: null, slots: 1,
     ...(troops ? {} : { carrier: 'carriage' }),
   };
+  if (push) checkTarget(target, errs);
   // An amount, or null for *. A word that is not an amount is an error, and
   // the line is then marked not to run (ok:false): reading it as * would mean
   // "no limit", which is the one wrong guess that drains a city.
@@ -250,7 +287,11 @@ function parseKeep(args, troops) {
   const errs = [], sw = {}, rest = [];
   for (const tok of args) {
     const m = String(tok).match(/^\/([a-z]+)(?:[:=](.*))?$/i);
-    if (m) { sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2]; continue; }
+    if (m) {
+      noteSwitch(sw, m[1].toLowerCase(), errs);
+      sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2];
+      continue;
+    }
     rest.push(String(tok));
   }
   const usage = troops
@@ -259,6 +300,7 @@ function parseKeep(args, troops) {
   const [target, list, ...tail] = rest;
   const out = { target: target || null, keep: {}, minBatch: null, slots: 1, ...(troops ? {} : { carrier: 'carriage' }) };
   if (!target || !list) errs.push(`${usage} — the city to send to and what to keep are required`);
+  checkTarget(target, errs);
 
   for (const part of String(list || '').split(',')) {
     const p = part.trim();
@@ -273,6 +315,8 @@ function parseKeep(args, troops) {
     // "*" would mean keep nothing and send it all: that is a guess worth refusing
     const v = amt === null ? null : NUM(amt);
     if (v === null) { errs.push(`"${p}" needs an amount to keep, e.g. ${code}:20m`); continue; }
+    // two amounts for one thing: which was meant can only be guessed
+    if (out.keep[key] !== undefined) { errs.push(`${troops ? troopName(key) : key} is listed twice in "${list}"`); continue; }
     out.keep[key] = v;
   }
   if (list && !Object.keys(out.keep).length && !errs.length) errs.push(`${usage} — nothing to keep in "${list}"`);
@@ -747,6 +791,25 @@ function pushPlan(ctx, state, game) {
   // thing would ask for it back (its /below, else its localAmount).
   const ownFloor = (goal, key, keyOf) => Math.max(0, ...goalsNamed(ctx.goals, goal)
     .filter((g) => g.ok !== false && keyOf(g) === key).map(triggerOf).filter((v) => v != null));
+  // What the other goals keep, kept here too. The upkeep goals' floors
+  // (goal-upkeep.upkeepFloor): gold never under the day of hero salary the
+  // rewards, the tax and the cure keep back (goal-heroes.salaryReserve), food
+  // never under what the next comfort costs. The next construction's cost
+  // (ctx.buildReserve, Engine.resolveBuild) is never shipped out of the bank
+  // it waits in — it counts as spent, as the troop batches and the upkeep goals
+  // count it.
+  const up = U.upkeepFloor(ctx.game ? ctx : { ...ctx, game });
+  const upkeepKeep = (k) => n(k === 'gold' || k === 'food' ? up[k] : 0);
+  const build = ctx.buildReserve || null;
+  const buildKeep = (k) => Math.max(0, n(build && build[k]));
+  // " (kept: ...)" for a note: the upkeep floor only where it is what sets
+  // the floor (a line keeping more keeps it already), the construction always
+  const keptBy = (key, upkeepSets) => {
+    const bits = [];
+    if (upkeepSets) bits.push(`${short2(upkeepKeep(key))} for ${up.text[key]}`);
+    if (buildKeep(key)) bits.push(`${short2(buildKeep(key))} for ${(build && build.label) || 'the next construction'}`);
+    return bits.length ? ` (kept: ${bits.join(', ')})` : '';
+  };
 
   const marches = new Map();            // receiver fieldId -> { recv, r, t }
   const planned = { r: 0, t: 0 };       // new marches this pass, by kind
@@ -759,11 +822,15 @@ function pushPlan(ctx, state, game) {
     for (const item of items) {
       const { g, key } = item;
       if (g.ok === false) { out.push(`line ${g.line || '?'} not run — it has errors`); continue; }
-      const floor = Math.max(item.local == null ? 0 : item.local, ownFloor(spec.request, key, spec.keyOf));
+      // resources: never under the upkeep floor, and the construction's share on top
+      const res = spec.kind === 'r';
+      const base = Math.max(item.local == null ? 0 : item.local, ownFloor(spec.request, key, spec.keyOf));
+      const upk = res ? upkeepKeep(key) : 0;
+      const floor = Math.max(base, upk) + (res ? buildKeep(key) : 0);
       let spare = Math.floor(spec.spare(key, floor));
       // wiki: "You must have OVER this amount in order to send some"
       if (spare <= 0) continue;
-      const head = `${spec.name(key)} ${short2(spec.stock(key))} over ${short2(floor)}`;
+      const head = `${spec.name(key)} ${short2(spec.stock(key))} over ${short2(floor)}${res ? keptBy(key, upk > base) : ''}`;
       const { list, unknown } = receiversFor(g.target, here, others, game);
       const why = [...unknown], sentTo = [];
       for (const recv of list) {

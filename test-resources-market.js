@@ -77,16 +77,27 @@ const march = (from, to, missionType, extra = {}) => ({
 });
 
 // One city's push plan. `own` gives other cities their own goal text.
-function push(here, castles, src, { selfArmys = [], own = {}, warTownOf = null, book = null } = {}) {
+function push(here, castles, src, { selfArmys = [], own = {}, warTownOf = null, book = null, buildReserve = null, player = null } = {}) {
   const game = fakeGame(castles, selfArmys);
+  if (player) Object.assign(game.player.playerInfo, player);
   const parsed = clean(src);
   const goalsOf = (c) => (c === here ? parsed.goals : parseGoals(own[c.name] || '').goals);
-  const ctx = { castle: here, goals: parsed.goals, config: parsed.config, goalsOf, selfArmies: selfArmys };
+  const ctx = { castle: here, goals: parsed.goals, config: parsed.config, goalsOf, selfArmies: selfArmys, buildReserve };
   if (warTownOf) ctx.warTownOf = warTownOf;
   if (book) ctx.rally = book(game, goalsOf);
   return { plan: T.plans.push(ctx, {}, game), game, ctx };
 }
 const res = (a, k) => (a && a.resources ? a.resources[k] : undefined);
+// What comfort costs, as goal-upkeep works it out (comfortCost): a prayer is
+// prestige / 10 x castleCount x the city's usePACIFY_SUCCOUR_OR_PACIFY_PRAY
+// food — 2,000,000 / 10 x 5 x 1 = 1m here; population raising is the
+// population limit x 5, a blessing the limit in food and a tenth in gold.
+const PRESTIGE = { prestige: 2e6, castleCount: 5 };
+const comforting = (c, { cur = 9000, limit = 10000 } = {}) => {
+  c.usePACIFY_SUCCOUR_OR_PACIFY_PRAY = 1;
+  Object.assign(c.resource, { curPopulation: cur, maxPopulation: limit });
+  return c;
+};
 
 // ---------------------------------------------------------------- the market
 // A book per resource, our cities' offers and the fills, the way the server
@@ -176,10 +187,10 @@ function trader(over = {}) {
 }
 // The trade plan for one city; `fresh` reads the books first, as the
 // marketRead action would.
-async function tplan(c, g, src, { state = {}, snipe = null, fresh = true } = {}) {
+async function tplan(c, g, src, { state = {}, snipe = null, fresh = true, buildReserve = null } = {}) {
   const parsed = clean(src);
   if (fresh) await TR.executors.marketRead(g, c, {}, state);
-  const ctx = { castle: c, goals: parsed.goals, config: parsed.config, accountId: 'a1', holidaySnipe: snipe };
+  const ctx = { castle: c, goals: parsed.goals, config: parsed.config, accountId: 'a1', holidaySnipe: snipe, buildReserve };
   return TR.plans.trade(ctx, state, g);
 }
 const kinds = (p) => p.actions.map((a) => a.kind);
@@ -255,6 +266,61 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     has(out, 'keeptroops: Archer over 400,000 to 8, at least 10,000 at a time');
     has(out, 'sendtroops: Scout to 8');
     has(out, '2 missions at a time to each receiver');
+  });
+
+  await t('a city name may be all digits (Lord02\'s "5", "8", "9"); coordinates must be x,y on the map', () => {
+    for (const src of ['keepresources 8 f:1b', 'keepresources 5|8|Fla f:1b 5m', 'sendresources (111,222) food 1b *',
+      'keeptroops 799,0 a:1k', 'sendtroops !9 archer 1k 2k', 'keepresources any|300,300 w:20m']) {
+      assert.deepStrictEqual(parseGoals(src).lines[0], { n: 1, status: 'ok', msg: null }, src);
+    }
+    has(errOf('keepresources 800,5 f:1b'), '800,5 is off the map — x and y run from 0 to 799');
+    has(errOf('sendtroops 5,1000 archer 1k 2k'), '5,1000 is off the map');
+    has(errOf('keepresources 111, f:1b'), '"111," is not x,y — write the coordinates as 111,222');
+    has(errOf('keepresources 1,2,3 f:1b'), '"1,2,3" is not x,y');
+    has(errOf('keepresources Fla||8 f:1b'), '"Fla||8" has an empty place between its | marks');
+    has(errOf('sendresources |8 food 1b 1m'), 'has an empty place');
+    // the pull lines read their <from> as before (Step 9)
+    assert.deepStrictEqual(parseGoals('requestresources 8 food 1b 100m').errors, []);
+  });
+
+  await t('every mistake on a push or market line is red in the editor, with the reason, and the line is not run', () => {
+    const bad = {
+      'keepresources 800,5 f:1b': 'off the map',
+      'keepresources 8 f:1b,food:2b': 'food is listed twice in "f:1b,food:2b"',
+      'keeptroops 8 a:1k,archer:2k 1k': 'Archer is listed twice',
+      'keepresources 8 f:1b /slots:2 /slots:3': '/slots is given twice on the line',
+      'keepresources 8 f:1b /slots:0': '/slots needs a whole number, 1 or more',
+      'keepresources 8 f:-5m': '"f:-5m" needs an amount to keep',
+      'sendresources 8 food 1b 1m /slots:2 /slots=3': '/slots is given twice on the line',
+      'sendresources 8 food 1b 1m 5m 2m': 'minBatch 5m is more than maxBatch 2m',
+      'sendresources 8 food 1b': 'localAmount and remoteAmount are required',
+      'sendresources 8 rubies 1b 1m': 'unknown resource "rubies"',
+      'sendtroops 8 archer 1k 2k lots': '"lots" is not an amount',
+      'sendtroops 8 archer 1k 2k /below:1k': 'unknown switch /below',
+      'tradepolicy /type:wood /min:1m /min:2m': '/min is given twice on the line',
+      'tradepolicy /type:wood /batch:0': '/batch needs an amount',
+      'tradepolicy /type:wood /allowselltomin:2': '/allowselltomin is on its own, or 0/1',
+      'tradepolicy /type:gold /donotautosellabovemax': 'gold is not bought or sold itself',
+      'tradepolicy /type:food /min:3d /max:2d': '/min 3d is more than /max 2d',
+      'tradepolicy /type:stone /max:': '/max: needs an amount',
+      'resourcelimits 2b 50m 2d 20m': 'stone "2d" is not an amount',
+      'resourcelimits 2b 50m 2b 20m 5m': 'expected: resourcelimits <food> <lumber> <stone> <iron>',
+      'config trade:yes': 'trade is 0 (off) or 1 (on), got "yes"',
+      'config trade:2,comfort:1': 'trade is 0 (off) or 1 (on)',
+      'trade 2': 'trade is 0 (off) or 1 (on)',
+    };
+    for (const [src, why] of Object.entries(bad)) {
+      const p = parseGoals(src);
+      assert.strictEqual(p.lines[0].status, 'error', `${src}: ${JSON.stringify(p.lines[0])}`);
+      has(p.lines[0].msg, why);
+      if (p.goals[0]) assert.strictEqual(p.goals[0].ok, false, `${src} would still run`);
+    }
+    // a good line of each is blue
+    for (const src of ['keepresources 8 f:1b 5m /slots:2', 'sendresources any food 1b 100m 50m 100m', 'keeptroops 8 a:1k,s:2k 1k',
+      'sendtroops 8 archer 1k 2k 500 1k', 'tradepolicy /type:food /min:2d /max:10b /batch:1m /donotautosellabovemax',
+      'tradepolicy /type:gold /min:3d', 'resourcelimits 2b 50m 2b 20m', 'config trade:1', 'config trade:0']) {
+      assert.deepStrictEqual(parseGoals(src).lines[0], { n: 1, status: 'ok', msg: null }, src);
+    }
   });
 
   // ============================================================ keepresources
@@ -494,6 +560,78 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     assert.strictEqual(res(p.actions[0], 'food'), 20e6);
   });
 
+  // ================================================ what other goals keep
+  console.log('\nwhat the upkeep goals and the next construction keep, a push keeps too\n');
+
+  await t('goal-upkeep.upkeepFloor: a day of hero salary, and the next comfort\'s food while comfort is on', () => {
+    const U = require('./goal-upkeep');
+    const H = require('./goal-heroes');
+    const c = comforting(trader({}));
+    const game = { player: { playerInfo: { ...PRESTIGE } } };
+    const ctxOf = (src) => { const p = clean(src); return { castle: c, goals: p.goals, config: p.config, game }; };
+    let f = U.upkeepFloor(ctxOf(''));
+    assert.deepStrictEqual([f.perHour, f.day, f.gold, f.food, f.text.gold, f.text.food], [10000, 240e3, 240e3, 1e6, 'a day of hero salary', 'a prayer']);
+    // the same day the rewards (Step 12) and the tax and the cure (Step 13) keep
+    assert.strictEqual(f.day, H.salaryReserve(c).reserve);
+    // comfortpolicy's population raising (under the limit) and blessing: 10,000 x 5, and 10,000 food + 1,000 gold
+    f = U.upkeepFloor(ctxOf('comfortpolicy 15 20 popraise bless pray'));
+    assert.deepStrictEqual([f.gold, f.food, f.text.food], [241e3, 1.06e6, 'a prayer + population raising + a blessing']);
+    c.resource.curPopulation = 10000;
+    assert.strictEqual(U.upkeepFloor(ctxOf('comfortpolicy 15 20 popraise')).food, 1e6, 'at its limit: nothing to raise');
+    // comfort off: the day of salary alone
+    f = U.upkeepFloor(ctxOf('config comfort:0\ncomfortpolicy 15 20 popraise bless'));
+    assert.deepStrictEqual([f.gold, f.food, f.text.food], [240e3, 0, '']);
+    // a cost the beans cannot give counts as nothing, as comfort then leaves it to the server
+    assert.strictEqual(U.upkeepFloor({ castle: c, goals: [], config: {}, game: { player: { playerInfo: {} } } }).food, 0);
+  });
+
+  await t('gold never goes under the day of hero salary the rewards, the tax and the cure keep back', () => {
+    const f = fleet({ five: { gold: 1e6 } });
+    f.five.resource.herosSalary = 10000;                 // 240k a day
+    let p = push(f.five, Object.values(f), 'keepresources 8 g:0').plan;
+    assert.strictEqual(res(p.actions[0], 'gold'), 760e3);
+    has(p.note, 'gold 1m over 240k (kept: 240k for a day of hero salary)');
+    // a line that keeps more already keeps the day
+    p = push(f.five, Object.values(f), 'keepresources 8 g:500k').plan;
+    assert.strictEqual(res(p.actions[0], 'gold'), 500e3);
+    has(p.note, 'gold 1m over 500k: 500k to 8');
+    // and the next construction's gold on top of it
+    p = push(f.five, Object.values(f), 'sendresources 8 gold * *', { buildReserve: { gold: 100e3, label: 'upgrade Cottage to L9' } }).plan;
+    assert.strictEqual(res(p.actions[0], 'gold'), 660e3);
+    has(p.note, '(kept: 240k for a day of hero salary, 100k for upgrade Cottage to L9)');
+  });
+
+  await t('food never goes under what the next comfort costs while comfort is on; with comfort:0 none is kept', () => {
+    const f = fleet({ five: { food: 50e6 } });
+    comforting(f.five);
+    // 8 holds 3b, under 4b: as much as five can spare (the transports carry 90m)
+    let p = push(f.five, Object.values(f), 'sendresources 8 food * 4b', { player: PRESTIGE }).plan;
+    assert.strictEqual(res(p.actions[0], 'food'), 49e6);
+    has(p.note, 'food 50m over 1m (kept: 1m for a prayer)');
+    p = push(f.five, Object.values(f), 'sendresources 8 food * 4b\ncomfortpolicy 15 20 popraise bless', { player: PRESTIGE }).plan;
+    assert.strictEqual(res(p.actions[0], 'food'), 50e6 - 1.06e6);
+    has(p.note, '(kept: 1.06m for a prayer + population raising + a blessing)');
+    p = push(f.five, Object.values(f), 'config comfort:0\nsendresources 8 food * 4b', { player: PRESTIGE }).plan;
+    assert.strictEqual(res(p.actions[0], 'food'), 50e6);
+    // troops are no part of it
+    const g = fleet({ five: { troop: { archer: 10e3 } } });
+    comforting(g.five);
+    p = push(g.five, Object.values(g), 'keeptroops 8 a:0', { player: PRESTIGE, buildReserve: { food: 1e9, label: 'x' } }).plan;
+    assert.deepStrictEqual(p.actions[0].troops, { archer: 10e3 });
+  });
+
+  await t('the next construction\'s cost is never shipped: it counts as spent, on top of what the line keeps', () => {
+    const f = fleet();
+    const build = { food: 20e6, wood: 1e6, label: 'upgrade Cottage to L9' };
+    let p = push(f.five, Object.values(f), 'keepresources 8 f:2.95b', { buildReserve: build }).plan;
+    assert.strictEqual(res(p.actions[0], 'food'), 30e6);
+    has(p.note, 'food 3b over 2.97b (kept: 20m for upgrade Cottage to L9)');
+    // five's 5m wood is what the builder waits for: nothing of it goes
+    p = push(f.five, Object.values(f), 'sendresources 8 wood * 10m', { buildReserve: { wood: 5e6, label: 'x' } }).plan;
+    assert.deepStrictEqual(p.actions, []);
+    has(p.note, 'sendresources: nothing over what this city keeps');
+  });
+
   // ============================================================== war town
   console.log('\na war town never sends\n');
 
@@ -707,6 +845,11 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     assert.deepStrictEqual(p.actions, []);
     has(p.note, 'wait for config trade:1');
     assert.strictEqual((await tplan(c, g, 'config trade:0\ntradepolicy /type:wood /min:100m')).actions.length, 0);
+    // a value that is not 0 or 1 (red in the editor) means off, and the plan says so
+    const parsed = parseGoals('config trade:yes');
+    const q = TR.plans.trade({ castle: c, goals: parsed.goals, config: parsed.config, accountId: 'a1' }, {}, g);
+    assert.deepStrictEqual(q.actions, []);
+    has(q.note, 'config trade:yes is not 0 or 1, so this city does not trade');
   });
 
   await t('no Marketplace: nothing to trade with', async () => {
@@ -738,7 +881,7 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const p = await tplan(c, g, 'config trade:1');
     const a = act(p, 'marketBuy', 'wood');
     assert.deepStrictEqual([a.amount, a.goldFloor, a.minTotal, a.funding], [15e6, 240e3, 100e3, 'gold']);
-    has(p.note, 'gold 1b (floor 240k)');
+    has(p.note, 'gold 1b (floor 240k: a day of hero salary)');
   });
 
   await t('the gold floor: a bid never takes gold under /min, the 0.5% fee included', async () => {
@@ -796,11 +939,121 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     assert.ok(act(await tplan(c, g, 'config trade:1'), 'marketBuy', 'wood'));
   });
 
-  await t('hero salary unknown: the gold floor can\'t be worked out, so nothing is bought', async () => {
-    const c = trader({ wood: 5e6, salary: null }); const g = marketGame([c]);
+  await t('the salary is the one every goal uses: the server\'s herosSalary, else level x 20 a hero (Game.heroSalary)', async () => {
+    const c = trader({ wood: 5e6, salary: null });
+    c.heros = [{ id: 1, level: 100, status: 0 }, { id: 2, level: 50, status: 0 }];
+    const g = marketGame([c]);
     const p = await tplan(c, g, 'config trade:1');
-    assert.deepStrictEqual(kinds(p), []);
-    has(p.note, 'hero salary unknown');
+    // (100 + 50) x 20 = 3,000 an hour: a day is 72,000
+    assert.strictEqual(act(p, 'marketBuy', 'wood').goldFloor, 24 * Game.heroSalary({ level: 150 }));
+    has(p.note, 'floor 72k: a day of hero salary');
+  });
+
+  await t('no bid goes under the day of hero salaries the rewards, tax and cure keep, whatever gold\'s /min says', async () => {
+    const c = trader({ wood: 5e6 }); const g = marketGame([c]);
+    const p = await tplan(c, g, 'config trade:1\ntradepolicy /type:gold /min:0');
+    assert.strictEqual(act(p, 'marketBuy', 'wood').goldFloor, 240e3);
+    const q = await tplan(c, g, 'config trade:1\ntradepolicy /type:gold /min:5m');
+    assert.strictEqual(act(q, 'marketBuy', 'wood').goldFloor, 5e6);
+    has(q.note, "floor 5m: gold's /min");
+  });
+
+  await t('the next construction\'s cost: its gold is on top of the floor, and nothing it needs is sold', async () => {
+    const c = trader({ wood: 5e6, food: 12e9, stone: 1e9, iron: 30e6 }); const g = marketGame([c]);
+    const build = { food: 500e6, wood: 2e6, gold: 3e6, label: 'upgrade Cottage to L9' };
+    let p = await tplan(c, g, 'config trade:1', { buildReserve: build });
+    const b = act(p, 'marketBuy', 'wood');
+    assert.strictEqual(b.goldFloor, 240e3 + 3e6);
+    has(p.note, 'floor 3.24m: a day of hero salary + 3m for upgrade Cottage to L9');
+    has(p.note, '500m food, 2m wood kept for upgrade Cottage to L9');
+    // food over its 10b max: 2b, less the 500m the construction waits for
+    const src = 'config trade:1\ntradepolicy /type:food /max:10b\ntradepolicy /type:wood /max:30m\ntradepolicy /type:stone /max:1b\ntradepolicy /type:iron /max:30m';
+    c.resource.wood.amount = 30e6;
+    p = await tplan(c, g, src, { buildReserve: build });
+    const s = act(p, 'marketSell', 'food');
+    assert.ok(s, p.note);
+    assert.deepStrictEqual([s.amount, s.keep], [1.5e9, 10.5e9]);
+    // the order keeps it too, whatever amount it was handed
+    const r = await run(g, c, { ...s, amount: 5e9 }, {});
+    assert.strictEqual(r.ok, 1);
+    assert.ok(c.resource.food.amount >= 10.5e9, `food went to ${c.resource.food.amount}`);
+  });
+
+  await t('an emergency sells what it must, but never what the next construction waits for', async () => {
+    const c = trader({ gold: 100e3, wood: 1e6, stone: 0, iron: 0, food: 5e9 }); const g = marketGame([c]);
+    const p = await tplan(c, g, 'config trade:1\ntradepolicy /type:food /min:5b\ntradepolicy /type:wood /min:1m',
+      { buildReserve: { food: 5e9, wood: 1e6, label: 'x' } });
+    has(p.note, 'EMERGENCY');
+    assert.deepStrictEqual(p.actions.filter((a) => a.kind === 'marketSell'), []);
+    has(p.note, "gold of the emergency can't be raised from the book");
+  });
+
+  await t('food is never sold under what the next comfort costs (goal-upkeep), an emergency included; comfort:0 keeps none', async () => {
+    const c = comforting(trader({ food: 5e6 })); const g = marketGame([c]);
+    Object.assign(g.player.playerInfo, PRESTIGE);
+    const src = 'config trade:1\ntradepolicy /type:food /min:0 /max:0';
+    let p = await tplan(c, g, src);
+    let s = act(p, 'marketSell', 'food');
+    assert.deepStrictEqual([s.amount, s.keep], [4e6, 1e6], p.note);
+    has(p.note, 'food never sold under 1m (a prayer)');
+    // the order itself keeps it, whatever amount it was handed
+    assert.strictEqual((await run(g, c, { ...s, amount: 5e6 }, {})).ok, 1);
+    assert.strictEqual(c.resource.food.amount, 1e6);
+    c.resource.food.amount = 5e6;
+    p = await tplan(c, g, `config comfort:0\n${src}`);
+    s = act(p, 'marketSell', 'food');
+    assert.deepStrictEqual([s.amount, s.keep], [5e6, 0]);
+    assert.ok(!p.note.includes('never sold under'), p.note);
+    // an emergency (gold under a day of salary) with food the only thing to sell
+    const e = comforting(trader({ gold: 100e3, food: 1.005e6, wood: 0, stone: 0, iron: 0 })); const g2 = marketGame([e]);
+    Object.assign(g2.player.playerInfo, PRESTIGE);
+    p = await tplan(e, g2, 'config trade:1');
+    has(p.note, 'EMERGENCY');
+    has(p.note, 'food never sold under 1m (a prayer)');
+    s = act(p, 'marketSell', 'food');
+    assert.deepStrictEqual([s.amount, s.keep, s.emergency], [5000, 1e6, true]);
+  });
+
+  await t('the gold the upkeep goals keep is the floor: a blessing\'s gold too when comfortpolicy blesses', async () => {
+    const c = comforting(trader({ wood: 5e6 })); const g = marketGame([c]);
+    Object.assign(g.player.playerInfo, PRESTIGE);
+    const p = await tplan(c, g, 'config trade:1\ncomfortpolicy 15 20 bless');
+    assert.strictEqual(act(p, 'marketBuy', 'wood').goldFloor, 240e3 + 1000);
+    has(p.note, 'floor 241k: a day of hero salary + a blessing');
+  });
+
+  await t('the engine hands the next construction\'s cost to the market and push goals', async () => {
+    const c = trader({ food: 12e9, wood: 30e6, stone: 1e9, iron: 30e6 });
+    c.buildings.push({ typeId: 31, level: 10, positionId: -1, status: 0 }, { typeId: 1, level: 1, positionId: 0, status: 0 });
+    const hub = city('Hub', 110, 100);
+    const g = marketGame([c, hub]);
+    // what the next Cottage level needs (castle.checkOutUpgrade's ConditionBean)
+    g.req = async (cmd) => (cmd === 'castle.checkOutUpgrade'
+      ? { ok: 1, conditionBean: { food: 500e6, wood: 0, stone: 0, iron: 0, gold: 0, population: 0, time: 60, buildings: [], techs: [], items: [] } }
+      : { ok: 1 });
+    await TR.executors.marketRead(g, c, {}, {});
+    const e = new Engine(g, () => {});
+    e.dryRun = true;
+    e.state = {};
+    const src = 'config hero:0,trade:1\nbuild c:2\ntradepolicy /type:food /max:10b\ntradepolicy /type:wood /max:30m\n'
+      + 'tradepolicy /type:stone /max:1b\ntradepolicy /type:iron /max:30m\nkeepresources Hub f:11b';
+    e.goalsFor = (id) => parseGoals(id === c.castleId ? src : 'config hero:0');
+    await e.tick();
+    const rep = e.lastReport[c.castleId];
+    const s = rep.trade.actions.find((a) => a.kind === 'marketSell' && a.res === 'food');
+    assert.ok(s, rep.trade.note);
+    // 2b over the 10b max, less the 500m the Cottage waits for
+    assert.deepStrictEqual([s.amount, s.keep], [1.5e9, 10.5e9]);
+    has(rep.push.note, 'food 12b over 11.5b (kept: 500m for ');
+  });
+
+  await t('config trade:1 with no line trades on NEAT\'s built-in values (the wiki says it does), and says so', async () => {
+    const c = trader({ wood: 5e6 }); const g = marketGame([c]);
+    const p = await tplan(c, g, 'config trade:1');
+    has(p.note, "no tradepolicy or resourcelimits line, so NEAT's built-in values: wood, stone and iron bought up to 20m");
+    assert.ok(act(p, 'marketBuy', 'wood'));
+    const q = await tplan(c, g, 'config trade:1\ntradepolicy /type:gold /min:1m');
+    assert.ok(!q.note.includes("NEAT's built-in values"), q.note);
   });
 
   await t('no spare gold: what another resource holds over /max is sold to buy what is short', async () => {
@@ -993,7 +1246,7 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const p = await tplan(c, g, 'config trade:1', { state });
     assert.strictEqual(act(p, 'marketBuy', 'wood'), undefined, p.note);
     // 5m + 5m in transit + 10m resting = 20m: not short any more
-    has(p.note, 'wood 20m');
+    has(p.note, 'all within the built-in values — food 5b, wood 20m');
   });
 
   await t('our offers are cancelled after 20 minutes (the fee is lost, and the log says so); nobody else\'s ever', async () => {

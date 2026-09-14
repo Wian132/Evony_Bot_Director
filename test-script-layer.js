@@ -83,8 +83,20 @@ t('errors keep their line in the text given and say "script line N" in the layer
   assert.strictEqual(r.errors[0].where, 'script line 3');
   assert.strictEqual(r.errors[0].source, 'script');
   has(r.errors[0].error, 'unknown troop code "zz"');
-  const s = GL.setScriptLayer(id, 13, 'config npc:1\nbogus 2');
-  assert.deepStrictEqual(s.errors.map((e) => `${e.where}: ${e.error}`), ['script line 2: unknown goal "bogus"']);
+  const s = GL.setScriptLayer(id, 13, 'config npc:1\ntroop qq:1');
+  assert.deepStrictEqual(s.errors.map((e) => `${e.where}: ${e.error}`), ['script line 2: TROOP: unknown troop code "qq"']);
+});
+
+t('a line that sets nothing (not a goal, or config with no good pair) is reported and left out', () => {
+  const id = acct();
+  GL.addScriptLine(id, 10, 'config npc:1');
+  let r = GL.addScriptLine(id, 10, 'bogus 2');
+  assert.deepStrictEqual(r.errors.map((e) => `${e.where}: ${e.error}`), ['script, not added: unknown goal "bogus"']);
+  r = GL.addScriptLine(id, 10, 'config nokey');
+  assert.strictEqual(r.errors[0].where, 'script, not added');
+  r = GL.addScriptLine(id, 10, 'config comfort:1,nokey');
+  assert.strictEqual(r.errors[0].where, 'script line 2', 'a line with one good key is kept');
+  assert.strictEqual(GL.getScriptLayer(id, 10).src, 'config npc:1\nconfig comfort:1,nokey');
 });
 
 t('the layer belongs to one account and one city', () => {

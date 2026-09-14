@@ -214,7 +214,14 @@ const SCRIPT_MAX_LINES = 1000;
 const LAYERS = new Map();                     // `${accountId}|${castleId}` -> layer
 const layerKey = (accountId, castleId) => `${accountId || ''}|${castleId}`;
 const splitLines = (text) => String(text ?? '').split(/\r?\n/);
-const isGoalLine = (l) => !!l.replace(/^\s*(\/\/|#).*$/, '').trim();
+// A line is kept only if it sets something: a goal, or at least one config key.
+// "unknown goal", or a config line whose every pair is bad, is reported to the
+// script and left out, rather than repeating the same error in every plan.
+const isGoalLine = (l) => {
+  if (!l.replace(/^\s*(\/\/|#).*$/, '').trim()) return false;
+  const p = parseGoals(l);
+  return p.goals.length > 0 || Object.keys(p.config).length > 0;
+};
 
 // A config line only matters for the keys it sets, and the last one wins, so a
 // key set again drops out of the earlier line (a line left with nothing goes);
@@ -256,15 +263,16 @@ function compactInto(lines, added) {
 
 // What a call hands back: the parse of the text it was given, parseGoals-style
 // ({ errors, lines }, line numbers counted in that text), each error also with
-// `where`, its place in the layer as the plan note names it ("script line 3").
+// `where`: its place in the layer as the plan note names it ("script line 3"),
+// or "script, not added" for a line that set nothing and was left out.
 function answer(accountId, castleId, text, extra = {}) {
   const p = parseGoals(text);
   const layer = LAYERS.get(layerKey(accountId, castleId));
   const at = layer ? layer.lines : [];
   const errors = p.errors.map((e) => {
     const given = splitLines(text)[e.line - 1].trim();
-    const n = at.lastIndexOf(given) + 1;
-    return { ...e, source: 'script', where: n ? `script line ${n}` : `script line ${e.line}` };
+    const n = isGoalLine(given) ? at.lastIndexOf(given) + 1 : 0;
+    return { ...e, source: 'script', where: n ? `script line ${n}` : 'script, not added' };
   });
   return { errors, lines: p.lines, layer: getScriptLayer(accountId, castleId), ...extra };
 }

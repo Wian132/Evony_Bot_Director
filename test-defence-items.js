@@ -88,6 +88,15 @@ async function wireGame({ replies = {}, loggedIn = true, castles = null, items: 
   return { g, c, sent, logs };
 }
 
+// The server's hostile army push: the whole account's list, no castle id; each
+// army names the field it marches on (the engine files it by targetFieldId).
+let armySeq = 700;
+const wireArmy = (to, troop, inMs = 5 * MIN) => ({
+  armyId: armySeq++, direction: 1, missionType: C.MISSION.attack, king: 'Raider', startPosName: 'Raider City',
+  targetFieldId: to.fieldId, reachTime: Date.now() + inMs, troop,
+});
+const pushHostile = (c, armys) => c.emit('cmd', 'server.EnemyArmysUpdate', { armys });
+
 // An engine over that game, with the live goal line in every city.
 function engineFor(g, line = LIVE, logs = []) {
   const e = new Engine(g, (m) => logs.push(String(m)));
@@ -457,15 +466,39 @@ function engineFor(g, line = LIVE, logs = []) {
   });
 
   await t('the live line, a 20k attack inbound: horn, corselet, penicillin through shop.useGoods; no truce', async () => {
-    const { g, sent } = await wireGame();
+    const { g, c, sent } = await wireGame();
     const e = engineFor(g);
-    e.incoming = { 11: [army(20000)] };     // attack detection itself is the engine's business (step 2)
+    pushHostile(c, [wireArmy(g.castles[0], { archer: '20000' })]);
     const r = await e.focus(g.castles[0]);
     const uses = sent.filter((s) => /stopWar|useGoods|useCastleGoods/.test(s.cmd));
     assert.deepStrictEqual(uses.map((s) => [s.cmd, s.data.itemId]),
       [['shop.useGoods', ID.warhorn], ['shop.useGoods', ID.corselet], ['shop.useGoods', ID.penicillin]]);
     assert.ok(r.acted.some((a) => /War Horn \(under attack\) -> ok/.test(a)), r.acted.join(' | '));
     assert.ok(e.state.Home.defence.used.warhorn > 0, 'the ok was not stamped');
+    assert.match(r.defense.note, /truce: loyalty 60 <= 79, held while 1 army\(ies\) march at the account/);
+  });
+
+  await t('through the hostile push: the wave is seen, lands, and the truce goes in the gap after it', async () => {
+    const { g, c, sent } = await wireGame();
+    const e = engineFor(g);
+    pushHostile(c, [wireArmy(g.castles[0], { archer: '20000' })]);
+    await e.focus(g.castles[0]);                        // inbound: buffs, the truce held
+    assert.ok(e.state.Home.defence.attackSeen > 0, 'the real attack did not open the defensecooldown window');
+    assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 0);
+    pushHostile(c, []);                                 // the wave has landed: the list is empty
+    const r = await e.focus(g.castles[0]);
+    assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 1, r.acted.join(' | '));
+    assert.match(r.defense.note, /under attack for another 30 min \(defensecooldown\)/);
+  });
+
+  await t('a junk wave through the push opens no window and spends nothing', async () => {
+    const { g, c, sent } = await wireGame();
+    const e = engineFor(g);
+    pushHostile(c, [wireArmy(g.castles[0], { archer: '4999' })]);
+    const r = await e.focus(g.castles[0]);
+    assert.deepStrictEqual(sent.filter((s) => /stopWar|useGoods|useCastleGoods/.test(s.cmd)), []);
+    assert.ok(!e.state.Home.defence.attackSeen);
+    assert.match(r.defense.note, /\(1 junk under 5000 ignored\)/);
   });
 
   await t('the live line, after the wave, loyalty 60: one truce, signed with the password hash', async () => {

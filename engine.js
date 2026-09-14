@@ -8,7 +8,7 @@ const path = require('path');
 const C = require('./constants');
 const { Game } = require('./game');
 const { parseGoals } = require('./goals');
-const { parseLayered, layerNote } = require('./goallayers');
+const { layerNote, runningGoals, getScriptLayer, scriptNote } = require('./goallayers');
 const M = require('./goalmods');
 const R = require('./rally');
 const S = require('./speedups');
@@ -910,9 +910,10 @@ class Engine {
   // A city runs its own goals and no other city's (db.goals.own). The first
   // time a city is seen it takes a copy of the default it used to fall through to.
   // Around them run the account's global goals, NEAT's PrependGoals before and
-  // AppendGoals after (goallayers.js); null only when all three are empty.
+  // AppendGoals after (goallayers.js), and last any goal lines a script ran here
+  // (the script goal layer, in memory); null only when nothing is left.
   goalsFor(id, name) {
-    return parseLayered(D.goals.layers(this.accountId, id, name));
+    return runningGoals(D.goals, this.accountId, id, name);
   }
 
   // Engine state used to be kept under each city's NAME. Names are not unique —
@@ -1277,7 +1278,8 @@ class Engine {
       // A manual gate needs no goal file to be held — but nothing else may run
       // here: the mayor plan, for one, acts even when no goals are written.
       if (controls.gate === 'open' || controls.gate === 'closed') return this.holdGate(castle, key, controls);
-      return { city: label, note: 'no goals set' };
+      const layer = getScriptLayer(this.accountId, g.castleId(castle));
+      return { city: label, note: layer ? `no goals set — ${scriptNote(layer)}` : 'no goals set' };
     }
     // War Town Mode on the console overrides `config wartown:` for this city;
     // Auto (or nothing set) leaves whatever the goals say.
@@ -1342,6 +1344,9 @@ class Engine {
     const globalsNote = layerNote(parsed);
     if (globalsNote) report.globals = { note: globalsNote };
     report.acted.push(...freeFirst.acted);
+    // goals a script set here: they win until cleared, so every pass says so
+    const layer = getScriptLayer(this.accountId, g.castleId(castle));
+    if (layer) report.script = { note: scriptNote(layer, parsed) };
 
     // war / hero / npc module plans — each is pure and may return null
     for (const { name, mod } of MODULES) {

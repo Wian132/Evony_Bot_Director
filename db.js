@@ -329,11 +329,13 @@ const snapshots = {
 
 // Keys in the goals table that belong to the ACCOUNT, not to a city: the
 // new-city template ('default'), the global goals run before and after every
-// city's own ('prepend', 'append') and the new-city script ('newcity'). See
-// goallayers.js. A city's own key is its castle id, so these never collide with
-// one; they are kept out of the by-NAME lookup, so a city that happens to be
-// called "prepend" is not seeded from the prepend goals.
-const NOT_A_CITY = new Set(['default', 'prepend', 'append', 'newcity']);
+// city's own ('prepend', 'append'), the new-city script ('newcity') and the
+// goal sets a script loads ('set1' to 'set9'). See goallayers.js. A city's own
+// key is its castle id, so these never collide with one; they are kept out of
+// the by-NAME lookup, so a city that happens to be called "prepend" is not
+// seeded from the prepend goals.
+const NOT_A_CITY = new Set(['default', 'prepend', 'append', 'newcity',
+  ...Array.from({ length: 9 }, (_, i) => `set${i + 1}`)]);
 
 const goals = {
   // Try each key in turn for this account, then the account's own default, then

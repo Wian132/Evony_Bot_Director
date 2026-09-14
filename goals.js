@@ -373,8 +373,6 @@ const NOT_IMPLEMENTED = {
     troopincrement: 'troop lines are trained in order, not by increments or ratio yet',
     troopdelbadque: 'badly queued troops are not cancelled yet',
     embassy: 'no goal uses the embassy yet',
-    trainint: 'no goal hires heroes yet, so nothing reads this key',
-    trainpol: 'no goal hires heroes yet, so nothing reads this key',
     fortification: 'fortification lines cannot be switched off this way yet',
     fortsusereserved: 'fortification orders do not keep a food reserve yet',
     wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',

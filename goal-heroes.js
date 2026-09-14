@@ -588,13 +588,13 @@ function spamHeroes(ctx) {
   return pool.filter((h) => specs.some((s) => matchHero(h, s, pool)));
 }
 
-// config training / training10 (wiki): NPC farming drops from every 8h to 1h.
+// config training / training10 (wiki): NPC farming drops from every 8.4h to 1h.
+// The NPC plan's own rule (goal-npc cycleFor: training for levels 1-9,
+// training10 for 10, then farmingpolicy, config farmingcycle, 8.4h), so this
+// note never says something the farming does not do. Required here, not at the
+// top: goal-npc requires this module.
 function npcCooldownMs(ctx, npcLevel) {
-  const cfg = ctx.config || {};
-  const EIGHT = 8 * 3600e3, ONE = 3600e3;
-  if (Number(npcLevel) === 10) return num(cfg.training10) === 1 ? ONE : EIGHT;
-  const t = num(cfg.training);
-  return (t === 1 || t === 2) ? ONE : EIGHT;
+  return require('./goal-npc')._internals.cycleFor(ctx, Number(npcLevel)).maxMs;
 }
 // config training:2 means "farm hourly, but send no transports".
 function npcUsesTransports(ctx) { return num((ctx.config || {}).training) !== 2; }

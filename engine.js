@@ -22,6 +22,9 @@ const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', '
   catch (e) { console.error(`goal module ${p} not loaded: ${e.message}`); return null; }
 }).filter(Boolean);
 
+// NPC farming asks for research levels before it plans (Engine.accountTechs)
+const NPC_MOD = (MODULES.find((m) => m.name === './goal-npc') || {}).mod || null;
+
 // action.kind -> executor, first module wins
 const MODULE_EXECUTORS = {};
 for (const { mod } of MODULES) {
@@ -1643,6 +1646,17 @@ class Engine {
     }
   }
 
+  // Research is the account's, not a city's: the list is read through a city,
+  // but its levels are the lord's, and only the research running is placed in a
+  // city (AvailableResearchListBean.castleId; Technology.as shows the others'
+  // under "other castles"). So any city's reading that is still fresh will do,
+  // and five farming cities cost one read, not five.
+  async accountTechs(castle, cityState = {}) {
+    const fresh = Object.values(this.techLevels || {})
+      .find((t) => t && t.levels && !t.error && Date.now() - n(t.at) < TECH_TTL);
+    return fresh || this.readTechs(castle, cityState);
+  }
+
   async focus(castle) {
     const g = this.game;
     // State and reports are kept by castle id (see migrateStateKeys); the name
@@ -1690,6 +1704,9 @@ class Engine {
       // how many armies are inbound to each of our cities (by castle id) —
       // hiding uses this to avoid running INTO a city that is itself under attack
       incomingByCastle: countsOf(incoming),
+      // when the console last came back from maintenance: goal-npc forgets its
+      // farming history then (wiki Npc)
+      maintEndedAt: this.maintEndedAt || 0,
     };
     // Hiding and the gate first, ahead even of the reads below (urgentWar).
     const urgent = await this.urgentWar(ctx, castle, cityState, book);
@@ -1711,6 +1728,9 @@ class Engine {
     if (parsed.config.building !== 0 && parsed.goals.some((x) => x.name === 'build' && x.needsTech)) {
       ctx.techs = await this.readTechs(castle, cityState);
     }
+    // NPC farming at levels 1-5 needs them too (wiki FAQ: Military Tradition,
+    // Archery, Horseback Riding — goal-npc researchCheck).
+    if (!ctx.techs && NPC_MOD && NPC_MOD.needsResearch(parsed.config)) ctx.techs = await this.accountTechs(castle, cityState);
     // The builder's next order, its requirements read and any prerequisite put
     // first; its cost stays out of the troop and wall batches sized below.
     const build = await this.resolveBuild(ctx, castle, cityState, buildPlan(ctx, (fort && fort.wallsFor) || 0));
@@ -1756,7 +1776,10 @@ class Engine {
       (report.build && report.build.actions && report.build.actions.length)
       || (report.fort && report.fort.orders && report.fort.orders.length)
     );
-    report.mayor = M.mayorPlan(ctx, willTrain ? 'train' : willBuild ? 'build' : 'idle');
+    // The heroes NPC farming sends this slice: under config trainpol:1 the mayor
+    // plan stands another hero in for the politics hero that leaves (wiki TrainPol).
+    const leaving = new Set(((report.npc && report.npc.actions) || []).map((a) => a.heroId));
+    report.mayor = M.mayorPlan(ctx, willTrain ? 'train' : willBuild ? 'build' : 'idle', { leaving });
     // The mayor plan read the heroes before the hide march took one of them out.
     if (urgent.hid && report.mayor && report.mayor.actions && report.mayor.actions.length) {
       report.mayor = { note: `${report.mayor.note}; held this slice — the hide march just left`, actions: [] };

@@ -493,8 +493,10 @@ const mapCache = {
     const levelStmt = db.prepare(
       `INSERT INTO tile_levels (fieldId,at,level,kind) VALUES (?,?,?,?)
        ON CONFLICT(fieldId,at) DO UPDATE SET level=excluded.level`);
-    const prevLevel = new Map(
-      all('SELECT id, level FROM map_cache WHERE level IS NOT NULL').map((r) => [Number(r.id), Number(r.level)]));
+    // Each tile's old level by its id, not the whole table up front: the table
+    // also holds every flat and valley the background map scan reads, and that
+    // scan writes a few blocks every minute.
+    const prevStmt = db.prepare('SELECT level FROM map_cache WHERE id = ? AND level IS NOT NULL');
     db.exec('BEGIN');
     try {
       for (const t of tiles) {
@@ -503,7 +505,8 @@ const mapCache = {
         // unowned tiles becomes observable instead of being silently lost.
         const lvl = n(t.level);
         if (lvl !== null) {
-          const prev = prevLevel.get(Number(t.id));
+          const row = prevStmt.get(Number(t.id));
+          const prev = row ? Number(row.level) : undefined;
           if (prev === undefined || prev !== lvl) {
             levelStmt.run(Number(t.id), Number(t.seen || now()), lvl, bind(t.kind));
           }
@@ -528,6 +531,28 @@ const mapCache = {
     }
     const u = one('SELECT max(seen) m FROM map_cache');
     return { updatedAt: (u && u.m) || 0, castles };
+  },
+
+  // The NPC camps alone, in the same shape as asJson's entries. NPC farming
+  // reads these every slice; the rest of the table (flats, valleys, players)
+  // stays unparsed.
+  npcs() {
+    return all("SELECT json FROM map_cache WHERE kind = 'npc' OR npc = 1")
+      .map((r) => { try { return JSON.parse(r.json); } catch { return null; } }).filter(Boolean);
+  },
+
+  // When one map block (the size x size square at x1,y1) was last read, from the
+  // tiles it left here: { at, tiles, unleveled } — at 0 when none are cached.
+  // `unleveled` counts NPC tiles cached without a level (an old mapscan.js
+  // sweep), which the background scan reads again. The field id is y*800+x, so
+  // the block is one primary-key range filtered by column.
+  blockSeen(x1, y1, size = 20) {
+    const W = 800;
+    const r = one(`SELECT max(seen) m, count(*) c,
+        sum(CASE WHEN (kind = 'npc' OR npc = 1) AND level IS NULL THEN 1 ELSE 0 END) u
+      FROM map_cache WHERE id BETWEEN ? AND ? AND (id % ${W}) BETWEEN ? AND ?`,
+    Number(y1) * W + Number(x1), (Number(y1) + size - 1) * W + Number(x1) + size - 1, Number(x1), Number(x1) + size - 1);
+    return { at: (r && n(r.m)) || 0, tiles: (r && n(r.c)) || 0, unleveled: (r && n(r.u)) || 0 };
   },
 
   count() { return n(one('SELECT count(*) c FROM map_cache').c) || 0; },

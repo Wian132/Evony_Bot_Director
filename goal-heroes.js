@@ -7,6 +7,8 @@
 //   homeheroes .............................. how many heroes stay home when farming
 //   spamheroes .............................. which heroes may be used for spam/loyalty hits
 //   config feastinghallspace ................ how many hero slots stay free
+//   config fasthero ......................... hire from the inn to the config hero makeup
+//   config hero:1+ .......................... also rewards heroes below 100 loyalty with gold
 //   config nomayor / hero / training / training10
 //
 // Wiring (one line each, in the files that own them):
@@ -27,6 +29,10 @@
 //                         prisoner still in the cell is status 4 and is spotted
 //                         without it
 //   state.hallReadAt      when the inn was last asked for the hall's free slots
+//                         (and its offers: the hiring step reads on this clock)
+//   state.lastHire        { at, name, idsBefore } a hire not yet on the roster
+//   state.rewards         { heroId: { at, loyalty, ok, msg } } the last gold reward
+//                         each hero got, and whether the server took it
 //
 // Sources (all read offline):
 //   src/scripts/com/evony/client/action/HeroCommand.as    command + param names
@@ -308,6 +314,23 @@ function heroStringGoal(name) {
 }
 
 const parsers = {
+  // config fasthero:<base>   (wiki FastHero; hirePlan reads it). goals.js checks
+  // a config key's value through its module's config parser, so a base that is
+  // not a number 0 or more is an error in the editor, not hiring left off
+  // without a word. `value` is what goals.js made of it: a number when NUM could
+  // read it, the text otherwise.
+  fasthero: {
+    kind: 'config', multi: false,
+    parse(value) {
+      const errors = [];
+      const n = typeof value === 'number' ? value : NaN;
+      if (!Number.isFinite(n) || n < 0) {
+        errors.push(`fasthero is the hero base to hire at, a number 0 (off) or more — e.g. fasthero:65, or 120+ to judge attack + intel - level; got "${value === undefined ? '' : value}"`);
+      }
+      return { base: Number.isFinite(n) && n >= 0 ? n : null, errors };
+    },
+  },
+
   // keepheroes <hero-string> [/always] [/max:<n>] [/reset]
   //   Heroes matching the string are never fired. /always lets the bot fire
   //   everything that does NOT match (default: only fire to free a slot).
@@ -424,6 +447,8 @@ const DEFAULT_SPAM = 'any:base<=69,level<50';
 
 // config hero:<switch>   wiki: Hero
 //   0 off, 1 level & reward only, XY = keep X politics + Y intel, rest attack.
+// 1 and up level heroes, spend their points and reward them (rewardPlan); XY
+// also fires for room, and hires when config fasthero is set (hirePlan).
 function heroPolicy(config = {}) {
   const raw = config.hero;
   if (raw === undefined || raw === null || raw === '') {
@@ -432,7 +457,7 @@ function heroPolicy(config = {}) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return { switch: raw, manage: false, mayFire: false, keepPol: 0, keepInt: 0, why: `config hero:${raw} not understood` };
   if (n === 0) return { switch: 0, manage: false, mayFire: false, keepPol: 0, keepInt: 0, why: 'config hero:0 — hero management off' };
-  if (n === 1) return { switch: 1, manage: true, mayFire: false, keepPol: 0, keepInt: 0, why: 'config hero:1 — level & reward only, never fire' };
+  if (n === 1) return { switch: 1, manage: true, mayFire: false, keepPol: 0, keepInt: 0, why: 'config hero:1 — level & reward only, never fire or hire' };
   if (n >= 10 && n <= 99) return { switch: n, manage: true, mayFire: true, keepPol: Math.floor(n / 10), keepInt: n % 10, why: `config hero:${n} — keep ${Math.floor(n / 10)} politics + ${n % 10} intel, rest attack` };
   return { switch: n, manage: true, mayFire: false, keepPol: 0, keepInt: 0, why: `config hero:${n} is not one of 0/1/10..22 — treating it as level-only` };
 }
@@ -499,14 +524,20 @@ function feastingHall(ctx) {
     if (fh && Number(fh.level) > 0) { capacity = Number(fh.level); source = `feasting hall L${fh.level} (inferred: 1 slot per level)`; }
   }
   // wiki FeastingHallSpace: the wanted free slots, PLUS one the bot holds for the
-  // TrainingHero "regardless of this goal". It is where HIRING stops; it is never
-  // a reason to fire (wiki: "the bot does not automatically hire heroes just
-  // because this goal is set"; it fires only when a task needs a slot).
-  const wantFree = Math.max(0, num(ctx.config && ctx.config.feastinghallspace)) + 1;
+  // TrainingHero. NEAT's city.checkFeastingHallSpace "counts one spot in Hall for
+  // Training Hero if not in that town" (wiki City), so that slot is held while a
+  // training hero on this city's round is in another city (trainingSlot) — not
+  // while it is here, sitting in its own slot, and not when none comes here.
+  // It is where HIRING stops; it is never a reason to fire (wiki: "the bot does
+  // not automatically hire heroes just because this goal is set"; it fires only
+  // when a task needs a slot).
+  const training = trainingSlot(ctx);
+  const spaces = Math.max(0, num(ctx.config && ctx.config.feastinghallspace));
+  const wantFree = spaces + training.reserve;
   const used = heroes.length;
   const free = capacity === null ? null : Math.max(0, capacity - used);
   return {
-    capacity, source, used, free, wantFree,
+    capacity, source, used, free, wantFree, spaces, training,
     short: free === null ? null : Math.max(0, wantFree - free),
     hireBudget: free === null ? 0 : Math.max(0, free - wantFree),
     // when the server's count was read, and whether that is recent enough to
@@ -514,6 +545,20 @@ function feastingHall(ctx) {
     readAt: seen ? seen.at : null,
     fresh: !!seen && Date.now() - seen.at < HALL_READ_MS,
   };
+}
+
+// The slot held for a training hero: 1 while one this city lists is due here
+// from another city (trainingHeroesDue), else 0.
+function trainingSlot(ctx) {
+  const due = trainingHeroesDue(ctx);
+  return due.length ? { reserve: 1, hero: due[0].hero, from: due[0].from } : { reserve: 0, hero: null, from: null };
+}
+
+// "feastinghallspace 2 + 1 for traininghero OTTO (now in F1)" — what the kept
+// slots are for, for the notes.
+function keptText(hall) {
+  const t = hall.training || { reserve: 0 };
+  return `feastinghallspace ${hall.spaces || 0}` + (t.reserve ? ` + 1 for traininghero ${t.hero} (now in ${t.from})` : '');
 }
 
 // ============================================================================
@@ -642,16 +687,20 @@ function trainingHeroesDue(ctx) {
 // worst attack score". Only idle heroes (FIREABLE) — never the mayor, anyone
 // away or a prisoner — and never a training hero. A captured hero we have since
 // persuaded is idle like any other and is judged by keepcapturedheroes.
-function fireOrder(ctx, state, policy, rules) {
+// For a hire (the hiring step): `extra` are inn offers counted as if already
+// here when the best politics and intel heroes are set aside, so a better
+// politics offer frees the weak politics hero it would replace; `eligible`
+// narrows who may go (fasthero: only heroes below its bar).
+function fireOrder(ctx, state, policy, rules, { extra = [], eligible = null } = {}) {
   const heroes = ((ctx.castle && ctx.castle.heros) || []);
   const trainees = trainingHeroNames(ctx);
   const reserved = new Set();
   const reserveBest = (attr, count) => {
-    heroes.slice()
-      .filter((h) => !reserved.has(h.id))
+    heroes.concat(extra)
+      .filter((h) => !reserved.has(h))
       .sort((a, b) => attrOf(b, attr) - attrOf(a, attr))
       .slice(0, Math.max(0, count))
-      .forEach((h) => reserved.add(h.id));
+      .forEach((h) => reserved.add(h));
   };
   reserveBest('management', policy.keepPol);
   reserveBest('stratagem', policy.keepInt);
@@ -659,7 +708,8 @@ function fireOrder(ctx, state, policy, rules) {
     .filter((h) => FIREABLE.has(num(h.status)))
     .filter((h) => !trainees.has(String(h.name || '').toLowerCase()))
     .filter((h) => !rules.protectedBy(h))
-    .filter((h) => !reserved.has(h.id))
+    .filter((h) => !reserved.has(h))
+    .filter((h) => !eligible || eligible(h))
     .sort((a, b) => attrOf(a, 'power') - attrOf(b, 'power'));
 }
 
@@ -709,8 +759,10 @@ const readHallAction = (ctx, why) => ({
 // hall, blockers?, fireable? }. It asks the inn for the hall's free slots when
 // they have never been read here, and again before a fire when the reading is
 // older than HALL_READ_MS — never more often than that per city — and fires by
-// the NEAT rule (fireOrder) only once the hall is short.
-function makeRoom(ctx, state = {}, { need = 1, reason = 'a hero needs a slot' } = {}) {
+// the NEAT rule (fireOrder) only once the hall is short. The hiring step also
+// passes `extra` and `eligible` (see fireOrder) and `eligibleWhy`, what the note
+// says of heroes `eligible` turned away.
+function makeRoom(ctx, state = {}, { need = 1, reason = 'a hero needs a slot', extra = [], eligible = null, eligibleWhy = '' } = {}) {
   const policy = heroPolicy(ctx.config || {});
   const heroes = ((ctx.castle && ctx.castle.heros) || []);
   const hall = feastingHall(ctx);
@@ -738,8 +790,8 @@ function makeRoom(ctx, state = {}, { need = 1, reason = 'a hero needs a slot' } 
   const at = `the hall is full (${hall.used}/${hall.capacity}, ${hall.source})`;
   const blockers = fireBlockers(ctx, state, policy);
   if (blockers.length) return { note: say(`${at}, not firing: ${blockers[0]}${prisonerNote(ctx)}`), blockers, hall, actions: [] };
-  const fireable = fireOrder(ctx, state, policy, rules);
-  if (!fireable.length) return { note: say(`${at}, but every hero is protected or busy${prisonerNote(ctx)}`), hall, fireable, actions: [] };
+  const fireable = fireOrder(ctx, state, policy, rules, { extra, eligible });
+  if (!fireable.length) return { note: say(`${at}, but every hero is protected or busy${eligibleWhy ? ` or ${eligibleWhy}` : ''}${prisonerNote(ctx)}`), hall, fireable, actions: [] };
   const take = Math.min(short, keepSwitches(ctx.goals).perPass, fireable.length, heroes.length - 1);
   const actions = fireActions(fireable.slice(0, take), reason, rules.keepDesc);
   return { note: say(`${at} -> firing ${actions.length} of ${fireable.length} fireable${prisonerNote(ctx)}`), hall, fireable, actions };
@@ -952,7 +1004,7 @@ function feastingHallPlan(ctx) {
   if (hall.capacity === null) {
     return { note: `feastinghallspace:${num(cfg.feastinghallspace)} — ${hall.used} hero(es), hall size unknown (no Feasting Hall in the building list, and the inn not read), so no hiring`, hall, actions: [] };
   }
-  const line = `feastinghallspace:${num(cfg.feastinghallspace)} — ${hall.used}/${hall.capacity} used, ${hall.free} free, want ${hall.wantFree} free (incl. 1 for traininghero; ${hall.source})`;
+  const line = `feastinghallspace:${num(cfg.feastinghallspace)} — ${hall.used}/${hall.capacity} used, ${hall.free} free, want ${hall.wantFree} free (${keptText(hall)}; ${hall.source})`;
   if (hall.short > 0) return { note: `${line} — ${hall.short} slot(s) short of it: no hiring, and nobody is fired for it`, hall, actions: [] };
   return { note: `${line} — may hire ${hall.hireBudget} more`, hall, actions: [] };
 }
@@ -1025,6 +1077,305 @@ function spamHeroesPlan(ctx) {
   };
 }
 
+// ------------------------------------------------------------------ hiring
+// config fasthero:<base>   wiki: FastHero, with Hero and FeastingHallSpace.
+//
+// "with config hero:10 set, you want the bot to keep 1 politics hero and the
+// rest attack heroes. With config fasthero:65 set, the bot will attempt to hire
+// & fire until it has found 1 65+ base politics hero and the rest 65+ base
+// attack heroes." Per city, one hire a pass at most:
+//   - only with config hero:10 or higher, and with over 1,000,000 gold left in
+//     the city once the hire's own level x 1000 is paid (Game.hireCost);
+//   - the inn is read on the hall's clock (at most every HALL_READ_MS per city,
+//     shared with makeRoom), and only when a hire could follow;
+//   - the offer hired is the best one the makeup wants — a politics hero while
+//     fewer than X good ones are here, an intel hero while fewer than Y, else an
+//     attack hero — with a base of at least fasthero: highest base first, then
+//     the cheapest. Offers are judged by Game.heroBase, the formula the roster
+//     is judged by, so a hire never lands below the bar;
+//   - hiring stops at the hall's kept slots: feastinghallspace, plus one while a
+//     training hero is on its way here (feastingHall);
+//   - with the hall at that limit, one idle hero below the bar that no keep rule
+//     protects is fired for a qualifying offer (makeRoom: the X best politics and
+//     Y best intel heroes, the offer counted among them, are set aside and the
+//     worst attack goes — never the mayor, a hero away, a prisoner or a training
+//     hero), and the offer is hired on the next pass, into the slot the fire made.
+// At 120 or more a hero is judged on attack + intel - level (wiki: 65 attack and
+// 65 intel at level 10 is 120; unspent points count, as in Game.heroBase), and
+// an intel-led hero fills an attack slot. NEAT then fires from "all available
+// heroes", which takes in the mayor; this bot never fires the mayor, so it
+// fires from the idle heroes there too.
+//
+// Left out on purpose: refreshing the inn — a refresh spends a Hero Hunting or
+// game coins (Tavern.as:473-528), and the FastHero page names no refresh (it
+// advises a level-1 inn, to keep hires cheap), so new offers come only as the
+// inn changes its list; an offer that asks for an item (a medal or jewellery,
+// HireHero.as:744-747) — a hire spends no items unasked; and hiring a hero
+// below the bar only to fire it again, which the wiki's "hire & fire" may mean
+// NEAT does, but which spends gold on a hero known to be unwanted.
+const FAST_GOLD_FLOOR = 1e6;
+const HIRE_CONFIRM_MS = 10 * 60e3;
+const ROLE_WORD = { management: 'politics', stratagem: 'intel', power: 'attack' };
+
+const fmt = (x) => Math.round(num(x)).toLocaleString('en-US');
+const ago = (ms) => (ms < 90e3 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${Math.round(ms / 60000)} min`);
+
+// config fasthero:<base>, read; null when it is not set.
+function fastHeroMode(config = {}) {
+  const raw = config.fasthero;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return { base: null, bad: true, why: `config fasthero:${raw} is not a number — no hiring` };
+  if (n === 0) return { base: 0, off: true, why: 'config fasthero:0 — automatic hiring off' };
+  return { base: n, combined: n >= 120, word: n >= 120 ? 'attack + intel - level' : 'base' };
+}
+
+// What fasthero judges a hero, or an inn offer, by.
+function fastScore(h, mode) {
+  if (mode && mode.combined) return attrOf(h, 'power') + attrOf(h, 'stratagem') - num(h.level) + num(h.remainPoint);
+  return heroBase(h);
+}
+
+// This city's inn offers as last read (Game.noteInn), or null.
+function innSeen(game, castle) {
+  if (!game || !game.innSeen || !castle) return null;
+  const id = typeof game.castleId === 'function' ? game.castleId(castle) : (castle.castleId ?? castle.id);
+  const s = game.innSeen[id];
+  return s && Array.isArray(s.offers) ? s : null;
+}
+
+// The good heroes here by role (the top attribute), and what the makeup still
+// wants. A prisoner is not ours, and a training hero is only passing through.
+function makeupOf(ctx, mode, policy) {
+  const trainees = trainingHeroNames(ctx);
+  const have = { management: 0, stratagem: 0, power: 0 };
+  for (const h of ((ctx.castle && ctx.castle.heros) || [])) {
+    if (num(h.status) === STATUS.CAPTIVE || trainees.has(String(h.name || '').toLowerCase())) continue;
+    if (fastScore(h, mode) >= mode.base) have[dominant(h)]++;
+  }
+  return {
+    have,
+    need: {
+      management: Math.max(0, policy.keepPol - have.management),
+      stratagem: Math.max(0, policy.keepInt - have.stratagem),
+    },
+  };
+}
+
+// Politics and intel heroes up to the makeup; the rest is attack (at 120+,
+// attack or intel: the combined score is the point there).
+function roleWanted(role, makeup, mode) {
+  if (role === 'management') return makeup.need.management > 0;
+  if (role === 'stratagem') return !!mode.combined || makeup.need.stratagem > 0;
+  return true;
+}
+
+// The offers worth hiring, best first — a wanted politics hero, then intel,
+// then the rest, each by score and then cost — and why the others are not.
+function judgeOffers(offers, { mode, makeup, gold }) {
+  const ok = [], passed = [];
+  for (const o of offers || []) {
+    if (!o || typeof o.name !== 'string' || !o.name || !Number.isFinite(Number(o.level))) continue;
+    const role = dominant(o), score = fastScore(o, mode), cost = Game.hireCost(o);
+    const who = `${o.name} (${ROLE_WORD[role]}, ${mode.word} ${score}, L${num(o.level)})`;
+    if (score < mode.base) { passed.push(`${who} is below ${mode.base}`); continue; }
+    if (!roleWanted(role, makeup, mode)) { passed.push(`${who}: no more ${ROLE_WORD[role]} heroes wanted`); continue; }
+    if (num(o.itemAmount) > 0) { passed.push(`${who} asks for ${num(o.itemAmount)} x ${o.itemId} — a hire spends no items`); continue; }
+    if (!(gold - cost > FAST_GOLD_FLOOR)) { passed.push(`${who} costs ${fmt(cost)} gold, leaving ${fmt(gold - cost)}`); continue; }
+    ok.push({ o, role, score, cost, who });
+  }
+  const rank = (x) => (x.role === 'management' ? 0 : x.role === 'stratagem' && !mode.combined ? 1 : 2);
+  ok.sort((a, b) => rank(a) - rank(b) || b.score - a.score || a.cost - b.cost);
+  return { ok, passed };
+}
+
+// A hire arrives on the roster by a server.HeroUpdate push. Until it has, the
+// hall's count is a slot out, so nothing more is hired; one that never shows in
+// HIRE_CONFIRM_MS is let go, and the inn is read afresh before the next hire.
+function hireConfirm(state, heroes) {
+  const h = state.lastHire;
+  if (!h) return {};
+  const before = new Set((h.idsBefore || []).map(String));
+  const since = Date.now() - num(h.at);
+  if (heroes.some((x) => String(x.name) === String(h.name) && !before.has(String(x.id)))) {
+    delete state.lastHire;
+    return { note: `${h.name}, hired ${ago(since)} ago, is on the roster` };
+  }
+  if (since < HIRE_CONFIRM_MS) return { wait: `hired ${h.name} ${ago(since)} ago — waiting for it on the roster before another hire` };
+  delete state.lastHire;
+  state.hireUnconfirmedAt = Date.now();
+  return { note: `${h.name}, hired ${ago(since)} ago, never showed on the roster — the inn is read afresh before another hire` };
+}
+
+const innReadAction = (ctx) => ({
+  kind: 'readHall',
+  label: `read ${(ctx.castle && ctx.castle.name) || 'this city'}'s inn: its offers and free hero slots (fasthero)`,
+});
+
+function hirePlan(ctx, state = {}) {
+  const cfg = ctx.config || {};
+  const mode = fastHeroMode(cfg);
+  if (!mode) return null;
+  if (mode.bad || mode.off) return { note: mode.why, actions: [] };
+  const head = `fasthero:${mode.base}${mode.combined ? ' (attack + intel - level)' : ''}`;
+  const policy = heroPolicy(cfg);
+  if (!policy.mayFire) return { note: `${head}: hires only with config hero:10 or higher — ${policy.why}`, actions: [] };
+  const castle = ctx.castle || {};
+  const heroes = castle.heros || [];
+  const problems = rosterProblems(castle);
+  if (problems.length) return { note: `${head}: waiting — ${problems[0]}`, actions: [] };
+
+  const confirm = hireConfirm(state, heroes);
+  if (confirm.wait) return { note: `${head}: ${confirm.wait}`, actions: [] };
+  const bits = confirm.note ? [confirm.note] : [];
+  const say = (s) => `${head}: ${bits.concat(s).join(' | ')}`;
+
+  // wiki FastHero: "You must also have over 1 million gold in your city."
+  const gold = Number(castle.resource && castle.resource.gold);
+  if (!Number.isFinite(gold)) return { note: say('the city\'s gold is not known yet'), actions: [] };
+  if (gold <= FAST_GOLD_FLOOR) return { note: say(`${fmt(gold)} gold here — it hires only with over ${fmt(FAST_GOLD_FLOOR)} in the city`), actions: [] };
+
+  const hall = feastingHall(ctx);
+  const room = hall.free === null ? null : hall.free - hall.wantFree;
+  if (hall.free !== null) bits.push(`hall ${hall.used}/${hall.capacity}, ${hall.free} free, keeping ${hall.wantFree} (${keptText(hall)})`);
+  if (room !== null && room < 0) return { note: say(`${-room} slot(s) short of that — no hiring`), hall, actions: [] };
+
+  const makeup = makeupOf(ctx, mode, policy);
+  bits.push(`${mode.word} ${mode.base}+ here: ${makeup.have.management} pol, ${makeup.have.stratagem} int, ${makeup.have.power} att ` +
+    `(config hero:${policy.switch} keeps ${policy.keepPol} pol + ${policy.keepInt} int, rest attack)`);
+
+  // At the limit only a swap brings a better hero in, so the inn is worth a
+  // read only when some hero below the bar would be free to go.
+  const below = (h) => fastScore(h, mode) < mode.base;
+  if (room === 0) {
+    if (keepSwitches(ctx.goals).always) return { note: say('full to its limit; keepheroes /always does the firing here, so fasthero hires only into a free slot'), hall, actions: [] };
+    const blockers = fireBlockers(ctx, state, policy);
+    if (blockers.length) return { note: say(`full to its limit, and no room can be made: ${blockers[0]}`), hall, actions: [] };
+    const rules = keepRules(ctx, state);
+    const trainees = trainingHeroNames(ctx);
+    const junk = heroes.filter((h) => FIREABLE.has(num(h.status)) && below(h) && !rules.protectedBy(h) && !trainees.has(String(h.name || '').toLowerCase()));
+    if (!junk.length) return { note: say(`full to its limit, and no idle hero below ${mode.base} may go (keep: ${rules.keepDesc})`), hall, actions: [] };
+  }
+
+  // The offers, on the hall's clock: one read every HALL_READ_MS at most.
+  const inn = innSeen(ctx.game, castle);
+  const innAge = inn ? Date.now() - inn.at : null;
+  const fresh = !!inn && innAge < HALL_READ_MS && !(state.hireUnconfirmedAt && inn.at < state.hireUnconfirmedAt);
+  if (fresh && state.hireUnconfirmedAt) delete state.hireUnconfirmedAt;       // read afresh since: done with
+  if (!fresh || hall.free === null) {
+    if (mayReadHall(state)) {
+      return { note: say(`reading the inn for its offers${hall.free === null ? ' and the hall\'s size' : ''}`), hall, actions: [innReadAction(ctx)] };
+    }
+    const next = ago(Math.max(0, HALL_READ_MS - (Date.now() - num(state.hallReadAt))));
+    if (hall.free === null) return { note: say(`hall size unknown, so no hiring — the inn is asked again in ${next}`), hall, actions: [] };
+    return { note: say(`${inn ? `the offers are ${ago(innAge)} old` : 'the inn has not answered'} — it is read again in ${next}`), hall, actions: [] };
+  }
+
+  const { ok, passed } = judgeOffers(inn.offers, { mode, makeup, gold });
+  const innLine = `inn read ${ago(innAge)} ago, ${inn.offers.length} offer(s)`;
+  if (!ok.length) {
+    const why = passed.length ? `: ${passed.slice(0, 3).join('; ')}${passed.length > 3 ? ` (+${passed.length - 3} more)` : ''}` : '';
+    return { note: say(`${innLine}, none to hire${why}`), hall, actions: [] };
+  }
+  const pick = ok[0];
+  const hire = {
+    kind: 'hireHero', heroName: pick.o.name, level: num(pick.o.level), cost: pick.cost, role: pick.role, score: pick.score,
+    label: `hire ${pick.who} from the inn for ${fmt(pick.cost)} gold — fasthero:${mode.base}, config hero:${policy.switch}`,
+  };
+  if (room >= 1) return { note: say(`${innLine} -> hiring ${pick.o.name}`), hall, offer: pick, actions: [hire] };
+
+  // Full to the limit: one hero below the bar goes now; the offer comes in on
+  // the next pass, into the slot that leaves.
+  const made = makeRoom(ctx, state, {
+    need: hall.wantFree + 1,
+    reason: `fasthero: room for ${pick.who}`,
+    extra: [pick.o], eligible: below, eligibleWhy: `already at ${mode.base} or more`,
+  });
+  return { note: say(`${innLine} | ${made.note}`), hall, offer: pick, fireable: made.fireable, actions: made.actions };
+}
+
+// ----------------------------------------------------------------- rewards
+// config hero:1 and up. wiki Hero: "1 - Level up & reward heroes only"; wiki
+// RewardHeroes: "Finds and rewards all heroes with loyalty below 100, using
+// gold." A gold reward (hero.awardGold, the Reward window's gold choice,
+// AwardHero.as:647) costs the hero's level x 100 (AwardHero.as:693). Per pass:
+//   - the hero with the lowest loyalty first (then the higher level) the city
+//     can pay for while keeping a day of hero salaries back — the server's
+//     herosSalary an hour, or level x 20 a hero (HireHero.as:598) — so a
+//     reward never brings on the gold shortage that costs loyalty;
+//   - REWARDS_PER_PASS at most, as each is one of the slice's few actions;
+//   - never a prisoner (not ours), never a hero whose loyalty is not known;
+//   - a reward the server refused is not asked again for REWARD_HOLD_MS, and
+//     one whose new loyalty has not shown on the roster (its HeroUpdate push) is
+//     waited on, for up to that long.
+// The wiki's rewards are gold, so medals (hero.useItem with hero.loyalty.N) are
+// never used here; useheroitem <hero> <medal> gives one by hand.
+const REWARDS_PER_PASS = 1;
+const REWARD_RESERVE_HOURS = 24;
+const REWARD_HOLD_MS = 60 * 60e3;
+const REWARD_CONFIRM_MS = 10 * 60e3;
+
+const loyaltyOf = (h) => (h && h.loyalty !== undefined && h.loyalty !== null && h.loyalty !== '' && Number.isFinite(Number(h.loyalty)) ? Number(h.loyalty) : null);
+
+// Gold a city keeps back from rewards: a day of its heroes' salaries.
+function salaryReserve(castle) {
+  const res = (castle && castle.resource) || {};
+  const pushed = Number(res.herosSalary);
+  const own = ((castle && castle.heros) || []).filter((h) => num(h.status) !== STATUS.CAPTIVE);
+  const perHour = Number.isFinite(pushed) && pushed > 0 ? pushed : own.reduce((s, h) => s + Game.heroSalary(h), 0);
+  return { perHour, reserve: perHour * REWARD_RESERVE_HOURS };
+}
+
+function rewardPlan(ctx, state = {}) {
+  const policy = heroPolicy(ctx.config || {});
+  if (!policy.manage) return null;
+  const castle = ctx.castle || {};
+  const heroes = castle.heros || [];
+  if (rosterProblems(castle).length) return null;
+  // forget heroes that left, and records past their hold
+  const rec = state.rewards && typeof state.rewards === 'object' ? state.rewards : {};
+  const here = new Set(heroes.map((h) => String(h.id)));
+  for (const id of Object.keys(rec)) {
+    if (!here.has(String(id)) || Date.now() - num(rec[id] && rec[id].at) >= REWARD_HOLD_MS) delete rec[id];
+  }
+  if (Object.keys(rec).length) state.rewards = rec; else delete state.rewards;
+
+  const low = heroes
+    .filter((h) => num(h.status) !== STATUS.CAPTIVE && loyaltyOf(h) !== null && loyaltyOf(h) < 100)
+    .sort((a, b) => loyaltyOf(a) - loyaltyOf(b) || num(b.level) - num(a.level));
+  if (!low.length) return null;
+  const head = `rewards: ${low.length} hero(es) below 100 loyalty (${low.map((h) => `${h.name} ${loyaltyOf(h)}`).join(', ')})`;
+  const gold = Number(castle.resource && castle.resource.gold);
+  if (!Number.isFinite(gold)) return { note: `${head} — the city's gold is not known yet`, actions: [] };
+  const { reserve } = salaryReserve(castle);
+
+  const actions = [], held = [], poor = [];
+  let spend = 0;
+  for (const h of low) {
+    const r = rec[h.id];
+    const since = r ? Date.now() - num(r.at) : 0;
+    if (r && !r.ok) { held.push(`${h.name}: refused ${ago(since)} ago (${r.msg || 'no reason given'})`); continue; }
+    if (r && loyaltyOf(h) <= num(r.loyalty)) {
+      held.push(since < REWARD_CONFIRM_MS ? `${h.name}: rewarded ${ago(since)} ago, waiting for its loyalty to show`
+        : `${h.name}: rewarded ${ago(since)} ago and its loyalty never rose — held for an hour`);
+      continue;
+    }
+    if (actions.length >= REWARDS_PER_PASS) continue;
+    const cost = Game.awardCost(h);
+    if (gold - spend - cost < reserve) { poor.push(`${h.name} (${fmt(cost)})`); continue; }
+    spend += cost;
+    actions.push({
+      kind: 'awardGold', heroId: h.id, heroName: h.name, loyalty: loyaltyOf(h), cost, reserve,
+      label: `reward ${h.name} (L${num(h.level)}, loyalty ${loyaltyOf(h)}) with ${fmt(cost)} gold`,
+    });
+  }
+  const parts = [head];
+  if (actions.length) parts.push(`rewarding ${actions.map((a) => a.heroName).join(', ')} for ${fmt(spend)} gold`);
+  if (poor.length) parts.push(`too little gold for ${poor.join(', ')}: ${fmt(gold)} here, ${fmt(reserve)} kept for a day of hero salaries`);
+  if (held.length) parts.push(`held: ${held.join('; ')}`);
+  return { note: parts.join(' — '), actions };
+}
+
 // ============================================================================
 // Executors -- the only place that talks to the game.
 // ============================================================================
@@ -1047,7 +1398,10 @@ const executors = {
   // the reply's posCount, which feastingHall uses from then on. The attempt is
   // stamped first, so a reply without posCount is not asked again for
   // HALL_READ_MS.
+  // The hiring step reads through here too (Game.tavernList also notes the
+  // offers), and when it and makeRoom both ask in one slice, one read does.
   readHall: async (game, castle, a, state) => {
+    if (state && state.hallReadAt && Date.now() - num(state.hallReadAt) < 5e3) return { ok: 1, again: true };
     if (state) state.hallReadAt = Date.now();
     const r = await game.tavernList(game.castleId(castle));
     if (!r || r.ok !== 1) return r || { ok: 0, errorMsg: 'no reply from the inn' };
@@ -1077,6 +1431,47 @@ const executors = {
     return game.addPoint(game.castleId(castle), live, add);
   },
 
+  // hero.hireHero(castleId, heroName), as HireHero.as:526 sends it. The gold
+  // floor is checked again (the plan can be a tick old). A hire that goes
+  // through leaves the inn's list, as in the client, and the next one waits for
+  // its HeroUpdate (hireConfirm). A refusal drops the offers read, so the inn is
+  // read afresh — on its clock — before another try.
+  hireHero: async (game, castle, a, state) => {
+    const cid = game.castleId(castle);
+    const gold = Number(castle.resource && castle.resource.gold);
+    if (!(gold - num(a.cost) > FAST_GOLD_FLOOR)) throw new Error(`the city has ${fmt(gold)} gold now — not hiring ${a.heroName} below the ${fmt(FAST_GOLD_FLOOR)} floor`);
+    const idsBefore = (castle.heros || []).map((h) => h.id);
+    const r = (await game.hireHero(cid, a.heroName)) || { ok: 0, errorMsg: 'no reply from the server' };
+    const inn = game.innSeen && game.innSeen[cid];
+    if (r.ok === 1) {
+      if (inn && Array.isArray(inn.offers)) inn.offers = inn.offers.filter((o) => String(o.name) !== String(a.heroName));
+      if (state) state.lastHire = { at: Date.now(), name: a.heroName, idsBefore };
+    } else if (inn) delete game.innSeen[cid];
+    return r;
+  },
+
+  // hero.awardGold(castleId, heroId), level x 100 gold (AwardHero.as:647, 693).
+  // Re-checked: still here, not a prisoner, still below 100, and the gold still
+  // covers it with the salary reserve kept. The outcome is recorded either way:
+  // rewardPlan holds a refused one back and waits for the new loyalty to show.
+  awardGold: async (game, castle, a, state) => {
+    const live = (castle.heros || []).find((h) => h.id === a.heroId);
+    if (!live) throw new Error(`${a.heroName} is no longer in this city — not rewarding`);
+    if (num(live.status) === STATUS.CAPTIVE) throw new Error(`${a.heroName} is a prisoner — not rewarding`);
+    const loyalty = loyaltyOf(live);
+    if (loyalty === null || loyalty >= 100) throw new Error(`${a.heroName} is at loyalty ${live.loyalty} now — not rewarding`);
+    const gold = Number(castle.resource && castle.resource.gold);
+    const cost = Game.awardCost(live);
+    if (!(gold - cost >= num(a.reserve))) throw new Error(`the city has ${fmt(gold)} gold now — rewarding ${a.heroName} would dip into the ${fmt(a.reserve)} kept for salaries`);
+    const r = (await game.awardGold(game.castleId(castle), a.heroId)) || { ok: 0, errorMsg: 'no reply from the server' };
+    if (state) {
+      const rec = (state.rewards = state.rewards && typeof state.rewards === 'object' ? state.rewards : {});
+      rec[a.heroId] = { at: Date.now(), loyalty, ok: r.ok === 1 };
+      if (r.ok !== 1) rec[a.heroId].msg = r.errorMsg || `ok=${r.ok}`;
+    }
+    return r;
+  },
+
   // hero.levelUp(castleId, heroId)
   levelUp: async (game, castle, a) => game.levelUpHero(game.castleId(castle), a.heroId),
 
@@ -1096,6 +1491,9 @@ const plans = {
   homeheroes: (ctx) => homeHeroesPlan(ctx),
   spamheroes: (ctx) => spamHeroesPlan(ctx),
   training: (ctx) => trainingPlan(ctx),
+  // last: a hire or a reward is the least urgent use of a slice's few actions
+  fasthero: (ctx, state) => hirePlan(ctx, state || {}),
+  rewards: (ctx, state) => rewardPlan(ctx, state || {}),
 };
 
 module.exports = {
@@ -1107,6 +1505,9 @@ module.exports = {
   heroPolicy, feastingHall, hallSeen, farmableHeroes, spamHeroes, npcCooldownMs, npcUsesTransports,
   isCaptive, rosterProblems, allocateStages, parseStages,
   // for the hiring step and the traininghero move: free a slot by the NEAT rule
-  makeRoom, fireOrder, keepRules, trainingHeroesDue, trainingHeroNames,
+  makeRoom, fireOrder, keepRules, trainingHeroesDue, trainingHeroNames, trainingSlot,
+  // hiring (config fasthero) and rewards (config hero:1+)
+  hirePlan, rewardPlan, fastHeroMode, fastScore, innSeen, makeupOf, judgeOffers, salaryReserve,
   DEFAULT_KEEP, DEFAULT_KEEP_CAPTURED, DEFAULT_SPAM, FIRE_COOLDOWN_MS, HALL_READ_MS,
+  FAST_GOLD_FLOOR, HIRE_CONFIRM_MS, REWARDS_PER_PASS, REWARD_RESERVE_HOURS, REWARD_HOLD_MS, REWARD_CONFIRM_MS,
 };

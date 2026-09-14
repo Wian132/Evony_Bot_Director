@@ -367,9 +367,22 @@ class Game {
   // Both inn replies are a HeroListResponse, which also carries posCount: the
   // Feasting Hall's free hero slots (HeroListResponse.as:18,44-46; the hire
   // window shows it as its free-slot line, Tavern.as:586-591, HireHero.as:735-738).
-  // Every read notes it (noteHall), so goals can use the server's own number.
-  async tavernList(castleId) { return this.noteHall(castleId, await this.req('hero.getHerosListFromTavern', { castleId })); }
-  async refreshTavern(castleId) { return this.noteHall(castleId, await this.req('hero.refreshHerosListFromTavern', { castleId })); }
+  // Every read notes it (noteHall), so goals can use the server's own number,
+  // and the offers too (noteInn), which the hiring goal works from.
+  async tavernList(castleId) { return this.noteHall(castleId, this.noteInn(castleId, await this.req('hero.getHerosListFromTavern', { castleId }))); }
+  async refreshTavern(castleId) { return this.noteHall(castleId, this.noteInn(castleId, await this.req('hero.refreshHerosListFromTavern', { castleId }))); }
+
+  // The inn's offers as last read, per city: the reply's heros, each a HeroBean
+  // with its level, attributes and the item a hire needs (itemId x itemAmount,
+  // HireHero.as:735-747). goal-heroes' hiring step judges them and takes a hired
+  // one off the list, as the client does (Tavern.as onHireHeroResponse).
+  noteInn(castleId, r) {
+    if (!r || r.ok !== 1 || !Array.isArray(r.heros)) return r;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(castleId));
+    this.innSeen = this.innSeen || {};
+    this.innSeen[c ? this.castleId(c) : castleId] = { at: Date.now(), offers: r.heros.slice() };
+    return r;
+  }
 
   // posCount is the free slots at that moment. The hall's size is that plus the
   // heroes then on the roster, which stays true through hires, fires and
@@ -391,6 +404,9 @@ class Game {
     };
     return r;
   }
+  // A hire names the inn offer (HireHero.as:526); the hero then arrives on the
+  // roster by a server.HeroUpdate add. awardGold is the Reward window's gold
+  // choice (AwardHero.as:647).
   hireHero(castleId, heroName) { return this.req('hero.hireHero', { castleId, heroName }); }
   fireHero(castleId, heroId) { return this.req('hero.fireHero', { castleId, heroId }); }
   releaseHero(castleId, heroId) { return this.req('hero.releaseHero', { castleId, heroId }); }
@@ -436,6 +452,14 @@ class Game {
     const top = Math.max(...['power', 'management', 'stratagem'].map((k) => Game.attrValue(h, k)));
     return top - Number(h.level || 0) + Number(h.remainPoint || 0);
   }
+
+  // What a hero costs, by the client's own sums: a hire takes level x 1000 gold
+  // (HireHero.as:743, its gold row) besides a free slot and any item the offer
+  // names; a gold reward takes level x 100 (AwardHero.as:647, 693); the salary is
+  // level x 20 gold an hour (HireHero.as:598-599).
+  static hireCost(h) { return Number((h && h.level) || 0) * 1000; }
+  static awardCost(h) { return Number((h && h.level) || 0) * 100; }
+  static heroSalary(h) { return Number((h && h.level) || 0) * 20; }
 
   // HeroConstants.as: 0 free, 1 chief (mayor), 2 guard, 3 marching, 4 captured, 5 returning, 8 farming
   static HERO_STATUS = { free: 0, mayor: 1, garrison: 2, marching: 3, captured: 4, returning: 5, farming: 8 };

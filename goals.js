@@ -244,7 +244,7 @@ const NOT_IMPLEMENTED = {
     embassy: 'nothing reads this key yet',
     trainint: 'nothing reads this key yet',
     trainpol: 'nothing reads this key yet',
-    fasthero: 'nothing reads this key yet',
+    fasthero: 'no goal hires heroes yet, so nothing reads this key',
     keepatthome: 'it only reports, and NPC farming and hiding still take any idle hero',
     attackgap: 'it only reports, and nothing spaces attacks by it yet',
     nohealing: 'the bot does not heal troops at all yet, so there is nothing to switch off',
@@ -253,7 +253,6 @@ const NOT_IMPLEMENTED = {
   goals: {
     homeheroes: 'it only reports, and NPC farming still picks from every idle hero',
     spamheroes: 'it only reports, and no spam or loyalty-attack goal uses these heroes yet',
-    keepcapturedheroes: 'captured heroes are never fireable and nothing tracks them, so it never decides anything',
   },
   // War settings are config keys. Written as a line of their own (`wartown 1`) they
   // parse into the goal list, where no plan looks; every plan reads ctx.config.

@@ -658,6 +658,24 @@ t('"any" is refused in fire, release, mayor, levelup and addpoint; levelup all s
   eq(script.parseLine('fire Anya').name, 'Anya', 'a name that starts with "any" is still a name');
 });
 
+t('the script editor paints a refused "any" red with the reason (script.lineStatus)', () => {
+  const s = script.lineStatus('fire any\nfire Bob\ninnrefresh force');
+  eq(s.lines.map((l) => l.status), ['error', 'ok', 'ok']);
+  has(s.lines[0].msg, /fire: name the hero — "any" is refused here/);
+});
+
+t('the goals editor: keepcapturedheroes now acts (ok), fasthero still does nothing until hiring exists', () => {
+  const G = require('./goals');
+  const l = (src) => parseGoals(src).lines[0];
+  eq(l('keepcapturedheroes any:level>=200').status, 'ok');
+  ok(!('keepcapturedheroes' in G.NOT_IMPLEMENTED.goals), 'off the idle table');
+  eq(l('config fasthero:65').status, 'idle');
+  has(l('config fasthero:65').msg, /no goal hires heroes yet/);
+  for (const src of ['config hero:10,nomayor:1,feastinghallspace:2', 'keepheroes any:level>=50', 'heropoints any att', 'nolevelheroes ForBob', 'traininghero OTTO 30 60 5']) {
+    eq(l(src).status, 'ok', src);
+  }
+});
+
 t('Game.findHero matches a name only: "any" and an empty name find nobody', () => {
   const g = new Game();
   const c = { heros: [hero({ name: 'First' }), hero({ name: 'Bob' })] };

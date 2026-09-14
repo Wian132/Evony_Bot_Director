@@ -1066,10 +1066,13 @@ function buildPlan(ctx, wallsFor = 0) {
   const lines = ctx.goals.filter((g) => g.name === 'build');
   const live = standing(ctx.castle);
   // A fortification goal can place nothing without Walls, whatever the wall
-  // queue read said, so no Walls at all means build them.
+  // queue read said, so no Walls at all means build them — unless config
+  // fortification:0 has the goal off (wiki FortificationGoal: "You can disable
+  // wall building via goals with config fortification:0"). A w: build line
+  // still builds them.
   const noWalls = !live.some((b) => b.typeId === C.WALLS_TYPE);
-  const fortsNeedWalls = noWalls && ctx.goals.some((g) => g.name === 'fortification'
-    && Object.values(g.forts || {}).some((v) => n(v) > 0));
+  const fortsNeedWalls = noWalls && setting(ctx.config && ctx.config.fortification) !== 0
+    && ctx.goals.some((g) => g.name === 'fortification' && Object.values(g.forts || {}).some((v) => n(v) > 0));
   // Step 16: the buildings the research goal needs (goal-research.js) are
   // worked by the builder with no build line at all (resolvePrereqs)
   const forResearch = ctx.researchBuildWants || [];
@@ -2424,6 +2427,10 @@ class Engine {
       ctx.troopMemory = troopMemory(cityState);
       ctx.trainer = trainerOf(g, castle, parsed.goals, cityState);
     }
+    // A day of the troops' upkeep (the queued troops' too): the troop and wall
+    // batches keep it in the granary (TroopsUseReserved, FortsUseReserved), and
+    // so does comfort's food (goal-upkeep shortOf).
+    ctx.foodDay = FOOD_DAY_HOURS * upkeepPerHour(ctx);
     // Under attack? The reserved barracks (reservedbarrack) and the emergency
     // walls (FortificationGoal) act on it.
     if (troops || parsed.goals.some((x) => x.name === 'fortification')) ctx.underAttack = this.underAttackOf(ctx, cityState);

@@ -58,6 +58,9 @@
 //   the next construction's cost — ctx.buildReserve (Engine.resolveBuild): a
 //     comfort's food or gold, a cure's gold, and the gold the tax counts as
 //     banked all leave it where it is.
+//   a day of the troops' upkeep in food — ctx.foodDay (Engine.focus), the day
+//     the troop and wall goals keep (wiki TroopsUseReserved): a comfort's food
+//     leaves it too.
 const W = require('./goal-war');
 const H = require('./goal-heroes');
 
@@ -299,11 +302,19 @@ function comfortCost(ctx, type, f) {
 const costText = (cost) => (cost ? Object.entries(cost).map(([k, v]) => `${fmt(v)} ${k}`).join(' and ') : 'an unknown amount');
 // The first thing the city holds too little of once the next construction's
 // share is left in the bank, or null (unknown banks are left to the server).
-function shortOf(cost, f, keep = null) {
+// `foodDay` is the day of the troops' upkeep the troop and wall goals keep in
+// the granary (ctx.foodDay, Engine.focus; wiki TroopsUseReserved: "By default,
+// the bot will attempt to keep 1 day of food in each city"): a comfort does
+// not spend it either.
+function shortOf(cost, f, keep = null, foodDay = 0) {
   for (const [k, v] of Object.entries(cost || {})) {
     if (f[k] === null || f[k] === undefined) continue;
     const held = n(keep && keep[k]);
-    if (f[k] - held < v) return `${fmt(v)} ${k} (has ${fmt(f[k])}${held ? `, ${fmt(held)} of it kept for ${keptWhat(keep)}` : ''})`;
+    const day = k === 'food' ? n(foodDay) : 0;
+    if (f[k] - held - day < v) {
+      return `${fmt(v)} ${k} (has ${fmt(f[k])}${held ? `, ${fmt(held)} of it kept for ${keptWhat(keep)}` : ''}`
+        + `${day ? `, ${fmt(day)} of it kept for a day of the troops' upkeep` : ''})`;
+    }
   }
   return null;
 }
@@ -338,7 +349,7 @@ function upkeepStep(ctx, state, f, roundComforts, now) {
   const f0 = heldBack(st);
   if (f0) return { notes: [`${head}: ${PACIFY_NAME[type]} ${failText(f0)}`], actions: [] };
   const cost = comfortCost(ctx, type, f);
-  const short = shortOf(cost, f, keptFor(ctx));
+  const short = shortOf(cost, f, keptFor(ctx), ctx.foodDay);
   if (short) return { notes: [`${head}: ${PACIFY_NAME[type]} needs ${short}`], actions: [] };
   return {
     notes: [`${head}: ${PACIFY_NAME[type]} (${type === 'pray' ? '+25 loyalty, -5 grievance' : '+5 loyalty, -15 grievance'}, costs ${costText(cost)})`],
@@ -391,7 +402,7 @@ function roundStep(ctx, state, policy, f, war, now) {
       if (f.population === null || f.limit === null) return skip('population unknown');
       if (!popNeeded) return skip(`not needed, population ${fmt(f.population)} is at its limit`);
       const cost = comfortCost(ctx, 'popraise', f);
-      const short = shortOf(cost, f, keptFor(ctx));
+      const short = shortOf(cost, f, keptFor(ctx), ctx.foodDay);
       if (short) return skip(`needed, but it costs ${short}`);
       return act({ kind: 'upkeepComfort', type: 'popraise', typeId: PACIFY.popraise },
         `population raising (${fmt(f.population)} of ${fmt(f.limit)}, +${fmt(Math.min(Math.floor(f.limit * 0.05), f.limit - f.population))} for ${costText(cost)})`);
@@ -405,7 +416,7 @@ function roundStep(ctx, state, policy, f, war, now) {
       return act({ kind: 'upkeepLevy', type: o.type, typeId: LEVY[o.type] }, `levy ${o.type}${gets} (-${LEVY_LOYALTY_COST} loyalty)`);
     }
     const cost = comfortCost(ctx, o.type, f);
-    const short = shortOf(cost, f, keptFor(ctx));
+    const short = shortOf(cost, f, keptFor(ctx), ctx.foodDay);
     if (short) return skip(`it costs ${short}`);
     if (o.type === 'pray' || o.type === 'relief') comforts = true;
     return act({ kind: 'upkeepComfort', type: o.type, typeId: PACIFY[o.type] }, `${PACIFY_NAME[o.type]} (every round, costs ${costText(cost)})`);

@@ -19,7 +19,7 @@ const C = require('./constants');
 const G = require('./goals');
 const { parseGoals } = G;
 const E = require('./engine');
-const { Engine, troopPlan, fortPlan, troopSettings, upkeepPerHour, trainerOf, TROOP_ORDERS } = E;
+const { Engine, troopPlan, fortPlan, buildPlan, troopSettings, upkeepPerHour, trainerOf, TROOP_ORDERS } = E;
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
@@ -332,6 +332,20 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
     has(plan.note, 'leaving 100k food in the bank for upgrade Farm');
   });
 
+  await t('comfort keeps the troops\' day of food too (Step 13\'s comfort, through ctx.foodDay)', async () => {
+    const w = world({ upkeep: 5000 });                                             // a day is 120,000 food
+    w.game.player.playerInfo.prestige = 1e6;                                       // a prayer: 100,000 food
+    w.castle.usePACIFY_SUCCOUR_OR_PACIFY_PRAY = 1;
+    Object.assign(w.castle.resource, { food: { amount: 150000 }, support: 50, complaint: 0, texRate: 0 });
+    w.goals('config hero:0');
+    const r = await w.e.focus(w.castle);
+    has(r.comfort.note, "praying needs 100,000 food (has 150,000, 120,000 of it kept for a day of the troops' upkeep)");
+    assert.ok(!r.acted.some((a) => /^comfort: praying/.test(a)), r.acted.join(' | '));
+    w.castle.resource.food = { amount: 300000 };
+    const r2 = await w.e.focus(w.castle);
+    assert.ok(r2.acted.some((a) => /^comfort: praying/.test(a)), r2.acted.join(' | '));
+  });
+
   await t('upkeep: the server\'s troopCostFood, else the troops at home; the barracks queue adds its own', async () => {
     const queued = [bar(4, 10, [{ type: TY.archer, num: 1000 }])];
     assert.strictEqual(upkeepPerHour(city({ troop: { archer: 1000 }, bars: queued })), 18000);
@@ -614,6 +628,14 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
     w.goals('config hero:0,fortification:0\nfortification ab:10');
     await w.e.focus(w.castle);
     assert.deepStrictEqual(w.calls, [], 'the wall queue was read or a batch sent');
+  });
+
+  await t('config fortification:0 also stops the first Walls the fortification goal would build; a w: line still builds them', async () => {
+    const castle = { buildings: [{ typeId: 31, positionId: -1, level: 10, status: 0 }] };     // no Walls
+    const plan = (src) => { const p = parseGoals(src); return buildPlan({ goals: p.goals, config: p.config, castle }); };
+    assert.deepStrictEqual(plan('fortification ab:10').ranked.map((a) => [a.kind, a.def.name]), [['new', 'Walls']]);
+    assert.strictEqual(plan('config fortification:0\nfortification ab:10'), null);
+    assert.deepStrictEqual(plan('config fortification:0\nfortification ab:10\nbuild w:1').ranked.map((a) => [a.kind, a.def.name]), [['new', 'Walls']]);
   });
 
   await t('wallqueuetime: 15-minute batches by default, the hours set, 0 no cap; with no time read the space decides', async () => {

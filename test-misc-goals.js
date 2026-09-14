@@ -147,6 +147,14 @@ const LIVE_LORD02 = [
     has(p.lines[0].msg, 'read as "config embassy:2"');
   });
 
+  await t('a bad value is red in the editor, in a config line or on its own line', async () => {
+    for (const src of ['config embassy:5', 'config embassy:', 'config comfort:1,embassy:open', 'embassy 5', 'embassy']) {
+      const l = parseGoals(src).lines[0];
+      assert.strictEqual(l.status, 'error', `${src}: ${l.msg}`);
+    }
+    has(parseGoals('config comfort:1,embassy:open').lines[0].msg, 'embassy must be 0 (always closed), 1 (always open) or 2');
+  });
+
   await t('describe says what each mode does', async () => {
     const d = (v) => W.describe(parseGoals(`config embassy:${v}`)).find((l) => l.startsWith('embassy:'));
     has(d(1), 'always allowed');
@@ -451,6 +459,21 @@ const LIVE_LORD02 = [
     assert.deepStrictEqual(T(row('npcNoLevel')), { kind: 'npc', level: null, where: '106,100' });
     assert.strictEqual(T(row('lake')).kind, 'valley');
     assert.strictEqual(T(row('npc5', { armyType: undefined })).level, 5, 'a row without a mission type is judged by its target');
+  });
+
+  await t('an unowned valley as the background map scan stores it (Step 15) is recognised', async () => {
+    // one 3x1 block read the way Session.backgroundScan reads one: terrain from
+    // mapStr ([type][level] per tile: 5 grassland, 6 lake, 10 flat), kept by goal-npc keepTile
+    const { Session } = require('./session');
+    const NPC = require('./goal-npc');
+    const blk = { x1: 111, y1: 100, x2: 113, y2: 100, mapStr: '5463a2', castles: [], at: NOW };
+    const tiles = Session.prototype.mapBlockTiles.call({}, blk, new Set()).filter(NPC.keepTile).map((x) => ({ ...x, seen: NOW }));
+    assert.deepStrictEqual(tiles.map((x) => [x.kind, x.level, x.userName || null]), [['grassland', 4, null], ['lake', 3, null], ['flat', 2, null]]);
+    D.mapCache.upsertMany(tiles);
+    const T = (x) => RP._internals.targetOf(row('npc5', { targetPos: `Valley(${x},100)` }), OWN);
+    assert.deepStrictEqual(T(111), { kind: 'valley', level: 4, where: '111,100' });
+    assert.deepStrictEqual(T(112), { kind: 'valley', level: 3, where: '112,100' });
+    assert.strictEqual(T(113), null, 'a flat is not a valley');
   });
 
   await t('never opened: another mission, a player city, a flat, a tile the map cache does not know, a march that is not ours', async () => {

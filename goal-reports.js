@@ -32,8 +32,10 @@
 //   - NPC attacks of other levels (npc1-4, npc6-9), and the return reports of
 //     every judged attack, have no rule that keeps them, so they go, as in
 //     NEAT — unless their kind's number is 0, which keeps every one.
-// A valley is recognised only once it is in the map cache (the console's map
-// scans keep owned valleys; a later step's background scan keeps the rest).
+// A valley is recognised by its map cache tile: the six valley kinds (forest,
+// desert, hill, swamp, grassland, lake) that the console's background map scan
+// stores around its farming cities, owned or not. A target the cache does not
+// hold is not opened.
 //
 // Reports belong to the account, not to a city: the goal runs from one city
 // only, the first of the account's cities whose goals have a readable
@@ -137,17 +139,12 @@ function posOf(s) {
   return m ? { name: m[1].trim(), x: Number(m[2]), y: Number(m[3]) } : null;
 }
 
-// The map cache (db.js mapCache, fed by the console's map scans), read once
-// per cache version: fieldId -> tile.
-let _tiles = { version: -1, map: null };
+// The map cache (db.js mapCache), one tile at a time: the console's
+// background map scan (Step 15) keeps every camp, flat and valley around the
+// farming cities there (goal-npc keepTile), so the whole table is never read
+// for a few reports.
 function tileAt(fieldId) {
-  const D = require('./db');
-  const v = D.mapCache.version();
-  if (_tiles.version !== v || !_tiles.map) {
-    const raw = D.mapCache.asJson();
-    _tiles = { version: v, map: new Map(Object.values((raw && raw.castles) || {}).map((t) => [Number(t.id), t])) };
-  }
-  return _tiles.map.get(Number(fieldId)) || null;
+  return require('./db').mapCache.tile(fieldId);
 }
 
 // What the row's target is, judged from the row alone, or null when the row

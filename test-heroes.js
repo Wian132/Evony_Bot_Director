@@ -335,18 +335,21 @@ t('a keepheroes line with a broken hero string reports and protects nothing new'
 // ======================================================================
 console.log('feasting hall');
 // ======================================================================
-t('capacity comes from the feasting hall level, plus one slot for traininghero', () => {
+// Changed on purpose (step 12): the training hero's slot is held only while one
+// is on its way here (wiki City: checkFeastingHallSpace counts it "if not in
+// that town"); these cities have no training hero, so no slot is held for one.
+t('capacity comes from the feasting hall level; with no training hero coming, no slot is held for one', () => {
   const c = ctx([JUNK1, JUNK2], { config: { feastinghallspace: 2 }, hallLevel: 8 });
   const hall = H.feastingHall(c);
   eq({ capacity: hall.capacity, used: hall.used, free: hall.free, wantFree: hall.wantFree, hireBudget: hall.hireBudget },
-     { capacity: 8, used: 2, free: 6, wantFree: 3, hireBudget: 3 });
+     { capacity: 8, used: 2, free: 6, wantFree: 2, hireBudget: 4 });
   const p = H.plans.feastinghallspace(c);
-  ok(/may hire 3 more/.test(p.note), p.note);
+  ok(/may hire 4 more/.test(p.note), p.note);
 });
 t('a full hall reports how many slots it is short', () => {
   const c = ctx(ROSTER, { config: { feastinghallspace: 1 }, hallLevel: 6 });
-  eq(H.feastingHall(c).short, 2);
-  ok(/2 slot\(s\) short/.test(H.plans.feastinghallspace(c).note));
+  eq(H.feastingHall(c).short, 1);
+  ok(/1 slot\(s\) short/.test(H.plans.feastinghallspace(c).note));
 });
 t('castle.heroCapacity wins over the inferred level when present', () => {
   const c = ctx([JUNK1], { config: { feastinghallspace: 0 } });

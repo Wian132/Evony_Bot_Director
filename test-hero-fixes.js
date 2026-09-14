@@ -292,7 +292,8 @@ t('a reading taken at another Feasting Hall level is ignored, and the inference 
 t('with no reading the size is inferred as one slot per level, as before', () => {
   const a = city('Guess', [hero({})], { hall: 8 });
   const hall = H.feastingHall({ game: planGame([a]), castle: a, config: { feastinghallspace: 2 } });
-  eq([hall.capacity, hall.free, hall.wantFree, hall.readAt, hall.fresh], [8, 7, 3, null, false]);
+  // step 12: no training hero comes here, so no slot is held for one (was 3)
+  eq([hall.capacity, hall.free, hall.wantFree, hall.readAt, hall.fresh], [8, 7, 2, null, false]);
   has(hall.source, /inferred/);
   eq(H.feastingHall({ castle: a }).capacity, 8, 'no game at all (stone-of-finding calls it this way)');
 });
@@ -336,7 +337,8 @@ t('a hall short of feastinghallspace fires nobody — it is where hiring stops',
   const p = H.plans.keepheroes(ctxFor(game, b, 'config hero:10,feastinghallspace:4'), {});
   eq(p.actions, []);
   has(p.note, /none needs to go/);
-  has(H.plans.feastinghallspace(ctxFor(game, b, 'config hero:10,feastinghallspace:4')).note, /5 slot\(s\) short of it: no hiring, and nobody is fired for it/);
+  // step 12: 4, not 5 — no training hero comes here, so no slot is held for one
+  has(H.plans.feastinghallspace(ctxFor(game, b, 'config hero:10,feastinghallspace:4')).note, /4 slot\(s\) short of it: no hiring, and nobody is fired for it/);
 });
 
 t('room for a training hero on its way: the hall is read from the inn first', () => {
@@ -664,13 +666,14 @@ t('the script editor paints a refused "any" red with the reason (script.lineStat
   has(s.lines[0].msg, /fire: name the hero — "any" is refused here/);
 });
 
-t('the goals editor: keepcapturedheroes now acts (ok), fasthero still does nothing until hiring exists', () => {
+t('the goals editor: keepcapturedheroes now acts (ok), and since step 12 fasthero too', () => {
   const G = require('./goals');
   const l = (src) => parseGoals(src).lines[0];
   eq(l('keepcapturedheroes any:level>=200').status, 'ok');
   ok(!('keepcapturedheroes' in G.NOT_IMPLEMENTED.goals), 'off the idle table');
-  eq(l('config fasthero:65').status, 'idle');
-  has(l('config fasthero:65').msg, /no goal hires heroes yet/);
+  // changed on purpose (step 12): the hiring step reads config fasthero
+  eq(l('config fasthero:65').status, 'ok');
+  ok(!('fasthero' in G.NOT_IMPLEMENTED.config), 'off the idle table');
   for (const src of ['config hero:10,nomayor:1,feastinghallspace:2', 'keepheroes any:level>=50', 'heropoints any att', 'nolevelheroes ForBob', 'traininghero OTTO 30 60 5']) {
     eq(l(src).status, 'ok', src);
   }

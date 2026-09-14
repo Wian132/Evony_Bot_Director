@@ -230,9 +230,23 @@ function parseLine(raw) {
   }
 
   // ---- hero management ----
+  // fire, release, mayor, levelup and addpoint act on ONE hero, named. "any" (or
+  // any:<filter>) used to mean the city's first hero there, so a slip could fire,
+  // release or re-spec whichever hero happened to be listed first; it is refused.
+  const oneHero = (what, name) => {
+    const s = String(name || '').trim();
+    if (!s) throw new Error(`${what}: give a hero name`);
+    if (/^any(:|$)/i.test(s)) throw new Error(`${what}: name the hero — "${s}" is refused here, so a slip cannot pick whichever hero is listed first`);
+    return s;
+  };
   if (cmd === 'heroes' || cmd === 'herolist') return { cmd: 'heroes' };
   if (cmd === 'inn' || cmd === 'tavern') return { cmd: 'inn' };
-  if (cmd === 'innrefresh' || cmd === 'refreshinn') return { cmd: 'innrefresh' };
+  // innrefresh [force] — force pays game coins when no Hero Hunting is held
+  if (cmd === 'innrefresh' || cmd === 'refreshinn') {
+    const extra = tok.slice(1).map((t) => t.toLowerCase());
+    if (extra.some((t) => t !== 'force')) throw new Error(`${cmd}: usage  innrefresh [force]  — force pays game coins when no Hero Hunting is held`);
+    return { cmd: 'innrefresh', force: extra.includes('force') };
+  }
   if (cmd === 'hire') {
     if (!tok[1]) throw new Error('hire: give a hero name, or "best" / "best politics"');
     if (tok[1].toLowerCase() === 'best') {
@@ -244,11 +258,11 @@ function parseLine(raw) {
   }
   if (cmd === 'fire' || cmd === 'release') {
     if (!tok[1]) throw new Error(`${cmd}: give a hero name`);
-    return { cmd, name: tok.slice(1).join(' ') };
+    return { cmd, name: oneHero(cmd, tok.slice(1).join(' ')) };
   }
   if (cmd === 'mayor' || cmd === 'appoint') {
     if (!tok[1]) throw new Error('mayor: give a hero name');
-    return { cmd: 'mayor', name: tok.slice(1).join(' ') };
+    return { cmd: 'mayor', name: oneHero('mayor', tok.slice(1).join(' ')) };
   }
   if (cmd === 'unmayor' || cmd === 'unappoint' || cmd === 'dischargemayor') return { cmd: 'unmayor' };
   // Finds the hero in whichever city it is; see rename-hero.js.
@@ -260,13 +274,14 @@ function parseLine(raw) {
     const last = (tok[tok.length - 1] || '').toLowerCase();
     let attr = null, nameToks = tok.slice(1);
     if (ATTR[last] || last === 'auto') { attr = last === 'auto' ? null : ATTR[last]; nameToks = tok.slice(1, -1); }
-    return { cmd: 'levelup', name: nameToks.join(' '), attr };
+    const name = nameToks.join(' ');
+    return { cmd: 'levelup', name: name.toLowerCase() === 'all' ? 'all' : oneHero('levelup', name), attr };
   }
   if (cmd === 'addpoint' || cmd === 'addpoints') {
     const attr = ATTR[(tok[tok.length - 2] || '').toLowerCase()];
     const n = parseInt(tok[tok.length - 1], 10);
     if (!attr || Number.isNaN(n)) throw new Error('addpoint: usage  addpoint <hero> <attack|politics|intel> <n>');
-    return { cmd: 'addpoint', name: tok.slice(1, -2).join(' '), attr, amount: n };
+    return { cmd: 'addpoint', name: oneHero('addpoint', tok.slice(1, -2).join(' ')), attr, amount: n };
   }
 
   // buildcity 123,456   -- turn an owned flat into a new city
@@ -711,6 +726,11 @@ async function run(game, actions, log, opts = {}) {
         const castle = game.castle(opts.castle);
         const cid = game.castleId(castle);
         if (a.cmd === 'innrefresh') {
+          // A Hero Hunting when one is held, game coins when not (Game.innRefreshCost);
+          // coins only with force.
+          const cost = game.innRefreshCost();
+          if (!cost.item && !a.force) { log(`  not refreshed: ${cost.text} — write  innrefresh force  to go ahead`); continue; }
+          log(`  refresh the inn: ${cost.text}`);
           if (dryRun) { log('  [dry run] would refresh the inn'); continue; }
           const rr = await game.refreshTavern(cid);
           log('  refresh -> ' + say(rr));
@@ -751,7 +771,11 @@ async function run(game, actions, log, opts = {}) {
         const castle = game.castle(opts.castle);
         const h = game.findHero(castle, a.name);
         if (!h) { log(`  no hero named "${a.name}" in ${castle.name}`); continue; }
+        // release only a prisoner we hold, fire never one (Game.heroActionRefusal)
+        const no = Game.heroActionRefusal(a.cmd, h);
+        if (no) { log(`  not sent: ${no}`); continue; }
         log(`  ${a.cmd} ${h.name} (id ${h.id}, L${h.level})`);
+        if (a.cmd === 'release') log('  (a released prisoner leaves for good; if it is a hero of your own other account, bring it home with a Stone of Finding there instead: lostheroes, recover)');
         if (dryRun) { log('  [dry run] not sent'); continue; }
         const r = a.cmd === 'fire' ? await game.fireHero(game.castleId(castle), h.id)
                                    : await game.releaseHero(game.castleId(castle), h.id);
@@ -763,6 +787,11 @@ async function run(game, actions, log, opts = {}) {
         const castle = game.castle(opts.castle);
         const h = game.findHero(castle, a.name);
         if (!h) { log(`  no hero named "${a.name}"`); continue; }
+        if (Number(h.status) === 1) { log(`  ${h.name} is already mayor of ${castle.name}`); continue; }
+        // only an idle hero of ours (Game.heroActionRefusal); promoted straight
+        // over the sitting mayor, as the client does (CastleChief.as:377-394)
+        const no = Game.heroActionRefusal('mayor', h);
+        if (no) { log(`  not sent: ${no}`); continue; }
         log(`  appoint ${h.name} as mayor of ${castle.name}`);
         if (dryRun) { log('  [dry run] not sent'); continue; }
         const r = await game.promoteToChief(game.castleId(castle), h.id);

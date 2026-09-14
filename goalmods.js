@@ -278,23 +278,44 @@ function defensePlan(ctx, state) {
 //   default            -> best politics hero
 //   about to train     -> best attack hero
 //   about to build     -> best politics hero
-// Swapping costs two commands, so only swap when the desired hero actually differs.
+// Only a hero at home can take the office. The client's mayor window offers the
+// idle heroes and shows the sitting mayor (HerosMansion.as:448-467) — never one
+// marching (3), returning (5), farming (8), guarding a valley (2) or a prisoner
+// we hold (4) (HeroConstants.as:5-17) — and promotes straight over the sitting
+// mayor, with no discharge first (CastleChief.as:377-394). The engine does the
+// same, so a refused promotion leaves the old mayor in office.
+//
+// Stands down under config hero:0 (hero management off) and config nomayor:1
+// (noMayorPlan keeps the office empty; appointing here undid it every other
+// tick). With config hero UNSET it still runs, as before: the wiki's Hero page
+// gives 0 as the default, but NoMayor, TrainPol and TrainingHero all describe a
+// mayor kept by default with no mention of config hero, so the wiki does not
+// settle it and the earlier behaviour stays.
+// Swapping costs a command, so only swap when the desired hero actually differs.
 function mayorPlan(ctx, intent) {
-  if (ctx.config.hero === 0) return null;
+  const cfg = ctx.config || {};
+  if (cfg.hero !== undefined && cfg.hero !== null && cfg.hero !== '') {
+    if (Number(cfg.hero) === 0) return null;
+    if (!Number.isFinite(Number(cfg.hero))) return { note: `mayor: config hero:${cfg.hero} not understood — leaving the mayor alone` };
+  }
+  if (n(cfg.nomayor) === 1) return null;
   const heroes = (ctx.castle.heros || []);
   if (!heroes.length) return { note: 'mayor: no heroes in this city' };
 
+  // HeroConstants.as: 0 = free, 1 = chief (mayor). 2 is GARRISON, not mayor.
+  const current = heroes.find((h) => Number(h.status) === 1);
+  const pool = heroes.filter((h) => h.status !== undefined && h.status !== null && (Number(h.status) === 0 || Number(h.status) === 1));
+  if (!pool.length) return { note: `mayor: no hero at home to appoint (${heroes.length} away or held)` };
+
   // The attribute field already includes allocated points (HeroProperties.as shows
-  // h.power directly), so adding *Added here would double-count.
+  // h.power directly), so adding *Added here would double-count. On a tie the
+  // sitting mayor stays, rather than a swap to an equal hero.
   const val = (h, k) => n(h[k]);
-  const bestBy = (k) => heroes.slice().sort((a, b) => val(b, k) - val(a, k))[0];
+  const bestBy = (k) => pool.slice().sort((a, b) => (val(b, k) - val(a, k)) || ((b === current) - (a === current)))[0];
 
   const wantAttack = intent === 'train';
   const want = wantAttack ? bestBy('power') : bestBy('management');
   if (!want) return null;
-
-  // HeroConstants.as: 1 = chief (mayor). 2 is GARRISON, not mayor.
-  const current = heroes.find((h) => Number(h.status) === 1);
   const why = wantAttack ? 'training troops' : (intent === 'build' ? 'building' : 'resource production');
 
   if (current && current.id === want.id) {
@@ -303,7 +324,7 @@ function mayorPlan(ctx, intent) {
   return {
     note: `mayor: want ${want.name} (${wantAttack ? 'atk ' + val(want, 'power') : 'pol ' + val(want, 'management')}) for ${why}` +
           (current ? `, currently ${current.name}` : ', currently none'),
-    actions: [{ kind: 'setMayor', hero: want, hadMayor: !!current, label: `appoint ${want.name} as mayor (${why})` }],
+    actions: [{ kind: 'setMayor', hero: want, current: current ? current.name : null, label: `appoint ${want.name} as mayor (${why})` }],
   };
 }
 
@@ -311,6 +332,17 @@ function mayorPlan(ctx, intent) {
 // Cross-city: the named hero rotates through every city that lists it.
 // Leaves once minStay has elapsed AND (maxStay passed OR npcHits done).
 // Moving = discharge as mayor -> reinforce march to the next city -> re-appoint.
+
+// How many NPC runs the hero has made from this city since `from`. goal-npc's
+// recordSend keeps each hero's run times in the sending city's state
+// (heroHits[<name, lower case>]), and the engine files a city's state under its
+// name, or its id when it has none (engine.js focus) — both are tried.
+function npcHitsIn(state, game, castle, key, from) {
+  const cs = (castle.name && state[castle.name]) || state[String(game.castleId(castle))] || {};
+  const times = (cs.heroHits && cs.heroHits[key]) || [];
+  return times.filter((t) => n(t) >= from).length;
+}
+
 function trainingHeroPlan(game, cityGoals, state) {
   const wanted = new Map();     // heroName -> [castle, ...]
   for (const { castle, parsed } of cityGoals) {
@@ -328,16 +360,36 @@ function trainingHeroPlan(game, cityGoals, state) {
       plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: parked in ${holder.name} (only one city wants it, so no rotation)` });
       continue;
     }
+    const hero = holder.heros.find((h) => (h.name || '').toLowerCase() === key);
     const st = (state.hero = state.hero || {});
     const rec = (st[key] = st[key] || { since: Date.now(), at: game.castleId(holder), npcHits: 0 });
-    if (rec.at !== game.castleId(holder)) { rec.at = game.castleId(holder); rec.since = Date.now(); rec.npcHits = 0; }
+    if (rec.at !== game.castleId(holder)) {
+      // It has arrived: the stay starts now. Its NPC hits count from when it
+      // left the last city — the engine stamps `since` when it sends the move,
+      // and a hero on the road cannot farm — so a run this city sent in the
+      // slice it arrived, before this ran, still counts.
+      rec.hitsFrom = n(rec.since);
+      rec.at = game.castleId(holder); rec.since = Date.now();
+    }
+    // wiki TrainingHero: it "may leave the city after at least <npchits> npc
+    // hits are made". Counted afresh each tick from goal-npc's record.
+    rec.npcHits = npcHitsIn(state, game, holder, key, n(rec.hitsFrom || rec.since));
 
     const stayed = (Date.now() - rec.since) / 1000;
     const minOk = stayed >= n(goal.minStaySec);
     const maxOk = goal.maxStaySec ? stayed >= n(goal.maxStaySec) : false;
     const hitsOk = goal.npcHits ? rec.npcHits >= n(goal.npcHits) : false;
     if (!minOk || !(maxOk || hitsOk || !goal.maxStaySec)) {
-      plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: in ${holder.name} for ${Math.round(stayed)}s (min ${goal.minStaySec}s)` });
+      plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: in ${holder.name} for ${Math.round(stayed)}s (min ${goal.minStaySec}s)${goal.npcHits ? `, ${rec.npcHits}/${goal.npcHits} npc hits` : ''}` });
+      continue;
+    }
+    // Only a hero at home can be sent: idle, or the mayor (the engine stands it
+    // down first). One out on an NPC run, returning, guarding a valley or still
+    // on the road here stays put until it is home — wiki: an NPC trip may
+    // overrun the stay, and it "will be moved to the next city upon returning".
+    const hs = Number(hero.status);
+    if (hs !== 0 && hs !== 1) {
+      plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: due to leave ${holder.name} after ${Math.round(stayed)}s, but it is ${require('./game').Game.STATUS_WORD[hs] || `status ${hero.status}`} — it moves once it is home` });
       continue;
     }
     const idx = cities.findIndex((c) => game.castleId(c) === game.castleId(holder));

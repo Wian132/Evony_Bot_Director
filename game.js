@@ -364,8 +364,33 @@ class Game {
 
   // ---- heroes ----
   // Attribute names: power = Attack, management = Politics, stratagem = Intelligence.
-  tavernList(castleId) { return this.req('hero.getHerosListFromTavern', { castleId }); }
-  refreshTavern(castleId) { return this.req('hero.refreshHerosListFromTavern', { castleId }); }
+  // Both inn replies are a HeroListResponse, which also carries posCount: the
+  // Feasting Hall's free hero slots (HeroListResponse.as:18,44-46; the hire
+  // window shows it as its free-slot line, Tavern.as:586-591, HireHero.as:735-738).
+  // Every read notes it (noteHall), so goals can use the server's own number.
+  async tavernList(castleId) { return this.noteHall(castleId, await this.req('hero.getHerosListFromTavern', { castleId })); }
+  async refreshTavern(castleId) { return this.noteHall(castleId, await this.req('hero.refreshHerosListFromTavern', { castleId })); }
+
+  // posCount is the free slots at that moment. The hall's size is that plus the
+  // heroes then on the roster, which stays true through hires, fires and
+  // arrivals until the Feasting Hall itself changes level — so the level is kept
+  // too, and goal-heroes.feastingHall ignores a reading taken at another level.
+  // A reply without posCount says nothing (the client's field would default to
+  // 0, "full"), so it is not noted.
+  noteHall(castleId, r) {
+    const raw = r && r.posCount;
+    if (!r || r.ok !== 1 || raw === undefined || raw === null || raw === '' || !Number.isFinite(Number(raw))) return r;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(castleId));
+    if (!c) return r;
+    const heroes = (c.heros || []).length;
+    const fh = (c.buildings || []).find((b) => Number(b.typeId) === 27);   // 27 = Feasting Hall
+    this.hallSeen = this.hallSeen || {};
+    this.hallSeen[this.castleId(c)] = {
+      at: Date.now(), posCount: Number(raw), heroes, capacity: Number(raw) + heroes,
+      fhLevel: fh ? Number(fh.level) : null,
+    };
+    return r;
+  }
   hireHero(castleId, heroName) { return this.req('hero.hireHero', { castleId, heroName }); }
   fireHero(castleId, heroId) { return this.req('hero.fireHero', { castleId, heroId }); }
   releaseHero(castleId, heroId) { return this.req('hero.releaseHero', { castleId, heroId }); }
@@ -423,10 +448,51 @@ class Game {
     return scores[0].k;
   }
 
+  // Why the client would not offer this action on this hero, or null. A prisoner
+  // we hold (status 4) is offered Release (and Persuade) and nothing else; Fire
+  // is for anyone else (HeroProperties.as:1195-1218), and the mayor's window
+  // offers only idle heroes beside the sitting mayor (HerosMansion.as:448-467).
+  // Releasing a captured hero from the captor's side loses it — its owner
+  // brings it home with a Stone of Finding — so release is never sent for one of
+  // our own heroes. The script and the console both ask this.
+  static heroActionRefusal(action, h) {
+    if (!h) return 'hero not found in this city';
+    const st = Number(h.status), prisoner = st === 4;
+    if (action === 'release' && !prisoner) return `${h.name} is not a prisoner (${Game.STATUS_WORD[st] || `status ${h.status}`}) — release only dismisses a prisoner you hold; fire dismisses your own hero`;
+    if (action === 'fire' && prisoner) return `${h.name} is a prisoner you hold — a prisoner is dismissed with release, not fire`;
+    if (action === 'mayor') {
+      if (prisoner) return `${h.name} is a prisoner you hold — only your own heroes can be mayor`;
+      if (st !== 0 && st !== 1) return `${h.name} is ${Game.STATUS_WORD[st] || `status ${h.status}`}, not idle at home — only an idle hero can be made mayor`;
+    }
+    return null;
+  }
+  static STATUS_WORD = { 0: 'idle', 1: 'mayor', 2: 'guarding a valley', 3: 'marching', 4: 'a prisoner', 5: 'returning', 8: 'farming' };
+
+  // What the next inn refresh would cost. It spends a Hero Hunting when one is
+  // held (Tavern.as:548); with none the client offers to buy one and sends the
+  // same command, and the server charges game coins (Tavern.as:473-479, 515-528).
+  // held is null when the inventory has never loaded.
+  static HERO_HUNTING = 'consume.refreshtavern.1';
+  innRefreshCost() {
+    const items = this.player && this.player.items;
+    const held = Array.isArray(items) ? Number((items.find((i) => i.id === Game.HERO_HUNTING) || {}).count || 0) : null;
+    return {
+      held, item: held > 0,
+      text: held > 0 ? `spends 1 Hero Hunting (${held} held)`
+        : held === 0 ? 'no Hero Hunting held, so the server charges game coins'
+          : 'the inventory has not loaded, so it cannot tell whether this costs a Hero Hunting or game coins',
+    };
+  }
+
+  // One hero, by its name. "any" and an empty name used to mean the city's first
+  // hero, so `fire any`, `release any` or a bare `levelup attack` acted on
+  // whichever hero happened to be listed first; now only a real name matches.
+  // (Marches pick "any" through pickHero, which is a different thing.)
   findHero(castle, name) {
-    const heros = castle.heros || [];
-    if (!name || name === 'any') return heros[0] || null;
-    return heros.find((h) => (h.name || '').toLowerCase() === String(name).toLowerCase()) || null;
+    const heros = (castle && castle.heros) || [];
+    const want = String(name == null ? '' : name).trim().toLowerCase();
+    if (!want) return null;
+    return heros.find((h) => (h.name || '').toLowerCase() === want) || null;
   }
 
   // Re-read a hero after an action (the server pushes server.HeroUpdate).

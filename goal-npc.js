@@ -759,7 +759,14 @@ function recordSend(state, action, result) {
   const cyc = (st.cycles[action.level] = st.cycles[action.level] || { startedAt: 0 });
   if (!cyc.startedAt) cyc.startedAt = now;
   st.npcHits = n(st.npcHits) + 1;
-  state.npcHits = n(state.npcHits) + 1;    // engine.js/traininghero count hits here
+  state.npcHits = n(state.npcHits) + 1;
+  // and when, per hero: the traininghero rotation counts its hero's runs from
+  // this city since it arrived (goalmods.trainingHeroPlan, the npchits exit)
+  const who = action.hero && action.hero.name ? String(action.hero.name).toLowerCase() : null;
+  if (who) {
+    const hh = (state.heroHits = state.heroHits || {});
+    hh[who] = (Array.isArray(hh[who]) ? hh[who] : []).concat(now).slice(-100);
+  }
 }
 
 const executors = {

@@ -545,18 +545,28 @@ const server = http.createServer(async (req, res) => {
         return send(200, 'application/json', JSON.stringify({ ok: went, lines }));
       }
 
+      // What the next inn refresh would spend; the page asks before paying coins.
+      if (b.action === 'refreshinnpreview') {
+        const cost = g.innRefreshCost();
+        return send(200, 'application/json', JSON.stringify({ ok: true, held: cost.held, text: cost.text }));
+      }
+
+      // Release only a prisoner we hold, never Fire or promote one, promote only
+      // an idle hero (Game.heroActionRefusal, which the script asks too).
+      if (['mayor', 'fire', 'release'].includes(b.action)) {
+        const no = require('./game').Game.heroActionRefusal(b.action, hero);
+        if (no) throw new Error(no);
+      }
+
       if (b.action === 'mayor') {
-        if (!hero) throw new Error('hero not found in this city');
-        const current = (castle.heros || []).find((h) => Number(h.status) === 1);
-        if (current && current.id !== hero.id) await g.dischargeChief(cid);
+        // Straight over the sitting mayor, as the client does (CastleChief.as:377-394):
+        // discharging first left the city with no mayor whenever the promotion failed.
         r = await g.promoteToChief(cid, hero.id);
       } else if (b.action === 'unmayor') {
         r = await g.dischargeChief(cid);
       } else if (b.action === 'fire') {
-        if (!hero) throw new Error('hero not found in this city');
         r = await g.fireHero(cid, hero.id);
       } else if (b.action === 'release') {
-        if (!hero) throw new Error('hero not found in this city');
         r = await g.releaseHero(cid, hero.id);
       } else if (b.action === 'addpoint') {
         if (!hero) throw new Error('hero not found in this city');
@@ -577,6 +587,9 @@ const server = http.createServer(async (req, res) => {
       } else if (b.action === 'hire') {
         r = await g.hireHero(cid, b.heroName);
       } else if (b.action === 'refreshinn') {
+        // Coins only when the page has asked (it sends force after its ask()).
+        const cost = g.innRefreshCost();
+        if (!cost.item && !b.force) throw new Error(`not refreshed: ${cost.text}`);
         r = await g.refreshTavern(cid);
       } else {
         throw new Error('unknown action ' + b.action);

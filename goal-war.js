@@ -110,6 +110,26 @@ function clockMin(s) {
 }
 const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
+// "06:00 12:00 22:00 02:00" -> [{from, to, text}] in minutes after midnight,
+// with the errors. wartownpolicy reads its hours this way, and so does
+// schedulepolicy (processing.js), on this machine's clock; a window may run
+// past midnight (22:00 02:00).
+function parseWindows(args, goal) {
+  const errs = [], windows = [];
+  const toks = (args || []).map(String).filter(Boolean);
+  if (!toks.length) errs.push(`expected: ${goal} <start> <end> [<start> <end> ...], e.g. ${goal} 06:00 12:00`);
+  if (toks.length % 2) errs.push(`times come in start/end pairs — "${toks[toks.length - 1]}" has no end time`);
+  for (let i = 0; i + 1 < toks.length; i += 2) {
+    const a = clockMin(toks[i]), b = clockMin(toks[i + 1]);
+    const bad = a === null ? toks[i] : b === null ? toks[i + 1] : null;
+    if (bad !== null) { errs.push(`"${bad}" is not a time of day — write hh:mm, e.g. 06:00`); continue; }
+    const from = a % 1440, to = b;                  // 24:00 only makes sense as an end
+    if (from === to % 1440 && to !== 1440) { errs.push(`${toks[i]} ${toks[i + 1]} starts and ends at the same time`); continue; }
+    windows.push({ from, to, text: `${hhmm(from)}-${hhmm(to)}` });
+  }
+  return { windows, errors: errs };
+}
+
 // ------------------------------------------------------------ switch parsing
 const kv = (s) => { const i = s.indexOf(':'); return i < 0 ? [s, null] : [s.slice(0, i), s.slice(i + 1)]; };
 
@@ -400,21 +420,7 @@ const parsers = {
   // midnight (wartownpolicy 22:00 02:00).
   wartownpolicy: {
     kind: 'policy', multi: false,
-    parse(args) {
-      const errs = [], windows = [];
-      const toks = args.map(String).filter(Boolean);
-      if (!toks.length) errs.push('expected: wartownpolicy <start> <end> [<start> <end> ...], e.g. wartownpolicy 06:00 12:00');
-      if (toks.length % 2) errs.push(`times come in start/end pairs — "${toks[toks.length - 1]}" has no end time`);
-      for (let i = 0; i + 1 < toks.length; i += 2) {
-        const a = clockMin(toks[i]), b = clockMin(toks[i + 1]);
-        const bad = a === null ? toks[i] : b === null ? toks[i + 1] : null;
-        if (bad !== null) { errs.push(`"${bad}" is not a time of day — write hh:mm, e.g. 06:00`); continue; }
-        const from = a % 1440, to = b;                  // 24:00 only makes sense as an end
-        if (from === to % 1440 && to !== 1440) { errs.push(`${toks[i]} ${toks[i + 1]} starts and ends at the same time`); continue; }
-        windows.push({ from, to, text: `${hhmm(from)}-${hhmm(to)}` });
-      }
-      return { windows, errors: errs };
-    },
+    parse(args) { return parseWindows(args, 'wartownpolicy'); },
   },
 
   // --------------------------------------------------------- config monitorarmy
@@ -1690,6 +1696,8 @@ module.exports = {
   keepAttHome,                       // the hero keepatthome keeps home
   attackGroups, underAttack,         // attackgap / defensecooldown
   healingAllowed,
+  // daily windows on this machine's clock: wartownpolicy's, and schedulepolicy's (processing.js)
+  parseWindows, windowAt, nextWindow, hhmm,
   // exported for the tests
   _internals: { durationMs, count, normalizeArmy, classify, threatsOf, buildHideMarch, gateBotChoice, hidingOptions, hhmmss, defaultJunk,
     clockMin, windowAt, marchesFrom, hideHero },

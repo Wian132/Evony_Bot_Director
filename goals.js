@@ -206,6 +206,11 @@ const GOALS = {
           errs.push('research is 0 (research paused) or 1');
           continue;
         }
+        // plan:0 pauses the plan lines; plan:1 is the default (wiki Plan, goal-plan.js)
+        if (k.toLowerCase() === 'plan' && !/^[01]$/.test(v)) {
+          errs.push('plan is 0 (plan lines paused) or 1');
+          continue;
+        }
         const kind = TROOP_CONFIG[k.toLowerCase()];
         if (kind) {
           const got = settingValue(kind, k.toLowerCase(), v);
@@ -409,8 +414,10 @@ const GOALS = {
   rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (upkeep, war, heroes, npc, valleys, transfers, market, reports, research) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-research']) {
+// ---- goal modules (upkeep, war, heroes, npc, valleys, transfers, market, reports, research,
+// plan, schedule/processing) contribute their own parsers + config keys ----
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-research',
+  './goal-plan', './processing']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -438,7 +445,6 @@ const NOT_IMPLEMENTED = {
   // documents is accepted (CONFIG_KEYS), so a pasted NEAT file says here, line
   // by line, which of its switches do nothing yet.
   config: {
-    plan: 'no plan goal yet',
   },
   // goal lines whose plan only reports. (spamheroes left in Step 18: its
   // heroes are what the script's spamattack / loyaltyattack send, through
@@ -450,11 +456,77 @@ const NOT_IMPLEMENTED = {
   bare: [],
 };
 
+// ---- NEAT's obsolete goals ----
+// wiki Obsolete: "All of the following goals still function within the bot.
+// They have been replaced by a more powerful or functional goal", and
+// CapturedFireLimit: "the bot will automatically treat it as the
+// keepcapturedheroes internally". Each is read as the goal that replaced it,
+// and its line says so ("obsolete in NEAT — read as ..."): blue when the
+// replacement works here, red ("does nothing yet") while it does not. `as` is
+// the replacement's words, put in front of the line's own; `read(args)` gives
+// the replacement line(s) and any errors instead; `idle()` says what still does
+// nothing. npc10heroes keeps goal-npc's own parser, which reads it as
+// npcheroes 10 already, and only gains the note.
+const OBSOLETE = {
+  // ballsused npc1s,npc2s,npc3s,npc4s,npc5s — the ballistas sent to levels 1 to 5,
+  // in order (wiki Obsolete, SetBallsUsed): "phased out in lieu of the more
+  // powerful NpcTroops goal", so each number is that level's npctroops line.
+  // A 0 would send the transports alone into the camp: it is refused, and that
+  // level keeps its default load.
+  ballsused: {
+    read(args) {
+      const errors = [], lines = [];
+      const nums = args.join(' ').split(/[\s,]+/).filter(Boolean);
+      if (!nums.length) errors.push('needs the ballistas for levels 1 to 5, e.g. ballsused 25,50,170,250,500');
+      if (nums.length > 5) errors.push(`${nums.length} numbers, but ballsused covers levels 1 to 5 — the rest are left out`);
+      nums.slice(0, 5).forEach((s, i) => {
+        const v = NUM(s);
+        if (v === null || !Number.isInteger(v)) errors.push(`level ${i + 1}: "${s}" is not a whole number of ballistas`);
+        else if (v === 0) errors.push(`level ${i + 1}: 0 ballistas would send the transports alone — that level keeps its default load`);
+        else lines.push(`npctroops ${i + 1} b:${v}`);
+      });
+      return { lines, errors };
+    },
+  },
+  // ExcludeList: "This single goal can replace NoAbandonFlats, NpcExcludeList,
+  // and Npc10ExcludeList". Keeping flats is the flats goals' work.
+  noabandonflats: { as: 'excludelist', idle: () => NOT_IMPLEMENTED.config.abandonflats || null },
+  npcexcludelist: { as: 'excludelist' },
+  npc10excludelist: { as: 'excludelist' },
+  npc10heroes: { native: true, as: 'npcheroes 10' },
+  // "npc10list npc1 npc2 ..." lists level-10 camps, which is NpcList's
+  // "npclist [level] npc1 npc2 ..." (the wiki names NpcLimits as its successor,
+  // but a list of camps is NpcList's)
+  npc10list: { as: 'npclist 10' },
+  npc10troops: { as: 'npctroops 10' },
+  npc10limit: { as: 'npclimits 10' },
+  npc10limits: { as: 'npclimits 10' },
+  // "capturedfirelimit 100 will be treated as keepcapturedheroes any:level>=100"
+  capturedfirelimit: {
+    read(args) {
+      const v = args.length === 1 ? NUM(args[0]) : null;
+      if (v === null || !Number.isInteger(v)) return { lines: [], errors: ['needs one hero level, e.g. capturedfirelimit 100 (read as keepcapturedheroes any:level>=100)'] };
+      return { lines: [`keepcapturedheroes any:level>=${v}`], errors: [] };
+    },
+  },
+};
+
+// What an obsolete line reads as: { lines, errors }.
+function readObsolete(name, args) {
+  const old = OBSOLETE[name];
+  if (old.read) return old.read(args);
+  return { lines: [`${old.as} ${args.join(' ')}`.trim()], errors: [] };
+}
+const obsoleteNote = (lines) => `obsolete in NEAT — read as ${lines.length ? lines.map((l) => `"${l}"`).join(', ') : 'nothing, until it is fixed'}`;
+
 // What a line that reads fine comes to, if nothing acts on it. `seen` is the
 // line's goal name, its tokens and, for config, the keys it set. A config line
 // with one idle key among working ones is still flagged, naming the idle key and
 // the keys that do work, so a key that does nothing is never hidden in a blue line.
+// A goal's own parser may say its line does nothing yet (`lineIdle`, e.g. a
+// processingpolicy naming only tasks nothing here runs).
 function idleNote(seen) {
+  if (seen.idle) return seen.idle;
   if (seen.name === 'config') {
     const idle = seen.keys.filter((k) => NOT_IMPLEMENTED.config[k]);
     if (!idle.length) return null;
@@ -471,8 +543,9 @@ function idleNote(seen) {
 }
 
 // The note on a line parseGoals read differently from how it was written (a
-// bare war setting read as config). describe() lists these too.
-const READ_AS = /^read as "config /;
+// bare war setting read as config, an obsolete NEAT goal read as its
+// replacement). describe() lists these too.
+const READ_AS = /^(read as "config |obsolete in NEAT)/;
 
 // Each source line's standing, for the console editor's colours:
 //   ok       the engine acts on it (msg may still say something, e.g. what it replaced)
@@ -518,7 +591,29 @@ function parseGoals(text) {
     if (!line) return;
     const tok = line.split(/\s+/);
     const name = tok[0].toLowerCase();
-    const def = GOALS[name];
+
+    // An obsolete NEAT goal (OBSOLETE above) is read as the goal that replaced
+    // it: its goals are the replacement's, on this line, and the line says so.
+    const old = Object.prototype.hasOwnProperty.call(OBSOLETE, name) ? OBSOLETE[name] : null;
+    if (old && !old.native) {
+      const said = (e) => errors.push({ line: i + 1, text: raw.trim(), error: `${name.toUpperCase()}: ${e}` });
+      const r = readObsolete(name, tok.slice(1));
+      r.errors.forEach(said);
+      for (const text of r.lines) {
+        const t2 = text.split(/\s+/);
+        const d2 = GOALS[t2[0]];
+        const p2 = d2.parse(t2.slice(1), text);
+        (p2.errors || []).forEach(said);
+        delete p2.errors; delete p2.lineNote; delete p2.lineIdle;
+        goals.push({ name: t2[0], kind: d2.kind, line: i + 1, raw: line, obsolete: name, readAs: text, ...p2 });
+      }
+      const why = old.idle ? old.idle() : null;
+      seen[i] = { name, args: tok.slice(1), keys: null, note: obsoleteNote(r.lines), idle: why ? `${name} does nothing yet: ${why}` : null };
+      return;
+    }
+
+    // own names only: a line starting "constructor" or "__proto__" is no goal
+    const def = Object.prototype.hasOwnProperty.call(GOALS, name) ? GOALS[name] : null;
     if (!def) { errors.push({ line: i + 1, text: raw.trim(), error: `unknown goal "${tok[0]}"` }); return; }
 
     // A config key written as its own line ("wartown 1", "hiding 5", "gate 3").
@@ -544,8 +639,14 @@ function parseGoals(text) {
 
     const parsed = def.parse(tok.slice(1), line);
     for (const e of parsed.errors || []) errors.push({ line: i + 1, text: raw.trim(), error: `${name.toUpperCase()}: ${e}` });
-    delete parsed.errors;
+    // what the goal's own parser says of its line for the editor: a note on a
+    // line that works (lineNote), or that the line does nothing yet (lineIdle)
+    const { lineNote = null, lineIdle = null } = parsed;
+    delete parsed.errors; delete parsed.lineNote; delete parsed.lineIdle;
     seen[i] = { name, args: tok.slice(1), keys: name === 'config' ? Object.keys(parsed.values || {}) : null };
+    const note = [lineNote, old && old.native ? obsoleteNote([`${old.as} ${tok.slice(1).join(' ')}`.trim()]) : null].filter(Boolean);
+    if (note.length) seen[i].note = note.join('; ');
+    if (lineIdle) seen[i].idle = lineIdle;
 
     if (name === 'config') { Object.assign(config, parsed.values); return; }   // merge, last wins
 
@@ -607,6 +708,10 @@ function describe(parsed) {
     } else if (name === 'tradepolicy' || name === 'resourcelimits') {
       const { describeTrade } = require('./goal-trade');
       for (const g of list) out.push(describeTrade(g));
+    } else if (name === 'plan') {
+      out.push(...require('./goal-plan').describe(list));
+    } else if (name === 'schedulepolicy' || name === 'processingpolicy') {
+      for (const g of list) out.push(require('./processing').describeGoal(g));
     } else if (name === 'rallypolicy') {
       for (const g of list) {
         const parts = [...Object.entries(g.caps || {}).map(([k, v]) => `${k}:${v}`),
@@ -614,7 +719,8 @@ function describe(parsed) {
         out.push(`rallypolicy: ${parts.join(' ')}`);
       }
     } else {
-      for (const g of list) out.push(`${name}: ${g.raw}`);
+      // an obsolete NEAT goal shows as what it was read as
+      for (const g of list) out.push(`${name}: ${g.readAs || g.raw}`);
     }
   }
   return out;
@@ -622,4 +728,6 @@ function describe(parsed) {
 
 module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, TECH_ABBR, MULTI_BUILDINGS, buildingOf, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED,
   // the research goal (goal-research.js) reads its lines the same way
-  TWO_WORDS, buildCondition };
+  TWO_WORDS, buildCondition,
+  // NEAT's obsolete goals and what each is read as (Step 19)
+  OBSOLETE };

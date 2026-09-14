@@ -31,6 +31,14 @@ const NPC_MOD = (MODULES.find((m) => m.name === './goal-npc') || {}).mod || null
 let RS = null;
 try { RS = require('./goal-research'); } catch (e) { console.error(`goal module ./goal-research not loaded: ${e.message}`); }
 
+// Step 19: the plan goal's line in work reaches the builder and the research
+// goal as a build and a research line of their own (goal-plan.js expand), and
+// schedulepolicy / processingpolicy (processing.js) say when a city acts and
+// which of its marches goes first.
+let PL = null, PR = null;
+try { PL = require('./goal-plan'); } catch (e) { console.error(`goal module ./goal-plan not loaded: ${e.message}`); }
+try { PR = require('./processing'); } catch (e) { console.error(`goal module ./processing not loaded: ${e.message}`); }
+
 // action.kind -> executor, first module wins
 const MODULE_EXECUTORS = {};
 for (const { mod } of MODULES) {
@@ -1064,6 +1072,9 @@ function outsideWanted(all, want) {
 
 function buildPlan(ctx, wallsFor = 0) {
   const lines = ctx.goals.filter((g) => g.name === 'build');
+  // Step 19: the plan line in work comes as build lines of its own, ahead of
+  // these, each with its own tag ("plan line 1/2", goal-plan.js expand)
+  const own = lines.filter((l) => !l.plan);
   const live = standing(ctx.castle);
   // A fortification goal can place nothing without Walls, whatever the wall
   // queue read said, so no Walls at all means build them — unless config
@@ -1130,7 +1141,7 @@ function buildPlan(ctx, wallsFor = 0) {
   const planned = {};          // new buildings already given a plot, per type
   let active = 0, stop = null;
   for (let k = 0; k < lines.length && !stop; k++) {
-    const line = lines[k], tag = `line ${k + 1}/${lines.length}`;
+    const line = lines[k], tag = line.tag || `line ${own.indexOf(line) + 1}/${own.length}`;
     const on = [], waits = [];
     for (const gr of line.groups || [{ targets: line.targets || [] }]) {
       const why = gr.when ? conditionFails(gr.when, live, ctx.techs) : null;
@@ -1255,11 +1266,14 @@ function buildPlan(ctx, wallsFor = 0) {
   // prerequisite is never built only for the lines to demolish it again.
   const limits = {};
   for (const [typeId, w] of want) if (w.cap < Infinity || w.top < Infinity) limits[typeId] = { cap: w.cap, top: w.top };
+  const at = active ? lines[active - 1] : null;
   return {
     actions: busy.length ? [] : ranked,
     ranked,                     // in order, even while busy: what comes next
     busy: busy.length > 0,
-    line: active || null, lines: lines.length, stop, limits,
+    // the build line worked on (plan: the plan line, when that is it)
+    line: at && !at.plan ? own.indexOf(at) + 1 : null, plan: at && at.plan ? at.plan : null,
+    lines: own.length, stop, limits,
     note: parts.length ? `build: ${parts.join('; ')}`
       : lines.length || !forResearch.length ? 'all build targets met' : 'build: no build lines, only what the research goal needs',
   };
@@ -1536,9 +1550,11 @@ async function readCondition(g, cid, a) {
 // has backed off. `wallsFor` comes from the last tick, because the Walls level a
 // fortification goal needs takes a Walls queue read that only a tick makes. The
 // research levels a ?condition? tests are the engine's last reading.
-function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}, techs = null }) {
+function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}, techs = null, now = Date.now() }) {
   // the buildings the research goal asked for on the engine's last pass
   const forResearch = cityState.researchBuildWants || [];
+  // Step 19: the plan line in work, as the engine plans it (goal-plan.js)
+  if (PL) goals = PL.expand({ goals: goals || [], config: config || {} }, castle, ((techs || cityState.techs) || {}).levels || null).goals;
   const plan = buildPlan({ castle, goals: goals || [], config: config || {}, techs: techs || cityState.techs || null,
     researchBuildWants: forResearch }, wallsFor);
   if (!plan) return { next: null, idle: 'no build goals for this city' };
@@ -1574,6 +1590,9 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}
     if (!pre.next) out.idle = `nothing to place: ${pre.stop || 'every order is passed over or held back'}`;
     else out.idle = null;
   }
+  // Step 19: outside the city's schedulepolicy hours nothing is placed (processing.js)
+  const sched = PR && out.next && !plan.busy ? PR.scheduleAt(goals, now) : null;
+  if (sched && !sched.on) out.wait = `the city ${sched.why}`;
   return out;
 }
 
@@ -1637,6 +1656,13 @@ const countsOf = (incoming) => Object.fromEntries(Object.entries(incoming || {})
 
 // Hiding and the gate race a wave's arrival (Engine.urgentWar).
 const URGENT_PLANS = ['hiding', 'gate'];
+// The report's entries that run in blocks of their own in focus, not through
+// runPlanActions (hiding and the gate ran first, in urgentWar).
+const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'research', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
+
+// Something backed off is not tried, costs no action and writes no log line
+// every tick: the plan's note says what is held and until when.
+const heldBack = (list) => (list.length ? `; held back: ${list.slice(0, 3).join('; ')}${list.length > 3 ? ` (+${list.length - 3} more)` : ''}` : '');
 // A war pass lands this long after the moment it was woken for, so the wave is
 // already inside (or already out of) the window when the plan looks.
 const WAKE_SLACK_MS = 250;
@@ -2360,6 +2386,196 @@ class Engine {
     return fresh || this.readTechs(castle, cityState);
   }
 
+  // Step 19: every research level the engine has read, from any city (they are
+  // the account's) and this city's saved reading, the highest of each — a
+  // level once reached stays. null when nothing has been read. Whether a plan
+  // line is finished is judged on these (goal-plan.js).
+  knownTechLevels(cityState = {}) {
+    const out = {};
+    const add = (lv) => {
+      for (const [k, v] of Object.entries(lv || {})) if (v !== null && v !== undefined) out[k] = Math.max(n(out[k]), n(v));
+    };
+    for (const t of Object.values(this.techLevels || {})) if (t) add(t.levels);
+    add(cityState.techs && cityState.techs.levels);
+    return Object.keys(out).length ? out : null;
+  }
+
+  // The plan-style goals' actions, sent in report order, `budget` of them at
+  // most; returns the budget left. Every plan on the report, not a fixed list —
+  // otherwise a war/hero plan gets computed and then silently never executed.
+  // troop/fort/build/research/mayor run in their own blocks in focus.
+  //
+  // A march (an action carrying `rally`) waits while the SENDING city's rally
+  // spot or rallypolicy has no slot for it. The plans already ask, but plans
+  // are made before anything in this slice is sent, so the book has the last
+  // word. Hiding carries no `rally`: getting the army out is never held.
+  //
+  // Step 19, processingpolicy (processing.js): the missions of the tasks it
+  // weighs — npc farming, buildnpc, sendtroops, sendresources, and whatever
+  // registers later — go together, where the first of their plans stands on the
+  // report, fewest points first: each one sent adds 10/priority points to its
+  // task in the state of the city it leaves (for another city's pull, that
+  // city's), under that city's processingpolicy. A task turned off is held, even
+  // if its own plan did not leave it out. Ties keep the report's order.
+  async runPlanActions(report, { castle, cityState, book, budget, goals = [], goalsOf = null, skip = OWN_BLOCKS }) {
+    const g = this.game;
+    const heldOn = new Map();                // plan -> what waits, for its note
+    const hold = (p, text) => { if (!heldOn.has(p)) heldOn.set(p, []); heldOn.get(p).push(text); };
+    // one action: 'held' (no rally slot), 'stop' (no action left this slice),
+    // 'planned' (a dry run), 'sent', or 'failed'
+    const run = async (a, p) => {
+      const full = a.rally ? book.check(a.rally) : null;
+      if (full) { hold(p, `${a.label}: ${full}`); return 'held'; }
+      if (budget-- <= 0) return 'stop';
+      if (this.dryRun) {
+        report.acted.push(`[plan] ${a.label}`);
+        if (a.rally) book.record(a.rally, false);
+        return 'planned';
+      }
+      try {
+        let r = { ok: 1 };
+        if (a.kind === 'defenceItem') {
+          // Each defence item through its own game command (game.js
+          // useDefenceItem). A use counts only once the server says ok.
+          r = await g.useDefenceItem(g.castleId(castle), a.itemId);
+          if (r && r.ok === 1) {
+            const d = (cityState.defence = cityState.defence || {});
+            (d.used = d.used || {})[a.item] = Date.now();
+          }
+        }
+        else if (a.kind === 'note') { report.acted.push(a.label); return 'noted'; }
+        else if (MODULE_EXECUTORS[a.kind]) {
+          r = await MODULE_EXECUTORS[a.kind](g, castle, a, cityState);
+        } else { report.acted.push(`${a.label} -> no executor for "${a.kind}"`); return 'failed'; }
+        if (r.ok === 1 && a.rally) book.record(a.rally);
+        report.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
+        return r.ok === 1 ? 'sent' : 'failed';
+      } catch (e) { report.acted.push(`${a.label} -> ${e.message}`); return 'failed'; }
+    };
+
+    // the processingpolicy missions, and the plan they go at
+    const queue = [];
+    let at = null;
+    for (const [key, p] of Object.entries(report)) {
+      if (skip.has(key) || !p || typeof p !== 'object' || !Array.isArray(p.actions)) continue;
+      for (const a of p.actions) {
+        const task = PR ? PR.taskOf(a) : null;
+        if (!task) continue;
+        queue.push({ a, p, task });
+        if (at === null) at = key;
+      }
+    }
+    const queued = new Set(queue.map((x) => x.a));
+    const runQueue = async () => {
+      const now = g.now ? g.now() : Date.now();
+      const here = String(g.castleId(castle));
+      const senders = new Map();
+      const senderOf = (a) => {
+        const from = (a.rally && a.rally.from) || castle;
+        const id = String(g.castleId(from));
+        if (!senders.has(id)) {
+          senders.set(id, {
+            id, state: id === here ? cityState : (this.state[id] = this.state[id] || {}),
+            goals: id === here ? goals : ((goalsOf && goalsOf(from)) || []),
+          });
+        }
+        return senders.get(id);
+      };
+      const left = [];
+      for (const x of queue) {
+        x.s = senderOf(x.a);
+        x.prio = PR.priorityNow(x.s.goals, x.task, now);
+        if (x.prio > 0) left.push(x);
+        else hold(x.p, `${x.a.label}: ${PR.allowed(x.s.goals, x.task, now).why}`);
+      }
+      const dry = new Map();                 // points a dry run would have added
+      const score = (x) => PR.points(x.s.state, x.task, now) + n(dry.get(`${x.s.id}:${x.task}`));
+      while (left.length) {
+        let best = 0;
+        for (let k = 1; k < left.length; k++) if (score(left[k]) < score(left[best]) - 1e-9) best = k;
+        const x = left.splice(best, 1)[0];
+        const r = await run(x.a, x.p);
+        if (r === 'stop') break;
+        if (r === 'sent') PR.record(x.s.state, x.task, x.prio, now);
+        if (r === 'planned') dry.set(`${x.s.id}:${x.task}`, n(dry.get(`${x.s.id}:${x.task}`)) + PR.WEIGHT / x.prio);
+      }
+    };
+
+    for (const [key, p] of Object.entries(report)) {
+      if (skip.has(key)) continue;
+      if (!p || typeof p !== 'object' || !p.actions) continue;
+      if (key === at) await runQueue();
+      for (const a of p.actions) {
+        if (queued.has(a)) continue;
+        if ((await run(a, p)) === 'stop') break;
+      }
+    }
+    for (const [p, list] of heldOn) p.note = (p.note || '') + heldBack(list);
+    return budget;
+  }
+
+  // wiki FortificationGoal: under attack, 1 of each type on the first line
+  // "with emergency priority" — ahead of every other goal this slice, and
+  // outside the action budget. Each type is tried once per attack.
+  async emergencyWalls(castle, cityState, fort, acted) {
+    const g = this.game;
+    if (!fort || !fort.emergency || !fort.emergency.length) return;
+    for (const o of fort.emergency) {
+      const what = `emergency: build 1 ${o.wall.name} (under attack)`;
+      if (this.dryRun) { acted.push(`[plan] ${what}`); continue; }
+      const rec = cityState.fortEmergency && cityState.fortEmergency.key === o.key ? cityState.fortEmergency : { key: o.key, done: [] };
+      cityState.fortEmergency = rec;
+      rec.at = Date.now();
+      if (!rec.done.includes(o.wall.typeId)) rec.done.push(o.wall.typeId);
+      try {
+        const r = await g.produceWall(g.castleId(castle), o.wall.typeId, 1);
+        acted.push(`${what} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`);
+      } catch (e) { acted.push(`${what} -> ${e.message}`); }
+    }
+  }
+
+  // schedulepolicy (processing.js), outside the city's hours: only its defence
+  // acts. Hiding and the gate already ran (urgentWar); here the emergency walls
+  // while an attack is inbound (FortificationGoal), the defence items
+  // (defensepolicy) and goal-war's other plans — the war town recall, warrules,
+  // the embassy — are planned and sent, the last two within the slice's budget.
+  // Nothing else is read, planned or sent: no training, wall batches,
+  // construction, research, mayor, comfort or other upkeep, hero, farming,
+  // buildnpc, valley, transfer, market or report work, and no free finish.
+  async offHours({ castle, ctx, cityState, urgent, sched, key, label, book, goalsOf }) {
+    const g = this.game;
+    const report = { city: label, schedule: { note: sched.note }, acted: urgent.acted };
+    // the emergency walls: an attack does not wait for the city's hours either
+    if (ctx.goals.some((x) => x.name === 'fortification')) {
+      ctx.underAttack = this.underAttackOf(ctx, cityState);
+      if (ctx.underAttack && ctx.underAttack.inbound > 0) {
+        ctx.fortEmergency = cityState.fortEmergency || null;
+        ctx.walls = await this.readWalls(castle);
+        const fort = fortPlan(ctx);
+        if (fort && fort.emergency && fort.emergency.length) {
+          report.fort = { note: `fortification: under attack — the emergency walls go, outside the hours too`, emergency: fort.emergency };
+          await this.emergencyWalls(castle, cityState, fort, report.acted);
+        }
+      }
+    }
+    report.defense = M.defensePlan(ctx, cityState);
+    const W = MODULES.find((m) => m.name === './goal-war');
+    for (const [k, fn] of Object.entries((W && W.mod.plans) || {})) {
+      try {
+        const p = k in urgent.plans ? urgent.plans[k] : fn(ctx, cityState, g);
+        if (p) report[k] = p;
+      } catch (e) { report.acted.push(`${W.name} plan "${k}" failed: ${e.message}`); }
+    }
+    await this.runPlanActions(report, { castle, cityState, book, budget: this.maxActionsPerSlice, goals: ctx.goals, goalsOf });
+    cityState.lastFocus = Date.now();
+    this.state[key] = cityState;
+    saveState(this.state, this.accountId);
+    report.at = Date.now();
+    report.dryRun = this.dryRun;
+    this.lastReport[key] = report;
+    return report;
+  }
+
   async focus(castle) {
     const g = this.game;
     // State and reports are kept by castle id (see migrateStateKeys); the name
@@ -2391,8 +2607,12 @@ class Engine {
     const book = this.rallyBook(goalsOf);
     // the account's hostile armies, grouped by the city each one marches on
     const incoming = this.incomingFor();
+    // Step 19: the plan line in work, as a build and a research line ahead of
+    // the city's own (goal-plan.js); finished or not by the research levels
+    // the engine has read so far (research is the account's)
+    const planned = PL ? PL.expand(parsed, castle, this.knownTechLevels(cityState)) : { goals: parsed.goals, plan: null };
     const ctx = {
-      game: g, castle, goals: parsed.goals, config: parsed.config, fortifications,
+      game: g, castle, goals: planned.goals, config: parsed.config, fortifications,
       controls,
       // buildnpc's registry is keyed by account; without this it stands down
       // rather than guess which account a city belongs to.
@@ -2413,6 +2633,10 @@ class Engine {
     };
     // Hiding and the gate first, ahead even of the reads below (urgentWar).
     const urgent = await this.urgentWar(ctx, castle, cityState, book);
+    // schedulepolicy (processing.js): outside the city's hours only its
+    // defence acts, and nothing below is read or planned
+    const sched = PR ? PR.scheduleAt(parsed.goals, g.now ? g.now() : Date.now()) : null;
+    if (sched && !sched.on) return this.offHours({ castle, ctx, cityState, urgent, sched, key, label, book, goalsOf });
     // Free finishes next (speedups.js): a job started since the last slice
     // that the game finishes for free is done before the plans look at the city,
     // so the builder is free for this slice's plan.
@@ -2456,7 +2680,8 @@ class Engine {
     let research = null;
     if (RS) {
       ctx.researchWants = cityState.researchWants || [];
-      if (RS.listNeeded(parsed, cityState)) {
+      // the plan line's research counts as a research line (Step 19)
+      if (RS.listNeeded({ ...parsed, goals: ctx.goals }, cityState)) {
         ctx.research = await this.readResearch(castle, cityState, ctx);
         if (ctx.research && ctx.research.levels) ctx.techs = ctx.research;
       }
@@ -2502,6 +2727,11 @@ class Engine {
       acted: urgent.acted,
     };
     if (research) report.research = research;
+    // Step 19: the plan line in work, the city's hours, and how its marches rank
+    if (planned.plan) report.plan = { note: planned.plan.note };
+    if (sched) report.schedule = { note: sched.note };
+    const processingNote = PR ? PR.processingNote(ctx.goals, cityState, g.now ? g.now() : Date.now()) : null;
+    if (processingNote) report.processing = { note: processingNote };
     const globalsNote = layerNote(parsed);
     if (globalsNote) report.globals = { note: globalsNote };
     report.acted.push(...freeFirst.acted);
@@ -2574,72 +2804,11 @@ class Engine {
     }
 
     // wiki FortificationGoal: under attack, 1 of each type on the first line
-    // "with emergency priority" — ahead of every other goal this slice, and
-    // outside the action budget. Each type is tried once per attack.
-    if (report.fort && report.fort.emergency && report.fort.emergency.length) {
-      for (const o of report.fort.emergency) {
-        const what = `emergency: build 1 ${o.wall.name} (under attack)`;
-        if (this.dryRun) { report.acted.push(`[plan] ${what}`); continue; }
-        const rec = cityState.fortEmergency && cityState.fortEmergency.key === o.key ? cityState.fortEmergency : { key: o.key, done: [] };
-        cityState.fortEmergency = rec;
-        rec.at = Date.now();
-        if (!rec.done.includes(o.wall.typeId)) rec.done.push(o.wall.typeId);
-        try {
-          const r = await g.produceWall(g.castleId(castle), o.wall.typeId, 1);
-          report.acted.push(`${what} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`);
-        } catch (e) { report.acted.push(`${what} -> ${e.message}`); }
-      }
-    }
+    // "with emergency priority" — ahead of every other goal (emergencyWalls)
+    await this.emergencyWalls(castle, cityState, report.fort, report.acted);
 
-    // Something backed off is not tried, costs no action and writes no log line
-    // every tick: the plan's note says what is held and until when.
-    const heldBack = (list) => (list.length ? `; held back: ${list.slice(0, 3).join('; ')}${list.length > 3 ? ` (+${list.length - 3} more)` : ''}` : '');
-
-    // generic executors for the plan-style goals
-    // Every plan on the report, not a fixed list — otherwise a war/hero plan gets
-    // computed and then silently never executed. troop/fort/build/mayor run in
-    // their own dedicated blocks above, so skip them here.
-    //
-    // A march (an action carrying `rally`) waits while the SENDING city's rally
-    // spot or rallypolicy has no slot for it. The plans already ask, but plans
-    // are made before anything in this slice is sent, so the book has the last
-    // word. Hiding carries no `rally`: getting the army out is never held.
-    // Hiding and the gate already ran, first and outside the budget (urgentWar).
-    const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'research', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
-    for (const [key, p] of Object.entries(report)) {
-      if (OWN_BLOCKS.has(key)) continue;
-      if (!p || typeof p !== 'object' || !p.actions) continue;
-      const held = [];
-      for (const a of p.actions) {
-        const full = a.rally ? book.check(a.rally) : null;
-        if (full) { held.push(`${a.label}: ${full}`); continue; }
-        if (budget-- <= 0) break;
-        if (this.dryRun) {
-          report.acted.push(`[plan] ${a.label}`);
-          if (a.rally) book.record(a.rally, false);
-          continue;
-        }
-        try {
-          let r = { ok: 1 };
-          if (a.kind === 'defenceItem') {
-            // Each defence item through its own game command (game.js
-            // useDefenceItem). A use counts only once the server says ok.
-            r = await g.useDefenceItem(g.castleId(castle), a.itemId);
-            if (r && r.ok === 1) {
-              const d = (cityState.defence = cityState.defence || {});
-              (d.used = d.used || {})[a.item] = Date.now();
-            }
-          }
-          else if (a.kind === 'note') { report.acted.push(a.label); continue; }
-          else if (MODULE_EXECUTORS[a.kind]) {
-            r = await MODULE_EXECUTORS[a.kind](g, castle, a, cityState);
-          } else { report.acted.push(`${a.label} -> no executor for "${a.kind}"`); continue; }
-          if (r.ok === 1 && a.rally) book.record(a.rally);
-          report.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
-        } catch (e) { report.acted.push(`${a.label} -> ${e.message}`); }
-      }
-      if (held.length) p.note = (p.note || '') + heldBack(held);
-    }
+    // generic executors for the plan-style goals (runPlanActions)
+    budget = await this.runPlanActions(report, { castle, cityState, book, budget, goals: ctx.goals, goalsOf });
 
     // The troop goal: its own allowance, outside the budget above (runTroops).
     await this.runTroops(castle, cityState, report.troop && report.troop.orders ? report.troop : null, report.acted);
@@ -2808,6 +2977,14 @@ class Engine {
           this.line(`${a.label} — held: ${city} is a war town (2), the traininghero stays there`, { city, kind: 'plan' });
           continue;
         }
+        // schedulepolicy (processing.js): the march leaves that city, so it
+        // goes only in that city's hours
+        const from = cityGoals.find((x) => x.castle === a.from);
+        const sch = PR && from ? PR.scheduleAt(from.parsed.goals, g.now ? g.now() : Date.now()) : null;
+        if (sch && !sch.on) {
+          this.line(`${a.label} — held: ${city} ${sch.why}`, { city, kind: 'plan' });
+          continue;
+        }
         const xy = g.castleXY(a.to);
         // checked before the mayor is stood down, not after
         const rally = { from: a.from, kind: 't', missionType: C.MISSION.reinforce, targetFieldId: C.coordsToFieldId(xy.x, xy.y), troops: { scouter: 1 } };
@@ -2838,6 +3015,8 @@ class Engine {
 
 module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN,
   inboundArmy, incomingByCity, WAKE_SLACK_MS, resolvePrereqs, PREREQ_READS, COND_TTL,
+  // the plan goal judges its lines finished the way the builder reads a target (goal-plan.js)
+  addWant, typeOrders, buildMet,
   // the research goal tests its ?condition? the way a build line does (goal-research.js)
   conditionFails,
   // Step 17: the troop and wall settings

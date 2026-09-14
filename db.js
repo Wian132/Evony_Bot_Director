@@ -327,6 +327,14 @@ const snapshots = {
 
 // -------------------------------------------------------------------- goals
 
+// Keys in the goals table that belong to the ACCOUNT, not to a city: the
+// new-city template ('default'), the global goals run before and after every
+// city's own ('prepend', 'append') and the new-city script ('newcity'). See
+// goallayers.js. A city's own key is its castle id, so these never collide with
+// one; they are kept out of the by-NAME lookup, so a city that happens to be
+// called "prepend" is not seeded from the prepend goals.
+const NOT_A_CITY = new Set(['default', 'prepend', 'append', 'newcity']);
+
 const goals = {
   // Try each key in turn for this account, then the account's own default, then
   // the shared default. Returns {src, cityKey, accountId} or null.
@@ -350,17 +358,52 @@ const goals = {
   // it keeps running what it ran before, and from then on the row is its own. A
   // row saved empty stays empty and never falls back to the default again.
   own(accountId, cityId, cityName, kind = 'goal') {
-    if (cityId === null || cityId === undefined || cityId === '') return null;
+    return goals.seed(accountId, cityId, cityName, kind).row;
+  },
+
+  // own(), saying what happened: { row, seeded, from, had }. `had` is true when
+  // the city already had a row of its own (an empty one included), `seeded`
+  // when this call copied one in, and `from` names the row it was copied from
+  // ({accountId, cityKey}; cityKey 'default' is the new-city template). The
+  // session calls this the moment a city appears (server.CastleUpdate), so the
+  // copy is made then and logged, rather than on the engine's first read.
+  seed(accountId, cityId, cityName, kind = 'goal') {
+    const none = { row: null, seeded: false, from: null, had: false };
+    if (cityId === null || cityId === undefined || cityId === '') return none;
     const key = String(cityId);
     const get = () => one('SELECT * FROM goals WHERE accountId = ? AND cityKey = ? AND kind = ?', accountId || '', key, kind);
     let row = get();
-    if (!row) {
-      const seed = goals.find(accountId, [key, cityName], kind);
-      if (!seed) return null;
-      goals.set(accountId, key, kind, seed.src);
-      row = get();
+    if (row) return { row: row.src ? row : null, seeded: false, from: null, had: true };
+    const name = NOT_A_CITY.has(String(cityName || '').trim().toLowerCase()) ? null : cityName;
+    let seed = goals.find(accountId, [key, name], kind);
+    // An account that saved its template EMPTY has said "no template": the
+    // install-wide rows find() falls through to must not seed its cities instead.
+    if (seed && accountId && seed.accountId === '') {
+      const tpl = goals.exact(accountId, 'default', kind);
+      if (tpl && !tpl.src) seed = null;
     }
-    return row && row.src ? row : null;
+    if (!seed) return none;
+    goals.set(accountId, key, kind, seed.src);
+    row = get();
+    return { row: row && row.src ? row : null, seeded: true, from: { accountId: seed.accountId, cityKey: seed.cityKey }, had: false };
+  },
+
+  // One exact row, no fallback: an account's template, prepend or append text.
+  exact(accountId, cityKey, kind = 'goal') {
+    return one('SELECT * FROM goals WHERE accountId = ? AND cityKey = ? AND kind = ?',
+      accountId || '', String(cityKey), kind) || null;
+  },
+
+  // What the engine evaluates in one city (NEAT's GlobalGoals): the account's
+  // prepend goals, the city's own (seeded as own() does), the append goals.
+  // Each is the text or null; goallayers.parseLayered puts them together.
+  layers(accountId, cityId, cityName) {
+    const text = (r) => (r && r.src ? r.src : null);
+    return {
+      prepend: text(goals.exact(accountId, 'prepend', 'goal')),
+      city: text(goals.own(accountId, cityId, cityName, 'goal')),
+      append: text(goals.exact(accountId, 'append', 'goal')),
+    };
   },
 
   // One city's script loadouts as [{slot, src, savedAt}], the empty ones left
@@ -419,6 +462,12 @@ const engineState = {
            ON CONFLICT(accountId,key) DO UPDATE SET json=excluded.json, at=excluded.at`,
         accountId || '', k, JSON.stringify(v), t);
     }
+  },
+  // save() only ever upserts, so a key the engine has moved (a city's state
+  // re-keyed from its name to its castle id) has to be dropped here, or the
+  // next load brings it back.
+  remove(keys, accountId = '') {
+    for (const k of keys || []) run('DELETE FROM engine_state WHERE accountId = ? AND key = ?', accountId || '', String(k));
   },
 };
 

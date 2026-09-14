@@ -477,7 +477,7 @@ function engineFor(g, line = LIVE, logs = []) {
     assert.deepStrictEqual(uses.map((s) => [s.cmd, s.data.itemId]),
       [['shop.useGoods', ID.warhorn], ['shop.useGoods', ID.corselet], ['shop.useGoods', ID.penicillin]]);
     assert.ok(r.acted.some((a) => /War Horn \(under attack\) -> ok/.test(a)), r.acted.join(' | '));
-    assert.ok(e.state.Home.defence.used.warhorn > 0, 'the ok was not stamped');
+    assert.ok(e.state[11].defence.used.warhorn > 0, 'the ok was not stamped');
     assert.match(r.defense.note, /truce: loyalty 60 <= 79, held while 1 army\(ies\) march at the account/);
   });
 
@@ -486,7 +486,7 @@ function engineFor(g, line = LIVE, logs = []) {
     const e = engineFor(g);
     pushHostile(c, [wireArmy(g.castles[0], { archer: '20000' })]);
     await e.focus(g.castles[0]);                        // inbound: buffs, the truce held
-    assert.strictEqual(Object.keys(e.state.Home.war.defense.waves).length, 1, 'the real attack did not open the defensecooldown window');
+    assert.strictEqual(Object.keys(e.state[11].war.defense.waves).length, 1, 'the real attack did not open the defensecooldown window');
     assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 0);
     pushHostile(c, []);                                 // the wave has landed: the list is empty
     const r = await e.focus(g.castles[0]);
@@ -500,28 +500,28 @@ function engineFor(g, line = LIVE, logs = []) {
     pushHostile(c, [wireArmy(g.castles[0], { archer: '4999' })]);
     const r = await e.focus(g.castles[0]);
     assert.deepStrictEqual(sent.filter((s) => /stopWar|useGoods|useCastleGoods/.test(s.cmd)), []);
-    assert.ok(!(e.state.Home.war && e.state.Home.war.defense));
+    assert.ok(!(e.state[11].war && e.state[11].war.defense));
     assert.match(r.defense.note, /\(1 junk under 5000 ignored\)/);
   });
 
   await t('the live line, after the wave, loyalty 60: one truce, signed with the password hash', async () => {
     const { g, sent } = await wireGame();
     const e = engineFor(g);
-    e.state.Home = landed(2 * MIN);
+    e.state[11] = landed(2 * MIN);
     const r = await e.focus(g.castles[0]);
     const truce = sent.filter((s) => s.cmd === 'city.setStopWarState');
     assert.deepStrictEqual(truce, [{ cmd: 'city.setStopWarState', data: { ItemId: 'player.peace.1', passWord: HASH } }]);
     assert.ok(r.acted.some((a) => /Truce Agreement for the whole account \(loyalty 60 <= 79\) -> ok/.test(a)), r.acted.join(' | '));
-    assert.ok(e.state.Home.defence.used.truce > 0);
+    assert.ok(e.state[11].defence.used.truce > 0);
   });
 
   await t('a refused truce stamps no cooldown, and the server\'s reason is in the log', async () => {
     const { g } = await wireGame({ replies: { 'city.setStopWarState': { ok: -1, errorMsg: 'You have troops marching' } } });
     const e = engineFor(g);
-    e.state.Home = landed(2 * MIN);
+    e.state[11] = landed(2 * MIN);
     const r = await e.focus(g.castles[0]);
     assert.ok(r.acted.some((a) => /-> You have troops marching/.test(a)), r.acted.join(' | '));
-    assert.strictEqual(e.state.Home.defence.used.truce, undefined, 'a refused truce was stamped as used');
+    assert.strictEqual(e.state[11].defence.used.truce, undefined, 'a refused truce was stamped as used');
   });
 
   await t('two cities under attack at low loyalty in one tick: exactly one truce is sent', async () => {
@@ -532,8 +532,8 @@ function engineFor(g, line = LIVE, logs = []) {
     const { g, sent } = await wireGame({ castles });
     const logs = [];
     const e = engineFor(g, LIVE, logs);
-    e.state.Home = landed(MIN);
-    e.state.Other = landed(MIN);
+    e.state[11] = landed(MIN);
+    e.state[22] = landed(MIN);
     await e.tick();
     assert.strictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState').length, 1);
     assert.ok(logs.some((l) => /\[Other\].*a Truce Agreement went out \d+ s ago from Home and covers every city/.test(l)), logs.join('\n'));
@@ -547,17 +547,17 @@ function engineFor(g, line = LIVE, logs = []) {
     const { g, sent } = await wireGame();
     const e = engineFor(g);
     e.dryRun = true;
-    e.state.Home = landed(MIN);
+    e.state[11] = landed(MIN);
     const r = await e.focus(g.castles[0]);
     assert.ok(r.acted.includes('[plan] Truce Agreement for the whole account (loyalty 60 <= 79)'), r.acted.join(' | '));
     assert.deepStrictEqual(sent, []);
-    assert.deepStrictEqual(e.state.Home.defence.used, {});
+    assert.deepStrictEqual(e.state[11].defence.used, {});
   });
 
   await t('a Truce Agreement not held: nothing is sent', async () => {
     const { g, sent } = await wireGame({ items: stock({ [ID.truce]: 0 }) });
     const e = engineFor(g);
-    e.state.Home = landed(MIN);
+    e.state[11] = landed(MIN);
     await e.focus(g.castles[0]);
     assert.deepStrictEqual(sent.filter((s) => s.cmd === 'city.setStopWarState'), []);
   });
@@ -565,7 +565,7 @@ function engineFor(g, line = LIVE, logs = []) {
   await t('neither the password nor its hash reaches a log line, the report or the saved state', async () => {
     const { g, logs } = await wireGame();
     const e = engineFor(g, LIVE, logs);
-    e.state.Home = landed(MIN);
+    e.state[11] = landed(MIN);
     await e.tick();
     const everything = [logs.join('\n'), JSON.stringify(e.state), JSON.stringify(e.lastReport),
       util.inspect(g, { depth: 8 }), util.inspect(e, { depth: 8 })].join('\n');

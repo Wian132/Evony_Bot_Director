@@ -475,7 +475,7 @@ const A2 = [
     assert.strictEqual(o.held.length, 2);
     const { e, sent } = engineGame(castle);
     e.goalsFor = () => parseGoals('config hero:0\nbuild c:10:2\nbuild b:5:2');
-    e.state.T = cityState;
+    e.state[1] = cityState;          // castle id 1: state is keyed by id
     await e.focus(castle);
     assert.deepStrictEqual(sent, [['upgrade', 2]]);
   });
@@ -589,8 +589,8 @@ const A2 = [
     assert.strictEqual(reads.filter((c) => c === 'tech.getResearchList').length, 1);
     assert.strictEqual(sent.length, 2, 'one demolition a tick');
     assert.strictEqual(sent[0][0], 'demolish');
-    assert.deepStrictEqual(e.state.T.techs.levels, { 5: 10 }, 'the console outlook reads the levels from the city state');
-    e.state.T.techs.at = e.techLevels[1].at = Date.now() - 11 * 60e3;
+    assert.deepStrictEqual(e.state[1].techs.levels, { 5: 10 }, 'the console outlook reads the levels from the city state');
+    e.state[1].techs.at = e.techLevels[1].at = Date.now() - 11 * 60e3;
     await e.focus(castle);
     assert.strictEqual(reads.filter((c) => c === 'tech.getResearchList').length, 2, 'not re-read after 10 minutes');
   });

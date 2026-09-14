@@ -248,7 +248,7 @@ t('hiding launches on a wave the server pushed, to the other city', async () => 
   assert.ok(march, `no hide march: ${r.hiding && r.hiding.note}`);
   assert.strictEqual(march[1].castleId, 101);
   assert.strictEqual(march[1].newArmyBean.targetPoint, refuge.fieldId);
-  assert.ok(e.state.Home.war.hide, 'the hide march was not recorded');
+  assert.ok(e.state[101].war.hide, 'the hide march was not recorded');
   assert.match(r.hiding.note, /launching/);
 });
 
@@ -504,7 +504,7 @@ t('once the hide march is out, the next wake is its early recall', async () => {
   const { e } = engineFor(w, { 101: 'config hiding:2,hero:0' }, { live: true });
   w.push([army(home, { inMs: 90000 })]);
   await e.focus(home);
-  const hide = e.state.Home.war.hide;
+  const hide = e.state[101].war.hide;
   assert.ok(hide, 'no hide march');
   near(wakeIn(e), hide.forImpactAt + 5 * 60000 + WAKE_SLACK_MS - serverNow());
 });
@@ -564,11 +564,11 @@ t('the console\'s engine view shows the war pass\'s latest word', async () => {
   const w = world({ cities: [home, refuge] });
   const { e } = engineFor(w, { 101: 'config hiding:2,hero:0', 202: 'config hero:0' }, { live: true });
   await e.tick();
-  assert.match(e.lastReport.Home.hiding.note, /nothing inbound/);
+  assert.match(e.lastReport[101].hiding.note, /nothing inbound/);
   w.push([army(home, { inMs: 90000 })]);
   await e.tick({ urgent: true });
-  assert.match(e.lastReport.Home.hiding.note, /launching/);
-  assert.ok(e.lastReport.Home.acted.some((a) => /^hide .* -> ok$/.test(a)));
+  assert.match(e.lastReport[101].hiding.note, /launching/);
+  assert.ok(e.lastReport[101].acted.some((a) => /^hide .* -> ok$/.test(a)));
 });
 
 // ========================================================= 8. the console's timer

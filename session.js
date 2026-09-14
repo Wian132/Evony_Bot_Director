@@ -171,10 +171,102 @@ class Session {
         this.note(a.promoted
           ? `city registry: ${a.name} promoted to a buildnpc city (field ${a.fieldId})`
           : `city registry: ${a.name || 'city'} recorded as ${a.origin} and PROTECTED (field ${a.fieldId})`);
+        if (a.promoted) this.leaveBare(g, a.fieldId);
       }
       for (const m of r.moved) this.note(`city registry: ${m.name || 'city'} moved from field ${m.from} to ${m.to}`);
       return r;
     } catch (e) { this.note('city registry: ' + e.message); return null; }
+  }
+
+  // A city buildnpc built on a flat to hand back as an NPC is not a new city
+  // of the account in NEAT's sense: it must stay empty until it is abandoned,
+  // and a template that trains, builds or hires there could keep it from ever
+  // qualifying (goal-buildnpc canAbandon). So it is given an EMPTY goal row of
+  // its own, which also stops the engine copying the template in on its first
+  // read (db.goals.seed). The account's global goals still run there.
+  leaveBare(g, fieldId) {
+    const acct = this.account && this.account.id;
+    const c = (g.castles || []).find((x) => Number(x.fieldId) === Number(fieldId));
+    if (!c || !this.org || !acct) return false;
+    const id = String(g.castleId(c));
+    if (this.org.goals.exact(acct, id, 'goal')) return false;
+    this.org.goals.set(acct, id, 'goal', '');
+    this.note(`${c.name || 'city'} was built by buildnpc to be handed back as an NPC: it gets no new-city template and no new-city script`,
+      { city: c.name || null, kind: 'sys' });
+    return true;
+  }
+
+  // A city founded or captured while we are connected (server.CastleUpdate,
+  // updateType 0) — NEAT's "new city" moment (wiki: NewCityGoals, NewCityScript):
+  //   * the city registry learns of it now, so buildnpc sees it mid-session and
+  //     not only at the next login
+  //   * with no goals of its own it gets the account's new-city template at once
+  //     (the engine would copy it on its first read anyway; this way it is the
+  //     template as it stands now, and the log says so)
+  //   * the account's new-city script, if it has one, runs in it once
+  // Returns what was done, for the tests.
+  cityAdded(g, castle) {
+    const G = require('./goallayers');
+    const id = g.castleId(castle);
+    const name = castle.name || `city ${id}`;
+    const xy = (g.castleXY && g.castleXY(castle)) || {};
+    const say = (m, kind = 'sys') => this.note(m, { city: castle.name || null, kind });
+    const out = { castleId: id, seeded: false, had: false, bare: false, script: null };
+    say(`new city: ${name}${xy.x !== undefined ? ` (${xy.x},${xy.y})` : ''} has joined the account`);
+    this.reconcileRegistry(g);
+
+    const acct = this.account && this.account.id;
+    if (!this.org || !acct) {
+      say(`new city ${name}: this console has no account to keep goals under, so no new-city template was applied`);
+      return out;
+    }
+    const reg = this.org.registry.byCastleId(acct, id);
+    if (reg && reg.origin === 'buildnpc' && reg.state === 'built') { out.bare = true; return out; }
+
+    // the global goals run in every city, this one included
+    const globals = ['prepend', 'append']
+      .map((k) => [k, G.goalLines((this.org.goals.exact(acct, k, 'goal') || {}).src)]).filter(([, n]) => n > 0);
+    const also = globals.length ? `; the global goals run there too (${globals.map(([k, n]) => `${n} ${k} line(s)`).join(', ')})` : '';
+
+    const s = this.org.goals.seed(acct, id, castle.name, 'goal');
+    out.seeded = s.seeded; out.had = s.had;
+    if (s.had) {
+      say(`new city ${name}: it already has goals of its own, so the new-city template was not applied${also}`);
+    } else if (s.seeded) {
+      const from = s.from.cityKey !== 'default' ? `the goals saved under "${s.from.cityKey}"`
+        : s.from.accountId ? 'the new-city template' : 'the install-wide default goals';
+      out.lines = G.goalLines(s.row && s.row.src);
+      say(`new city ${name}: goals set from ${from}, ${out.lines} goal line(s) applied${also}`, 'act');
+    } else {
+      say(`new city ${name}: this account has no new-city template, so it starts with no goals of its own`
+        + (also || '; with no global goals either, the engine leaves it alone'));
+    }
+
+    // NEAT's !NewCityScript.txt. Run by the console (server.js installs the
+    // runner), a few seconds on, so the pushes that come with a new city land
+    // before its first line reads them.
+    const script = this.org.goals.exact(acct, 'newcity', 'script');
+    if (script && String(script.src || '').trim()) {
+      if (typeof this.runNewCityScript !== 'function') {
+        out.script = 'no runner';
+        say(`new city ${name}: the new-city script only runs under the console, so it was not run here`);
+      } else {
+        out.script = 'started';
+        say(`new city ${name}: running the new-city script`, 'act');
+        setTimeout(async () => {
+          try {
+            const r = await this.runNewCityScript(id, script.src, (m) => say(`new-city script: ${m}`, 'act'));
+            if (r && r.errors && r.errors.length) {
+              say(`new city ${name}: the new-city script has ${r.errors.length} error(s) and was not run — `
+                + r.errors.slice(0, 3).map((e) => `line ${e.line}: ${e.error}`).join('; '));
+            } else if (r && r.ok) {
+              say(`new city ${name}: the new-city script ${r.stopped ? 'was stopped' : 'finished'} (${r.actions || 0} action(s))`);
+            } else say(`new city ${name}: the new-city script did not run — ${(r && r.error) || 'no reason given'}`);
+          } catch (e) { say(`new city ${name}: the new-city script failed — ${e.message}`); }
+        }, Session.NEW_CITY_SCRIPT_DELAY_MS);
+      }
+    }
+    return out;
   }
 
   // logSeq is monotonic; this.log is a ring whose length plateaus, so it cannot
@@ -262,6 +354,9 @@ class Session {
 
   // Kept as a hook so tests can make the stagger deterministic.
   static rand() { return Math.random(); }
+
+  // How long after a city appears its new-city script starts (cityAdded).
+  static NEW_CITY_SCRIPT_DELAY_MS = 5000;
 
   startSupervisor({ heartbeatMs = 60000, idleLimitMs = 150000, checkMs = 5000 } = {}) {
     if (this._supervisor) return;
@@ -859,7 +954,12 @@ class Session {
           const cb = data.castleBean;
           if (!cb) break;
           const i = g.castles.findIndex((x) => g.castleId(x) === g.castleId(cb));
-          if (Number(data.updateType) === 0) { if (i < 0) g.castles.push(cb); }
+          if (Number(data.updateType) === 0) {
+            if (i < 0) {
+              g.castles.push(cb);
+              try { this.cityAdded(g, cb); } catch (e) { this.note(`new city ${cb.name || ''}: ${e.message}`); }
+            }
+          }
           else if (Number(data.updateType) === 1) { if (i >= 0) g.castles.splice(i, 1); }
           else if (i >= 0) {
             g.castles[i].fieldId = cb.fieldId ?? g.castles[i].fieldId;
@@ -956,13 +1056,10 @@ class Session {
     const out = new Map();
     const names = new Set();
     try {
-      const { parseGoals } = require('./goals');
-      const seen = new Set();          // cities often hold copies of the same goals
+      // each city's goals as the engine reads them, the global goals included
       for (const c of g.castles) {
-        const entry = this.org.goals.own(this.account && this.account.id, g.castleId(c), c.name, 'goal');
-        if (!entry || seen.has(entry.src)) continue;
-        seen.add(entry.src);
-        for (const x of parseGoals(entry.src).goals) {
+        const parsed = this.goalsOf(c);
+        for (const x of (parsed && parsed.goals) || []) {
           if (x.name === 'traininghero' && x.hero) names.add(String(x.hero).toLowerCase());
         }
       }
@@ -1350,11 +1447,9 @@ class Session {
   // Which fortification stage is this city on, and what does it want?
   activeFortStage(c) {
     try {
-      const { parseGoals } = require('./goals');
-      const id = this.game ? this.game.castleId(c) : null;
-      const entry = this.org.goals.own(this.account && this.account.id, id, c.name, 'goal');
-      if (!entry) return null;
-      const stages = parseGoals(entry.src).goals.filter((x) => x.name === 'fortification');
+      const parsed = this.goalsOf(c);
+      if (!parsed) return null;
+      const stages = parsed.goals.filter((x) => x.name === 'fortification');
       if (!stages.length) return null;
       const have = {};
       for (const w of C.WALLS) have[w.code] = Number((c.fortification || {})[w.beanKey] || 0);
@@ -1464,7 +1559,7 @@ class Session {
     if (!g || !this.engine) return null;
     const castle = g.castles.find((x) => g.castleId(x) === Number(castleId));
     if (!castle) return null;
-    const r = this.engine.lastReport[castle.name || String(g.castleId(castle))];
+    const r = this.engine.lastReport[String(g.castleId(castle))];      // keyed by castle id (engine.focus)
     if (!r) return null;
     const notes = Object.entries(r)
       .filter(([k, v]) => k !== 'acted' && v && typeof v === 'object' && v.note)
@@ -1477,33 +1572,38 @@ class Session {
   // backed off. Null when it cannot be worked out.
   buildOutlook(c) {
     try {
-      const { parseGoals } = require('./goals');
       const { buildOutlook } = require('./engine');
       const id = this.game ? this.game.castleId(c) : null;
-      const entry = this.org.goals.own(this.account && this.account.id, id, c.name, 'goal');
-      const key = c.name || String(id);
+      // the merged prepend + city + append goals, as the engine plans with them
+      const parsed = this.goalsOf(c) || { goals: [], config: {} };
+      const key = String(id);                // the engine keys state and reports by castle id
       const e = this.engine;
       const last = e && e.lastReport[key];
-      const parsed = entry ? parseGoals(entry.src) : { goals: [], config: {} };
       return buildOutlook({
         castle: c,
         goals: parsed.goals,
         config: parsed.config,          // config building:0 pauses construction
-        cityState: (e && e.state[key]) || {},
+        cityState: (e && e.state[key]) || {},   // its research levels too (Engine.readTechs)
         wallsFor: (last && last.fort && last.fort.wallsFor) || 0,
       });
     } catch { return null; }
   }
 
+  // The goals the engine works in one city: the account's prepend goals, the
+  // city's own and the append goals (goallayers.parseLayered), or null. The
+  // console's views read these so they show what the engine does.
+  goalsOf(c) {
+    const { parseLayered } = require('./goallayers');
+    const id = this.game ? this.game.castleId(c) : null;
+    return parseLayered(this.org.goals.layers(this.account && this.account.id, id, c.name));
+  }
+
   // Which troop-goal stage is this city currently working on?
   activeTroopStage(c) {
     try {
-      const { parseGoals } = require('./goals');
       const { troopPlan } = require('./engine');
-      const id = this.game ? this.game.castleId(c) : null;
-      const entry = this.org.goals.own(this.account && this.account.id, id, c.name, 'goal');
-      if (!entry) return null;
-      const parsed = parseGoals(entry.src);
+      const parsed = this.goalsOf(c);
+      if (!parsed) return null;
       // the same marches the engine counts, or this names a stage it has left
       const selfArmies = (this.game && this.game.player && this.game.player.selfArmys) || [];
       const plan = troopPlan({ castle: c, goals: parsed.goals, config: parsed.config, selfArmies });

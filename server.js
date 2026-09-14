@@ -80,6 +80,39 @@ function scriptErrors(actions) {
   return [...seen.values()];
 }
 
+// NEAT's !NewCityScript.txt: the account's new-city script (goallayers.js) runs
+// once in a city the moment it appears (session.js cityAdded). It is an
+// ordinary run of that city's, as /api/script starts one: it shows in
+// /api/script/runs, Stop ends it, it never doubles a run already going there,
+// and a script with errors runs whole or not at all.
+SESSION.runNewCityScript = async (castleId, src, log) => {
+  const { parse, run } = require('./script');
+  const actions = parse(src || '');
+  const errors = scriptErrors(actions);
+  if (errors.length) return { ok: false, errors };
+  const key = String(castleId);
+  if (SCRIPT_RUNS.has(key)) return { ok: false, error: 'a script is already running in that city' };
+  const running = { stop: false, startedAt: Date.now(), lines: [], dropped: 0 };
+  SCRIPT_RUNS.set(key, running);
+  try {
+    const game = await SESSION.connect();
+    const n = await run(game, actions, (m) => {
+      running.lines.push(m);
+      if (running.lines.length > SCRIPT_KEEP) { running.lines.shift(); running.dropped++; }
+      log(m);
+    }, {
+      castle: castleId, session: SESSION, shouldStop: () => running.stop,
+      otherScripts: () => [...SCRIPT_RUNS].filter(([, r]) => r !== running && !r.atLogout).map(([city]) => city),
+      atLogout: (on) => { running.atLogout = !!on; },
+    });
+    return { ok: true, actions: n, stopped: running.stop };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  } finally {
+    SCRIPT_RUNS.delete(key);
+  }
+};
+
 function body(req) {
   return new Promise((resolve) => {
     let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
@@ -651,6 +684,27 @@ const server = http.createServer(async (req, res) => {
         ? 'Saved. The engine is PAUSED — these take effect when you resume it.'
         : 'Saved. The engine picks these up on its next tick.',
     }));
+  }
+
+  // The account-wide texts behind the editor's selector (goallayers.js): the
+  // new-city template, the Prepend and Append goals every city runs around its
+  // own, and the new-city script.
+  //   GET  /api/goals/account?which=template|prepend|append|script
+  //   POST /api/goals/account {which, src, save}  -> {errors (with where), described, note}
+  if (url.pathname === '/api/goals/account') {
+    const G = require('./goallayers');
+    const acct = SESSION.account && SESSION.account.id;
+    try {
+      if (!ORG || !acct) throw new Error('this console has no account to keep account-wide goals under');
+      if (req.method !== 'POST') return send(200, 'application/json', JSON.stringify(G.readText(ORG.goals, acct, q.get('which'))));
+      const b = await body(req);
+      const r = G.saveText(ORG.goals, acct, b);
+      if (r.saved) {
+        if (SESSION.userPaused && (r.which === 'prepend' || r.which === 'append')) r.note = 'Saved. The engine is PAUSED — these take effect when you resume it.';
+        SESSION.note(`${r.label} saved from the console (${G.goalLines(b.src)} line(s))`);
+      }
+      return send(200, 'application/json', JSON.stringify(r));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
 
   if (url.pathname === '/script' || url.pathname === '/script.html') {

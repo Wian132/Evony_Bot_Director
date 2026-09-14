@@ -51,16 +51,17 @@ function stubGame() {
     e.dryRun = true;
     e.state = {};
     // Pretend an earlier slice recorded npc runs and a comfort timestamp.
-    e.state.TestCity = {
+    // State is keyed by castle id (1), not by the name TestCity.
+    e.state['1'] = {
       npc: { runs: [{ fieldId: 5 }], hits: { 5: 1 }, cycles: { 5: { startedAt: 1 } } },
       lastComfort: 12345,
     };
-    const before = e.state.TestCity;
+    const before = e.state['1'];
     e.goalsFor = () => ({ goals: [], config: {} });
 
     await e.focus(g.castle());
 
-    const after = e.state.TestCity;
+    const after = e.state['1'];
     assert.strictEqual(after, before, 'the state object was replaced, not merged');
     assert.ok(after.npc, 'npc bookkeeping was discarded');
     assert.strictEqual(after.npc.runs.length, 1, 'npc.runs was discarded — npcteams would never count');
@@ -76,8 +77,8 @@ function stubGame() {
     e.state = {};
     e.goalsFor = () => ({ goals: [], config: {} });
     await e.focus(g.castle());
-    assert.ok(e.state.TestCity, 'no state row was created');
-    assert.ok(e.state.TestCity.lastFocus > 0, 'lastFocus missing');
+    assert.ok(e.state['1'], 'no state row was created under the castle id');
+    assert.ok(e.state['1'].lastFocus > 0, 'lastFocus missing');
   });
 
   // ---------------------------------------------------------------- troopPlan
@@ -647,7 +648,7 @@ function stubGame() {
     const hold = (msg) => ({ n: 3, until: Date.now() + 3600e3, msg });
     // Three held back: under the old engine these three skips used up the
     // whole slice and nothing was ever built.
-    e.state['7'] = { failures: {
+    e.state['1'] = { failures: {       // city "7" is castle id 1: state is keyed by id
       'build:upgrade:32:-2': hold('Town Hall level too low'),
       'build:upgrade:7:1001': hold('Insufficient resources'),
       'build:upgrade:7:1002': hold('Insufficient resources'),
@@ -662,7 +663,7 @@ function stubGame() {
     const { e, castle, sent } = buildGame({ refuse: { [-2]: 'One building allowed to be built at a time.' } });
     await e.focus(castle);
     assert.strictEqual(sent.length, 1);
-    assert.ok(!(e.state['7'].failures || {})['build:upgrade:32:-2'], 'the Walls were backed off for the builder being busy');
+    assert.ok(!(e.state['1'].failures || {})['build:upgrade:32:-2'], 'the Walls were backed off for the builder being busy');
     const r = await e.focus(castle);
     assert.strictEqual(sent.length, 1, 'asked the busy builder again straight away');
     assert.match(r.build.note, /the server says the builder is busy, asking again in \d+m/);
@@ -672,7 +673,7 @@ function stubGame() {
     const { e, castle, sent } = buildGame({ refuse: { [-2]: 'Insufficient resources. Required Lumber 139300.' } });
     await e.focus(castle);
     assert.deepStrictEqual(sent, [['upgrade', -2]]);
-    assert.ok(e.state['7'].failures['build:upgrade:32:-2'], 'the refusal was not backed off');
+    assert.ok(e.state['1'].failures['build:upgrade:32:-2'], 'the refusal was not backed off');
   });
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

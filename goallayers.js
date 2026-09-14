@@ -227,6 +227,8 @@ const isGoalLine = (l) => {
 // key set again drops out of the earlier line (a line left with nothing goes);
 // a one-per-city goal written again replaces the earlier line. A script that
 // flips `config npc:5` and `config npc:0` in a loop does not grow the layer.
+// A bare war setting (`hiding 2`, read as config hiding:2 by goals.js) counts as
+// a config line of its one key.
 function configPairs(line) {
   const m = String(line).match(/^\s*config\s+(.*)$/i);
   if (!m) return null;
@@ -235,17 +237,23 @@ function configPairs(line) {
     return [(i < 0 ? p : p.slice(0, i)).toLowerCase(), p];
   });
 }
+const configOnly = (p) => p.goals.length === 0 && Object.keys(p.config).length > 0;
 function compactInto(lines, added) {
   const out = lines.slice();
   for (const raw of added) {
     const line = raw.trim();
     const p = parseGoals(line);
     const g = p.goals[0];
-    if (!p.errors.length && /^config\s/i.test(line)) {
+    if (!p.errors.length && configOnly(p)) {
       const keys = new Set(Object.keys(p.config));
       for (let i = out.length - 1; i >= 0; i--) {
+        const q = parseGoals(out[i]);
+        if (!configOnly(q)) continue;
         const pairs = configPairs(out[i]);
-        if (!pairs) continue;
+        if (!pairs) {                              // bare: gone once its key is set again
+          if (Object.keys(q.config).every((k) => keys.has(k))) out.splice(i, 1);
+          continue;
+        }
         const keep = pairs.filter(([k]) => !keys.has(k));
         if (keep.length === pairs.length) continue;
         if (keep.length) out[i] = `config ${keep.map(([, pair]) => pair).join(',')}`; else out.splice(i, 1);

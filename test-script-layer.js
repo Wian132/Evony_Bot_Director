@@ -140,6 +140,28 @@ t('a key set again drops out of the earlier config line; a loop does not grow th
   assert.strictEqual(GL.getScriptLayer(id, 18).count, 4, 'the same line twice running was kept twice');
 });
 
+t('a bare war setting (hiding 2, read as config) is compacted like a config line', () => {
+  const id = acct();
+  for (let i = 0; i < 20; i++) { GL.addScriptLine(id, 9, 'hiding 2'); GL.addScriptLine(id, 9, 'hiding 0'); }
+  assert.strictEqual(GL.getScriptLayer(id, 9).src, 'hiding 0');
+  GL.addScriptLine(id, 9, 'config hiding:1,npc:5');
+  assert.strictEqual(GL.getScriptLayer(id, 9).src, 'config hiding:1,npc:5');
+  assert.deepStrictEqual(running(id, 9).config, { hiding: 1, npc: 5 });
+});
+
+t('script lines get the same per-line standing as a city\'s goals (the editor\'s colours)', () => {
+  const id = acct();
+  const text = '// from a script\nconfig trade:1,npc:5\nhiding 2\ntroop zz:1\nbogus 3\n\ntroop a:1k';
+  const r = GL.addScriptLine(id, 8, text);
+  assert.deepStrictEqual(r.lines, parseGoals(text).lines, 'the answer differs from what /api/goals gives this text');
+  assert.deepStrictEqual(r.lines.map((l) => l.status), ['comment', 'idle', 'ok', 'error', 'error', 'blank', 'ok']);
+  has(r.lines[1].msg, 'trade does nothing yet');
+  has(r.lines[2].msg, 'read as "config hiding:2"');
+  assert.deepStrictEqual(GL.setScriptLayer(id, 8, text).lines, parseGoals(text).lines);
+  D.goals.set(id, 'set4', 'goal', text);
+  assert.deepStrictEqual(GL.loadScriptGoals(id, 8, 4).lines, parseGoals(text).lines);
+});
+
 t('the layer holds 1000 lines at most', () => {
   const id = acct();
   GL.setScriptLayer(id, 19, Array.from({ length: GL.SCRIPT_MAX_LINES }, (_, i) => `troop a:${i + 1}`).join('\n'));

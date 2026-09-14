@@ -311,7 +311,7 @@ const food = (a) => a.resources.food;
     assert.strictEqual(game.sent.length, 1, `${game.sent.length} marches went`);
     assert.strictEqual(game.sent[0].castleId, f.five.castleId);
     assert.strictEqual(e.pendingMarches.length, 1, 'the send is held against 5 until the server lists it');
-    has(e.lastReport.X.transfer.note, 'no sender — 5 rallypolicy r:1 (1 resource transport out)');
+    has(e.lastReport[other.castleId].transfer.note, 'no sender — 5 rallypolicy r:1 (1 resource transport out)');   // reports are keyed by castle id
   });
 
   await t('the next tick does not send again while the first is still on its way', async () => {
@@ -336,7 +336,7 @@ const food = (a) => a.resources.food;
     const { e, game } = engineFor([f.fla, f.five], { Fla: 'requestresources 5 food 500m 5b 50m 1b', 5: 'rallypolicy max:8' }, busy);
     await e.tick();
     assert.strictEqual(game.sent.length, 0, 'a goal march took the 9th slot');
-    has(e.lastReport.Fla.transfer.note, 'rallypolicy max:8 (8 busy)');
+    has(e.lastReport[f.fla.castleId].transfer.note, 'rallypolicy max:8 (8 busy)');
   });
 
   // Plans are made before anything in the slice is sent, so the engine checks
@@ -350,7 +350,7 @@ const food = (a) => a.resources.food;
     T.plans.transfer = (ctx, st, g) => real({ ...ctx, rally: R.rallyBook({ game: g, armies: [] }) }, st, g);
     try { await e.tick(); } finally { T.plans.transfer = real; }
     assert.strictEqual(game.sent.length, 0, 'the transport went into a full rally spot');
-    has(e.lastReport.Fla.transfer.note, 'held back: pull 50,000,000 food from 5 (2.2 tiles, 10,000 transports): rally spot L1: 1/1 busy');
+    has(e.lastReport[f.fla.castleId].transfer.note, 'held back: pull 50,000,000 food from 5 (2.2 tiles, 10,000 transports): rally spot L1: 1/1 busy');
   });
 
   await t('traininghero waits for a rally slot before standing the mayor down', async () => {

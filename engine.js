@@ -8,6 +8,7 @@ const path = require('path');
 const C = require('./constants');
 const { Game } = require('./game');
 const { parseGoals } = require('./goals');
+const { parseLayered, layerNote } = require('./goallayers');
 const M = require('./goalmods');
 const R = require('./rally');
 
@@ -30,6 +31,12 @@ for (const { mod } of MODULES) {
 const D = require('./db');
 const loadState = (accountId) => D.engineState.load(accountId || '');
 const saveState = (s, accountId) => D.engineState.save(s, accountId || '');
+
+// Top-level engine state that is not a city's: the traininghero record
+// (goalmods.trainingHeroPlan) and the marker migrateStateKeys leaves. Never
+// taken for a city name.
+const KEYED_BY = '_keyedBy';
+const NOT_CITY_STATE = new Set(['hero', KEYED_BY]);
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -854,6 +861,7 @@ class Engine {
     // Mode) for a castle. Absent under goalsd and the tests, where goals rule alone.
     this.controlsFor = null;
     this.state = loadState(accountId);
+    this.migrateStateKeys();
     this.running = false;
     this.dryRun = true;
     this.maxActionsPerSlice = 3;
@@ -900,9 +908,52 @@ class Engine {
 
   // A city runs its own goals and no other city's (db.goals.own). The first
   // time a city is seen it takes a copy of the default it used to fall through to.
+  // Around them run the account's global goals, NEAT's PrependGoals before and
+  // AppendGoals after (goallayers.js); null only when all three are empty.
   goalsFor(id, name) {
-    const row = D.goals.own(this.accountId, id, name, 'goal');
-    return row ? parseGoals(row.src) : null;
+    return parseLayered(D.goals.layers(this.accountId, id, name));
+  }
+
+  // Engine state used to be kept under each city's NAME. Names are not unique —
+  // a new city takes the server's default name — so two such cities shared one
+  // set of backoffs, builder holds and comfort timers. It is keyed by castle id
+  // now. What was saved under a name is moved, once per account, to the current
+  // city (or cities) of that name, each keeping a copy of what they shared, and
+  // the name row is dropped from the database so the next load does not bring
+  // it back. A marker then says the state is keyed by id, so a later city that
+  // happens to carry an old name never inherits what is left under it. A name
+  // that is also a castle id, and the keys that are not cities, are left alone.
+  // Returns how many names were moved.
+  migrateStateKeys() {
+    const g = this.game;
+    if (!g || !Array.isArray(g.castles) || !g.castles.length || !this.state || typeof g.castleId !== 'function') return 0;
+    if (this.state[KEYED_BY] === 'castleId') return 0;
+    this.state[KEYED_BY] = 'castleId';
+    const ids = new Set(g.castles.map((c) => String(g.castleId(c))));
+    const byName = new Map();
+    for (const c of g.castles) {
+      const name = c.name === undefined || c.name === null ? '' : String(c.name);
+      if (!name || ids.has(name) || NOT_CITY_STATE.has(name)) continue;
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push(String(g.castleId(c)));
+    }
+    const moved = [];
+    for (const [name, list] of byName) {
+      const old = this.state[name];
+      if (!old || typeof old !== 'object') continue;
+      // a city that already has state under its id keeps that, the newer one
+      for (const id of list) if (!this.state[id]) this.state[id] = list.length > 1 ? JSON.parse(JSON.stringify(old)) : old;
+      delete this.state[name];
+      moved.push(name);
+    }
+    try {
+      if (moved.length) D.engineState.remove(moved, this.accountId || '');
+      saveState(this.state, this.accountId);
+    } catch (e) { this.line(`engine state: could not save the move to castle ids (${e.message})`, { kind: 'sys' }); }
+    if (moved.length) {
+      this.line(`engine state: moved from city names to castle ids — ${moved.map((nm) => `${nm} -> ${byName.get(nm).join(', ')}`).join('; ')}`, { kind: 'sys' });
+    }
+    return moved.length;
   }
 
   // Our own marches. Until the first army push arrives, the login's list is
@@ -1020,14 +1071,14 @@ class Engine {
       const cid = g.castleId(castle);
       const parsed = this.goalsSeen[cid];
       if (!parsed) continue;
-      const key = castle.name || String(cid);
       const ctx = {
         game: g, castle, goals: parsed.goals, config: parsed.config,
         controls: (this.controlsFor && this.controlsFor(castle)) || {},
         incoming: incoming[cid] || [],
       };
       const since = n(this.warCheckedAt[cid]);
-      for (const m of W.mod.warMoments(ctx, this.state[key] || {})) {
+      // city state is keyed by castle id (migrateStateKeys)
+      for (const m of W.mod.warMoments(ctx, this.state[String(cid)] || {})) {
         if (m > since && (best === null || m < best)) best = m;
       }
     }
@@ -1048,7 +1099,9 @@ class Engine {
       this.warCheckedAt[cid] = g.now ? g.now() : Date.now();
       const parsed = this.goalsFor(cid, castle.name);
       if (!parsed) { delete this.goalsSeen[cid]; continue; }
-      const key = castle.name || String(cid);
+      // state and reports by castle id, log lines by the city's name (focus)
+      const key = String(cid);
+      const label = castle.name || key;
       const cityState = (this.state[key] = this.state[key] || {});
       cityState.accountId = this.accountId || null;
       const ctx = {
@@ -1059,7 +1112,7 @@ class Engine {
         selfArmies: this.liveArmies(), rally: book,
       };
       const r = await this.urgentWar(ctx, castle, cityState, book);
-      for (const a of r.acted) this.line(a, { city: key, kind: /^\[plan\]/.test(a) ? 'plan' : 'act' });
+      for (const a of r.acted) this.line(a, { city: label, kind: /^\[plan\]/.test(a) ? 'plan' : 'act' });
       // the console's engine view shows the latest word from these two
       const last = this.lastReport[key];
       if (last) {
@@ -1211,14 +1264,17 @@ class Engine {
 
   async focus(castle) {
     const g = this.game;
-    const key = castle.name || String(g.castleId(castle));
+    // State and reports are kept by castle id (see migrateStateKeys); the name
+    // is what the log files the city's lines under.
+    const key = String(g.castleId(castle));
+    const label = castle.name || key;
     const controls = (this.controlsFor && this.controlsFor(castle)) || {};
     const parsed = this.goalsFor(g.castleId(castle), castle.name);
     if (!parsed) {
       // A manual gate needs no goal file to be held — but nothing else may run
       // here: the mayor plan, for one, acts even when no goals are written.
       if (controls.gate === 'open' || controls.gate === 'closed') return this.holdGate(castle, key, controls);
-      return { city: key, note: 'no goals set' };
+      return { city: label, note: 'no goals set' };
     }
     // War Town Mode on the console overrides `config wartown:` for this city;
     // Auto (or nothing set) leaves whatever the goals say.
@@ -1269,12 +1325,14 @@ class Engine {
       ctx.techs = await this.readTechs(castle, cityState);
     }
     const report = {
-      city: key,
+      city: label,
       troop: troopPlan(ctx), fort, build: buildPlan(ctx, (fort && fort.wallsFor) || 0),
       comfort: M.comfortPlan(ctx, cityState),
       defense: M.defensePlan(ctx, cityState),
       acted: urgent.acted,
     };
+    const globalsNote = layerNote(parsed);
+    if (globalsNote) report.globals = { note: globalsNote };
 
     // war / hero / npc module plans — each is pure and may return null
     for (const { name, mod } of MODULES) {
@@ -1464,7 +1522,7 @@ class Engine {
     const g = this.game;
     const cityState = (this.state[key] = this.state[key] || {});
     const W = MODULES.find((m) => m.name === './goal-war');
-    const report = { city: key, acted: [] };
+    const report = { city: castle.name || key, acted: [] };
     if (!W) { report.note = 'no goals set (gate module not loaded)'; return report; }
     const p = W.mod.plans.gate({ game: g, castle, goals: [], config: {}, controls, incoming: [] }, cityState, g);
     report.gate = p;
@@ -1486,6 +1544,9 @@ class Engine {
   // (warPass) — what the console runs between ticks at nextWakeAt.
   async tick(opts = {}) {
     const g = this.game;
+    // state assigned after construction (a reconnect carries it over) may still
+    // be keyed by name; a no-op once it is not
+    this.migrateStateKeys();
     if (opts && opts.urgent) return this.warPass();
 
     // per-city goals, round robin (one city has "focus" at a time, as NEAT does)

@@ -148,6 +148,7 @@
   .bar .hint { color:var(--dim); font-size:11px; margin-left:auto; text-align:right; }
   .bar .hint .neg { font-weight:bold; }
   #loadSel { max-width:200px; }
+  #acctSel { max-width:190px; }
 
   /* the row above the editor: editor icons, Gate Control, War Town Mode */
   .ctlrow { display:flex; align-items:flex-end; gap:14px; padding:2px 0 4px; flex:0 0 auto; }
@@ -448,6 +449,7 @@
       <div class="well" id="editWell"><div class="edbox" id="edBox"><div class="edhl" id="edHl" aria-hidden="true"></div><textarea id="editor" spellcheck="false" aria-describedby="edLine"></textarea></div><pre class="out" id="engView" hidden></pre></div>
       <div class="edline" id="edLine"></div>
       <div class="bar">
+        <select id="acctSel" title="This city's own text, or one the whole account shares: the new-city template, the goals every city runs first (prepend) and last (append), the new-city script"></select>
         <select id="loadSel" title="This city's script loadouts — every city has its own ten; the first line names one"></select>
         <button id="apply">Apply</button>
         <button id="save">Save</button>
@@ -1044,7 +1046,9 @@ async function loadEditor() {
   $('edBox').hidden = k === 'engine';
   $('edLine').hidden = k === 'engine';
   $('engView').hidden = k !== 'engine';
+  paintAcctSel();
   if (k === 'engine') { showTipHtml(null, null); renderEngineView(); return; }
+  if (acctWhich()) return loadAcctText(mine);     // an account-wide text, not this city's
   paintEditHint();
   if (!city) { ed.value = ''; edcShow(); paintLoadSel(); return; }
   // Read-only until this city's text is in, so nothing typed meanwhile is
@@ -1079,6 +1083,7 @@ async function loadEditor() {
 // warning stays until the text is edited (or a minute passes).
 function paintEditHint(extra, bad) {
   if (extra) S.hintUntil = Date.now() + (bad ? 60000 : 10000);
+  if (!extra && acctWhich()) { $('editHint').innerHTML = acctHint(); return; }
   const h = S.head;
   const city = S.cityData ? esc(S.cityData.name) : 'the open city';
   const L = loadOf();
@@ -1093,7 +1098,8 @@ function paintEditHint(extra, bad) {
 // An edit is a draft of the open city's text only.
 $('editor').addEventListener('input', () => {
   const v = $('editor').value, city = String(S.city), L = loadOf(city);
-  if (S.edit === 'script' && L) {
+  if (acctWhich()) acctInput();          // an account-wide text is open, not the city's
+  else if (S.edit === 'script' && L) {
     if (v === (L.saved[L.slot] ?? '')) delete L.drafts[L.slot];
     else L.drafts[L.slot] = v;
     paintLoadSel();
@@ -1125,6 +1131,7 @@ const hintIn = (city, edit) => (m, bad) => {
 };
 
 async function goalsCall(save) {
+  if (acctWhich()) return acctCall(save);
   if (!S.city) return paintEditHint('no city is open yet', true);
   const city = String(S.city), src = $('editor').value, hint = hintIn(city, 'goals'), key = edcKey();
   if (save && !(city in GOALED.saved)) return hint('this city\'s goals have not loaded — nothing was saved', true);
@@ -1153,6 +1160,7 @@ async function goalsCall(save) {
 }
 
 async function saveLoadout() {
+  if (acctWhich()) return acctCall(true);
   const city = String(S.city), L = loadOf(city), hint = hintIn(city, 'script');
   if (!L) return hint('this city\'s loadouts have not loaded — try again', true);
   const slot = L.slot, src = $('editor').value, key = edcKey();
@@ -1170,6 +1178,7 @@ async function saveLoadout() {
 }
 
 $('apply').onclick = async () => {
+  if (acctWhich()) return acctCall(false);
   if (S.edit !== 'script') return goalsCall(false);
   const city = String(S.city), hint = hintIn(city, 'script'), src = $('editor').value, key = edcKey();
   const r = await post('/api/script', { src, parseOnly: true });
@@ -1182,9 +1191,124 @@ $('apply').onclick = async () => {
 };
 $('save').onclick = () => (S.edit === 'script' ? saveLoadout() : goalsCall(true));
 
+// ---------- account-wide texts: new-city template, prepend / append goals, new-city script ----------
+// NEAT keeps these as files beside the bot (!NewCityGoals.txt, !PrependGoals.txt,
+// !AppendGoals.txt, !NewCityScript.txt). Here they belong to the account and are
+// opened from the selector in the editor bar (goallayers.js, /api/goals/account).
+// ACCT.goals / ACCT.script is the text open in that tab ('' = the city's own);
+// unsaved edits wait per text, as a city's do.
+const ACCT = { goals: '', script: '', saved: {}, drafts: {}, info: {}, offered: {} };
+const ACCT_OPTS = {
+  goals: [['', 'This city\'s goals'], ['template', 'New-city template'],
+    ['prepend', 'Prepend goals (all cities)'], ['append', 'Append goals (all cities)']],
+  script: [['', 'This city\'s loadouts'], ['script', 'New-city script']],
+};
+const ACCT_ABOUT = {
+  template: 'copied into a city the first time it appears (founded or captured) if it has no goals of its own',
+  prepend: 'every city runs these before its own goals; a city\'s own lines override them',
+  append: 'every city runs these after its own goals; they override the city\'s own lines',
+  script: 'runs once in each city founded or captured while this console is connected',
+};
+// how an error's place is named in each (goallayers.js TEXTS)
+const ACCT_WHERE = { template: 'template', prepend: 'prepend', append: 'append', script: 'new-city script' };
+const acctWhich = () => ((S.edit === 'goals' || S.edit === 'script') ? ACCT[S.edit] : '');
+const acctLabel = (which) => ((Object.values(ACCT_OPTS).flat().find(([v]) => v === which) || [])[1] || which).replace(/ \(.*\)$/, '');
+
+// The selector, and the loadout picker and Run, which belong to a city's scripts.
+function paintAcctSel() {
+  const opts = ACCT_OPTS[S.edit];
+  $('acctSel').style.display = opts ? '' : 'none';
+  if (!opts) return;
+  $('acctSel').innerHTML = opts.map(([v, label]) => `<option value="${v}">${esc(label)}${v && v in ACCT.drafts ? ' *' : ''}</option>`).join('');
+  $('acctSel').value = ACCT[S.edit] || '';
+  if (acctWhich()) { $('loadSel').style.display = 'none'; $('runScript').style.display = 'none'; }
+}
+$('acctSel').onchange = () => {
+  if (!ACCT_OPTS[S.edit]) return;
+  ACCT[S.edit] = $('acctSel').value;
+  S.hintUntil = 0;
+  loadEditor();
+};
+
+// Read one into the editor. An account with no template at all is offered
+// NEAT's default new-city goals as an unsaved draft, once.
+async function loadAcctText(mine) {
+  const which = acctWhich(), ed = $('editor');
+  ed.readOnly = true;
+  ed.placeholder = '';
+  ed.value = ACCT.drafts[which] ?? ACCT.saved[which] ?? '';
+  edcShow();                  // coloured like any text in the editor (edcKey knows it)
+  paintEditHint();
+  const r = await getJSON('/api/goals/account?which=' + encodeURIComponent(which));
+  if (mine !== editLoads) return;
+  // A failed read must not show as an empty text that Save would then write back.
+  if (!r || r.ok === false) return paintEditHint(`${acctLabel(which)} did not load${r && r.error ? ': ' + r.error : ''} — switch tabs to try again`, true);
+  ACCT.saved[which] = r.src || '';
+  ACCT.info[which] = r;
+  if (r.suggested && !ACCT.offered[which] && !(which in ACCT.drafts)) ACCT.drafts[which] = r.suggested;
+  if (r.suggested) ACCT.offered[which] = true;
+  if (ACCT.drafts[which] === ACCT.saved[which]) delete ACCT.drafts[which];
+  ed.value = ACCT.drafts[which] ?? ACCT.saved[which];
+  edcShow();
+  ed.readOnly = false;
+  paintAcctSel();
+  paintEditHint();
+}
+
+function acctInput() {
+  const which = acctWhich(), v = $('editor').value;
+  if (!(which in ACCT.saved)) return;
+  if (v === ACCT.saved[which]) delete ACCT.drafts[which]; else ACCT.drafts[which] = v;
+  paintAcctSel();
+}
+
+function acctHint() {
+  const which = acctWhich(), info = ACCT.info[which] || {}, h = S.head;
+  const draft = which in ACCT.drafts;
+  return `<b>${esc(acctLabel(which))}</b>: ${esc(ACCT_ABOUT[which] || '')}`
+    + (info.inherited && !draft ? ' · shown from the install-wide default' : '')
+    + (draft ? (info.suggested && ACCT.drafts[which] === info.suggested ? ' · <b>NEAT\'s default, not saved</b>' : ' · <b>not saved</b>') : '')
+    + ((which === 'prepend' || which === 'append') && h && h.paused ? ' · engine <b>PAUSED</b>' : '');
+}
+
+// Apply checks, Save keeps. The errors say which text they are in: in a city
+// these lines run among its own, so "prepend line 3" is where to look.
+async function acctCall(save) {
+  const which = acctWhich(), edit = S.edit, src = $('editor').value, key = edcKey();
+  const hint = (m, bad) => { if (S.edit === edit && acctWhich() === which) paintEditHint(m, bad); };
+  if (save && !(which in ACCT.saved)) return hint(`${acctLabel(which)} has not loaded — nothing was saved`, true);
+  const r = await post('/api/goals/account', { which, src, save });
+  if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
+  if (save) {
+    ACCT.saved[which] = src.trim() ? src : '';
+    if (ACCT.drafts[which] === src) delete ACCT.drafts[which];     // unless it was edited again meanwhile
+    ACCT.info[which] = { ...(ACCT.info[which] || {}), exists: true, inherited: false };
+    if (S.edit === edit) paintAcctSel();
+  }
+  const errs = r.errors || [];
+  // lines that read fine but that nothing acts on yet, as goalsCall lists them
+  const idle = (r.lines || []).filter((l) => l.status === 'idle');
+  if (errs.length) {
+    hint(save ? `saved with ${errs.length} error(s) — those lines are skipped until they're fixed. See Output.`
+      : `${errs.length} error(s) — these lines won't work as written. See Output.`, true);
+  } else if (idle.length) {
+    hint(save ? `${r.note || 'saved'} ${idle.length} line(s) do nothing yet — see Output.`
+      : `no errors, but ${idle.length} line(s) do nothing yet — see Output. Not saved yet, press Save`);
+  } else hint(save ? (r.note || 'saved') : 'no errors — not saved yet, press Save');
+  const where = ACCT_WHERE[which] || which;
+  showOutput([
+    `${acctLabel(which)}${save ? ' — saved' : ' — checked'}`, '',
+    ...(errs.length ? [`${errs.length} error(s) — these lines won't work as written:`, ...errs.map((e) => `  ${e.where}: ${e.error}`), ''] : []),
+    ...(idle.length ? [`${idle.length} line(s) read fine but nothing acts on them yet:`, ...idle.map((l) => `  ${where} line ${l.n}: ${l.msg}`), ''] : []),
+    ...(r.described || []),
+  ].join('\n'));
+}
+
 // Always live. A script with errors is refused whole by the server. Runs in
 // different cities go side by side, and each city's Output shows its own run.
 $('runScript').onclick = async () => {
+  if (acctWhich()) return;             // the new-city script runs by itself, in new cities
   const src = $('editor').value, L = loadOf();
   if (!S.city) return paintEditHint('no city is open yet', true);
   if (!L) return paintEditHint('this city\'s loadouts have not loaded — try again', true);
@@ -1256,8 +1380,10 @@ async function renderEngineView() {
 // is asked for after a pause in typing (EDC_MS). A check never saves.
 const EDC_MS = 300;
 const EDC = { seq: 0, timer: 0, key: null, rows: null, lines: null, shown: [] };
-// the editor an answer belongs to: tab, city and, for scripts, the loadout
-const edcKey = () => `${S.edit}:${S.city}:${S.edit === 'script' ? ((loadOf() || {}).slot || '') : ''}`;
+// the editor an answer belongs to: tab, city and, for scripts, the loadout — or
+// the account-wide text open in that tab (acctWhich), whichever city is open
+const edcKey = () => (acctWhich() ? `${S.edit}:@${acctWhich()}:`
+  : `${S.edit}:${S.city}:${S.edit === 'script' ? ((loadOf() || {}).slot || '') : ''}`);
 
 // Comments and blank lines need no server: // or # in goals, only // in scripts.
 function edcLocal(kind, row) {
@@ -3127,6 +3253,7 @@ async function refresh(force) {
     const acctId = h.account ? h.account.id : null;
     if (LOAD.acct !== undefined && LOAD.acct !== acctId) {
       LOAD.cities = {}; GOALED.saved = {}; GOALED.drafts = {};
+      ACCT.saved = {}; ACCT.drafts = {}; ACCT.info = {}; ACCT.offered = {};
       for (const k of Object.keys(OUT)) delete OUT[k];
       S.city = null; S.cityData = null; loadEditor();
     }

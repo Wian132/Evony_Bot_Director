@@ -283,6 +283,14 @@ function build(db, helpers) {
       own(accountId, cityId, cityName, kind) {
         return ownsAccount(accountId) ? raw.goals.own(accountId, cityId, cityName, kind) : null;
       },
+      seed(accountId, cityId, cityName, kind) {
+        return ownsAccount(accountId) ? raw.goals.seed(accountId, cityId, cityName, kind)
+          : { row: null, seeded: false, from: null, had: false };
+      },
+      exact(accountId, cityKey, kind) { return ownsAccount(accountId) ? raw.goals.exact(accountId, cityKey, kind) : null; },
+      layers(accountId, cityId, cityName) {
+        return ownsAccount(accountId) ? raw.goals.layers(accountId, cityId, cityName) : { prepend: null, city: null, append: null };
+      },
       loadouts(accountId, cityId) { return ownsAccount(accountId) ? raw.goals.loadouts(accountId, cityId) : []; },
       set(accountId, cityKey, kind, src) { return raw.goals.set(requireAccount(accountId), cityKey, kind, src); },
       remove(accountId, cityKey, kind) { return raw.goals.remove(requireAccount(accountId), cityKey, kind); },
@@ -295,6 +303,7 @@ function build(db, helpers) {
     const engineState = {
       load(accountId) { return ownsAccount(accountId) ? raw.engineState.load(accountId) : {}; },
       save(obj, accountId) { return raw.engineState.save(obj, requireAccount(accountId)); },
+      remove(keys, accountId) { return raw.engineState.remove(keys, requireAccount(accountId)); },
     };
 
     const registry = {

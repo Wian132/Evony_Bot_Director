@@ -434,7 +434,7 @@ const recalls = (game) => game.reqs.filter(([cmd]) => cmd === 'army.callBackArmy
     let r = engineFor([fla, five], { Fla: 'requestresources 5 food 500m 5b 50m 100m', 5: 'config wartown:1' });
     await r.e.tick();
     assert.strictEqual(r.game.sent.length, 0, 'the war town sent a transport');
-    has(r.e.lastReport.Fla.transfer.note, '5 is a war town (1)');
+    has(r.e.lastReport[fla.castleId].transfer.note, '5 is a war town (1)');
     [fla, five] = mk();
     r = engineFor([fla, five], { Fla: 'requestresources 5 food 500m 5b 50m 100m' }, { controls: { 5: { wartown: 2 } } });
     await r.e.tick();

@@ -777,13 +777,18 @@ test('wartown:1 -> locks down, traininghero may still move', () => {
 test('wartown:2 -> locks down, traininghero stays put', () => {
   assert.strictEqual(W.plans.wartown(makeCtx({ config: { wartown: 2 } }), {}).heroMayMove, false);
 });
-test('wartown: switching on recalls every marching army', () => {
-  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [{ armyId: 11 }, { armyId: 12 }] });
+// Our own marches as SelfArmysUpdate lists them: start field, direction 1 out.
+const HOME_FIELD = C.coordsToFieldId(200, 300);
+const outMarch = (armyId, extra = {}) => ({ armyId, startFieldId: HOME_FIELD, targetFieldId: C.coordsToFieldId(1, 1),
+  missionType: C.MISSION.attack, direction: 1, ...extra });
+
+test("wartown: switching on recalls this city's marching armies, with its castle id", () => {
+  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [outMarch(11), outMarch(12), outMarch(13, { startFieldId: 999 })] });
   const p = W.plans.wartown(ctx, {});
-  assert.deepStrictEqual(p.actions.map((a) => [a.kind, a.armyId]), [['recallArmy', 11], ['recallArmy', 12]]);
+  assert.deepStrictEqual(p.actions.map((a) => [a.kind, a.armyId, a.castleId]), [['recallArmy', 11, 101], ['recallArmy', 12, 101]]);
 });
 test('wartown: it only recalls once, not every tick', () => {
-  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [{ armyId: 11 }] });
+  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [outMarch(11)] });
   const state = {};
   assert.strictEqual(W.plans.wartown(ctx, state).actions.length, 1);
   assert.strictEqual(W.plans.wartown(ctx, state).actions.length, 0);
@@ -795,15 +800,15 @@ test('wartown: turning it back off announces the lift', () => {
   assert.ok(/lifted/.test(p.note));
   assert.strictEqual(p.lockdown, false);
 });
-test('wartown: armies still out a minute later get a second recall', () => {
-  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [{ armyId: 11 }] });
+test('wartown: an army still heading out two minutes after its recall gets a second one', () => {
+  const ctx = makeCtx({ config: { wartown: 1 }, selfArmies: [outMarch(11)] });
   const state = {};
   assert.strictEqual(W.plans.wartown(ctx, state).actions.length, 1);
   assert.strictEqual(W.plans.wartown(ctx, state).actions.length, 0, 'not every tick');
-  state.war.wartown.lastRecallAt = NOW - 120000;
+  state.war.wartown.recall[11] = { plannedAt: NOW - 120000, sentAt: NOW - 120000, tries: 1 };
   const p = W.plans.wartown(ctx, state);
   assert.strictEqual(p.actions.length, 1);
-  assert.ok(/still recalling/.test(p.note), p.note);
+  assert.ok(/recalling 1 march/.test(p.note), p.note);
 });
 test('isWarTown reports the mode for the other goal modules', () => {
   assert.strictEqual(W.isWarTown(makeCtx({ config: { wartown: 2 } })), 2);
@@ -835,27 +840,29 @@ const mixedHeroes = [
   { id: 5, name: 'Marching', status: 3, power: 500, management: 10, stratagem: 10 },
 ];
 
-test('keepatthome reserves the strongest idle attack heroes, not the politicians', () => {
+// wiki KeepAttHome: on/off, and it keeps ONE hero — the best attack hero.
+test('keepatthome:1 keeps the best attack hero home — a stand-in while that one is out', () => {
   const castle = fakeCastle({ heros: mixedHeroes });
-  const k = W.keepAttHome(makeCtx({ castle, config: { keepatthome: 2 } }));
-  assert.deepStrictEqual(k.reserved.map((h) => h.name), ['Bruiser', 'Sabre']);
-  assert.ok(k.reservedIds.has(1) && k.reservedIds.has(3));
-  assert.ok(!k.reservedIds.has(2), 'a politics hero is not an attack hero');
-  assert.ok(!k.reservedIds.has(4), 'the mayor (status 1) is not free to reserve');
-  assert.ok(!k.reservedIds.has(5), 'a hero already marching (status 3) cannot be reserved');
+  const k = W.keepAttHome(makeCtx({ castle, config: { keepatthome: 1 } }));
+  assert.strictEqual(k.away.name, 'Marching', 'the best (status 3) is out');
+  assert.deepStrictEqual(k.reserved.map((h) => h.name), ['Bruiser'], 'the best one at home stands in');
+  assert.ok(!k.reservedIds.has(4), 'the mayor (status 1) is never the one kept');
+  const back = fakeCastle({ heros: mixedHeroes.map((h) => (h.id === 5 ? { ...h, status: 0 } : h)) });
+  assert.deepStrictEqual(W.keepAttHome(makeCtx({ castle: back, config: { keepatthome: 1 } })).reserved.map((h) => h.name), ['Marching']);
 });
 test('keepatthome ranks on power alone — *Added is a point count, not a bonus', () => {
-  const castle = fakeCastle({ heros: mixedHeroes });
-  const k = W.keepAttHome(makeCtx({ castle, config: { keepatthome: 3 } }));
-  // Clerk has management 250 vs power 30; adding managementAdded 90 would not
-  // change that, but adding powerAdded 100 to Bruiser must not happen either.
-  assert.deepStrictEqual(k.reserved.map((h) => h.name), ['Bruiser', 'Sabre']);
-  assert.strictEqual(W._internals.isAttackHero({ power: 100, powerAdded: 900, management: 200 }), false,
-    'powerAdded must not be able to promote a politics hero to an attack hero');
+  const heros = [
+    { id: 1, name: 'Points', status: 0, power: 200, powerAdded: 150 },
+    { id: 2, name: 'Natural', status: 0, power: 210, powerAdded: 0 },
+  ];
+  const k = W.keepAttHome(makeCtx({ castle: fakeCastle({ heros }), config: { keepatthome: 1 } }));
+  assert.strictEqual(k.hero.name, 'Natural', 'power already includes the allocated points');
 });
-test('keepatthome reports how many it is short', () => {
-  const castle = fakeCastle({ heros: mixedHeroes });
-  assert.strictEqual(W.keepAttHome(makeCtx({ castle, config: { keepatthome: 4 } })).short, 2);
+test('keepatthome:1 with nobody to stand in says so', () => {
+  const heros = [{ id: 5, name: 'Marching', status: 3, power: 500 }, { id: 4, name: 'Mayor', status: 1, power: 400 }];
+  const k = W.keepAttHome(makeCtx({ castle: fakeCastle({ heros }), config: { keepatthome: 1 } }));
+  assert.strictEqual(k.hero, null);
+  assert.strictEqual(k.short, 1);
 });
 test('keepatthome:0 reserves nobody', () => {
   assert.strictEqual(W.keepAttHome(makeCtx({ config: { keepatthome: 0 } })).keep, 0);
@@ -864,38 +871,28 @@ test('keepatthome with junk -> error', () => {
   assert.ok(W.parsers.keepatthome.parse('lots').errors.length);
 });
 
-test('attackgap gates outgoing attacks and clears once the gap has passed', () => {
-  const ctx = makeCtx({ config: { attackgap: 90 } });
+// wiki AttackGap: the spacing between INCOMING waves that makes them separate attacks.
+test('attackgap groups incoming waves: 90s apart is one attack under attackgap:90, two under 60', () => {
   assert.strictEqual(W.parsers.attackgap.parse(90).gapMs, 90000, 'bare numbers are seconds');
-  const state = {};
-  assert.strictEqual(W.attackAllowed(ctx, state).ok, true);
-  W.noteAttackSent(state, NOW - 30000);
-  const held = W.attackAllowed(ctx, state);
-  assert.strictEqual(held.ok, false);
-  assert.strictEqual(held.waitMs, 60000);
-  W.noteAttackSent(state, NOW - 120000);
-  assert.strictEqual(W.attackAllowed(ctx, state).ok, true);
+  const incoming = [wireArmy({ inMs: 60000, troop: { archer: '200000' }, armyId: 1 }),
+                    wireArmy({ inMs: 145000, troop: { archer: '200000' }, armyId: 2 })];
+  assert.strictEqual(W.attackGroups(makeCtx({ config: { attackgap: 90 }, incoming })).groups.length, 1);
+  assert.strictEqual(W.attackGroups(makeCtx({ config: { attackgap: 60 }, incoming })).groups.length, 2);
 });
 test('attackgap:2min is unambiguous', () => {
   assert.strictEqual(W.parsers.attackgap.parse('2min').gapMs, 120000);
 });
-test('attackgap unset -> never blocks', () => {
-  assert.strictEqual(W.attackAllowed(makeCtx({ config: {} }), {}).ok, true);
+test('attackgap unset -> the NEAT default of 6 seconds', () => {
+  assert.strictEqual(W.parsers.attackgap.parse(undefined).gapMs, 6000);
 });
 
-test('defensecooldown counts in minutes and paces the gate', () => {
+// wiki DefenseCooldown: how long the city counts as under attack after a hit.
+test('defensecooldown counts in minutes and no longer holds the gate', () => {
   assert.strictEqual(W.parsers.defensecooldown.parse(5).cooldownMs, 300000);
   assert.strictEqual(W.parsers.defensecooldown.parse('30s').cooldownMs, 30000);
   const ctx = makeCtx({ config: { gate: 1, defensecooldown: 5 }, goals: [GP('1 1 2 0 1')] });
-  const state = { war: { lastDefenceAt: NOW - 60000 } };
-  const p = W.plans.gate(ctx, state);
-  assert.deepStrictEqual(p.actions, []);
-  assert.ok(/defensecooldown/.test(p.note), p.note);
-});
-test('defensecooldown does not block once it has elapsed', () => {
-  const ctx = makeCtx({ config: { gate: 1, defensecooldown: 5 }, goals: [GP('1 1 2 0 1')] });
-  const state = { war: { lastDefenceAt: NOW - 600000 } };
-  assert.strictEqual(W.plans.gate(ctx, state).actions.length, 1);
+  const state = { war: { gate: { lastAt: NOW - 60000 } } };
+  assert.strictEqual(W.plans.gate(ctx, state).actions.length, 1, 'only /mintoggle paces the gate');
 });
 
 test('nohealing:1 forbids healing, 0 and unset allow it', () => {

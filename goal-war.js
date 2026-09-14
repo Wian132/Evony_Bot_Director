@@ -31,17 +31,19 @@
 //   config gate:<minutes|6s>             open/close the gate before impact
 //   config warrules:<minutes>            alliance-chat alerts
 //   config wartown:<0|1|2>               lock the city down for war
+//   wartownpolicy <start> <end> [...]    ...only between these times
 //   config monitorarmy:<n>               accepted, does nothing (see below)
-//   config keepatthome:<n>               reserve N attack heroes in the city
-//   config attackgap:<seconds|2min>      minimum spacing between outgoing attacks
-//   config defensecooldown:<minutes|30s> minimum spacing between defensive responses
+//   config keepatthome:<0|1>             keep the best attack hero home
+//   config attackgap:<seconds>           waves this far apart are separate attacks
+//   config defensecooldown:<minutes>     still "under attack" this long after a hit
 //   config nohealing:<0|1>               never heal wounded troops
 //   gatepolicy <na> <reg> <sb> <mix> <mnt> [/switches]
 //   hidingpolicy /switch:value ...       (our addition — NEAT infers these)
 //
-// The last four are LIMITS, not actions: they are exported as helpers
-// (keepAttHome / attackAllowed / defenceAllowed / healingAllowed) for the goals
-// that do march, and reported by plans.constraints so they are visible.
+// War town, keepatthome, attackgap, defensecooldown and nohealing are rules
+// the OTHER goals read, not actions: they are exported as helpers (lockdown /
+// isWarTown / keepAttHome / attackGroups / underAttack / healingAllowed) and
+// reported by plans.wartown and plans.constraints so they are visible.
 //
 // ctx is {game, castle, goals, config, fortifications, incoming} as built by
 // engine.js. Two OPTIONAL extras are used when present and degraded to a note
@@ -91,6 +93,20 @@ function durationMs(v, unit = 'min') {
   if (u[0] === 'h') return q * 3600000;
   return q * 60000;
 }
+
+// NEAT's defaults for the two defence timings (wiki AttackGap, DefenseCooldown).
+const ATTACK_GAP_DEFAULT_MS = 6000;
+const DEFENSE_COOLDOWN_DEFAULT_MS = 30 * 60000;
+
+// "06:00" / "6:00" -> minutes after midnight; "24:00" is the end of the day.
+function clockMin(s) {
+  const m = String(s).trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (mi > 59 || h > 24 || (h === 24 && mi > 0)) return null;
+  return h * 60 + mi;
+}
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // ------------------------------------------------------------ switch parsing
 const kv = (s) => { const i = s.indexOf(':'); return i < 0 ? [s, null] : [s.slice(0, i), s.slice(i + 1)]; };
@@ -315,16 +331,44 @@ const parsers = {
   },
 
   // -------------------------------------------------- config wartown:<0|1|2>
+  // wiki WarTown. A value that is not 0, 1 or 2 is reported; a larger number
+  // still reads as 2 (the strictest lockdown), anything unreadable as off.
   wartown: {
     kind: 'config', multi: false,
     parse(value) {
       const errs = [];
-      const v = parseInt(value, 10);
-      if (!Number.isInteger(v) || v < 0 || v > 2) {
+      const s = value === undefined || value === null ? '' : String(value).trim();
+      const v = /^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+      if (!/^[012]$/.test(s)) {
         errs.push(`wartown must be 0 (off), 1 (on, traininghero may move) or 2 (on, traininghero stays), got "${value}"`);
       }
-      const mode = clamp(Number.isInteger(v) ? v : 0, 0, 2);
+      const mode = Number.isFinite(v) ? clamp(Math.round(v) || (v > 0 ? 1 : 0), 0, 2) : 0;
       return { mode, enabled: mode > 0, heroMayMove: mode === 1, errors: errs };
+    },
+  },
+
+  // ------------------------------------------ wartownpolicy <start> <end> ...
+  // wiki WarTownPolicy: the War Town lockdown holds only between each start
+  // and end time, and the city plays normally the rest of the day. It has no
+  // effect unless config wartown:1 or 2 is on. Times are hh:mm on this
+  // machine's clock, as `@:` times in scripts are; a window may run past
+  // midnight (wartownpolicy 22:00 02:00).
+  wartownpolicy: {
+    kind: 'policy', multi: false,
+    parse(args) {
+      const errs = [], windows = [];
+      const toks = args.map(String).filter(Boolean);
+      if (!toks.length) errs.push('expected: wartownpolicy <start> <end> [<start> <end> ...], e.g. wartownpolicy 06:00 12:00');
+      if (toks.length % 2) errs.push(`times come in start/end pairs — "${toks[toks.length - 1]}" has no end time`);
+      for (let i = 0; i + 1 < toks.length; i += 2) {
+        const a = clockMin(toks[i]), b = clockMin(toks[i + 1]);
+        const bad = a === null ? toks[i] : b === null ? toks[i + 1] : null;
+        if (bad !== null) { errs.push(`"${bad}" is not a time of day — write hh:mm, e.g. 06:00`); continue; }
+        const from = a % 1440, to = b;                  // 24:00 only makes sense as an end
+        if (from === to % 1440 && to !== 1440) { errs.push(`${toks[i]} ${toks[i + 1]} starts and ends at the same time`); continue; }
+        windows.push({ from, to, text: `${hhmm(from)}-${hhmm(to)}` });
+      }
+      return { windows, errors: errs };
     },
   },
 
@@ -336,51 +380,63 @@ const parsers = {
     parse() { return { noop: true, errors: [] }; },
   },
 
-  // ------------------------------------------------ config keepatthome:<n>
-  // INFERRED (the wiki page would not load — surge-protected throughout this
-  // session). Read as: keep N ATTACK heroes in the city rather than out
-  // farming. The Hiding page names it as the goal that guarantees hiding a
-  // hero to march with, which is the reading used here. It never marches
-  // anything itself — it only ever stops another goal from marching.
+  // ------------------------------------------------ config keepatthome:<0|1>
+  // wiki KeepAttHome (default 0): on/off. On keeps the city's best attack hero
+  // home for defence instead of sending it farming — the traininghero never
+  // counts, and while config training is on it keeps the SECOND best (the best
+  // is out training). It never marches anything; it only stops other goals
+  // from marching that hero (see keepAttHome below). A larger number is
+  // reported and read as on: there is one hero to keep, not a count.
   keepatthome: {
     kind: 'config', multi: false,
     parse(value) {
       const errs = [];
-      const v = parseInt(value, 10);
-      if (value !== undefined && value !== null && value !== '' && !Number.isInteger(v)) {
-        errs.push(`keepatthome: expected a hero count, got "${value}"`);
-      }
-      const keep = Math.max(0, Number.isInteger(v) ? v : 0);
-      return { keep, enabled: keep > 0, errors: errs };
+      const s = value === undefined || value === null ? '' : String(value).trim();
+      let on = false;
+      if (s === '1') on = true;
+      else if (/^\d+$/.test(s) && Number(s) > 1) {
+        on = true;
+        errs.push(`keepatthome is on/off (0 or 1) — it keeps the one best attack hero home; "${value}" is read as 1`);
+      } else if (s !== '' && s !== '0') errs.push(`keepatthome: expected 0 or 1, got "${value}"`);
+      return { on, keep: on ? 1 : 0, enabled: on, errors: errs };
     },
   },
 
   // --------------------------------------------- config attackgap:<seconds>
-  // INFERRED unit: seconds. Write "2min" if you mean minutes — the suffix is
-  // honoured and removes the ambiguity.
+  // wiki AttackGap (default 6): incoming waves that land at least this many
+  // seconds after the wave before are a separate attack, each evaded on its
+  // own; closer waves are one attack, evaded together once. Bare numbers are
+  // seconds; "1min" works too.
   attackgap: {
     kind: 'config', multi: false,
     parse(value) {
       const errs = [];
-      const ms = durationMs(value, 'sec');
-      if (value !== undefined && value !== null && value !== '' && ms === 0 && String(value) !== '0') {
-        errs.push(`attackgap: cannot read "${value}" as a duration (seconds, or "2min")`);
+      const set = value !== undefined && value !== null && value !== '';
+      let ms = set ? durationMs(value, 'sec') : ATTACK_GAP_DEFAULT_MS;
+      if (set && ms === 0 && String(value) !== '0') {
+        errs.push(`attackgap: cannot read "${value}" as seconds — using the default ${ATTACK_GAP_DEFAULT_MS / 1000}`);
+        ms = ATTACK_GAP_DEFAULT_MS;
       }
-      return { gapMs: ms, enabled: ms > 0, errors: errs };
+      return { gapMs: ms, isDefault: !set, errors: errs };
     },
   },
 
   // ---------------------------------------- config defensecooldown:<minutes>
-  // INFERRED unit: minutes. Write "30s" if you mean seconds.
+  // wiki DefenseCooldown (default 30): how long after an attack lands on the
+  // city, or is recalled, the city still counts as under attack. Junk attacks
+  // never start it. Bare numbers are minutes; "90s" works too. (It no longer
+  // paces the gate: gatepolicy /mintoggle does that.)
   defensecooldown: {
     kind: 'config', multi: false,
     parse(value) {
       const errs = [];
-      const ms = durationMs(value, 'min');
-      if (value !== undefined && value !== null && value !== '' && ms === 0 && String(value) !== '0') {
-        errs.push(`defensecooldown: cannot read "${value}" as a duration (minutes, or "30s")`);
+      const set = value !== undefined && value !== null && value !== '';
+      let ms = set ? durationMs(value, 'min') : DEFENSE_COOLDOWN_DEFAULT_MS;
+      if (set && ms === 0 && String(value) !== '0') {
+        errs.push(`defensecooldown: cannot read "${value}" as minutes — using the default ${DEFENSE_COOLDOWN_DEFAULT_MS / 60000}`);
+        ms = DEFENSE_COOLDOWN_DEFAULT_MS;
       }
-      return { cooldownMs: ms, enabled: ms > 0, errors: errs };
+      return { cooldownMs: ms, isDefault: !set, errors: errs };
     },
   },
 
@@ -600,9 +656,11 @@ function buildHideMarch(ctx, opt, t, game) {
   // -- hero --------------------------------------------------------------
   // HeroConstants.as: 0 FREE, 1 CHIEF (mayor), 2 GUARD, 3 SEND, 4 SEIZED,
   // 5 BACK, 8 FARM. The wiki is explicit that hiding never demotes the mayor
-  // to free a hero up, so only a FREE hero may lead the march.
+  // to free a hero up, so only a FREE hero may lead the march. Which one:
+  // see hideHero (keepatthome's defender and the traininghero go last).
   const heroes = castle.heros || [];
-  const hero = heroes.find((h) => Number(h.status) === HERO.FREE);
+  const pick = hideHero(ctx, heroes);
+  const hero = pick.hero;
   if (!hero && opt.needHero) {
     const mayor = heroes.find((h) => Number(h.status) === HERO.CHIEF);
     return { error: 'no idle hero to lead the hide march' + (mayor ? ` (${mayor.name} is mayor and will not be demoted for this)` : '') +
@@ -719,6 +777,7 @@ function buildHideMarch(ctx, opt, t, game) {
   if (!safe) warn.push('WARNING: the round trip is shorter than the wait — the army lands back before impact');
   if (clampedByFood) warn.push(`encamp time cut to fit ${fmt(foodBudget)} food`);
   if (!hero) warn.push('no hero aboard');
+  else if (pick.why) warn.push(`led by ${hero.name}, ${pick.why}`);
 
   return {
     note: `hiding: launching — ${bits.join(', ')}${warn.length ? ' [' + warn.join('; ') + ']' : ''}`,
@@ -812,9 +871,8 @@ function gatePlan(ctx, state, game) {
   if (t.now - n(gs.lastAt) < minToggle) {
     return { note: `${head} — holding, last toggle was ${hhmmss(t.now - n(gs.lastAt))} ago`, actions: [] };
   }
-  // config defensecooldown paces every defensive response, this one included.
-  const cool = defenceAllowed(ctx, state, game);
-  if (!cool.ok) return { note: `${head} — held by defensecooldown for another ${hhmmss(cool.waitMs)}`, actions: [] };
+  // /mintoggle is the only pacing: config defensecooldown is NEAT's
+  // under-attack window (underAttack below), not a gate throttle.
 
   return {
     note: head,
@@ -916,50 +974,211 @@ function warRulesPlan(ctx, state, game) {
 }
 
 // ------------------------------------------------------------------ wartown
-// config wartown:<0|1|2>
-// A lockdown flag. It does not itself march anything: it tells the rest of the
-// bot to stop moving troops around. On the 0 -> 1/2 transition it also does the
-// wiki's "recallall" for you, which needs ctx.selfArmies to name the armies.
+// config wartown:<0|1|2>   (+ wartownpolicy <start> <end> ...)
+//
+// wiki WarTown: "lock down most troop movements in preparation of war. No npc
+// farming runs, KeepResource, SendResource, KeepTroop, or SendTroop goals".
+// This plan reports; the holding is done by every goal that marches, which
+// all ask lockdown() below:
+//   goal-npc       no farming runs from this city
+//   goal-buildnpc  stands down: no flat occupied, no city abandoned
+//   goal-transfer  this city sends no transfer march; its own requests are
+//                  still served by the other cities — supplies coming IN move
+//                  nothing out of it, and NEAT holds only the sending goals
+//   engine.js      wartown:2 keeps the traininghero here once it has landed,
+//                  wartown:1 lets it come and go
+// Hiding is not held: an evasion is the one march a city under attack needs.
+// The console's War Town Mode counts exactly as the config key does.
+//
+// NEAT recalls nothing itself (the wiki points at the recallall script). This
+// does that recallall once, when war town is switched on: every march still
+// heading OUT of this city (ArmyConstants.as direction 1), each recalled once
+// with this city's castleId — the city it left from, which army.callBackArmy
+// wants (server.js's console recall does the same) — and again only if it is
+// still heading out a while later. Marches already coming home are left to
+// arrive. Armies camped elsewhere — a reinforcement standing in another city,
+// troops holding a valley, an encampment — were put there on purpose and stay:
+// recallall is for "troops marching from the city". The hide march, and under
+// wartown:1 the traininghero's own move, are not touched. A wartownpolicy
+// window opening later recalls nothing: its runs finish and come home, which
+// is what the wiki's advice to pair it with SchedulePolicy counts on.
+const RECALL_PENDING_MS = 55000;      // proposed, never sent: a dry run, or the slice ran out of actions
+const RECALL_RETRY_MS = 2 * 60000;    // sent, and the army is still heading out
+const RECALL_MAX_TRIES = 3;
+
+const nowOf = (ctx, game) => { const g = game || (ctx && ctx.game); return g && g.now ? g.now() : Date.now(); };
+
+// The console's War Town Mode for this city, or null on Auto (or no console).
+function consoleWarTown(ctx) {
+  const v = ctx.controls && ctx.controls.wartown;
+  return v === undefined || v === null || v === '' || v === 'auto' ? null : v;
+}
+
+// This machine's clock, minutes after midnight.
+const minuteOfDay = (at) => { const d = new Date(at); return d.getHours() * 60 + d.getMinutes(); };
+
+// The wartownpolicy window `at` falls in, or null.
+function windowAt(windows, at) {
+  const m = minuteOfDay(at);
+  return windows.find((w) => (w.from < w.to ? m >= w.from && m < w.to : m >= w.from || m < w.to)) || null;
+}
+// The window that opens next after `at`.
+function nextWindow(windows, at) {
+  const m = minuteOfDay(at);
+  const wait = (w) => (w.from - m + 1440) % 1440;
+  return windows.slice().sort((a, b) => wait(a) - wait(b))[0] || null;
+}
+
+// The War Town lockdown, as every goal that marches asks about it.
+//   on          true while marches out of this city are held
+//   mode        the switch: 0 off, 1 on (traininghero may move), 2 on (it stays)
+//   heroMayMove false only while the lockdown holds under mode 2
+//   window      the wartownpolicy window in force, when there is one
+//   why         a few words for a plan note
+function lockdown(ctx, at) {
+  const fromConsole = consoleWarTown(ctx);
+  const raw = fromConsole !== null ? fromConsole : (ctx.config || {}).wartown;
+  if (raw === undefined || raw === null) {
+    return { on: false, mode: 0, heroMayMove: true, window: null, source: null, errors: [], why: 'war town off' };
+  }
+  const cfg = parsers.wartown.parse(raw);
+  const source = fromConsole !== null ? 'the console' : 'config';
+  const base = { mode: cfg.mode, source, errors: cfg.errors, window: null };
+  if (!cfg.enabled) return { ...base, on: false, heroMayMove: true, why: 'war town off' };
+
+  const pol = (ctx.goals || []).find((g) => g.name === 'wartownpolicy');
+  const windows = (pol && pol.windows) || [];
+  if (!windows.length) return { ...base, on: true, heroMayMove: cfg.heroMayMove, why: `war town ${cfg.mode} (${source})` };
+  const when = at === undefined ? nowOf(ctx) : at;
+  const w = windowAt(windows, when);
+  if (!w) {
+    const next = nextWindow(windows, when);
+    return { ...base, on: false, heroMayMove: true, scheduled: true, next,
+      why: `war town ${cfg.mode} (${source}) waits for its wartownpolicy hours, next ${next.text}` };
+  }
+  return { ...base, on: true, heroMayMove: cfg.heroMayMove, scheduled: true, window: w,
+    why: `war town ${cfg.mode} (${source}, wartownpolicy ${w.text})` };
+}
+
+// Other modules ask this before moving troops out of a city: the mode while
+// the lockdown holds, 0 when it does not.
+function isWarTown(ctx, at) {
+  const l = lockdown(ctx, at);
+  return l.on ? l.mode : 0;
+}
+
+const trainingHeroNames = (ctx) => new Set((ctx.goals || [])
+  .filter((g) => g.name === 'traininghero' && g.hero).map((g) => String(g.hero).toLowerCase()));
+
+const MISSION_NAME = Object.fromEntries(Object.entries(C.MISSION).map(([k, v]) => [v, k]));
+
+// This city's own marches, sorted for the switch-on recall. ArmyConstants.as:
+// direction 1 going out, 2 coming home, 3 camped.
+function marchesFrom(ctx, st, heroMayMove) {
+  const fid = Number(ctx.castle && ctx.castle.fieldId);
+  const out = { recall: [], camped: [], left: [], known: Number.isFinite(fid) };
+  if (!out.known) return out;
+  const hide = st.hide || null;
+  const th = trainingHeroNames(ctx);
+  for (const a of ctx.selfArmies || []) {
+    const b = a.raw || a;                          // the engine wraps the ArmyBean
+    if (Number(b.startFieldId ?? a.startFieldId) !== fid) continue;
+    const dir = Number(b.direction ?? a.direction) || 1;
+    if (dir === 2) continue;                       // already coming home
+    const target = n(b.targetFieldId ?? a.targetFieldId);
+    const mission = n(b.missionType ?? a.missionType);
+    const xy = target ? C.fieldIdToCoords(target) : null;
+    const m = {
+      armyId: a.armyId ?? b.armyId, missionType: mission, targetFieldId: target, hero: b.hero || null,
+      what: `${MISSION_NAME[mission] || 'march'} to ${b.targetPosName || (xy ? `${xy.x},${xy.y}` : '?')}`,
+    };
+    if (dir === 3) { out.camped.push(m); continue; }
+    const isHide = hide && ((hide.armyId != null && String(hide.armyId) === String(m.armyId))
+      || (target === n(hide.targetFieldId) && mission === n(hide.missionType)));
+    if (isHide) { out.left.push({ ...m, why: 'the hide march' }); continue; }
+    if (heroMayMove && m.hero && th.has(String(m.hero).toLowerCase())) {
+      out.left.push({ ...m, why: 'the traininghero on its way (war town 1)' });
+      continue;
+    }
+    out.recall.push(m);
+  }
+  return out;
+}
+
 function warTownPlan(ctx, state, game) {
   game = game || ctx.game;
-  const cfg = parsers.wartown.parse(ctx.config.wartown);
-  if (ctx.config.wartown === undefined || ctx.config.wartown === null) return null;
+  const set = consoleWarTown(ctx) !== null || (ctx.config.wartown !== undefined && ctx.config.wartown !== null);
+  if (!set) {
+    const pol = (ctx.goals || []).find((g) => g.name === 'wartownpolicy');
+    return pol ? { note: 'wartownpolicy: idle — it schedules a war town, so it needs config wartown:1 or 2', actions: [], lockdown: false } : null;
+  }
 
   const st = warState(state);
   const ws = (st.wartown = st.wartown || {});
-  const now = game && game.now ? game.now() : Date.now();
+  const now = nowOf(ctx, game);
+  const lock = lockdown(ctx, now);
+  const errs = lock.errors.length ? ` [${lock.errors.join('; ')}]` : '';
+  const head = `wartown ${lock.mode}${lock.source === 'the console' ? ' (console)' : ''}`;
 
-  if (!cfg.enabled) {
-    if (ws.on) { ws.on = false; ws.liftedAt = now; return { note: 'wartown: lifted — normal troop movement resumes', actions: [], lockdown: false }; }
-    return { note: 'wartown: off', actions: [], lockdown: false };
+  if (!lock.mode) {
+    const lifted = !!ws.on;
+    if (lifted) { ws.on = false; ws.liftedAt = now; delete ws.targets; delete ws.recall; }
+    return { note: `${lifted ? `${head}: lifted — normal troop movement resumes` : `${head}: off`}${errs}`, actions: [], lockdown: false };
   }
 
-  const suppressed = 'npc farming, valley/hunting runs, KeepResources, SendResources, KeepTroops and SendTroops';
-  const heroNote = cfg.heroMayMove ? 'traininghero may still move in and out' : 'traininghero stays put once it lands here';
-
-  const armies = ctx.selfArmies || null;
-  const fresh = !ws.on;
-  if (fresh) { ws.on = true; ws.since = now; }
-
-  // Re-issue the recall if armies are still out a minute later: the first pass
-  // may have been a dry run, or a callBackArmy may simply have failed.
-  const retry = !fresh && armies && armies.length && now - n(ws.lastRecallAt) > 60000;
-  if (!fresh && !retry) {
-    return { note: `wartown ${cfg.mode}: locked down — ${suppressed} are held; ${heroNote}`, actions: [], lockdown: true, heroMayMove: cfg.heroMayMove };
+  // Switched on (not a window opening): note what is heading out right now.
+  const marches = marchesFrom(ctx, st, lock.heroMayMove);
+  if (!ws.on) {
+    ws.on = true; ws.since = now; ws.recall = {};
+    ws.targets = lock.on ? marches.recall.map((m) => m.armyId).filter((id) => id !== undefined && id !== null) : [];
+  }
+  if (!lock.on) {
+    return { note: `${head}: outside its wartownpolicy hours — normal troop movement until ${hhmm(lock.next.from)}${errs}`,
+      actions: [], lockdown: false, heroMayMove: true };
   }
 
-  if (!armies) {
-    return {
-      note: `wartown ${cfg.mode}: locking down — ${suppressed} are held; ${heroNote}. ` +
-            'Cannot recall marching armies automatically (no server.SelfArmysUpdate feed)',
-      actions: [], lockdown: true, heroMayMove: cfg.heroMayMove,
-    };
+  const bits = [];
+  const live = new Map(marches.recall.map((m) => [String(m.armyId), m]));
+  // one that has turned round, landed or gone drops off the list for good
+  ws.targets = (ws.targets || []).filter((id) => live.has(String(id)));
+  const recs = (ws.recall = ws.recall || {});
+  for (const id of Object.keys(recs)) if (!ws.targets.some((x) => String(x) === id)) delete recs[id];
+
+  // Each army: recalled once; again only once a sent recall has had
+  // RECALL_RETRY_MS to turn it round and it is still heading out; never more
+  // than RECALL_MAX_TRIES times. A recall planned but never sent is simply
+  // planned again on the next tick.
+  const actions = [], waiting = [], stuck = [];
+  for (const id of ws.targets) {
+    const m = live.get(String(id));
+    const rec = recs[id];
+    if (rec) {
+      const due = rec.sentAt ? now - n(rec.sentAt) >= RECALL_RETRY_MS : now - n(rec.plannedAt) >= RECALL_PENDING_MS;
+      if (!due) { waiting.push(m); continue; }
+      if (rec.sentAt && n(rec.tries) >= RECALL_MAX_TRIES) { stuck.push({ ...m, error: rec.error }); continue; }
+    }
+    recs[id] = { ...(rec || {}), plannedAt: now };
+    actions.push({
+      kind: 'recallArmy', wartown: true, armyId: m.armyId, castleId: game.castleId(ctx.castle),
+      label: `wartown: recall ${m.what} (army ${m.armyId})`,
+    });
   }
-  ws.lastRecallAt = now;
+
+  if (!marches.known) bits.push('this city has no map position, so its marches cannot be told apart — nothing recalled');
+  else if (ctx.selfArmies === undefined || ctx.selfArmies === null) bits.push('no army list yet — nothing recalled');
+  if (actions.length) bits.push(`recalling ${actions.length} march(es) still heading out`);
+  if (waiting.length) bits.push(`${waiting.length} recalled, waiting for them to turn round`);
+  for (const m of stuck) bits.push(`${m.what} (army ${m.armyId}) would not turn back after ${RECALL_MAX_TRIES} recalls${m.error ? ` (${m.error})` : ''} — recall it by hand`);
+  const later = marches.recall.filter((m) => !ws.targets.some((x) => String(x) === String(m.armyId))).length;
+  if (later) bits.push(`${later} other march(es) heading out are left alone (only what was out at switch-on is recalled)`);
+  if (marches.camped.length) bits.push(`${marches.camped.length} camped elsewhere stay where they are`);
+  for (const m of marches.left) bits.push(`${m.why} is not recalled`);
+
+  const heroNote = lock.heroMayMove ? 'the traininghero may still come and go' : 'the traininghero stays once it lands here';
   return {
-    note: `wartown ${cfg.mode}: ${fresh ? 'locking down and recalling' : 'still recalling'} ${armies.length} marching army(ies); ${heroNote}`,
-    actions: armies.map((a) => ({ kind: 'recallArmy', armyId: a.armyId, label: `recall army ${a.armyId}` })),
-    lockdown: true, heroMayMove: cfg.heroMayMove,
+    note: `${head}: locked down${lock.window ? ` (${lock.window.text})` : ''} — npc farming, buildnpc and transfers ` +
+          `out of this city are held; ${heroNote}${bits.length ? '; ' + bits.join('; ') : ''}${errs}`,
+    actions, lockdown: true, heroMayMove: lock.heroMayMove,
   };
 }
 
@@ -973,83 +1192,173 @@ function monitorArmyPlan(ctx) {
 
 // --------------------------------------------------------------- constraints
 // keepatthome / attackgap / defensecooldown / nohealing never march anything.
-// They are limits the OTHER goals are supposed to respect, so they are exposed
-// as helpers as well as reported in a plan note.
+// They are rules the OTHER goals read, so they are exposed as helpers as well
+// as reported in a plan note.
 
 // power / management / stratagem ALREADY include the points allocated with
 // hero.addPoint — `powerAdded` is the separate count of those allocations, not
 // a bonus to add on. HeroProperties.as (1274, 1610, 2134) renders the panel
 // straight from heroMes.power and never touches powerAdded.
 const heroAttack = (h) => n(h.power);
-const isAttackHero = (h) => heroAttack(h) >= Math.max(n(h.management), n(h.stratagem));
 
-// The heroes keepatthome reserves: the strongest attack heroes that are home
-// and idle. Anything wanting to send a hero out should skip these.
+// wiki KeepAttHome: the hero kept home is the city's best attack hero — never
+// the traininghero, and the second best while config training is on (the best
+// is out training). Left out of the ranking: the mayor, which is home anyway
+// and can neither farm nor lead a march (HomeHeroes leaves it out of its count
+// the same way), and captives. The ranking covers the whole roster, home or
+// away. While the hero it picks is away, the best one at home below it stands
+// in, so an attack hero is in the city whenever one can be; the stand-in is
+// free again as soon as the real one is back.
+//   hero         the hero kept home right now (null: nobody can be)
+//   away         the ranked hero, when it is out and `hero` stands in for it
+//   reservedIds  what npc farming must not send; hiding takes it last
 function keepAttHome(ctx) {
-  const cfg = parsers.keepatthome.parse(ctx.config.keepatthome);
-  if (!cfg.enabled) return { keep: 0, reserved: [], reservedIds: new Set() };
-  const home = (ctx.castle.heros || []).filter((h) => h.status === HERO.FREE && isAttackHero(h));
-  const reserved = home.slice().sort((a, b) => heroAttack(b) - heroAttack(a)).slice(0, cfg.keep);
-  return { keep: cfg.keep, reserved, reservedIds: new Set(reserved.map((h) => h.id)), short: cfg.keep - reserved.length };
+  const cfg = parsers.keepatthome.parse((ctx.config || {}).keepatthome);
+  const out = { on: cfg.on, keep: cfg.keep, hero: null, away: null, training: false,
+    reserved: [], reservedIds: new Set(), short: cfg.keep, errors: cfg.errors };
+  if (!cfg.on) return out;
+  const c = ctx.config || {};
+  out.training = n(c.training) >= 1 || n(c.training10) >= 1;
+  const th = trainingHeroNames(ctx);
+  const ranked = ((ctx.castle && ctx.castle.heros) || [])
+    .filter((h) => n(h.status) !== HERO.CHIEF && n(h.status) !== HERO.SEIZED && !th.has(String(h.name || '').toLowerCase()))
+    .sort((a, b) => heroAttack(b) - heroAttack(a));
+  const at = out.training ? 1 : 0;
+  const top = ranked[at];
+  if (!top) return out;
+  const isHome = (h) => h.status === undefined || n(h.status) === HERO.FREE;
+  out.hero = isHome(top) ? top : ranked.slice(at + 1).find(isHome) || null;
+  out.away = isHome(top) ? null : top;
+  if (out.hero) { out.reserved = [out.hero]; out.reservedIds = new Set([out.hero.id]); out.short = 0; }
+  return out;
 }
 
-// True when another outgoing attack may leave now. Stamp noteAttackSent() after
-// each attack march so the gap is measured from the right moment.
-function attackAllowed(ctx, state, game) {
-  const cfg = parsers.attackgap.parse(ctx.config.attackgap);
-  if (!cfg.enabled) return { ok: true, waitMs: 0 };
-  const now = (game || ctx.game) && ((game || ctx.game).now ? (game || ctx.game).now() : Date.now());
-  const since = now - n(warState(state).lastAttackAt);
-  return since >= cfg.gapMs ? { ok: true, waitMs: 0 } : { ok: false, waitMs: cfg.gapMs - since };
+// Hiding needs a FREE hero to lead the march, and the wiki's advice is to use
+// KeepAttHome or HomeHeroes so one is home. So it takes a hero no rule holds
+// first; then keepatthome's defender, which is exactly why that rule is there
+// when all else is out; and the traininghero last, so its rotation only breaks
+// when nobody else is in. homeheroes counts heroes held back from FARMING, and
+// an evasion is not farming, so its home heroes are free for this.
+function hideHero(ctx, heroes) {
+  const free = heroes.filter((h) => Number(h.status) === HERO.FREE);
+  const kept = keepAttHome(ctx).reservedIds;
+  const th = trainingHeroNames(ctx);
+  const isTh = (h) => th.has(String(h.name || '').toLowerCase());
+  const plain = free.find((h) => !kept.has(h.id) && !isTh(h));
+  if (plain) return { hero: plain, why: null };
+  const defender = free.find((h) => kept.has(h.id));
+  if (defender) return { hero: defender, why: 'the keepatthome hero, as nobody else is home' };
+  const trainee = free.find(isTh);
+  return trainee ? { hero: trainee, why: 'the traininghero, as nobody else is home' } : { hero: null, why: null };
 }
-function noteAttackSent(state, at) { warState(state).lastAttackAt = at || Date.now(); }
 
-// Same shape for the defensive side: one defensive response per cooldown.
-function defenceAllowed(ctx, state, game) {
-  const cfg = parsers.defensecooldown.parse(ctx.config.defensecooldown);
-  if (!cfg.enabled) return { ok: true, waitMs: 0 };
-  const now = (game || ctx.game) && ((game || ctx.game).now ? (game || ctx.game).now() : Date.now());
-  const since = now - n(warState(state).lastDefenceAt);
-  return since >= cfg.cooldownMs ? { ok: true, waitMs: 0 } : { ok: false, waitMs: cfg.cooldownMs - since };
+// wiki AttackGap: the real waves, soonest first, grouped into attacks. A wave
+// landing at least `attackgap` after the wave before it starts a new attack;
+// closer waves are one attack, evaded together once. Junk is defaultJunk's
+// (defensepolicy /junktroop). Hiding's march already stays out past every wave
+// inside hidingpolicy /horizon, so each separate attack there is evaded; coming
+// home BETWEEN attacks and going out again is not done: a relaunch that misses
+// its moment would leave the whole army home when the next attack lands.
+// Waves with no known arrival time cannot be placed.
+function attackGroups(ctx, threats) {
+  const gapMs = parsers.attackgap.parse((ctx.config || {}).attackgap).gapMs;
+  const t = threats || threatsOf(ctx, {});
+  const timed = t.real.filter((a) => a.msUntil !== null).sort((a, b) => a.msUntil - b.msUntil);
+  const groups = [];
+  for (const a of timed) {
+    const g = groups[groups.length - 1];
+    if (g && a.msUntil - g.lastMs < gapMs) { g.waves.push(a); g.lastMs = a.msUntil; }
+    else groups.push({ firstMs: a.msUntil, lastMs: a.msUntil, waves: [a] });
+  }
+  return { gapMs, groups, waves: timed.length, untimed: t.real.length - timed.length };
 }
-function noteDefenceUsed(state, at) { warState(state).lastDefenceAt = at || Date.now(); }
+
+// One key per inbound wave, stable from tick to tick.
+function waveKey(a) {
+  const raw = a.raw || {};
+  const id = a.armyId ?? raw.armyId ?? (raw.raw && raw.raw.armyId);
+  return id !== undefined && id !== null ? `id:${id}` : `at:${a.from}@${a.reachTime}`;
+}
+
+// wiki DefenseCooldown: the city is under attack while a real wave is inbound,
+// and for `defensecooldown` minutes after the last one landed or was recalled.
+// Junk (defaultJunk: defensepolicy /junktroop) never starts it. A landing or a
+// recall is only seen by looking, so each call remembers the waves it sees
+// (state.war.defense) and settles the ones that have gone: gone once its time
+// had come, it landed then; gone earlier, it was recalled (or turned away) just
+// now. goalmods' defensePlan and plans.constraints both call it every tick
+// (the same call twice is harmless). The wiki's users of the window are
+// defensepolicy /usetruce /usespeech and config embassy:2.
+function underAttack(ctx, state) {
+  const cfg = parsers.defensecooldown.parse((ctx.config || {}).defensecooldown);
+  const t = threatsOf(ctx, {});
+  const now = t.now;
+  // a quiet city that has never been attacked keeps no record at all
+  if (!t.real.length && !(state && state.war && state.war.defense)) {
+    return { on: false, inbound: 0, leftMs: 0, cooldownMs: cfg.cooldownMs, lastEndAt: null, sinceEndMs: null, attacks: attackGroups(ctx, t) };
+  }
+  const st = warState(state || {});
+  const ds = (st.defense = st.defense || {});
+  ds.waves = ds.waves || {};
+  const seen = new Set();
+  for (const a of t.real) {
+    const key = waveKey(a);
+    seen.add(key);
+    const landAt = a.msUntil === null ? null : now + a.msUntil;
+    ds.waves[key] = landAt;
+    if (landAt !== null && landAt <= now) ds.lastEndAt = Math.max(n(ds.lastEndAt), landAt);
+  }
+  for (const [key, landAt] of Object.entries(ds.waves)) {
+    if (seen.has(key)) continue;
+    ds.lastEndAt = Math.max(n(ds.lastEndAt), landAt !== null && n(landAt) <= now ? n(landAt) : now);
+    delete ds.waves[key];
+  }
+  const inbound = t.real.filter((a) => a.msUntil === null || a.msUntil > 0).length;
+  const leftMs = ds.lastEndAt ? Math.max(0, n(ds.lastEndAt) + cfg.cooldownMs - now) : 0;
+  return {
+    on: inbound > 0 || leftMs > 0, inbound, leftMs, cooldownMs: cfg.cooldownMs,
+    lastEndAt: ds.lastEndAt || null, sinceEndMs: ds.lastEndAt ? now - ds.lastEndAt : null,
+    attacks: attackGroups(ctx, t),
+  };
+}
 
 function healingAllowed(ctx) { return !parsers.nohealing.parse(ctx.config.nohealing).on; }
 
-// One plan so the limits show up in the tick report rather than being invisible.
-function constraintsPlan(ctx, state, game) {
-  game = game || ctx.game;
+const minutesText = (ms) => (ms % 60000 ? hhmmss(ms) : `${ms / 60000} min`);
+
+// One plan so the rules show up in the tick report rather than being invisible.
+function constraintsPlan(ctx, state) {
   const cfg = ctx.config || {};
   const lines = [];
+  const errs = (e) => (e && e.length ? ` [${e.join('; ')}]` : '');
 
   if (cfg.keepatthome !== undefined) {
     const k = keepAttHome(ctx);
-    if (k.keep) {
-      lines.push(`keepatthome ${k.keep}: holding ${k.reserved.map((h) => h.name).join(', ') || 'nobody'}` +
-                 (k.short > 0 ? ` (${k.short} short — they are out)` : ''));
-    }
+    const which = k.training ? 'second-best attack hero (config training is on)' : 'best attack hero';
+    if (!k.on) { if (k.errors.length) lines.push(`keepatthome: off${errs(k.errors)}`); }
+    else if (k.hero && !k.away) lines.push(`keepatthome: ${k.hero.name} (atk ${heroAttack(k.hero)}), the ${which}, stays home${errs(k.errors)}`);
+    else if (k.hero) lines.push(`keepatthome: ${k.away.name}, the ${which}, is out — ${k.hero.name} stays home until it is back${errs(k.errors)}`);
+    else if (k.away) lines.push(`keepatthome: ${k.away.name}, the ${which}, is out and nobody can stand in — it stays home once back${errs(k.errors)}`);
+    else lines.push(`keepatthome: there is no ${which} to keep home${errs(k.errors)}`);
   }
+
+  // Looked at every tick, set or not: the under-attack window has to see waves land.
+  const u = underAttack(ctx, state);
   if (cfg.attackgap !== undefined) {
-    const a = attackAllowed(ctx, state, game);
-    const g = parsers.attackgap.parse(cfg.attackgap);
-    if (g.enabled) lines.push(`attackgap ${hhmmss(g.gapMs)}: ${a.ok ? 'clear to attack' : `hold ${hhmmss(a.waitMs)}`}`);
+    const g = u.attacks;
+    lines.push(`attackgap ${g.gapMs / 1000}s: ${g.waves ? `${g.waves} wave(s) inbound = ${g.groups.length} separate attack(s)` : 'nothing inbound'}` +
+               errs(parsers.attackgap.parse(cfg.attackgap).errors));
   }
-  if (cfg.defensecooldown !== undefined) {
-    const d = defenceAllowed(ctx, state, game);
-    const g = parsers.defensecooldown.parse(cfg.defensecooldown);
-    if (g.enabled) lines.push(`defensecooldown ${hhmmss(g.cooldownMs)}: ${d.ok ? 'ready' : `hold ${hhmmss(d.waitMs)}`}`);
+  if (cfg.defensecooldown !== undefined || u.on) {
+    const now = u.inbound ? 'under attack' : u.on ? `under attack for another ${hhmmss(u.leftMs)} (the last wave landed or was recalled ${hhmmss(u.sinceEndMs)} ago)` : 'not under attack';
+    lines.push(`defensecooldown ${minutesText(u.cooldownMs)}: ${now}${u.inbound ? ` — ${u.inbound} real wave(s) inbound` : ''}` +
+               errs(parsers.defensecooldown.parse(cfg.defensecooldown).errors));
   }
   if (cfg.nohealing !== undefined && !healingAllowed(ctx)) {
     lines.push('nohealing: wounded troops are left wounded (nothing in this bot heals yet, so nothing to suppress)');
   }
 
   return lines.length ? { note: lines.join(' | '), actions: [] } : null;
-}
-
-// Other modules ask this before moving troops out of a city.
-function isWarTown(ctx) {
-  const cfg = parsers.wartown.parse(ctx.config.wartown);
-  return cfg.enabled ? cfg.mode : 0;
 }
 
 // ============================================================================
@@ -1079,9 +1388,26 @@ const executors = {
   },
 
   // army.callBackArmy {castleId, armyId}   ArmyCommands.as:118
+  // castleId is the city the army LEFT from (server.js's console recall looks
+  // it up the same way); an action that names it uses it. War town recalls are
+  // counted per army, sent or refused, so the plan knows when to try again.
   async recallArmy(game, castle, a, state) {
-    const r = await game.req('army.callBackArmy', { castleId: game.castleId(castle), armyId: a.armyId });
-    if (state && r && r.ok === 1) {
+    const castleId = a.castleId !== undefined && a.castleId !== null ? a.castleId : game.castleId(castle);
+    let r;
+    try {
+      r = await game.req('army.callBackArmy', { castleId, armyId: a.armyId });
+    } finally {
+      if (state && a.wartown) {
+        const st = warState(state);
+        const ws = (st.wartown = st.wartown || {});
+        const recs = (ws.recall = ws.recall || {});
+        const rec = (recs[a.armyId] = recs[a.armyId] || {});
+        rec.sentAt = game.now ? game.now() : Date.now();
+        rec.tries = n(rec.tries) + 1;
+        rec.error = r && r.ok === 1 ? null : (r && r.errorMsg) || (r ? `ok=${r.ok}` : 'no reply');
+      }
+    }
+    if (state && !a.wartown && r && r.ok === 1) {
       const st = warState(state);
       if (st.hide && (st.hide.armyId === a.armyId || st.hide.armyId === null)) delete st.hide;
     }
@@ -1098,7 +1424,6 @@ const executors = {
         const at = game.now ? game.now() : Date.now();
         gs.gate = gs.gate || {};
         gs.gate.lastAt = at; gs.gate.want = !!a.open;
-        gs.lastDefenceAt = at;              // a gate flip is a defensive response
       }
     }
     return r;
@@ -1149,23 +1474,30 @@ function describe(parsed) {
     const w = parsers.warrules.parse(cfg.warrules);
     out.push(w.enabled ? `warrules: alert the alliance, updates every ${hhmmss(w.everyMs)}, reminders every ${hhmmss(w.reminderMs)}` : 'warrules: off');
   }
+  const wtp = goal('wartownpolicy');
+  const hours = wtp && wtp.windows && wtp.windows.length ? wtp.windows.map((w) => w.text).join(', ') : null;
   if (cfg.wartown !== undefined) {
     const w = parsers.wartown.parse(cfg.wartown);
     out.push(w.enabled
-      ? `wartown ${w.mode}: troop movement locked down, ${w.heroMayMove ? 'traininghero may still rotate' : 'traininghero stays put'}`
+      ? `wartown ${w.mode}: no npc farming, buildnpc or transfers out of this city${hours ? ` during ${hours}` : ''}, ` +
+        `${w.heroMayMove ? 'traininghero may still rotate' : 'traininghero stays once it lands here'}`
       : 'wartown: off');
+  }
+  if (wtp) {
+    out.push(`wartownpolicy: war town only during ${hours || '(no valid hours)'} on this machine's clock` +
+             (parsers.wartown.parse(cfg.wartown).enabled ? '' : ' — idle until config wartown:1 or 2'));
   }
   if (cfg.keepatthome !== undefined) {
     const k = parsers.keepatthome.parse(cfg.keepatthome);
-    out.push(k.enabled ? `keepatthome: ${k.keep} attack hero(es) stay in the city and are never sent farming` : 'keepatthome: off');
+    out.push(k.on ? 'keepatthome: the best attack hero (never the traininghero; the second best while config training is on) stays home, never sent farming' : 'keepatthome: off');
   }
   if (cfg.attackgap !== undefined) {
     const a = parsers.attackgap.parse(cfg.attackgap);
-    out.push(a.enabled ? `attackgap: at least ${hhmmss(a.gapMs)} between outgoing attacks` : 'attackgap: off');
+    out.push(`attackgap: incoming waves ${a.gapMs / 1000}s or more apart are separate attacks, closer ones one attack`);
   }
   if (cfg.defensecooldown !== undefined) {
     const d = parsers.defensecooldown.parse(cfg.defensecooldown);
-    out.push(d.enabled ? `defensecooldown: at least ${hhmmss(d.cooldownMs)} between defensive responses` : 'defensecooldown: off');
+    out.push(`defensecooldown: still under attack ${minutesText(d.cooldownMs)} after the last real wave lands or is recalled`);
   }
   if (cfg.nohealing !== undefined) {
     out.push(parsers.nohealing.parse(cfg.nohealing).on ? 'nohealing: wounded troops are never healed' : 'nohealing: off');
@@ -1188,13 +1520,13 @@ module.exports = {
   // integration helpers
   configKeys,
   describe,
-  isWarTown,
-  keepAttHome,
-  attackAllowed, noteAttackSent,
-  defenceAllowed, noteDefenceUsed,
+  lockdown, isWarTown,               // war town, for every goal that marches
+  keepAttHome,                       // the hero keepatthome keeps home
+  attackGroups, underAttack,         // attackgap / defensecooldown
   healingAllowed,
   // exported for the tests
-  _internals: { durationMs, count, normalizeArmy, classify, threatsOf, buildHideMarch, gateBotChoice, hidingOptions, hhmmss, isAttackHero, defaultJunk },
+  _internals: { durationMs, count, normalizeArmy, classify, threatsOf, buildHideMarch, gateBotChoice, hidingOptions, hhmmss, defaultJunk,
+    clockMin, windowAt, marchesFrom, hideHero },
   // when the hiding and gate goals next need a look (Engine.nextWakeAt)
   warMoments,
 };

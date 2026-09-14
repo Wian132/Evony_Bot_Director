@@ -878,6 +878,25 @@ class Engine {
     };
   }
 
+  // Any city's War Town mode right now (0 when not locked down): its own
+  // `config wartown:` and wartownpolicy, with the console's War Town Mode on
+  // top. Transfers ask it about the city that would send; the traininghero
+  // about the city it would leave.
+  warTownLookup() {
+    const g = this.game, seen = new Map();
+    const W = MODULES.find((m) => m.name === './goal-war');
+    return (c) => {
+      if (!W || !c) return 0;
+      const id = g.castleId(c);
+      if (!seen.has(id)) {
+        const p = this.goalsFor(id, c.name);
+        const controls = (this.controlsFor && this.controlsFor(c)) || {};
+        seen.set(id, W.mod.isWarTown({ game: g, castle: c, config: (p && p.config) || {}, goals: (p && p.goals) || [], controls }));
+      }
+      return seen.get(id);
+    };
+  }
+
   // Every city's rally slots, for this slice: live marches plus the ones sent
   // and not yet listed, against each city's Rally Spot and its rallypolicy.
   rallyBook(goalsOf = this.goalsLookup()) {
@@ -997,6 +1016,8 @@ class Engine {
       selfArmies: this.liveArmies(),
       // rally slots in every city, and any city's goals
       rally: book, goalsOf,
+      // any city's War Town mode (goal-transfer asks about its senders)
+      warTownOf: this.warTownLookup(),
       // how many armies are inbound to each of our cities (by castle id) —
       // hiding uses this to avoid running INTO a city that is itself under attack
       incomingByCastle: countsOf(incoming),
@@ -1250,10 +1271,18 @@ class Engine {
       .map((castle) => ({ castle, parsed: this.goalsFor(g.castleId(castle), castle.name) }))
       .filter((x) => x.parsed);
     const book = this.rallyBook();
+    const warTownOf = this.warTownLookup();
     for (const p of M.trainingHeroPlan(g, cityGoals, this.state)) {
       this.line(p.note, { kind: 'plan' });
       for (const a of p.actions || []) {
         const city = a.from && a.from.name;
+        // wiki WarTown: under wartown:2 the traininghero stays in the city it
+        // has landed in; under wartown:1 it comes and goes as usual, and it
+        // may always move INTO a war town. The console's mode counts the same.
+        if (warTownOf(a.from) === 2) {
+          this.line(`${a.label} — held: ${city} is a war town (2), the traininghero stays there`, { city, kind: 'plan' });
+          continue;
+        }
         const xy = g.castleXY(a.to);
         // checked before the mayor is stood down, not after
         const rally = { from: a.from, kind: 't', missionType: C.MISSION.reinforce, targetFieldId: C.coordsToFieldId(xy.x, xy.y), troops: { scouter: 1 } };

@@ -24,6 +24,7 @@
 // NOT offered here rather than shipped as a switch that quietly does nothing.
 const C = require('./constants');
 const D = require('./db');
+const W = require('./goal-war');
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -216,6 +217,13 @@ function canAbandon({ accountId, game, castle, policy = DEF, now = Date.now(), a
 function buildNpcPlan(ctx, state, game) {
   const cfg = ctx.config || {};
   if (n(cfg.buildnpc) < 1) return null;              // off unless explicitly asked for
+
+  // A war town stands the whole goal down: occupying a flat is an attack
+  // march (wiki BuildNpc), which WarTownPolicy counts with the npc and valley
+  // attacks it stops, and nothing irreversible — abandoning a city — is done
+  // while the city is locked down for war. It picks up again once lifted.
+  const war = W.lockdown(ctx);
+  if (war.on) return { note: `buildnpc — standing down: ${war.why}`, actions: [] };
 
   const P = policyFor(ctx);
   const st = (state.buildnpc = state.buildnpc || {});

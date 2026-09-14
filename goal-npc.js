@@ -36,6 +36,7 @@ const path = require('path');
 const C = require('./constants');
 const R = require('./rally');
 const H = require('./goal-heroes');
+const W = require('./goal-war');
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -541,6 +542,11 @@ function npcPlan(ctx, state, game) {
   const lowest = n(cfg.npc);
   if (!lowest) return null;                      // goal not switched on
 
+  // wiki WarTown: "No npc farming runs" from a war town (the console's War
+  // Town Mode counts the same), and none inside wartownpolicy's hours.
+  const war = W.lockdown(ctx);
+  if (war.on) return { note: `npc:${lowest} — held: ${war.why}`, actions: [] };
+
   const castle = ctx.castle || {};
   const now = n(ctx.now) || Date.now();
 
@@ -602,6 +608,12 @@ function npcPlan(ctx, state, game) {
   // HeroConstants.as: 0 free, 1 chief/mayor, 2 guard, 3 marching, 4 captured,
   // 5 returning, 8 farming. Only a free hero may be given a new march.
   const idleHeroes = (castle.heros || []).filter((h) => (h.status === 0 || h.status === undefined) && !busyHeroes.has(h.id));
+  // Heroes that stay home (wiki KeepAttHome, HomeHeroes): keepatthome's
+  // defender is never sent, and homeheroes N leaves N of the heroes a level's
+  // npcheroes allows at home — N of the whole hall with the default "any".
+  // The mayor is not a free hero, so it never counts toward N.
+  const kept = W.keepAttHome({ ...ctx, castle });
+  const keepHome = H.farmableHeroes({ ...ctx, castle }).keepHome;
 
   const actions = [];
   const notes = [];
@@ -642,8 +654,16 @@ function npcPlan(ctx, state, game) {
       const spec = heroSpecFor(ctx, level);
       const free = idleHeroes.filter((h) => !busyHeroes.has(h.id));
       if (!free.length) { stop = 'no idle hero left'; outOfHeroes = true; break; }
-      const hero = heroCandidates(free, spec, castle.heros)[0];
-      if (!hero) { stop = `no idle hero matches "${spec}"`; break; }
+      const allowed = heroCandidates(free, spec, castle.heros);
+      if (keepHome && allowed.length && allowed.length <= keepHome) {
+        stop = `homeheroes ${keepHome}: ${allowed.map((h) => h.name).join(', ')} stay${allowed.length === 1 ? 's' : ''} home`;
+        break;
+      }
+      const hero = allowed.find((h) => !kept.reservedIds.has(h.id));
+      if (!hero) {
+        stop = allowed.length ? `${allowed[0].name} is the only idle hero for "${spec}" and keepatthome keeps it home` : `no idle hero matches "${spec}"`;
+        break;
+      }
 
       const load = troopLoadFor(ctx, level, hero, target, { ...opts, home });
       if (!load.ok) { stop = load.reason; break; }

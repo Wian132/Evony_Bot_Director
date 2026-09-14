@@ -338,6 +338,8 @@ for (const mod of ['./goal-war', './goal-heroes', './goal-npc', './goal-buildnpc
 }
 // heroes/war read these but do not own them
 for (const k of ['nomayor', 'feastinghallspace', 'hero', 'trainint', 'trainpol', 'fasthero']) CONFIG_KEYS.add(k);
+// free finishes (speedups.js): config freespeedup:0 turns them off in a city
+for (const k of require('./speedups').configKeys) CONFIG_KEYS.add(k);
 
 // a few troop aliases NEAT accepts that differ from our codes
 const ALIAS = {

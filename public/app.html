@@ -163,10 +163,38 @@
   .gatestate { font-size:11px; padding-bottom:4px; }
   .gatestate b.open { color:var(--amber); } .gatestate b.closed { color:var(--ok); }
 
-  textarea#editor {
-    width:100%; height:100%; background:var(--panel); color:var(--ink); border:0; padding:4px 6px;
-    font:12px/1.45 "Courier New", Consolas, monospace; resize:none; outline:none; display:block;
+  /* The editor is a textarea over a layer (#edHl) that repeats its text line for
+     line, coloured by what the parser made of each line: blue works, red has an
+     error or does nothing yet, grey is a comment. Both must lay the text out
+     identically, so every text metric is set on both here; the textarea's own text
+     turns transparent only once the layer is painting (.hl-on). */
+  .edbox { position:relative; height:100%; }
+  textarea#editor, .edhl {
+    margin:0; border:0; padding:4px 6px;
+    font:11px/16px Consolas, "Lucida Console", "Courier New", monospace;
+    font-variant-ligatures:none; letter-spacing:0; word-spacing:0; tab-size:8; text-align:left;
+    white-space:pre-wrap; overflow-wrap:break-word; word-break:normal;
   }
+  textarea#editor {
+    position:relative; z-index:1; width:100%; height:100%; background:transparent; color:var(--ink);
+    caret-color:var(--ink); resize:none; outline:none; display:block;
+  }
+  textarea#editor::placeholder { color:var(--faint); }
+  .edbox.hl-on textarea#editor { color:transparent; }
+  .edbox.hl-on textarea#editor::selection { color:transparent; background:rgba(42,98,216,.28); }
+  :root[data-theme="dark"] .edbox.hl-on textarea#editor::selection { background:rgba(141,180,255,.32); }
+  .edhl { position:absolute; top:0; left:0; overflow:hidden; pointer-events:none; color:var(--ink); }
+  .edhl::after { content:''; display:block; height:32px; }   /* never less to scroll than the textarea */
+  .edhl .gl:empty::before { content:'\200b'; }                /* an empty line still takes its height */
+  .edhl .gl-ok { color:var(--blue); }
+  .edhl .gl-idle, .edhl .gl-error { color:var(--bad); }
+  .edhl .gl-error { text-decoration:underline wavy; text-decoration-skip-ink:none; text-underline-offset:2px; }
+  .edhl .gl-comment { color:var(--faint); }
+  /* under the editor: why the cursor's line is red, or how the lines stand */
+  .edline { flex:0 0 auto; padding:3px 1px 0; min-height:18px; font-size:11px; color:var(--dim);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .edline.bad { color:var(--bad); }
+  .edline .c-ok { color:var(--blue); } .edline .c-bad { color:var(--bad); }
   pre.out { margin:0; padding:5px 7px; font:11.5px/1.5 "Courier New", Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
 
   /* monitor icon toolbar */
@@ -417,7 +445,8 @@
           </select>
         </div>
       </div>
-      <div class="well" id="editWell"><textarea id="editor" spellcheck="false"></textarea><pre class="out" id="engView" hidden></pre></div>
+      <div class="well" id="editWell"><div class="edbox" id="edBox"><div class="edhl" id="edHl" aria-hidden="true"></div><textarea id="editor" spellcheck="false" aria-describedby="edLine"></textarea></div><pre class="out" id="engView" hidden></pre></div>
+      <div class="edline" id="edLine"></div>
       <div class="bar">
         <select id="loadSel" title="This city's script loadouts — every city has its own ten; the first line names one"></select>
         <button id="apply">Apply</button>
@@ -1012,11 +1041,12 @@ async function loadEditor() {
   $('apply').title = 'Check for errors — nothing is saved';
   $('save').title = k === 'script' ? 'Save into the selected loadout' : 'Save the goals — the engine works them from its next tick';
   $('editor').placeholder = k === 'script' ? '// the first line names this loadout' : '';
-  $('editor').hidden = k === 'engine';
+  $('edBox').hidden = k === 'engine';
+  $('edLine').hidden = k === 'engine';
   $('engView').hidden = k !== 'engine';
-  if (k === 'engine') { renderEngineView(); return; }
+  if (k === 'engine') { showTipHtml(null, null); renderEngineView(); return; }
   paintEditHint();
-  if (!city) { ed.value = ''; paintLoadSel(); return; }
+  if (!city) { ed.value = ''; edcShow(); paintLoadSel(); return; }
   // Read-only until this city's text is in, so nothing typed meanwhile is
   // taken for this city's draft while another city's text is still showing.
   ed.readOnly = true;
@@ -1024,13 +1054,15 @@ async function loadEditor() {
     const L = await loadLoadouts(city);
     if (mine !== editLoads) return;     // moved on while it loaded
     paintLoadSel();
-    if (!L) { ed.value = ''; return; }  // stays read-only: nothing to save into
+    if (!L) { ed.value = ''; edcShow(); return; }  // stays read-only: nothing to save into
     ed.value = slotSrc(L, L.slot);
+    edcShow();
     ed.readOnly = false;
     paintEditHint();
     return;
   }
   ed.value = GOALED.drafts[city] ?? GOALED.saved[city] ?? '';
+  edcShow();
   const r = await getJSON(`/api/editor?city=${encodeURIComponent(city)}&kind=goal`);
   if (mine !== editLoads) return;
   // A failed read must not show as empty goals that Save would then write back.
@@ -1038,6 +1070,7 @@ async function loadEditor() {
   GOALED.saved[city] = r.src || '';
   if (GOALED.drafts[city] === GOALED.saved[city]) delete GOALED.drafts[city];
   ed.value = GOALED.drafts[city] ?? GOALED.saved[city];
+  edcShow();
   ed.readOnly = false;
   paintEditHint();
 }
@@ -1078,6 +1111,7 @@ $('loadSel').onchange = () => {
   LOAD_SLOTS[city] = L.slot;
   store.set('evony_loadslots', LOAD_SLOTS);
   $('editor').value = slotSrc(L, L.slot);
+  edcShow();
   S.hintUntil = 0;
   paintEditHint();
 };
@@ -1092,21 +1126,28 @@ const hintIn = (city, edit) => (m, bad) => {
 
 async function goalsCall(save) {
   if (!S.city) return paintEditHint('no city is open yet', true);
-  const city = String(S.city), src = $('editor').value, hint = hintIn(city, 'goals');
+  const city = String(S.city), src = $('editor').value, hint = hintIn(city, 'goals'), key = edcKey();
   if (save && !(city in GOALED.saved)) return hint('this city\'s goals have not loaded — nothing was saved', true);
   const r = await post('/api/goals', { src, city, save });
   if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
   if (save) {
     GOALED.saved[city] = src;
     if (GOALED.drafts[city] === src) delete GOALED.drafts[city];     // unless it was edited again meanwhile
   }
   const errs = r.errors || [];
+  // lines that read fine but that nothing acts on yet: red in the editor too
+  const idle = (r.lines || []).filter((l) => l.status === 'idle');
   if (errs.length) {
     hint(save ? `saved with ${errs.length} error(s) — these goals won't work as written until they're fixed. See Output.`
       : `${errs.length} error(s) — these goals won't work as written. See Output.`, true);
+  } else if (idle.length) {
+    hint(save ? `${r.engineNote || 'saved'} ${idle.length} line(s) do nothing yet — see Output.`
+      : `no errors, but ${idle.length} line(s) do nothing yet — see Output. Not saved yet, press Save`);
   } else hint(save ? (r.engineNote || 'saved') : 'no errors — not saved yet, press Save');
   showOutput([
     ...(errs.length ? [`${errs.length} error(s) — these lines won't work as written:`, ...errs.map((e) => `  line ${e.line}: ${e.error}`), ''] : []),
+    ...(idle.length ? [`${idle.length} line(s) read fine but nothing acts on them yet:`, ...idle.map((l) => `  line ${l.n}: ${l.msg}`), ''] : []),
     ...(r.described || []),
   ].join('\n'), city);
 }
@@ -1114,9 +1155,10 @@ async function goalsCall(save) {
 async function saveLoadout() {
   const city = String(S.city), L = loadOf(city), hint = hintIn(city, 'script');
   if (!L) return hint('this city\'s loadouts have not loaded — try again', true);
-  const slot = L.slot, src = $('editor').value;
+  const slot = L.slot, src = $('editor').value, key = edcKey();
   const r = await post('/api/loadouts', { city, slot, src });
   if (r.ok === false) return hint('not saved — ' + (r.error || 'failed'), true);
+  edcTake(key, src, r);
   if (src.trim()) L.saved[slot] = src; else delete L.saved[slot];
   if (L.drafts[slot] === src) delete L.drafts[slot];     // unless it was edited again meanwhile
   if (String(S.city) === city) paintLoadSel();
@@ -1129,9 +1171,10 @@ async function saveLoadout() {
 
 $('apply').onclick = async () => {
   if (S.edit !== 'script') return goalsCall(false);
-  const city = String(S.city), hint = hintIn(city, 'script');
-  const r = await post('/api/script', { src: $('editor').value, parseOnly: true });
+  const city = String(S.city), hint = hintIn(city, 'script'), src = $('editor').value, key = edcKey();
+  const r = await post('/api/script', { src, parseOnly: true });
   if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
   const n = (r.errors || []).length;
   hint(n ? `${n} error(s) — this script won't run until they're fixed. See Output.`
     : 'no errors — Save keeps it in this loadout, Run runs it', n > 0);
@@ -1201,6 +1244,154 @@ async function renderEngineView() {
   for (const a of rep.acted) lines.push('  ' + a);
   $('engView').textContent = lines.join('\n');
 }
+
+// ---------- editor colours ----------
+// #edHl sits behind the textarea and repeats its text, one div per line, coloured
+// by what the server's own parser made of each line (goals.js / script.js
+// lineStatus): blue works, red has an error or does nothing yet, grey is a
+// comment. The textarea is still the editor — its text only turns transparent
+// over the layer — so typing, paste, undo, the keyboard and the drafts are its own.
+// A line typed since the last answer keeps its colour if it is unchanged, is
+// grey at once if it is a comment, and is plain ink until the next answer, which
+// is asked for after a pause in typing (EDC_MS). A check never saves.
+const EDC_MS = 300;
+const EDC = { seq: 0, timer: 0, key: null, rows: null, lines: null, shown: [] };
+// the editor an answer belongs to: tab, city and, for scripts, the loadout
+const edcKey = () => `${S.edit}:${S.city}:${S.edit === 'script' ? ((loadOf() || {}).slot || '') : ''}`;
+
+// Comments and blank lines need no server: // or # in goals, only // in scripts.
+function edcLocal(kind, row) {
+  if (!row.trim()) return { status: 'blank', msg: null };
+  if ((kind === 'goals' ? /^\s*(\/\/|#)/ : /^\s*\/\//).test(row)) return { status: 'comment', msg: null };
+  return null;
+}
+
+// The last answer's colours for the lines typing has not touched: those before
+// the first changed line and after the last one.
+function edcCarry(rows) {
+  const out = [];
+  if (!EDC.lines || EDC.key !== edcKey()) return out;
+  const old = EDC.rows;
+  let a = 0;
+  while (a < rows.length && a < old.length && rows[a] === old[a]) { out[a] = EDC.lines[a]; a++; }
+  for (let b = 0; b < rows.length - a && b < old.length - a && rows[rows.length - 1 - b] === old[old.length - 1 - b]; b++) {
+    out[rows.length - 1 - b] = EDC.lines[old.length - 1 - b];
+  }
+  return out;
+}
+
+function edcPaint() {
+  if (S.edit === 'engine') return;
+  const kind = S.edit, rows = $('editor').value.split('\n'), known = edcCarry(rows);
+  EDC.shown = rows.map((row, i) => known[i] || edcLocal(kind, row) || { status: 'pend', msg: null });
+  $('edHl').innerHTML = rows.map((row, i) => `<div class="gl gl-${EDC.shown[i].status}">${esc(row)}</div>`).join('');
+  $('edBox').classList.add('hl-on');
+  edcFit();
+  edcStrip();
+}
+
+// The layer wraps where the textarea wraps only at the same width, and the
+// textarea loses its scrollbar's width once it has one; clientWidth is that width.
+function edcFit() {
+  const ta = $('editor'), hl = $('edHl');
+  hl.style.width = ta.clientWidth + 'px';
+  hl.style.height = ta.clientHeight + 'px';
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
+// An answer from /api/goals or /api/script (a check, an Apply, a Save). A console
+// older than this page sends no `lines`, only the errors; those still paint red.
+function edcTake(key, src, r) {
+  if (!r || r.ok === false || key !== edcKey()) return;
+  const rows = src.split('\n'), kind = key.split(':')[0];
+  let lines = Array.isArray(r.lines) && r.lines.length === rows.length ? r.lines : null;
+  if (!lines) {
+    const bad = new Map();
+    for (const e of r.errors || []) bad.set(e.line, (bad.has(e.line) ? bad.get(e.line) + '; ' : '') + e.error);
+    lines = rows.map((row, i) => (bad.has(i + 1) ? { status: 'error', msg: bad.get(i + 1) }
+      : edcLocal(kind, row) || { status: 'ok', msg: null }));
+  }
+  Object.assign(EDC, { key, rows, lines });
+  edcPaint();
+}
+
+async function edcCheck() {
+  clearTimeout(EDC.timer);
+  const kind = S.edit;
+  if (kind !== 'goals' && kind !== 'script') return;
+  const key = edcKey(), src = $('editor').value, mine = ++EDC.seq;
+  // parseOnly rides along with lines, so a console older than this page parses and
+  // never runs the script; `check` never saves goals, and an older console saves
+  // only when told to save
+  const r = kind === 'goals'
+    ? await post('/api/goals', { src, check: true })
+    : await post('/api/script', { src, parseOnly: true, lines: true });
+  if (mine === EDC.seq) edcTake(key, src, r);
+}
+// New text in the editor: paint it now, ask about it now.
+function edcShow() { edcPaint(); edcCheck(); }
+
+// Under the editor: why the cursor's line is red, otherwise how the lines stand.
+function edcStrip() {
+  const el = $('edLine'), ta = $('editor');
+  if (S.edit === 'engine') return;
+  const i = ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
+  const s = EDC.shown[i];
+  if (s && s.msg) {
+    const red = s.status === 'error' || s.status === 'idle';
+    el.className = 'edline' + (red ? ' bad' : '');
+    el.textContent = `line ${i + 1}: ${s.msg}`;
+    el.title = el.textContent;
+    return;
+  }
+  const n = { ok: 0, idle: 0, error: 0 };
+  for (const x of EDC.shown) if (x.status in n) n[x.status]++;
+  const part = (k, cls, one, many) => (n[k] ? `<span class="${cls}">${n[k]} ${n[k] === 1 ? one : many}</span>` : '');
+  const bits = [
+    part('ok', 'c-ok', S.edit === 'goals' ? 'line works' : 'line reads fine', S.edit === 'goals' ? 'lines work' : 'lines read fine'),
+    part('idle', 'c-bad', 'does nothing yet', 'do nothing yet'),
+    part('error', 'c-bad', 'has an error', 'have errors'),
+  ].filter(Boolean);
+  el.className = 'edline';
+  el.title = 'Blue works, red has an error or does nothing yet, grey is a comment. '
+    + 'Hover a red line, or put the cursor on it, to see why.';
+  el.innerHTML = bits.length
+    ? bits.join(' · ') + (n.idle || n.error ? ' — hover a red line or put the cursor on it to see why' : '')
+    : '<span class="c-ok">blue</span> works · <span class="c-bad">red</span> has an error or does nothing yet · grey is a comment';
+}
+
+// The line under the pointer: the layer's line divs, top to bottom.
+function edcRowAt(y) {
+  const rows = $('edHl').children;
+  let lo = 0, hi = rows.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1, r = rows[mid].getBoundingClientRect();
+    if (y < r.top) hi = mid - 1; else if (y >= r.bottom) lo = mid + 1; else return mid;
+  }
+  return -1;
+}
+
+(function () {
+  const ta = $('editor');
+  ta.addEventListener('input', () => {
+    showTipHtml(null, null);
+    edcPaint();
+    clearTimeout(EDC.timer);
+    EDC.timer = setTimeout(edcCheck, EDC_MS);
+  });
+  ta.addEventListener('scroll', () => { $('edHl').scrollTop = ta.scrollTop; $('edHl').scrollLeft = ta.scrollLeft; });
+  for (const ev of ['keyup', 'mouseup', 'focus']) ta.addEventListener(ev, edcStrip);
+  ta.addEventListener('keydown', () => showTipHtml(null, null));
+  ta.addEventListener('mousemove', (ev) => {
+    const i = edcRowAt(ev.clientY), s = EDC.shown[i];
+    if (!s || !s.msg || (s.status !== 'error' && s.status !== 'idle')) return showTipHtml(null, null);
+    showTipHtml(ev, `<b class="neg">line ${i + 1}</b><div>${esc(s.msg)}</div>`);
+  });
+  ta.addEventListener('mouseleave', () => showTipHtml(null, null));
+  // the pane's splitters and the window resize the textarea; the layer follows
+  new ResizeObserver(() => edcFit()).observe(ta);
+})();
 
 // ---------- monitors ----------
 // NEAT's icon toolbar. `needs` lists the per-city extras a panel reads; those

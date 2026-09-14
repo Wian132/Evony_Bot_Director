@@ -636,6 +636,9 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     const { parseGoals, describe } = require('./goals');
     const parsed = parseGoals(b.src || '');
+    // The editor's colours ask this on every pause in typing: the parse and its
+    // per-line standing only. A check never saves, whatever else it is sent.
+    if (b.check) return send(200, 'application/json', JSON.stringify({ ok: true, errors: parsed.errors, lines: parsed.lines }));
     let saved = null;
     if (b.save) {
       const key = String(b.city || 'default').trim() || 'default';
@@ -643,7 +646,7 @@ const server = http.createServer(async (req, res) => {
       saved = key;
     }
     return send(200, 'application/json', JSON.stringify({
-      ok: true, errors: parsed.errors, described: describe(parsed), saved,
+      ok: true, errors: parsed.errors, lines: parsed.lines, described: describe(parsed), saved,
       engineNote: SESSION.userPaused
         ? 'Saved. The engine is PAUSED — these take effect when you resume it.'
         : 'Saved. The engine picks these up on its next tick.',
@@ -656,6 +659,12 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/script' && req.method === 'POST') {
     const b = await body(req);
+    // The editor's colours: each line's standing, asked on every pause in typing.
+    // It logs nothing and runs nothing. The page sends parseOnly with it, so a
+    // console older than the page only parses too.
+    if (b.parseOnly && b.lines) {
+      return send(200, 'application/json', JSON.stringify({ ok: true, ...require('./script').lineStatus(b.src || '') }));
+    }
     const env = loadEnv();
     const lines = [];
     const log = (m) => { lines.push(m); console.log('[script] ' + m); };

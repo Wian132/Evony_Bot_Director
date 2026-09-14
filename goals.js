@@ -199,11 +199,101 @@ const ALIAS = {
   phract: C.BY_CODE.cata, worker: C.BY_CODE.wo,
 };
 
+// ---- accepted, but nothing acts on it yet ----
+// These parse without an error, yet no plan does anything with them. The console's
+// editor paints them red with the reason below, not blue: NEAT's editor did the
+// same ("a valid line that just isn't added to the bot's list yet" shows red —
+// wiki SyntaxHighlighting). THIS IS THE ONE LIST: a step that makes one of these
+// work deletes its entry here, and the line turns blue.
+// monitorarmy is deliberately absent: the NEAT wiki says it never did anything on
+// NEAT or YAEB either, so a line that does nothing is working as documented.
+const NOT_IMPLEMENTED = {
+  // config <key>:<value> — no plan reads these keys
+  config: {
+    trade: 'no goal trades on the market yet (the buy and sell script lines do)',
+    valley: 'no goal captures or farms valleys yet',
+    hunting: 'no goal hunts medals yet',
+    troopsusepopmax: 'training uses idle population only, so nothing reads this key',
+    troopsusereserved: 'nothing reads this key yet',
+    troopqueuetime: 'nothing reads this key yet (a batch is sized by config troopslot or troop /slot)',
+    troopidlequeuetime: 'nothing reads this key yet',
+    reservedbarrack: 'nothing reads this key yet',
+    troopincrement: 'nothing reads this key yet',
+    embassy: 'nothing reads this key yet',
+    trainint: 'nothing reads this key yet',
+    trainpol: 'nothing reads this key yet',
+    fasthero: 'nothing reads this key yet',
+    keepatthome: 'it only reports, and NPC farming and hiding still take any idle hero',
+    attackgap: 'it only reports, and nothing spaces attacks by it yet',
+    nohealing: 'the bot does not heal troops at all yet, so there is nothing to switch off',
+  },
+  // goal lines whose plan only reports
+  goals: {
+    homeheroes: 'it only reports, and NPC farming still picks from every idle hero',
+    spamheroes: 'it only reports, and no spam or loyalty-attack goal uses these heroes yet',
+    keepcapturedheroes: 'captured heroes are never fireable and nothing tracks them, so it never decides anything',
+  },
+  // War settings are config keys. Written as a line of their own (`wartown 1`) they
+  // parse into the goal list, where no plan looks; every plan reads ctx.config.
+  bare: ['hiding', 'gate', 'warrules', 'wartown', 'keepatthome', 'attackgap', 'defensecooldown', 'nohealing'],
+};
+
+// What a line that reads fine comes to, if nothing acts on it. `seen` is the
+// line's goal name, its tokens and, for config, the keys it set. A config line
+// with one idle key among working ones is still flagged, naming the idle key and
+// the keys that do work, so a key that does nothing is never hidden in a blue line.
+function idleNote(seen) {
+  if (seen.name === 'config') {
+    const idle = seen.keys.filter((k) => NOT_IMPLEMENTED.config[k]);
+    if (!idle.length) return null;
+    const rest = seen.keys.filter((k) => !NOT_IMPLEMENTED.config[k] && CONFIG_KEYS.has(k));
+    const and = (l) => (l.length > 1 ? `${l.slice(0, -1).join(', ')} and ${l[l.length - 1]}` : l[0]);
+    return idle.map((k) => `${k} does nothing yet: ${NOT_IMPLEMENTED.config[k]}`).join('; ')
+      + (rest.length ? ` (${and(rest)} on this line ${rest.length > 1 ? 'work' : 'works'})` : '');
+  }
+  if (NOT_IMPLEMENTED.goals[seen.name]) return `${seen.name} does nothing yet: ${NOT_IMPLEMENTED.goals[seen.name]}`;
+  if (NOT_IMPLEMENTED.bare.includes(seen.name)) {
+    return `${seen.name} is a config setting: as a line of its own it does nothing. Write it as  config ${seen.name}:${seen.args.join('') || '<value>'}`;
+  }
+  return null;
+}
+
+// Each source line's standing, for the console editor's colours:
+//   ok       the engine acts on it (msg may still say something, e.g. what it replaced)
+//   error    it has an error, or a later line of the same one-per-city goal replaced it
+//   idle     it reads fine but nothing acts on it yet (NOT_IMPLEMENTED)
+//   comment  a // or # line          blank  nothing on it
+// A line keeps whatever parsed on it even with an error (see parseGoals), but the
+// editor still wants it fixed, so any error makes it red.
+function lineStatus(src, errors, seen, dropped) {
+  const notices = new Set(dropped.values());      // said on the line that was dropped
+  const errs = new Map();
+  for (const e of errors) {
+    if (notices.has(e)) continue;
+    if (!errs.has(e.line)) errs.set(e.line, []);
+    errs.get(e.line).push(e.error);
+  }
+  const later = new Map([...dropped].map(([was, e]) => [e.line, was]));
+  return src.map((raw, i) => {
+    const n = i + 1, s = seen[i];
+    if (!raw.trim()) return { n, status: 'blank', msg: null };
+    const msgs = errs.get(n) || [];
+    if (!s && !msgs.length) return { n, status: 'comment', msg: null };
+    if (dropped.has(n)) msgs.push(`${s.name} is written again on line ${dropped.get(n).line}, and the later line wins, so this one does nothing`);
+    const idle = s ? idleNote(s) : null;
+    if (msgs.length) return { n, status: 'error', msg: [...msgs, ...(idle ? [idle] : [])].join('; ') };
+    if (idle) return { n, status: 'idle', msg: idle };
+    return { n, status: 'ok', msg: later.has(n) ? `replaces line ${later.get(n)}` : null };
+  });
+}
+
 function parseGoals(text) {
   const lines = String(text || '').split(/\r?\n/);
   const goals = [];      // ordered, as written
   const errors = [];
   const config = {};
+  const seen = [];            // per line: what lineStatus needs to know about it
+  const dropped = new Map();  // a replaced singleton's line -> the error that said so
 
   lines.forEach((raw, i) => {
     const line = raw.replace(/^\s*(\/\/|#).*$/, '').trim();
@@ -216,6 +306,7 @@ function parseGoals(text) {
     const parsed = def.parse(tok.slice(1), line);
     for (const e of parsed.errors || []) errors.push({ line: i + 1, text: raw.trim(), error: `${name.toUpperCase()}: ${e}` });
     delete parsed.errors;
+    seen[i] = { name, args: tok.slice(1), keys: name === 'config' ? Object.keys(parsed.values || {}) : null };
 
     if (name === 'config') { Object.assign(config, parsed.values); return; }   // merge, last wins
 
@@ -223,13 +314,14 @@ function parseGoals(text) {
       const prev = goals.findIndex((g) => g.name === name);
       if (prev >= 0) {
         errors.push({ line: i + 1, text: raw.trim(), error: `${name} appears more than once — the later one wins (line ${goals[prev].line} discarded)` });
+        dropped.set(goals[prev].line, errors[errors.length - 1]);
         goals.splice(prev, 1);
       }
     }
     goals.push({ name, kind: def.kind, line: i + 1, raw: line, ...parsed });
   });
 
-  return { config, goals, errors };
+  return { config, goals, errors, lines: lineStatus(lines, errors, seen, dropped) };
 }
 
 function describe(parsed) {
@@ -274,4 +366,4 @@ function describe(parsed) {
   return out;
 }
 
-module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, FORT_ABBR, CONFIG_KEYS };
+module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED };

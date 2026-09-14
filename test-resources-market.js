@@ -26,6 +26,7 @@ async function t(name, fn) {
   catch (e) { console.log('  FAIL  ' + name + '\n        ' + (e && e.message)); fail++; }
 }
 const has = (s, sub) => assert.ok(String(s).includes(sub), `"${s}" does not contain "${sub}"`);
+const hasNotWaiting = (s) => assert.ok(!String(s).includes('has not reported'), `"${s}" still waits for a push`);
 const clean = (src) => {
   const p = parseGoals(src);
   assert.deepStrictEqual(p.errors, [], `${src}\n  should parse cleanly`);
@@ -140,6 +141,8 @@ function marketGame(castles, books = {}, { selfArmys = [] } = {}) {
     if (left > 0) {
       c.trades.push({ id: tradeId++, tradeType: C.TRADE_TYPE[type], resType: C.TRADE_RES[resource], amount, dealedAmount: amount - left, price: p });
     }
+    // server.ResourceUpdate, as the console's session applies it: a new object
+    if (!g.noPush) c.resource = { ...c.resource };
     return { ok: 1 };
   };
   g.cancelTrade = async (castleId, id) => {
@@ -153,6 +156,7 @@ function marketGame(castles, books = {}, { selfArmys = [] } = {}) {
     if (o.tradeType === C.TRADE_TYPE.buy) c.resource.gold += left * o.price;
     else c.resource[['food', 'wood', 'stone', 'iron'][o.resType]].amount += left;
     c.trades.splice(i, 1);
+    if (!g.noPush) c.resource = { ...c.resource };
     return { ok: 1 };
   };
   return g;
@@ -1002,6 +1006,33 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const r = await run(g, c, { kind: 'marketCancel', tradeId: 777, label: 'x' }, state);
     assert.strictEqual(r.ok, 0);
     has(r.errorMsg, 'not one of our offers');
+  });
+
+  await t('no resource push since our last order (goalsd applies none): the next pass waits, never buys twice', async () => {
+    const c = trader({ wood: 5e6 });
+    const g = marketGame([c], { wood: { asks: [[15, 50e6]], bids: [[14, 1e9]] } });
+    g.noPush = true;
+    const state = {};
+    const gold0 = c.resource.gold;
+    let p = await tplan(c, g, 'config trade:1', { state });
+    await run(g, c, act(p, 'marketBuy', 'wood'), state);
+    // nothing pushed: the city still shows the gold it had, and no purchase in transit
+    c.resource.gold = gold0;
+    c.transingTrades.length = 0;
+    const before = g.writes.length;
+    p = await tplan(c, g, 'config trade:1', { state });
+    assert.deepStrictEqual(kinds(p), []);
+    has(p.note, 'waiting — the server has not reported this city\'s resources since our last order');
+    // a second order in the same slice goes by our own sums (1b less the 226m
+    // just bid is under an 800m floor), not by the old 1b
+    const r = await run(g, c, { kind: 'marketBuy', res: 'wood', amount: 10e6, minTotal: 1, band: 0.1, goldFloor: 800e6, funding: 'gold', label: 'x' }, state);
+    assert.strictEqual(r.ok, 0, r.errorMsg);
+    assert.strictEqual(g.writes.length, before, 'bid again on figures from before the first buy');
+    // the push comes: trading carries on
+    g.noPush = false;
+    c.resource = { ...c.resource };
+    p = await tplan(c, g, 'config trade:1', { state });
+    hasNotWaiting(p.note);
   });
 
   await t('order count: two trades a pass at most, and no more than two of our own offers resting', async () => {

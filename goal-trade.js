@@ -262,9 +262,26 @@ function resolve(v, perHour) {
 // What goal-trade keeps per connection: the pacing, and each city's offer
 // limit once a refusal has said it.
 function marketOf(game) {
-  if (!game._goalMarket) game._goalMarket = { writeAt: 0, misses: 0, cap: new Map(), books: {} };
+  if (!game._goalMarket) game._goalMarket = { writeAt: 0, misses: 0, cap: new Map(), books: {}, est: new Map() };
   return game._goalMarket;
 }
+
+// After our orders, a city's figures are old until the server pushes its
+// resources again (server.ResourceUpdate; the console's session puts a NEW
+// resource object on the castle each time). Until then: the gold as our own
+// sums have it, never more than the old figure says, and no new plan at all —
+// otherwise the same shortfall would be bought again on figures from before
+// the last buy. (goalsd's bare Game applies no such pushes, so there the
+// market goals stop after one round of orders, which is the safe way to fail.)
+const stale = (game, castle) => {
+  const e = marketOf(game).est.get(game.castleId(castle));
+  return e && castle.resource === e.res ? e : null;
+};
+const goldOf = (game, castle) => {
+  const pushed = n(castle.resource && castle.resource.gold);
+  const e = stale(game, castle);
+  return e ? Math.min(pushed, e.gold) : pushed;
+};
 const clockOf = (game) => game.tradeClock || { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
 
 // The book of one resource as the last read left it — ours or anyone's
@@ -536,6 +553,12 @@ function tradePlan(ctx, cityState, game) {
   const cancelling = new Set(actions.map((a) => String(a.tradeId)));
   const resting = mine.filter((o) => !cancelling.has(String(o.id)));
 
+  // our last orders are not in this city's figures yet: nothing new on them
+  if (stale(game, here)) {
+    notes.push('waiting — the server has not reported this city\'s resources since our last order, so its figures are old');
+    return { note: `trade: ${notes.join('; ')}`, actions };
+  }
+
   // holidaysnipe first: never trade what it is working on
   const claims = ctx.holidaySnipe !== undefined ? ctx.holidaySnipe : HS.claims(ctx.accountId, game);
   if (claims && !claims.dry && claims.cities && claims.cities.has(cid)) {
@@ -682,7 +705,8 @@ async function placeTrade(game, castle, a, cityState, side) {
   const { levels, why } = levelsFor(book, side, a.band, a.emergency);
   if (!levels.length) return { ok: 0, errorMsg: `waiting — ${why}` };
   const res = castle.resource || {};
-  let gold = n(res.gold);
+  const gold0 = goldOf(game, castle);
+  let gold = gold0;
   const orders = [];
   let left = a.amount;
   if (side === 'buy') {
@@ -718,10 +742,12 @@ async function placeTrade(game, castle, a, cityState, side) {
   if (room <= 0) return { ok: 0, errorMsg: 'waiting — every market offer of this city is in use' };
 
   const done = [], refused = [];
-  let spent = 0;
+  let spent = 0, fees = 0, lastRes = null;
   for (const o of orders.slice(0, room)) {
     await pace(game);
     const had = (castle.trades || []).map((t) => String(t.id));
+    // the figures as they stood when this order went: a push after it replaces them
+    const resBefore = castle.resource;
     let r;
     try {
       r = await game.newTrade({ castleId: cid, resource: a.res, type: side, amount: o.amount, price: o.price });
@@ -737,10 +763,12 @@ async function placeTrade(game, castle, a, cityState, side) {
       break;
     }
     const p = Number(o.price);
+    lastRes = resBefore;
     st.pending.push({ res: a.res, side, amount: o.amount, price: p, at: clock.now(), had, proceeds: side === 'sell' && !!a.proceeds });
     done.push(`${short(o.amount)} @ ${o.price}`);
     if (side === 'buy') spent += o.amount * p * (1 + FEE);
-    else if (a.proceeds) {
+    else fees += o.amount * p * FEE;
+    if (side === 'sell' && a.proceeds) {
       // gold the sale brings in, for the buys it pays for (stage 3)
       const was = st.proceeds && clock.now() - n(st.proceeds.at) <= PROCEEDS_MS ? n(st.proceeds.gold) : 0;
       st.proceeds = { gold: was + o.amount * p * (1 - FEE), at: clock.now() };
@@ -749,6 +777,9 @@ async function placeTrade(game, castle, a, cityState, side) {
   if (side === 'buy' && a.funding === 'proceeds' && st.proceeds) {
     st.proceeds.gold = Math.max(0, n(st.proceeds.gold) - spent);
   }
+  // what the gold is now by our own sums, until the server says (see stale):
+  // old while the castle still holds the figures from before our last order
+  if (done.length) marketOf(game).est.set(cid, { res: lastRes, gold: gold0 - spent - fees, at: clock.now() });
   if (done.length) a.label = `${a.label} — ${side === 'buy' ? 'bid' : 'offered'} ${done.join(', ')}${refused.length ? `; then refused: ${refused[0]}` : ''}`;
   return done.length ? { ok: 1 } : { ok: 0, errorMsg: refused[0] || 'nothing placed' };
 }

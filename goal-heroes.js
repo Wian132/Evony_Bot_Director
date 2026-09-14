@@ -6,6 +6,8 @@
 //   nolevelheroes ........................... which heroes must not be levelled
 //   homeheroes .............................. how many heroes stay home when farming
 //   spamheroes .............................. which heroes may be used for spam/loyalty hits
+//                                             (spamHeroes(castle, running) for the script's
+//                                             spamattack / loyaltyattack / capture)
 //   config feastinghallspace ................ how many hero slots stay free
 //   config fasthero ......................... hire from the inn to the config hero makeup
 //   config hero:1+ .......................... also rewards heroes below 100 loyalty with gold
@@ -580,13 +582,53 @@ function farmableHeroes(ctx) {
   return { keepHome, home, free: idle.filter((h) => !homeIds.has(h.id)) };
 }
 
-// The heroes a spam/loyalty attack may use (wiki: SpamHeroes).
-function spamHeroes(ctx) {
-  const rules = rulesFor(ctx.goals, 'spamheroes');
-  const pool = (ctx.castle.heros || []).filter((h) => num(h.status) === STATUS.IDLE);
-  const specs = rules.length ? rules.map((r) => r.spec) : [parseHeroString(DEFAULT_SPAM)];
-  return pool.filter((h) => specs.some((s) => matchHero(h, s, pool)));
+// The heroes SpamAttack, LoyaltyAttack and Capture may send from a city (wiki
+// SpamHeroes, SpamAttack, LoyaltyAttack): the idle heroes the city's
+// spamheroes lines allow, or with none, NEAT's default any:base<=69,level<50.
+// The lines add up in order and `spamheroes /reset` clears every line before
+// it (rulesFor): a reset a script sets lands in the city's script goal layer
+// (goallayers.addScriptLine), after the saved goals, so it clears those too
+// until the layer is cleared or the console restarts, as the wiki says a
+// script's /reset does.
+//
+//   spamHeroes(castle, running, opts) -> [hero, ...] in roster order
+//     castle   the city's CastleBean (castle.heros)
+//     running  the goals the city runs now: what goallayers.runningGoals or
+//              Engine.goalsFor returns ({ goals, config }), or just the goals
+//              array (config then reads as none); null means no goals at all
+//     opts.minLoyalty  only heroes at this loyalty or more (SpamAttack sends
+//              only heroes at 100, wiki SpamAttack)
+//   spamHeroes(ctx) — the plans' form, { castle, goals, config }.
+//
+// Only idle heroes (status 0): never the mayor, nor a hero out or captive.
+// Our own caution, where the wiki says nothing: the city's traininghero, and
+// the hero config keepatthome keeps home for defence, are never spam heroes,
+// whatever the lines say. spamHeroPool says which were held back and why.
+function spamHeroPool(castle, running, { minLoyalty = null } = {}) {
+  if (castle && castle.castle && running === undefined) { running = castle; castle = castle.castle; }
+  const goals = Array.isArray(running) ? running : ((running && running.goals) || []);
+  const config = (running && !Array.isArray(running) && running.config) || {};
+  const lines = goals.filter((g) => g.name === 'spamheroes');
+  const rules = rulesFor(goals, 'spamheroes');
+  const usingDefault = !rules.length;
+  const specs = usingDefault ? [parseHeroString(DEFAULT_SPAM)] : rules.map((r) => r.spec);
+  const idle = ((castle && castle.heros) || []).filter((h) => num(h.status) === STATUS.IDLE);
+  const allowed = idle.filter((h) => specs.some((s) => matchHero(h, s, idle)));
+  const trainee = new Set(goals.filter((g) => g.name === 'traininghero' && g.hero).map((g) => String(g.hero).toLowerCase()));
+  const kept = require('./goal-war').keepAttHome({ castle, goals, config }).reservedIds;
+  const held = [], heroes = [];
+  for (const h of allowed) {
+    const why = trainee.has(String(h.name || '').toLowerCase()) ? 'the traininghero'
+      : kept.has(h.id) ? 'kept home by keepatthome'
+        : minLoyalty !== null && num(h.loyalty) < minLoyalty ? `loyalty ${num(h.loyalty)} (under ${minLoyalty})` : null;
+    if (why) held.push({ hero: h, why }); else heroes.push(h);
+  }
+  return {
+    heroes, held, usingDefault, reset: lines.some((g) => g.reset), lines: lines.length,
+    rule: usingDefault ? DEFAULT_SPAM : rules.map((r) => describeHeroString(r.spec)).join(' | '),
+  };
 }
+function spamHeroes(castle, running, opts) { return spamHeroPool(castle, running, opts).heroes; }
 
 // config training / training10 (wiki): NPC farming drops from every 8.4h to 1h.
 // The NPC plan's own rule (goal-npc cycleFor: training for levels 1-9,
@@ -1067,13 +1109,18 @@ function homeHeroesPlan(ctx) {
   };
 }
 
+// Nothing to send: the note says which heroes a spamattack, loyaltyattack or
+// capture from this city would use (spamHeroPool), so the rule can be checked
+// before a script leans on it.
 function spamHeroesPlan(ctx) {
-  const rules = rulesFor(ctx.goals, 'spamheroes');
-  if (!rules.length) return null;
-  const usable = spamHeroes(ctx);
+  const p = spamHeroPool(ctx);
+  if (!p.lines) return null;
+  const names = (list) => (list.length > 8 ? `${list.slice(0, 8).join(', ')} (+${list.length - 8} more)` : list.join(', '));
+  const rule = p.usingDefault ? `${p.reset ? 'reset, so NEAT\'s default ' : 'default '}${p.rule}` : p.rule;
+  const held = p.held.length ? `; not used: ${p.held.map((x) => `${x.hero.name} (${x.why})`).join(', ')}` : '';
   return {
-    note: `spamheroes ${rules.map((r) => describeHeroString(r.spec)).join(' | ')}: ${usable.length} idle hero(es) usable`,
-    heroes: usable, actions: [],
+    note: `spamheroes ${rule}: ${p.heroes.length ? `spam heroes here: ${names(p.heroes.map((h) => h.name))}` : 'no idle hero here fits'}${held}`,
+    heroes: p.heroes, actions: [],
   };
 }
 
@@ -1502,7 +1549,7 @@ module.exports = {
   parseHeroString, matchHero, matchHeroes, describeHeroString,
   attrOf, addedOf, baseOf, heroBase, dominant,
   STATUS, STATUS_NAME, FIREABLE, ATTR, FIELDS,
-  heroPolicy, feastingHall, hallSeen, farmableHeroes, spamHeroes, npcCooldownMs, npcUsesTransports,
+  heroPolicy, feastingHall, hallSeen, farmableHeroes, spamHeroes, spamHeroPool, npcCooldownMs, npcUsesTransports,
   isCaptive, rosterProblems, allocateStages, parseStages,
   // for the hiring step and the traininghero move: free a slot by the NEAT rule
   makeRoom, fireOrder, keepRules, trainingHeroesDue, trainingHeroNames, trainingSlot,

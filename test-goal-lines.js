@@ -174,10 +174,13 @@ t('the table is the one switch: a key taken off it turns ok with nothing else ch
   delete NOT_IMPLEMENTED.config.valley;
   try { assert.deepStrictEqual(line('config valley:1'), { n: 1, status: 'ok', msg: null }); }
   finally { NOT_IMPLEMENTED.config.valley = was; }
-  const g = NOT_IMPLEMENTED.goals.spamheroes;
-  delete NOT_IMPLEMENTED.goals.spamheroes;
-  try { assert.strictEqual(line('spamheroes any').status, 'ok'); }
-  finally { NOT_IMPLEMENTED.goals.spamheroes = g; }
+  // Step 18 took spamheroes off (the script's spam attacks use its heroes), so
+  // the goals half is shown with an entry put on for the test and taken off again.
+  assert.strictEqual(line('spamheroes any').status, 'ok');
+  NOT_IMPLEMENTED.goals.spamheroes = 'a reason put here by this test only';
+  try { assert.strictEqual(line('spamheroes any').status, 'idle'); }
+  finally { delete NOT_IMPLEMENTED.goals.spamheroes; }
+  assert.deepStrictEqual(line('spamheroes any'), { n: 1, status: 'ok', msg: null });
 });
 
 // Step 4 made these work (War Town, KeepAttHome, HomeHeroes, AttackGap,
@@ -419,8 +422,9 @@ t('/api/goals check: the statuses only, and never a save — even when told to s
 });
 
 t('/api/goals Apply returns the statuses with the description, and saves nothing', async () => {
-  const r = await call('/api/goals', { src: 'troop a:2k\nspamheroes any', city: '101', save: false });
-  assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['ok', 'idle']);
+  // spamheroes is blue since Step 18 (it was the report-only line here)
+  const r = await call('/api/goals', { src: 'troop a:2k\nspamheroes any\nconfig valley:1', city: '101', save: false });
+  assert.deepStrictEqual(r.body.lines.map((l) => l.status), ['ok', 'ok', NOT_IMPLEMENTED.config.valley ? 'idle' : 'ok']);
   assert.ok(Array.isArray(r.body.described) && r.body.described.length);
   assert.strictEqual(r.body.saved, null);
   assert.strictEqual(saved(), 'troop a:1k');

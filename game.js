@@ -86,6 +86,9 @@ class Game {
     this.c.on('cmd', (cmd, data) => { if (cmd === 'server.PlayerBuffUpdate') this.applyPlayerBuffUpdate(data); });
     // And each city's medic camp, which the healing goal reads (goal-upkeep.js).
     this.c.on('cmd', (cmd, data) => { if (cmd === 'server.InjuredTroopUpdate') this.applyInjuredUpdate(data); });
+    // Each city's own buffs (a forced gate, slowed marches...): castle.buffs.
+    // See applyCastleBuffUpdate.
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.CastleBuffUpdate') this.applyCastleBuffUpdate(data); });
 
     // march/load skill params (affects march time)
     try {
@@ -347,6 +350,42 @@ class Game {
     if (i < 0) return;
     if (Number(data.updateType) === 1) list.splice(i, 1);
     else list[i] = { ...list[i], ...b };
+  }
+
+  // server.CastleBuffUpdate {castleid, updateType, buffBean} — note the
+  // lowercase castleid (CastleBuffUpdate.as). Context.as does not listen for
+  // it; the buff bar does (PLayerBuffBar.as:190-240, castlebuffRefresh; its
+  // addCastleBuff, :262-282, shows ForceopenclosegateBuff, IncArmyActionTimeBuff,
+  // MoveCastleCoolDownBuff and a few more off the city): on the city whose
+  // id is castleid, 1 removes the buff of that typeId, 0 and 2 add it or copy
+  // its typeId/descName/endTime onto the one already there, and any other
+  // type only updates one already there. One difference: the client's 0 for
+  // a buff it already holds adds a second copy; here the one copy is updated,
+  // so a castle holds one buff per type, as the login's list does. Without
+  // this castle.buffs stays as it was at login (timed marches read it).
+  applyCastleBuffUpdate(data) {
+    const b = data && data.buffBean;
+    if (!b || b.typeId === undefined || b.typeId === null) return;
+    const cid = data.castleid ?? data.castleId;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(cid));
+    if (!c) return;
+    const list = (c.buffs = Array.isArray(c.buffs) ? c.buffs : []);
+    const type = Number(data.updateType);
+    if (type === 1) {
+      for (let i = list.length - 1; i >= 0; i--) if (list[i] && list[i].typeId === b.typeId) list.splice(i, 1);
+      return;
+    }
+    const i = list.findIndex((x) => x && x.typeId === b.typeId);
+    if (i >= 0) list[i] = { ...list[i], ...b };
+    else if (type === 0 || type === 2) list.push({ ...b });
+  }
+
+  // The embassy's "allow alliance troops to station" box: army.setAllowAllianceArmy
+  // {castleId, isAllow} (ArmyCommands.as:156-167), sent by the Embassy window
+  // (Embassy.as:545-549), which sets castle.allowAlliance itself; the reply is a
+  // plain CommandResponse.
+  setAllowAlliance(castleId, isAllow) {
+    return this.req('army.setAllowAllianceArmy', { castleId, isAllow: !!isAllow });
   }
 
   // ---- teleporting a city (CityCommands.as) ----
@@ -911,16 +950,22 @@ class Game {
   }
 
   // ---- reports ----
+  // reportType is ObjConstants' 0 trade, 1 army, 2 other. A type it does not
+  // know is refused: it used to fall back to 0, so `cleanreports armies` (not
+  // `army`) deleted every trade report.
+  // A report reply names its command and nothing else, and the console's
+  // Reports window and the reportstokeep goal (goal-reports.js) both ask, so
+  // each report command waits in its own lane, as the market's do.
   async reportList(type = 'trade', pageNo = 1, pageSize = 50) {
-    this.c.send('report.receiveReportList', { pageNo, pageSize, reportType: C.REPORT_TYPE[type] ?? 0 });
-    const r = await this.c.await(['report.receiveReportList'], 12000);
-    return r.data;
+    const reportType = C.REPORT_TYPE[type];
+    if (reportType === undefined) throw new Error(`unknown report type "${type}" — trade, army or other`);
+    return this.lane('report.receiveReportList',
+      () => this.req('report.receiveReportList', { pageNo, pageSize, reportType }));
   }
 
-  async deleteReports(ids) {
-    this.c.send('report.deleteReport', { idStr: ids.join(',') });   // ReportCommands.as: idStr
-    const r = await this.c.await(['report.deleteReport'], 12000);
-    return r.data;
+  deleteReports(ids) {
+    // ReportCommands.as: idStr
+    return this.lane('report.deleteReport', () => this.req('report.deleteReport', { idStr: ids.join(',') }));
   }
 
   async cleanReports(type = 'trade') {
@@ -943,7 +988,11 @@ class Game {
   // report.markAsRead is how the client OPENS a report (PublicReportCanvas
   // .showDetail): the reply is a ReportResponse whose `report` is the full
   // ReportBean, XML `content` included — receiveReportList is only the index.
-  readReport(reportId) { return this.req('report.markAsRead', { reportId: Number(reportId) }); }
+  readReport(reportId) {
+    const ask = () => this.req('report.markAsRead', { reportId: Number(reportId) });
+    // (an object that borrows Game's methods without its lanes still reads)
+    return typeof this.lane === 'function' ? this.lane('report.markAsRead', ask) : ask();
+  }
   // The "mark as read" button: ids comma-joined (PublicReportCanvas.onMarkAsReadSelected).
   markReportsRead(ids) { return this.req('report.readOverReport', { reportIds: ids.join(',') }); }
 

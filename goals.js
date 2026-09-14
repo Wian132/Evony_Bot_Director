@@ -331,8 +331,8 @@ const GOALS = {
   rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (upkeep, war, heroes, npc, transfers, market) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade']) {
+// ---- goal modules (upkeep, war, heroes, npc, transfers, market, reports) contribute their own parsers + config keys ----
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade', './goal-reports']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -371,7 +371,6 @@ const NOT_IMPLEMENTED = {
     reservedbarrack: 'troop training does not hold a barracks back yet',
     troopincrement: 'troop lines are trained in order, not by increments or ratio yet',
     troopdelbadque: 'badly queued troops are not cancelled yet',
-    embassy: 'no goal uses the embassy yet',
     fortification: 'fortification lines cannot be switched off this way yet',
     fortsusereserved: 'fortification orders do not keep a food reserve yet',
     wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',
@@ -381,10 +380,10 @@ const NOT_IMPLEMENTED = {
     abandonflats: 'no goal holds or releases flats yet',
     acquireflats: 'no goal holds or releases flats yet',
   },
-  // goal lines whose plan only reports
-  goals: {
-    spamheroes: 'it only reports, and no spam or loyalty-attack goal uses these heroes yet',
-  },
+  // goal lines whose plan only reports. (spamheroes left in Step 18: its
+  // heroes are what the script's spamattack / loyaltyattack send, through
+  // goal-heroes.spamHeroes, and its plan names them.)
+  goals: {},
   // War settings written as a line of their own (`wartown 1`) used to parse into
   // the goal list, where no plan looks. Since Step 9 parseGoals reads such a line
   // as the config it means and says so on the line, so none is left here.

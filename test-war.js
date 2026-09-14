@@ -1025,7 +1025,7 @@ test('describe renders one line per configured war goal', () => {
 
 test('configKeys names every config key this module reads', () => {
   assert.deepStrictEqual(W.configKeys.slice().sort(),
-    ['attackgap', 'defensecooldown', 'gate', 'hiding', 'keepatthome', 'monitorarmy', 'nohealing', 'warrules', 'wartown']);
+    ['attackgap', 'defensecooldown', 'embassy', 'gate', 'hiding', 'keepatthome', 'monitorarmy', 'nohealing', 'warrules', 'wartown']);
   // and every one of them has a parser that can validate the value
   for (const k of W.configKeys) assert.strictEqual(typeof W.parsers[k].parse, 'function', `no parser for config ${k}`);
 });

@@ -36,6 +36,7 @@
 //   config keepatthome:<0|1>             keep the best attack hero home
 //   config attackgap:<seconds>           waves this far apart are separate attacks
 //   config defensecooldown:<minutes>     still "under attack" this long after a hit
+//   config embassy:<0|1|2>               the embassy's alliance-troops box
 //   config nohealing:<0|1>               never heal wounded troops
 //   gatepolicy <na> <reg> <sb> <mix> <mnt> [/switches]
 //   hidingpolicy /switch:value ...       (our addition — NEAT infers these)
@@ -484,6 +485,23 @@ const parsers = {
     },
   },
 
+  // ------------------------------------------------- config embassy:<0|1|2>
+  // wiki Embassy (default 1): 1 keeps the embassy's "allow alliance troops"
+  // box always open, 0 always closed, 2 open only while the city is under
+  // attack and for config defensecooldown after (underAttack below). Anything
+  // else, an empty value included, is an error, and the box is then left as
+  // it is (embassyPlan says why the default is not applied either).
+  embassy: {
+    kind: 'config', multi: false,
+    parse(value) {
+      const errs = [];
+      const s = value === undefined || value === null ? '' : String(value).trim();
+      const ok = /^[012]$/.test(s);
+      if (!ok) errs.push(`embassy must be 0 (always closed), 1 (always open) or 2 (open while under attack), got "${s}"`);
+      return { mode: ok ? Number(s) : null, errors: errs };
+    },
+  },
+
   // ------------------------------------------------ config nohealing:<0|1>
   // wiki NoHealing (default 0): 1 means never heal wounded troops, i.e. never
   // send army.cureInjuredTroop (ArmyCommands.as:174). goal-upkeep.js heals
@@ -598,7 +616,7 @@ const parsers = {
 // stored, so the goal works — it just shouts about it).
 // (goals.js already lists warrules, wartown, keepatthome and attackgap.)
 const configKeys = ['hiding', 'gate', 'warrules', 'wartown', 'monitorarmy',
-                    'keepatthome', 'attackgap', 'defensecooldown', 'nohealing'];
+                    'keepatthome', 'attackgap', 'defensecooldown', 'nohealing', 'embassy'];
 
 // Defaults for a hidingpolicy that was never written.
 function hidingOptions(ctx) {
@@ -1416,6 +1434,70 @@ function constraintsPlan(ctx, state) {
   return lines.length ? { note: lines.join(' | '), actions: [] } : null;
 }
 
+// ------------------------------------------------------------------ embassy
+// config embassy:<0|1|2>
+//
+// The box is CastleBean.allowAlliance (the console's General tab shows it as
+// "Alliance help"), set with army.setAllowAllianceArmy {castleId, isAllow}
+// from the Embassy window (Embassy.as:545-549). It is only sent when the box
+// differs from what the setting wants.
+//
+// NEAT's default is 1, "always open", but only a city whose goals say
+// `config embassy:<0|1|2>` (its own, or the account's prepend/append goals) is
+// touched: applied to every city, the default would open the box to alliance
+// troops in every live city, none of which sets the key, the moment this
+// shipped. A city that never mentions it keeps the box however it was set.
+//
+// A city with no Embassy is left alone as well: the box lives in the Embassy
+// window, and alliance troops can only station up to the Embassy's level
+// ("allied armies stationed: n/level", Embassy.as:445), so without one there
+// is nothing to allow.
+const EMBASSY_TYPE = 28;                // constants.js BUILDINGS: Embassy
+const EMBASSY_RETRY_MS = 5 * 60000;     // a refused or unanswered change is asked again after this
+
+function embassyPlan(ctx, state, game) {
+  const raw = (ctx.config || {}).embassy;
+  if (raw === undefined || raw === null) return null;
+  const cfg = parsers.embassy.parse(raw);
+  if (cfg.errors.length) return { note: `embassy: ${cfg.errors.join('; ')} — the box is left as it is`, actions: [] };
+  const word = { 0: 'always closed', 1: 'always open', 2: 'open while under attack' }[cfg.mode];
+  const head = `embassy ${cfg.mode} (${word})`;
+
+  const castle = ctx.castle || {};
+  const building = (castle.buildings || []).find((b) => n(b.typeId) === EMBASSY_TYPE && n(b.level) > 0);
+  if (!building) return { note: `${head}: this city has no Embassy, so there is no box to set`, actions: [] };
+
+  let want, why;
+  if (cfg.mode === 2) {
+    const u = underAttack(ctx, state);
+    want = u.on;
+    why = u.inbound ? `under attack, ${u.inbound} real wave(s) inbound`
+      : u.on ? `under attack for another ${hhmmss(u.leftMs)} (config defensecooldown)` : 'not under attack';
+  } else {
+    want = cfg.mode === 1;
+    why = null;
+  }
+  const set = want ? 'open' : 'closed';
+  const known = castle.allowAlliance === true || castle.allowAlliance === false;
+  const lead = `${head}: ${why ? `${why} — ` : ''}alliance troops ${want ? 'allowed' : 'not allowed'}`;
+  if (known && castle.allowAlliance === want) return { note: `${lead}; the box is already ${set}`, actions: [] };
+
+  // A change the server refused, or never answered, waits before it is asked again.
+  const last = state && state.war && state.war.embassy;
+  const now = nowOf(ctx, game);
+  if (last && !last.ok && last.want === want && now - n(last.at) < EMBASSY_RETRY_MS) {
+    return {
+      note: `${lead}; setting it ${set} ${last.error ? `was refused (${last.error})` : 'got no reply'} ` +
+            `${hhmmss(now - n(last.at))} ago, trying again in ${hhmmss(EMBASSY_RETRY_MS - (now - n(last.at)))}`,
+      actions: [],
+    };
+  }
+  return {
+    note: `${lead}; the box is ${known ? (castle.allowAlliance ? 'open' : 'closed') : 'not reported'} — setting it ${set}`,
+    actions: [{ kind: 'setEmbassy', allow: want, label: `${want ? 'open' : 'close'} the embassy to alliance troops (config embassy:${cfg.mode})` }],
+  };
+}
+
 // ============================================================================
 //                                  EXECUTORS
 // ============================================================================
@@ -1481,6 +1563,28 @@ const executors = {
         gs.gate.lastAt = at; gs.gate.want = !!a.open;
       }
     }
+    return r;
+  },
+
+  // army.setAllowAllianceArmy {castleId, isAllow}   ArmyCommands.as:156-167
+  // (game.setAllowAlliance). The client sets castle.allowAlliance itself and
+  // nothing echoes it back, so an ok does the same here. Every attempt is
+  // stamped, so a refusal waits EMBASSY_RETRY_MS before it is asked again.
+  async setEmbassy(game, castle, a, state) {
+    const castleId = game.castleId(castle);
+    let r;
+    try {
+      r = typeof game.setAllowAlliance === 'function' ? await game.setAllowAlliance(castleId, !!a.allow)
+        : await game.req('army.setAllowAllianceArmy', { castleId, isAllow: !!a.allow });
+    } finally {
+      if (state) {
+        warState(state).embassy = {
+          at: game.now ? game.now() : Date.now(), want: !!a.allow, ok: !!(r && r.ok === 1),
+          error: r && r.ok === 1 ? null : (r && r.errorMsg) || (r ? `ok=${r.ok}` : null),
+        };
+      }
+    }
+    if (r && r.ok === 1) castle.allowAlliance = !!a.allow;
     return r;
   },
 
@@ -1557,6 +1661,12 @@ function describe(parsed) {
   if (cfg.nohealing !== undefined) {
     out.push(parsers.nohealing.parse(cfg.nohealing).on ? 'nohealing: wounded troops are never healed' : 'nohealing: off');
   }
+  if (cfg.embassy !== undefined) {
+    const e = parsers.embassy.parse(cfg.embassy);
+    out.push(e.errors.length ? 'embassy: not understood, the box is left as it is'
+      : `embassy: alliance troops ${e.mode === 1 ? 'always allowed' : e.mode === 0 ? 'never allowed'
+        : 'allowed only while under attack and for config defensecooldown after'} (the Embassy's box)`);
+  }
   if (cfg.monitorarmy !== undefined) out.push('monitorarmy: accepted, does nothing');
   return out;
 }
@@ -1570,6 +1680,7 @@ module.exports = {
     wartown: warTownPlan,
     monitorarmy: monitorArmyPlan,
     constraints: constraintsPlan,      // keepatthome / attackgap / defensecooldown / nohealing
+    embassy: embassyPlan,              // config embassy (after constraints: it reads the same window)
   },
   executors,
   // integration helpers

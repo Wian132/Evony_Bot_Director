@@ -746,13 +746,14 @@ function oldGoals(OLD, src) {
       assert.ok(typeof why === 'string' && why.length > 10, k);
     }
     for (const k of ['abandon', 'abandonflats', 'acquireflats', 'fortification', 'fortsusereserved', 'plan', 'research',
-      'troopdelbadque', 'valley', 'valleyfarming', 'valleymin', 'trade', 'troopsusepopmax', 'wallqueuetime']) {
+      'troopdelbadque', 'valley', 'valleyfarming', 'valleymin', 'troopsusepopmax', 'wallqueuetime']) {
       assert.ok(k in list, `${k} does nothing here yet and should be listed`);
       assert.strictEqual(parseGoals(`config ${k}:1`).lines[0].status, 'idle', k);
     }
+    // trade: built in Step 14 (goal-trade.js)
     for (const k of ['npc', 'buildnpc', 'comfort', 'hero', 'troop', 'hiding', 'gate', 'warrules', 'wartown', 'defensecooldown',
       'keepatthome', 'attackgap', 'building', 'feastinghallspace', 'nomayor', 'farmingcycle', 'farmingcyclemin', 'npclimit',
-      'training', 'training10', 'monitorarmy']) {
+      'training', 'training10', 'monitorarmy', 'trade']) {
       assert.ok(!(k in list), `${k} is implemented (or, for monitorarmy, a no-op in NEAT too)`);
     }
   });

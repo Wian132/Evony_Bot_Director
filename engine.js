@@ -13,11 +13,11 @@ const M = require('./goalmods');
 const R = require('./rally');
 const S = require('./speedups');
 
-// War / hero / NPC / transfer goals live in their own modules, each exporting
-// { parsers, plans, executors }. parsers are merged by goals.js; plans and
-// executors are wired here. City upkeep (tax, healing, production, warehouse)
-// goes first: its rare, cheap actions come right after defensepolicy's.
-const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer'].map((p) => {
+// War / hero / NPC / transfer / market goals live in their own modules, each
+// exporting { parsers, plans, executors }. parsers are merged by goals.js;
+// plans and executors are wired here. City upkeep (tax, healing, production,
+// warehouse) goes first: its rare, cheap actions come right after defensepolicy's.
+const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade'].map((p) => {
   try { return { name: p, mod: require(p) }; }
   catch (e) { console.error(`goal module ${p} not loaded: ${e.message}`); return null; }
 }).filter(Boolean);

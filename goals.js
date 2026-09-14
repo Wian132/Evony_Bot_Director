@@ -331,8 +331,8 @@ const GOALS = {
   rallypolicy: require('./rally').parser,
 };
 
-// ---- goal modules (war, heroes, npc, transfers) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer']) {
+// ---- goal modules (upkeep, war, heroes, npc, transfers, market) contribute their own parsers + config keys ----
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-transfer', './goal-trade']) {
   try {
     const m = require(mod);
     Object.assign(GOALS, m.parsers || {});
@@ -360,7 +360,6 @@ const NOT_IMPLEMENTED = {
   // documents is accepted (CONFIG_KEYS), so a pasted NEAT file says here, line
   // by line, which of its switches do nothing yet.
   config: {
-    trade: 'no goal trades on the market yet (the buy and sell script lines do)',
     valley: 'no goal captures or farms valleys yet',
     valleyfarming: 'no goal captures or farms valleys yet',
     valleymin: 'no goal captures or farms valleys yet',
@@ -539,6 +538,12 @@ function describe(parsed) {
     } else if (name === 'requestresources' || name === 'requesttroops') {
       const { describeRequest } = require('./goal-transfer');
       for (const g of list) out.push(describeRequest(g));
+    } else if (require('./goal-transfer').PUSH_GOALS[name]) {
+      const { describePush } = require('./goal-transfer');
+      for (const g of list) out.push(describePush(g));
+    } else if (name === 'tradepolicy' || name === 'resourcelimits') {
+      const { describeTrade } = require('./goal-trade');
+      for (const g of list) out.push(describeTrade(g));
     } else if (name === 'rallypolicy') {
       for (const g of list) {
         const parts = [...Object.entries(g.caps || {}).map(([k, v]) => `${k}:${v}`),

@@ -745,15 +745,15 @@ function oldGoals(OLD, src) {
       assert.ok(NEAT_KEYS.includes(k), `${k} is not a NEAT key`);
       assert.ok(typeof why === 'string' && why.length > 10, k);
     }
-    for (const k of ['abandon', 'abandonflats', 'acquireflats', 'fortification', 'fortsusereserved', 'plan', 'research',
+    for (const k of ['abandon', 'abandonflats', 'acquireflats', 'fortification', 'fortsusereserved', 'plan',
       'troopdelbadque', 'valley', 'valleyfarming', 'valleymin', 'troopsusepopmax', 'wallqueuetime']) {
       assert.ok(k in list, `${k} does nothing here yet and should be listed`);
       assert.strictEqual(parseGoals(`config ${k}:1`).lines[0].status, 'idle', k);
     }
-    // trade: built in Step 14 (goal-trade.js)
+    // trade: built in Step 14 (goal-trade.js); research: Step 16 (goal-research.js)
     for (const k of ['npc', 'buildnpc', 'comfort', 'hero', 'troop', 'hiding', 'gate', 'warrules', 'wartown', 'defensecooldown',
       'keepatthome', 'attackgap', 'building', 'feastinghallspace', 'nomayor', 'farmingcycle', 'farmingcyclemin', 'npclimit',
-      'training', 'training10', 'monitorarmy', 'trade']) {
+      'training', 'training10', 'monitorarmy', 'trade', 'research']) {
       assert.ok(!(k in list), `${k} is implemented (or, for monitorarmy, a no-op in NEAT too)`);
     }
   });

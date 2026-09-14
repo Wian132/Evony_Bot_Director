@@ -171,11 +171,17 @@ function stubGame() {
     };
   }
 
-  await t('troopsusepopmax no longer orders past the idle population', async () => {
+  // Step 17: troopsusepopmax is NEAT's (wiki TroopsUsePopMax): the whole
+  // population, "by dropping production temporarily". The batch is sized
+  // against it, and the plan asks for the field workers it needs beyond the
+  // idle ones to be freed while it is placed (Engine.runTroops). It used to be
+  // ignored, which kept every order within the 2,503 idle.
+  await t('troopsusepopmax:1 sizes against the whole population and frees the workers for it', async () => {
     const ctx = city({ config: { troopsusepopmax: 1, troopslot: 0 }, troop: { ballista: 84 } });
     const plan = troopPlan(ctx);
     assert.strictEqual(plan.orders.length, 1);
-    assert.strictEqual(plan.orders[0].num, 500, 'sized against max population, the server refuses it whole');
+    assert.strictEqual(plan.orders[0].num, 3500, '17,503 population / 5 a ballista');
+    assert.deepStrictEqual(plan.popmax, { workers: 3500 * 5 - 2503, share: 1 });
   });
 
   await t('troops already in the queue count toward the target', async () => {
@@ -292,6 +298,9 @@ function stubGame() {
     assert.match(plan.note, /waiting on a free barracks queue slot/);
   });
 
+  // Step 17: the line is trained left to right, each type in full, filling the
+  // free slots (wiki TroopIncrement: "The bot will first train 100k warriors,
+  // then 100k scouts"), where it used to place one batch of each type a slice.
   await t('each batch goes to the barracks with the most room', async () => {
     const plan = troopPlan(city({
       goals: [{ troops: { ballista: 5000, carriage: 5000 } }],
@@ -300,14 +309,15 @@ function stubGame() {
         { positionId: 7, capacity: 5, items: [] },
       ],
     }));
-    assert.deepStrictEqual(plan.orders.map((o) => o.positionId), [7, 7]);
+    assert.deepStrictEqual(plan.orders.map((o) => o.positionId), [7, 7, 7, 7, 4, 7]);
+    assert.ok(plan.orders.every((o) => o.troop.key === 'ballista'), 'the transporters wait until the ballista are all queued');
   });
 
   await t('a troop the barracks cannot train yet is skipped, not ordered', async () => {
     const plan = troopPlan(city({
       goals: [{ troops: { catapult: 100, ballista: 5000 } }],
     }));
-    assert.deepStrictEqual(plan.orders.map((o) => o.troop.key), ['ballista']);
+    assert.ok(plan.orders.length && plan.orders.every((o) => o.troop.key === 'ballista'), plan.note);
     assert.match(plan.note, /not trainable here yet: Catapult/);
   });
 
@@ -404,7 +414,8 @@ function stubGame() {
     e.goalsFor = () => ({ goals: [{ name: 'troop', troops: { ballista: 5000 }, switches: {} }], config: {} });
     await e.focus(castle);
     assert.strictEqual(reads.filter((c) => c === 'troop.getTroopProduceList').length, 2);
-    assert.deepStrictEqual(sent.map((s) => s.num), [18], 'batch sized for the old mayor');   // 1,800 / 100
+    // Step 17: every free slot of the L10 barracks takes a batch (was one a slice)
+    assert.deepStrictEqual(sent.map((s) => s.num), Array(10).fill(18), 'batch sized for the old mayor');   // 1,800 / 100
   });
 
   await t('training times are cached, but not across a mayor changed elsewhere', async () => {

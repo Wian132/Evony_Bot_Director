@@ -137,6 +137,47 @@ const CONFIG_KEYS = new Set([
 // config building:0 pauses construction; building:1 is implied by any build line (wiki: Build)
 CONFIG_KEYS.add('building');
 
+// The troop and wall settings, each with the kind of value it takes (wiki
+// Troop, TroopQueueTime, TroopIdleQueueTime, TroopIncrement, TroopsUseReserved,
+// TroopsUsePopMax, ReservedBarrack, TroopDelBadQue, FortificationGoal,
+// FortsUseReserved, WallQueueTime). A value that cannot be read is an error and
+// the setting stays at its default, rather than NUM turning "30m" into 30
+// million hours or "abc" meaning something else.
+//   hours / minutes  a plain number, fractions allowed (.5)
+//   share            0 to 1, where 1 is 100% (wiki: "0.5 = 50%")
+//   increment        0 off, a share below 1 (0.01 = 1% steps), 1 ratio mode,
+//                    or a whole number of troops per step (500, 5k)
+//   flag             0 or 1
+const TROOP_CONFIG = {
+  troopqueuetime: 'hours', troopidlequeuetime: 'minutes', wallqueuetime: 'hours',
+  troopsusereserved: 'share', troopsusepopmax: 'share', fortsusereserved: 'share',
+  troopincrement: 'increment', reservedbarrack: 'flag', troopdelbadque: 'flag', fortification: 'flag',
+};
+// The troop line's own switches override the config for that line (wiki
+// Troop). /slot is ours: minutes, as config troopslot.
+const TROOP_SWITCHES = {
+  queuetime: 'hours', idlequeuetime: 'minutes', usereserved: 'share', usepopmax: 'share',
+  increment: 'increment', slot: 'minutes',
+};
+const PLAIN = /^(\d+(\.\d*)?|\.\d+)$/;
+// { value } or { error }
+function settingValue(kind, name, v) {
+  const s = String(v == null ? '' : v).trim();
+  const eg = { hours: `${name}:2 or ${name}:.5`, minutes: `${name}:30`, share: `${name}:0.5`, increment: `${name}:0.01, ${name}:1 or ${name}:500`, flag: `${name}:1` }[kind];
+  if (kind === 'flag') return /^[01]$/.test(s) ? { value: Number(s) } : { error: `${name} is 0 (off) or 1 (on), not "${s}"` };
+  if (kind === 'increment') {
+    const x = NUM(s);
+    if (x === null || (x > 1 && !Number.isInteger(x))) {
+      return { error: `${name} is 0 (off), a share below 1 (0.01 = 1% steps), 1 (ratio mode) or a whole number of troops per step, e.g. ${eg} — not "${s}"` };
+    }
+    return { value: x };
+  }
+  if (!PLAIN.test(s)) return { error: `${name} is ${kind === 'share' ? 'a share from 0 to 1 (1 = 100%, 0.5 = 50%)' : `${kind} as a plain number`}, e.g. ${eg} — not "${s}"` };
+  const x = parseFloat(s);
+  if (kind === 'share' && x > 1) return { error: `${name} is a share from 0 to 1 (1 = 100%, 0.5 = 50%), not ${s}` };
+  return { value: x };
+}
+
 // name -> { kind, multi, parse(args, raw) }
 const GOALS = {
   config: {
@@ -165,6 +206,13 @@ const GOALS = {
           errs.push('research is 0 (research paused) or 1');
           continue;
         }
+        const kind = TROOP_CONFIG[k.toLowerCase()];
+        if (kind) {
+          const got = settingValue(kind, k.toLowerCase(), v);
+          if (got.error) { errs.push(got.error); continue; }
+          out[k.toLowerCase()] = got.value;
+          continue;
+        }
         const value = NUM(v) ?? v;
         // A key a goal module reads through its own config parser (goal-war's
         // hiding, gate, wartown...) is checked by that parser now, so
@@ -175,10 +223,18 @@ const GOALS = {
         }
         out[k.toLowerCase()] = value;
       }
+      if (out.troopqueuetime !== undefined && out.troopslot !== undefined) {
+        errs.push('troopqueuetime (hours) and troopslot (minutes) both set the batch length: troopqueuetime is used, drop one');
+      }
       return { values: out, errors: errs };
     },
   },
 
+  // troop <type>:<amount>[,...] [/increment:n] [/queuetime:h] [/idlequeuetime:m]
+  // [/usereserved:0-1] [/usepopmax:0-1] [/slot:m] — wiki Troop. Each switch
+  // overrides its config key for this line only (engine.js troopSettings).
+  // An unknown switch or a value that cannot be read is an error and is left
+  // out, where it used to be accepted and ignored.
   troop: {
     kind: 'directive', multi: true,
     parse(args) {
@@ -187,7 +243,12 @@ const GOALS = {
       for (const tok of args) {
         if (tok.startsWith('/')) {
           const [k, v] = kv(tok.slice(1));
-          switches[k.toLowerCase()] = v === null ? true : (parseFloat(v) || 0);
+          const key = k.toLowerCase(), kind = TROOP_SWITCHES[key];
+          if (!kind) { errs.push(`unknown switch "/${k}" (known: ${Object.keys(TROOP_SWITCHES).map((s) => '/' + s).join(' ')})`); continue; }
+          if (v === null || v === '') { errs.push(`/${key} needs a value, e.g. /${key}:${{ hours: '.5', minutes: '30', share: '0.5', increment: '0.1' }[kind]}`); continue; }
+          const got = settingValue(kind, `/${key}`, v);
+          if (got.error) { errs.push(got.error); continue; }
+          switches[key] = got.value;
           continue;
         }
         for (const part of tok.split(',')) {
@@ -199,6 +260,11 @@ const GOALS = {
           if (n === null) { errs.push(`bad amount "${amt}" for ${code}`); continue; }
           troops[t.key] = n;
         }
+      }
+      // switches alone would read as a stage that is always met
+      if (!Object.keys(troops).length && !errs.length) errs.push('needs at least one troopType:amount, e.g. troop a:100k');
+      if (switches.queuetime !== undefined && switches.slot !== undefined) {
+        errs.push('/queuetime (hours) and /slot (minutes) both set the batch length: /queuetime is used, drop one');
       }
       return { troops, switches, errors: errs };
     },
@@ -217,6 +283,7 @@ const GOALS = {
         if (n === null) { errs.push(`bad amount "${amt}" for ${code}`); continue; }
         forts[w.code] = n;
       }
+      if (!Object.keys(forts).length && !errs.length) errs.push('needs at least one type:quantity, e.g. fortification ab:5000');
       return { forts, errors: errs };
     },
   },
@@ -371,16 +438,6 @@ const NOT_IMPLEMENTED = {
     valleyfarming: 'no goal captures or farms valleys yet',
     valleymin: 'no goal captures or farms valleys yet',
     hunting: 'no goal hunts medals yet',
-    troopsusepopmax: 'training uses idle population only, so nothing reads this key',
-    troopsusereserved: 'troop training does not keep a resource reserve yet',
-    troopqueuetime: 'nothing reads this key yet (a batch is sized by config troopslot or troop /slot)',
-    troopidlequeuetime: 'nothing reads this key yet (a batch is sized by config troopslot or troop /slot)',
-    reservedbarrack: 'troop training does not hold a barracks back yet',
-    troopincrement: 'troop lines are trained in order, not by increments or ratio yet',
-    troopdelbadque: 'badly queued troops are not cancelled yet',
-    fortification: 'fortification lines cannot be switched off this way yet',
-    fortsusereserved: 'fortification orders do not keep a food reserve yet',
-    wallqueuetime: 'fortification batches are sized by the fortified space left, not by time',
     plan: 'no plan goal yet',
     abandon: 'no goal abandons a city yet',
     abandonflats: 'no goal holds or releases flats yet',

@@ -209,7 +209,169 @@ async function orderFitted(send, num, castle, what, acted) {
 // ctx.training (Engine.readTraining) is what the barracks already hold and how
 // fast this city trains. Without it (the pure tests) orders are sized from
 // population and resources alone.
+//
+// NEAT's troop settings (wiki Troop and the pages it names). Each is a config
+// key, and a troop line's switch overrides it for that line alone (wiki Troop:
+// "If no switches are specified, the bot will use the configured goals for all
+// troops, or the default settings if both are lacking"):
+//   troopqueuetime / queuetime    hours of work per batch, "each slot in each
+//                                 barrack" (TroopQueueTime). config troopslot and
+//                                 /slot are the same in minutes, and still work.
+//   troopincrement / increment    0: the line left to right, each type in full
+//                                 before the next; a share (0.01) or a number
+//                                 (500): that much of each type in turn, round
+//                                 and round; 1: ratio mode (TroopIncrement)
+//   troopidlequeuetime / idlequeuetime  minutes a batch may run over the
+//                                 traininghero's time while it is away
+//   troopsusereserved / usereserved  how much of the day of food kept for the
+//                                 troops' upkeep training may spend
+//   troopsusepopmax / usepopmax   how much of the whole population training may
+//                                 take, freeing workers from the fields for it
+//   reservedbarrack, troopdelbadque  config only
+// All of it is worked out by troopSettings below.
+//
+// Queue time: the Troop page says 30 minutes by default, the TroopQueueTime page
+// 15. The Troop page is the goal's own and 30 is what this bot has always used,
+// so 30 stays.
 const DEFAULT_SLOT_MIN = 30;
+// wiki WallQueueTime: "If this is not set, the bot defaults to 15-minute queue times."
+const DEFAULT_WALL_MIN = 15;
+// wiki TroopsUseReserved, FortsUseReserved: "By default, the bot will attempt to
+// keep 1 day of food in each city. The bot will not queue troops if doing so
+// would bring it under this amount of days."
+const FOOD_DAY_HOURS = 24;
+// Training fills the barracks, NEAT's way: every free slot in every barracks
+// takes a batch of queue-time length (TroopQueueTime), and the traininghero
+// may be in a city for a single slice (a stay of 30-60 s) to do it. So batches
+// have their own allowance each slice, outside the three actions every other
+// goal shares, and this bounds the burst of commands.
+const TROOP_ORDERS = 20;
+// wiki TroopDelBadQue: a batch is "bad" when it "is not an optimal time to
+// completion" — queued by hand, or through lag by the wrong mayor. Only a
+// clearly slow one is cancelled: half as long again as the city's training hero
+// takes, and 5 minutes more in all (never less than troopidlequeuetime allows,
+// since "the bot won't cancel idle queues as bad queues", wiki FAQ). A cancel is
+// not free — the FAQ calls a cancel loop "a terrible waste of resources" — so
+// one a slice at most, only while that hero is mayor (the replacement is then
+// really faster), and a troop type is not cancelled again for an hour. The batch
+// in training is left alone: its time is already spent.
+const BAD_QUEUE_SLOWER = 1.5;
+const BAD_QUEUE_SLACK_SEC = 300;
+const BAD_QUEUE_HOLD = 60 * 60e3;
+// Ratio mode's smallest step for a type: 1% of its target, so the types take
+// turns in batches worth placing rather than single troops. The wiki gives none.
+const RATIO_STEP = 0.01;
+// Per-hero training times kept per city (troopMemory) are trusted this long.
+const HERO_TIMES_TTL = 24 * 3600e3;
+const RES_KEYS = ['food', 'wood', 'stone', 'iron'];
+
+// A setting as a number, or null when it is not set (or unreadable).
+const setting = (v) => (v === undefined || v === null || v === '' || v === true || !Number.isFinite(Number(v)) ? null : Number(v));
+const share = (v) => Math.min(1, Math.max(0, v));
+
+// The settings a troop stage trains by: its own switches, then the config, then
+// NEAT's defaults (wiki Troop: "Default queue time is 30 minutes, default idle
+// queue time is 1 minute, default usepopmax is 0 (use only idle pop), default
+// usereserved is 0 (it won't go below the reserved amounts), and default
+// increment is 0 (off)"). The idle queue time is 0 outside ratio mode and 1 in
+// it (wiki TroopIdleQueueTime; FAQ: "If you have config troopincrement:1 the bot
+// will automatically enable config troopidlequeuetime:1 as well").
+function troopSettings(stage, config = {}) {
+  const sw = (stage && stage.switches) || {};
+  const cfg = config || {};
+  const first = (...vals) => { for (const v of vals) { const x = setting(v); if (x !== null) return x; } return null; };
+  const q = first(sw.queuetime), sl = first(sw.slot), cq = first(cfg.troopqueuetime), cs = first(cfg.troopslot);
+  const slot = q !== null ? { sec: q * 3600, from: '/queuetime' }
+    : sl !== null ? { sec: sl * 60, from: '/slot' }
+      : cq !== null ? { sec: cq * 3600, from: 'config troopqueuetime' }
+        : cs !== null ? { sec: cs * 60, from: 'config troopslot' }
+          : { sec: DEFAULT_SLOT_MIN * 60, from: null };
+  const increment = Math.max(0, first(sw.increment, cfg.troopincrement) ?? 0);
+  const ratio = increment === 1;
+  return {
+    slotSec: Math.max(0, slot.sec), slotFrom: slot.from,
+    increment, ratio,
+    idleMin: Math.max(0, first(sw.idlequeuetime, cfg.troopidlequeuetime) ?? (ratio ? 1 : 0)),
+    useReserved: share(first(sw.usereserved, cfg.troopsusereserved) ?? 0),
+    usePopMax: share(first(sw.usepopmax, cfg.troopsusepopmax) ?? 0),
+    reservedBarrack: first(cfg.reservedbarrack) === 1,
+    delBadQue: first(cfg.troopdelbadque) === 1,
+  };
+}
+
+// Food the city's troops eat an hour: the server's own figure (the castle's
+// resource.troopCostFood, which the client takes off the food rate,
+// CastleInfoFrame.as:2113, Context.as:447), else worked out from the troops at
+// home. Troops still in the barracks queue eat once they are out, so they count
+// as well, at the upkeep constants.js lists (the larger of the two figures the
+// game data gives, so the reserve errs on the safe side).
+function upkeepPerHour(ctx) {
+  const castle = (ctx && ctx.castle) || {};
+  let per = setting((castle.resource || {}).troopCostFood);
+  if (per === null) {
+    per = 0;
+    for (const [k, v] of Object.entries(castle.troop || {})) per += n(v) * n((C.BY_KEY[k] || {}).food);
+  }
+  for (const b of (ctx && ctx.training && ctx.training.barracks) || []) {
+    for (const it of b.items || []) per += n(it.num) * n((TROOP_BY_TYPE[it.type] || {}).food);
+  }
+  return per;
+}
+
+// What the engine remembers per city for the troop goal (cityState.troopGoal):
+//   times    hero name (lower case) -> {at, unit: {typeId: seconds}}: how fast
+//            each hero trained here when it was mayor (noteHeroTimes), so the
+//            traininghero's speed is known while it is away
+//   badHold  troop typeId -> ms: no bad-queue cancel of that type until then
+//   restore  {food, wood, stone, iron, at}: production rates lowered for
+//            troopsusepopmax and not yet put back
+function troopMemory(cityState) {
+  const m = (cityState.troopGoal = cityState.troopGoal || {});
+  m.times = m.times || {};
+  m.badHold = m.badHold || {};
+  return m;
+}
+
+function heroTimesOf(mem, name) {
+  const t = mem && mem.times && name ? mem.times[String(name).toLowerCase()] : null;
+  return t && Date.now() - n(t.at) < HERO_TIMES_TTL ? t : null;
+}
+
+// Keep how fast this city trains under `heroName` (the mayor the read was made
+// under). The eight heroes seen last are kept.
+function noteHeroTimes(cityState, heroName, tr) {
+  if (!heroName || !tr || tr.error || !tr.unit || !Object.keys(tr.unit).length) return;
+  const mem = troopMemory(cityState);
+  const unit = {};
+  for (const [id, u] of Object.entries(tr.unit)) if (u && u.time !== null && u.time !== undefined) unit[id] = n(u.time);
+  mem.times[String(heroName).toLowerCase()] = { at: Date.now(), unit };
+  const names = Object.keys(mem.times).sort((a, b) => n(mem.times[b].at) - n(mem.times[a].at));
+  for (const k of names.slice(8)) delete mem.times[k];
+}
+
+// The traininghero this city's goals name (wiki TrainingHero), whether it is at
+// home here, the hero wherever it is, and how fast it trained here. null
+// without a traininghero line: then "the best available attack score hero in
+// that city will be used as the traininghero".
+function trainerOf(game, castle, goals, cityState = {}) {
+  const line = (goals || []).find((x) => x.name === 'traininghero' && x.hero);
+  if (!line) return null;
+  const key = String(line.hero).toLowerCase();
+  const named = (h) => String((h && h.name) || '').toLowerCase() === key;
+  const here = ((castle && castle.heros) || []).find(named) || null;
+  let hero = here;
+  for (const c of (!hero && game && game.castles) || []) { hero = (c.heros || []).find(named) || null; if (hero) break; }
+  return {
+    name: line.hero, hero,
+    present: !!(here && (n(here.status) === 0 || n(here.status) === 1)),
+    times: heroTimesOf(cityState.troopGoal, key),
+  };
+}
+
+// The heroes at home (idle, or the mayor), and the best attack hero of them:
+// the one the mayor plan appoints to train (goalmods.mayorPlan).
+const atHome =(castle) => ((castle && castle.heros) || []).filter((h) => n(h.status) === 0 || n(h.status) === 1);
+const bestAttack = (castle) => atHome(castle).sort((a, b) => n(b.power) - n(a.power))[0] || null;
 
 // Which of our marches are a city's troops. One that left from the city is
 // still its own, going, coming back or camped (outward). One aimed at it from
@@ -289,28 +451,55 @@ function troopPlan(ctx) {
   const head = `stage ${index + 1}/${stages.length}: short ${Object.entries(active.missing).map(([k, v]) => `${k} ${fmt(v)}${eta(k, v)}`).join(', ')}${inQueue}${onMarch}`;
   if (tr && tr.error) return { ...base, orders: [], note: `${head}; not training: ${tr.error}` };
 
-  // The server trains from IDLE population only, and refuses an order above it
-  // outright ("Insufficient idle population, 24580 required") instead of
-  // trimming it. troopsusepopmax used to size orders against max population,
-  // so every order bigger than the idle count failed and nothing trained. A
-  // target bigger than one batch is worked off batch by batch instead.
+  const s = troopSettings(active.stage, ctx.config);
+  const mem = ctx.troopMemory || null;
   const res = ctx.castle.resource || {};
-  const popBudget = idleOf(res);
 
-  // Each batch is sized to train in about this many minutes. A batch's time is
+  // Population. The server trains from IDLE population only and refuses an
+  // order above it outright ("Insufficient idle population, 24580 required")
+  // rather than trimming it, so orders once sized against the whole population
+  // all failed. By default only idle population is used (wiki Troop: "default
+  // usepopmax is 0 (use only idle pop)"). troopsusepopmax lets training take up
+  // to that share of the whole population "by dropping production temporarily"
+  // (wiki TroopsUsePopMax; Production: "Troop production may adjust production
+  // rates down temporarily"): the field workers the batches need are freed by
+  // lowering the Town Hall's production rates while they are placed, and the
+  // rates go back straight after (Engine.runTroops). Builders are never taken.
+  const idle = idleOf(res);
+  const whole = Math.max(0, n(res.curPopulation) - n(res.buildPeople));
+  const popBudget = s.usePopMax > 0
+    ? Math.max(idle, Math.min(whole, Math.floor(s.usePopMax * n(res.curPopulation)))) : idle;
+
+  // Each batch is sized to train in about the queue time. A batch's time is
   // fixed when it is queued, so one giant batch holds the barracks for weeks at
   // whatever speed the city had then (4,916 ballista: 42 days), with its
   // population and resources locked up the whole time. Short batches keep the
   // queue turning and each one trains at the mayor and research of its moment.
-  // troopslot:0 lifts the cap: batches as big as population and resources allow.
-  const slotMin = active.stage.switches.slot ?? ctx.config.troopslot ?? DEFAULT_SLOT_MIN;
-  const slotSec = Math.max(0, n(slotMin)) * 60;
+  // A queue time of 0 lifts the cap: batches as big as population and resources allow.
+  const slotSec = s.slotSec;
 
   // A barracks holds as many batches as its level, one of them training
-  // (Barrack.as: "waiting queue: remain / level - producing").
-  const room = tr ? tr.barracks.map((b) => ({ positionId: b.positionId, free: b.capacity - b.items.length })) : null;
+  // (Barrack.as: "waiting queue: remain / level - producing"). One with nothing
+  // queued at all is idle.
+  const bars = tr ? tr.barracks.map((b) => ({ positionId: b.positionId, capacity: b.capacity, free: b.capacity - b.items.length, idle: !b.items.length })) : null;
+  const notes = [];
 
-  const orders = [], cannot = [];
+  // wiki ReservedBarrack: "reserve 1 barrack in the city free of queues to use
+  // to build instant troops and to build the first of your Troop goal lines when
+  // under attack". The one kept is an empty barracks if there is one, the
+  // highest of those. Under attack (goal-war's under-attack window) it takes the
+  // first line's shortfall, and nothing else.
+  if (s.reservedBarrack && bars && bars.length) {
+    const kept = bars.slice().sort((a, b) => (b.idle - a.idle) || (b.capacity - a.capacity) || (a.positionId - b.positionId))[0];
+    const war = !!(ctx.underAttack && ctx.underAttack.on);
+    if (war && index === 0) notes.push(`under attack: the reserved barracks (plot ${kept.positionId}) trains stage 1 too`);
+    else {
+      kept.free = 0;
+      notes.push(`the barracks on plot ${kept.positionId} is kept free (reservedbarrack)${war ? '; under attack, but stage 1 is complete' : ''}`);
+    }
+  }
+
+  const orders = [], cannot = [], waits = [];
   // Step 11: the construction the builder takes on next — placed this slice
   // after the batches, or waited for — keeps its cost in the bank
   // (ctx.buildReserve, Engine.resolveBuild). Batches used to be sized from the
@@ -322,7 +511,6 @@ function troopPlan(ctx) {
   // troop type against the full untouched pool means the first order drains the
   // bank and every later one is rejected outright ("Insufficient resources.
   // Required Lumber 139300") instead of being trimmed to what is left.
-  const RES_KEYS = ['food', 'wood', 'stone', 'iron'];
   const pool = {
     food: n(res.food && res.food.amount),
     wood: n(res.wood && res.wood.amount),
@@ -330,35 +518,204 @@ function troopPlan(ctx) {
     iron: n(res.iron && res.iron.amount),
   };
   if (reserve) for (const k of RES_KEYS) pool[k] = Math.max(0, pool[k] - n(reserve[k]));
-  // One batch per troop type per tick, in the order the stage lists them, each
-  // into the barracks with the most room.
-  for (const [key, deficit] of Object.entries(active.missing)) {
+  // wiki TroopsUseReserved: a day of the troops' upkeep stays in the granary
+  // unless /usereserved (config troopsusereserved) lets training spend that
+  // share of it: 0.5 keeps half a day, 1 keeps none. The troops being ordered
+  // eat once they are out, so each one also keeps its own day of upkeep back —
+  // "The bot will not queue troops if doing so would bring it under this amount
+  // of days." The construction's food (above) is kept on top of it.
+  const keepShare = 1 - s.useReserved;
+  const foodKept = keepShare * FOOD_DAY_HOURS * upkeepPerHour(ctx);
+  pool.food -= foodKept;
+  const costEach = (t, k) => n(t.cost[k]) + (k === 'food' ? keepShare * FOOD_DAY_HOURS * n(t.food) : 0);
+
+  // wiki TroopIdleQueueTime: while the traininghero is set but away, a troop
+  // type the best hero here trains as fast as it does is trained in full ("it
+  // will do the full amount with the available hero rather than building small
+  // amounts or waiting"). A type it trains slower goes in small batches, only
+  // into idle barracks, each no more than troopidlequeuetime minutes longer than
+  // the traininghero would take; with 0 (the default outside ratio mode) that
+  // type waits for the traininghero. Its speed is what it trained at here as
+  // mayor (troopMemory); until it has been, a hero here with at least its attack
+  // counts as as fast, and otherwise the type waits for it.
+  const trainer = ctx.trainer || null;
+  const away = !!(trainer && trainer.hero && !trainer.present);
+  const best = bestAttack(ctx.castle);
+  const mayor = atHome(ctx.castle).find((h) => n(h.status) === 1) || null;
+  // the best hero's time: this read's when it is mayor, else as it last trained
+  // here, else the mayor's own — an upper bound, as attack only shortens it
+  const bestTimes = best && !(mayor && mayor.id === best.id) ? heroTimesOf(mem, best.name) : null;
+  const paceOf = (t, unit) => {
+    if (!away) return { mode: 'normal' };
+    const tt = trainer.times ? trainer.times.unit[t.typeId] : undefined;
+    if (tt === undefined || tt === null) {
+      if (best && n(best.power) >= n(trainer.hero.power)) return { mode: 'normal' };
+      return { mode: 'wait', why: `its speed here is not known yet` };
+    }
+    const own = bestTimes ? bestTimes.unit[t.typeId] : undefined;
+    const bt = own !== undefined && own !== null ? n(own) : n(unit && unit.time);
+    if (bt <= n(tt)) return { mode: 'normal' };
+    if (s.idleMin <= 0) return { mode: 'wait', why: 'troopidlequeuetime 0' };
+    const cap = Math.floor((s.idleMin * 60) / (bt - n(tt)));
+    if (cap < 1) return { mode: 'wait', why: `even one would take over ${s.idleMin} min longer` };
+    return { mode: 'idle', cap };
+  };
+
+  const left = { ...active.missing };
+  const blocked = {};
+  let allowance = TROOP_ORDERS;
+  const pickBar = (idleOnly) => bars && bars.filter((b) => b.free > 0 && (!idleOnly || (b.idle && !b.taken)))
+    .sort((a, b) => b.free - a.free)[0];
+  // One batch of a type, `want` at most, into the barracks with the most room.
+  // False when the type can take none now; it is then left for this slice.
+  const place = (key, want) => {
+    const t = C.BY_KEY[key];
+    const unit = tr ? tr.unit[t.typeId] : null;
+    const pace = paceOf(t, unit);
+    if (pace.mode === 'wait') { blocked[key] = true; waits.push(`${t.name} (${pace.why})`); return false; }
+    const bar = pickBar(pace.mode === 'idle');
+    if (bars && !bar) {
+      blocked[key] = true;
+      held = held || (pace.mode === 'idle' ? `an idle barracks for ${t.name}` : 'a free barracks queue slot');
+      return false;
+    }
+    const byPop = t.pop > 0 ? Math.floor(popLeft / t.pop) : want;
+    let byRes = Infinity, short = null;
+    for (const k of RES_KEYS) {
+      const each = costEach(t, k);
+      if (each > 0 && Math.floor(pool[k] / each) < byRes) { byRes = Math.floor(pool[k] / each); short = k; }
+    }
+    // a troop slower than the whole slot still trains, one at a time
+    const byTime = unit && unit.time > 0 && slotSec > 0 ? Math.max(1, Math.floor(slotSec / unit.time)) : Infinity;
+    const num = Math.max(0, Math.min(want, byPop, byRes, byTime, pace.cap === undefined ? Infinity : pace.cap));
+    if (num <= 0) {
+      blocked[key] = true;
+      held = held || (byPop < 1 ? `${s.usePopMax > 0 ? 'population' : 'idle population'} (${fmt(popLeft)})`
+        : short === 'food' && foodKept > 0 ? `food (${fmt(foodKept)} is kept for a day of the troops' upkeep)` : 'resources');
+      return false;
+    }
+    orders.push({ troop: t, num, positionId: bar ? bar.positionId : undefined, secs: unit ? num * unit.time : null,
+      ...(pace.mode === 'idle' ? { idle: true } : {}) });
+    if (bar) { bar.free--; bar.taken = true; }
+    popLeft -= num * t.pop;
+    for (const k of RES_KEYS) pool[k] -= num * costEach(t, k);
+    left[key] -= num;
+    allowance--;
+    return true;
+  };
+
+  // The types to train, in the order the line lists them.
+  const types = [];
+  for (const key of Object.keys(active.missing)) {
     const t = C.BY_KEY[key];
     if (!t) continue;
     const unit = tr ? tr.unit[t.typeId] : null;
     if (tr && !(unit && unit.allowed)) { cannot.push(t.name); continue; }
-    const bar = room && room.filter((b) => b.free > 0).sort((a, b) => b.free - a.free)[0];
-    if (room && !bar) { held = held || 'a free barracks queue slot'; break; }
-    const byPop = t.pop > 0 ? Math.floor(popLeft / t.pop) : deficit;
-    const byRes = Math.min(...RES_KEYS.map((k) => (t.cost[k] ? Math.floor(pool[k] / t.cost[k]) : Infinity)));
-    // a troop slower than the whole slot still trains, one at a time
-    const byTime = unit && unit.time > 0 && slotSec > 0 ? Math.max(1, Math.floor(slotSec / unit.time)) : Infinity;
-    const num = Math.max(0, Math.min(deficit, byPop, byRes, byTime));
-    if (num > 0) {
-      orders.push({ troop: t, num, positionId: bar ? bar.positionId : undefined, secs: unit ? num * unit.time : null });
-      if (bar) bar.free--;
-      popLeft -= num * t.pop;
-      for (const k of RES_KEYS) if (t.cost[k]) pool[k] -= num * t.cost[k];
-    } else if (!held) {
-      held = byPop < 1 ? `idle population (${fmt(popLeft)})` : 'resources';
+    types.push(key);
+  }
+  const target = active.stage.troops;
+  if (s.ratio) {
+    // wiki TroopIncrement, ratio mode (troopincrement:1): all the line's types
+    // together, each kept at the same share of its target: "all troops must be
+    // at an equal percentage of total completion, or it will focus on the
+    // troop(s) that are below that average percentage". The furthest behind
+    // goes first, up to the next one's share (or a step past its own).
+    const ranked = Object.keys(target).filter((k) => n(target[k]) > 0 && C.BY_KEY[k]
+      && !(tr && !(tr.unit[C.BY_KEY[k].typeId] || {}).allowed));
+    const pct = (k) => Math.min(1, (n(target[k]) - n(left[k])) / n(target[k]));
+    while (allowance > 0 && ranked.length) {
+      const avg = ranked.reduce((sum, k) => sum + pct(k), 0) / ranked.length;
+      const cand = types.filter((k) => left[k] > 0 && !blocked[k] && pct(k) <= avg + 1e-9).sort((a, b) => pct(a) - pct(b));
+      if (!cand.length) break;
+      const k = cand[0];
+      const above = ranked.map(pct).filter((p) => p > pct(k) + 1e-9);
+      const level = Math.min(1, Math.max(above.length ? Math.min(...above) : 0, pct(k) + RATIO_STEP));
+      // (the small epsilon keeps 0.06 x 1,000,000 from rounding up to 60,001)
+      place(k, Math.min(left[k], Math.max(1, Math.ceil(level * target[k] - (target[k] - left[k]) - 1e-6))));
+    }
+  } else if (s.increment > 0) {
+    // wiki TroopIncrement: "queue 1000 warriors (1% of 100000) and then queue
+    // 1000 scouts (1%), continuing down the line until it runs out of resources,
+    // population, open barracks, or troops to queue, and then restarting at the
+    // beginning of the line". A whole number is that many of each.
+    const stepOf = (k) => (s.increment < 1 ? Math.max(1, Math.round(s.increment * target[k])) : Math.floor(s.increment));
+    for (let progress = true; progress && allowance > 0;) {
+      progress = false;
+      for (const k of types) {
+        if (allowance <= 0) break;
+        if (left[k] > 0 && !blocked[k] && place(k, Math.min(stepOf(k), left[k]))) progress = true;
+      }
+    }
+  } else {
+    // wiki TroopIncrement: "The bot will first train 100k warriors, then 100k
+    // scouts, and so on": each type fills the free slots before the next gets
+    // any. A type that can take nothing now leaves them to the next.
+    for (const k of types) while (left[k] > 0 && !blocked[k] && allowance > 0) place(k, left[k]);
+  }
+
+  // wiki TroopDelBadQue: config troopdelbadque:1 cancels a waiting batch that
+  // is far slower than the city's training hero makes them (BAD_QUEUE_*). That
+  // hero is the one the mayor plan appoints to train, the best attack hero at
+  // home (goalmods.mayorPlan) — the traininghero, when it is here and the best.
+  let cancel = null;
+  if (s.delBadQue && tr) {
+    const trainsWith = best;
+    if (!mayor || !trainsWith || mayor.id !== trainsWith.id) {
+      notes.push(`troopdelbadque: slow batches are looked for while ${trainsWith ? trainsWith.name : 'the training hero'} is mayor`);
+    } else {
+      const hold = (mem && mem.badHold) || {};
+      const slack = Math.max(BAD_QUEUE_SLACK_SEC, s.idleMin * 60);
+      for (const b of tr.barracks) {
+        b.items.forEach((it, i) => {
+          const u = tr.unit[it.type];
+          // the first batch is the one in training
+          if (i === 0 || !u || it.queueId === null || it.queueId === undefined || !(n(it.num) > 0) || !(n(it.costTime) > 0)) return;
+          if (n(hold[it.type]) > Date.now()) return;
+          const waste = n(it.costTime) - n(it.num) * n(u.time);
+          if (n(it.costTime) / n(it.num) > n(u.time) * BAD_QUEUE_SLOWER && waste > slack && (!cancel || waste > cancel.waste)) {
+            const t = TROOP_BY_TYPE[it.type];
+            cancel = {
+              positionId: b.positionId, queueId: it.queueId, type: it.type, num: it.num, waste,
+              label: `cancel a slow batch: ${fmt(it.num)} ${t ? t.name : `troops of type ${it.type}`} in the barracks on plot ${b.positionId} `
+                + `(${dur(it.costTime)} queued, ${dur(n(it.num) * n(u.time))} with ${mayor.name})`,
+            };
+          }
+        });
+      }
     }
   }
 
+  // The field workers the batches take beyond the idle population, freed by
+  // lowering production while they are placed (troopsusepopmax).
+  const popUsed = orders.reduce((sum, o) => sum + o.num * o.troop.pop, 0);
+  const workers = popUsed - Math.max(0, idle - n(reserve && reserve.population));
+  const popmax = s.usePopMax > 0 && workers > 0 ? { workers, share: s.usePopMax } : null;
+
   let note = head;
   if (cannot.length) note += `; not trainable here yet: ${cannot.join(', ')}`;
+  if (waits.length) {
+    // "Worker, Warrior (its speed here is not known yet)": one reason, said once
+    const by = new Map();
+    for (const w of waits) {
+      const [, name, why] = w.match(/^(.*) \((.*)\)$/);
+      by.set(why, [...(by.get(why) || []), name]);
+    }
+    note += `; traininghero ${trainer.name} is away, waiting for it: ${[...by].map(([why, names]) => `${names.join(', ')} (${why})`).join('; ')}`;
+  }
+  const small = orders.filter((o) => o.idle).length;
+  if (small) note += `; ${trainer.name} is away: ${small} small batch(es) in idle barracks with ${best ? best.name : 'the hero here'} (troopidlequeuetime ${s.idleMin} min)`;
   if (!orders.length && held) note += `; waiting on ${held}`;
+  else if (held) note += `; then waiting on ${held}`;
+  if (allowance <= 0 && types.some((k) => left[k] > 0 && !blocked[k])) note += `; ${TROOP_ORDERS} batches a slice, more next slice`;
+  if (s.ratio) note += '; ratio mode (troopincrement 1)';
+  else if (s.increment > 0) note += `; ${s.increment < 1 ? `${+(s.increment * 100).toFixed(2)}%` : fmt(s.increment)} of each type in turn (increment)`;
+  if (s.slotFrom) note += `; batches of ${slotSec ? dur(slotSec) : 'any length'} (${s.slotFrom})`;
+  if (s.useReserved > 0) note += `; ${s.useReserved >= 1 ? 'no food is' : `${+(keepShare * 100).toFixed(1)}% of a day of food is`} kept for upkeep (usereserved ${s.useReserved})`;
+  for (const x of notes) note += `; ${x}`;
+  if (popmax) note += `; frees ${fmt(workers)} workers from the fields for these (usepopmax ${s.usePopMax}), production put back straight after`;
+  if (cancel) note += `; ${cancel.label}`;
   if (reserve && costText(reserve)) note += `; leaving ${costText(reserve)} in the bank for ${reserve.label || 'the next construction'}`;
-  return { ...base, orders, popBudget, slotMin: slotSec / 60, note };
+  return { ...base, orders, popBudget, slotMin: slotSec / 60, settings: s, cancel, popmax, note };
 }
 
 // ------------------------------------------------------- fortification ladder
@@ -375,9 +732,47 @@ function troopPlan(ctx) {
 // never asked for what cannot fit. When a stage needs more space than the Walls
 // give, the plan names the Walls level that would hold it (wallsFor) and
 // buildPlan puts that upgrade to the builder.
+//
+// NEAT's wall settings (wiki FortificationGoal, WallQueueTime, FortsUseReserved):
+//   config fortification:0     no wall building ("You can disable wall building
+//                              via goals with config fortification:0"), the
+//                              emergency below included
+//   config wallqueuetime:<h>   each batch about that many hours of work, 15
+//                              minutes by default, from what one unit takes
+//                              here (the fortification list's time, which has
+//                              the mayor applied); 0 lifts the cap. With no time
+//                              from the server the space decides, as before.
+//   config fortsusereserved    wall batches keep the day of the troops' upkeep
+//                              in the granary too, unless this share of it may go
+//   the emergency              "During an attack on you, the bot will read and
+//                              build 1 of each type of wall defense listed on the
+//                              1st line of fortification goals with emergency
+//                              priority." While a real wave is inbound (goal-war's
+//                              under-attack reckoning, junk left out), each type
+//                              the first line names gets a batch of one, once per
+//                              attack, ahead of everything else in the slice
+//                              (Engine.focus), met or not. Each still needs a
+//                              wall queue slot and its space; one unit is cheap
+//                              enough to go without the resource checks.
+// What one of each costs in the client's own table (GetDataXML_XMLFort, in the
+// client SWF; base seconds in the comments). The city's own costs come from
+// the fortification list (Engine.readFortCosts); these stand in, for the food
+// kept for upkeep, while that could not be read.
+const FORT_BASE = {
+  14: { food: 50, wood: 500, stone: 100, iron: 50 },       // Trap, 60 s
+  15: { food: 100, wood: 1200, stone: 0, iron: 150 },      // Abatis, 120 s
+  16: { food: 200, wood: 2000, stone: 1000, iron: 500 },   // Archer's Tower, 180 s
+  17: { food: 300, wood: 6000, stone: 0, iron: 0 },        // Rolling Logs, 360 s
+  18: { food: 600, wood: 0, stone: 8000, iron: 0 },        // Defensive Trebuchet, 600 s
+};
+
 function fortPlan(ctx) {
   const stages = ctx.goals.filter((g) => g.name === 'fortification');
   if (!stages.length) return null;
+  const cfg = ctx.config || {};
+  if (setting(cfg.fortification) === 0) {
+    return { paused: true, orders: [], emergency: [], wallsFor: 0, note: 'fortification building paused by config fortification:0' };
+  }
   const built = ctx.fortifications || {};
   const walls = ctx.walls || { level: wallsLevel(ctx.castle), queue: [] };
   const queued = {};
@@ -398,11 +793,6 @@ function fortPlan(ctx) {
     }
     if (short) { active = { missing }; index = i; break; }
   }
-  if (!active) return { done: true, note: `all ${stages.length} fortification stage(s) satisfied${inQueue}` };
-
-  const base = { stageIndex: index + 1, stageCount: stages.length, missing: active.missing };
-  const head = `stage ${index + 1}/${stages.length}: short ${Object.entries(active.missing).map(([k, v]) => `${k} ${fmt(v)}`).join(', ')}${inQueue}`;
-  if (walls.error) return { ...base, orders: [], note: `${head}; not building: ${walls.error}` };
 
   const level = Math.min(10, n(walls.level));
   const capacity = C.WALL_SPACE[level];
@@ -411,32 +801,82 @@ function fortPlan(ctx) {
   let left = Math.max(0, capacity - used);
   let room = Math.max(0, level - (walls.queue || []).length);
 
+  // The emergency, first: it takes its slots and space before the ladder does.
+  // Only with the wall queue read, so the slots are known.
+  const emergency = [];
+  let urgent = '';
+  const u = ctx.underAttack || null;
+  if (u && n(u.inbound) > 0 && ctx.walls && !walls.error) {
+    const had = ctx.fortEmergency && ctx.fortEmergency.key === u.key ? ctx.fortEmergency.done || [] : [];
+    const firstLine = Object.entries(stages[0].forts).filter(([, v]) => n(v) > 0).map(([code]) => C.WALL_BY_CODE[code]);
+    const missed = [];
+    for (const wall of firstLine) {
+      if (had.includes(wall.typeId)) continue;
+      if (room <= 0) { missed.push(`${wall.name} (no free wall queue slot)`); continue; }
+      if (left < wall.space) { missed.push(`${wall.name} (no fortified space)`); continue; }
+      emergency.push({ wall, num: 1, key: u.key });
+      left -= wall.space;
+      room--;
+    }
+    const names = (l) => l.map((w) => w.name).join(', ');
+    urgent = `; under attack: 1 of each on the first fortification line, first`
+      + (emergency.length ? ` — ${names(emergency.map((o) => o.wall))} now` : had.length ? ' — done for this attack' : '')
+      + (missed.length ? `; not yet: ${missed.join(', ')}` : '');
+  }
+
+  if (!active) return { done: true, emergency, wallsFor: 0, note: `all ${stages.length} fortification stage(s) satisfied${inQueue}${urgent}` };
+
+  const base = { stageIndex: index + 1, stageCount: stages.length, missing: active.missing };
+  const head = `stage ${index + 1}/${stages.length}: short ${Object.entries(active.missing).map(([k, v]) => `${k} ${fmt(v)}`).join(', ')}${inQueue}`;
+  if (walls.error) return { ...base, orders: [], emergency, note: `${head}; not building: ${walls.error}` };
+
+  // wiki WallQueueTime: hours per batch, 15 minutes when not set, 0 no cap.
+  const wq = setting(cfg.wallqueuetime);
+  const wallSec = wq === null ? DEFAULT_WALL_MIN * 60 : Math.max(0, wq * 3600);
+
   // Step 11: the construction the builder takes on next keeps its cost in the
   // bank (ctx.buildReserve), so while there is one a batch is also sized
   // against what is left, from what one of each type costs here
   // (ctx.fortCosts, Engine.readFortCosts). Costs not read: nothing is ordered
-  // rather than spend it. With no reserve the space decides alone, as before.
+  // rather than spend it. FortsUseReserved keeps the troops' day of food as
+  // well (the client's table stands in for costs not read). With costs read a
+  // batch is sized to the bank in any case; with none read and nothing kept,
+  // the space decides alone, as before.
   const reserve = ctx.buildReserve || null;
   const bank = (ctx.castle && ctx.castle.resource) || {};
-  const pool = reserve ? Object.fromEntries(['food', 'wood', 'stone', 'iron']
-    .map((k) => [k, Math.max(0, n(bank[k] && bank[k].amount) - n(reserve[k]))])) : null;
+  const keepShare = 1 - share(setting(cfg.fortsusereserved) ?? 0);
+  const foodKept = keepShare * FOOD_DAY_HOURS * upkeepPerHour(ctx);
+  const pool = reserve || foodKept > 0 || ctx.fortCosts ? Object.fromEntries(RES_KEYS
+    .map((k) => [k, Math.max(0, n(bank[k] && bank[k].amount) - n(reserve && reserve[k]))])) : null;
+  if (pool) pool.food -= foodKept;
+  const kept = reserve ? `, with ${costText(reserve)} kept for ${reserve.label || 'the next construction'}` : '';
 
   // One batch per short type per tick, the whole shortfall or as much as fits.
   const orders = [];
-  let held = '';
+  let held = '', capped = false;
   for (const [code, deficit] of Object.entries(active.missing)) {
     const wall = C.WALL_BY_CODE[code];
     if (room <= 0) { held = held || (level ? `a free wall queue slot (${level} at Walls L${level})` : 'Walls'); break; }
     let num = Math.min(deficit, Math.floor(left / wall.space));
     if (num <= 0) { held = held || 'fortified space'; continue; }
+    const read = (ctx.fortCosts && ctx.fortCosts[wall.typeId]) || null;
+    const each = read && read.time !== null && read.time !== undefined ? n(read.time) : null;
+    if (each > 0 && wallSec > 0 && Math.floor(wallSec / each) < num) { num = Math.max(1, Math.floor(wallSec / each)); capped = true; }
     if (pool) {
-      const cost = ctx.fortCosts && ctx.fortCosts[wall.typeId];
-      if (!cost) { held = held || `the fortification costs (unread), with ${costText(reserve)} kept for ${reserve.label || 'the next construction'}`; continue; }
-      num = Math.min(num, ...Object.keys(pool).map((k) => (n(cost[k]) > 0 ? Math.floor(pool[k] / n(cost[k])) : Infinity)));
-      if (num <= 0) { held = held || `resources, with ${costText(reserve)} kept for ${reserve.label || 'the next construction'}`; continue; }
-      for (const k of Object.keys(pool)) pool[k] -= num * n(cost[k]);
+      const cost = read || (reserve ? null : FORT_BASE[wall.typeId]);
+      if (!cost) { held = held || `the fortification costs (unread)${kept}`; continue; }
+      let byRes = Infinity, short = null;
+      for (const k of RES_KEYS) {
+        if (n(cost[k]) > 0 && Math.floor(pool[k] / n(cost[k])) < byRes) { byRes = Math.floor(pool[k] / n(cost[k])); short = k; }
+      }
+      num = Math.min(num, byRes);
+      if (num <= 0) {
+        held = held || (short === 'food' && foodKept > 0 ? `food (${fmt(foodKept)} is kept for a day of the troops' upkeep)${kept}` : `resources${kept}`);
+        continue;
+      }
+      for (const k of RES_KEYS) pool[k] -= num * n(cost[k]);
     }
-    orders.push({ wall, num });
+    orders.push({ wall, num, secs: each !== null ? num * each : null });
     left -= num * wall.space;
     room--;
   }
@@ -453,7 +893,9 @@ function fortPlan(ctx) {
     if (wallsFor <= level) wallsFor = 0;
   }
   if (!orders.length && held) note += `; waiting on ${held}`;
-  return { ...base, orders, wallsFor, space: { used, capacity, level }, note };
+  if (capped) note += `; batches of ${dur(wallSec)} (${wq === null ? 'the 15-minute default' : 'wallqueuetime'})`;
+  if (keepShare < 1) note += `; ${keepShare <= 0 ? 'no food is' : `${+(keepShare * 100).toFixed(1)}% of a day of food is`} kept for upkeep (fortsusereserved)`;
+  return { ...base, orders, emergency, wallsFor, space: { used, capacity, level }, note: note + urgent };
 }
 
 // --------------------------------------------------------------- build targets
@@ -624,10 +1066,13 @@ function buildPlan(ctx, wallsFor = 0) {
   const lines = ctx.goals.filter((g) => g.name === 'build');
   const live = standing(ctx.castle);
   // A fortification goal can place nothing without Walls, whatever the wall
-  // queue read said, so no Walls at all means build them.
+  // queue read said, so no Walls at all means build them — unless config
+  // fortification:0 has the goal off (wiki FortificationGoal: "You can disable
+  // wall building via goals with config fortification:0"). A w: build line
+  // still builds them.
   const noWalls = !live.some((b) => b.typeId === C.WALLS_TYPE);
-  const fortsNeedWalls = noWalls && ctx.goals.some((g) => g.name === 'fortification'
-    && Object.values(g.forts || {}).some((v) => n(v) > 0));
+  const fortsNeedWalls = noWalls && setting(ctx.config && ctx.config.fortification) !== 0
+    && ctx.goals.some((g) => g.name === 'fortification' && Object.values(g.forts || {}).some((v) => n(v) > 0));
   // Step 16: the buildings the research goal needs (goal-research.js) are
   // worked by the builder with no build line at all (resolvePrereqs)
   const forResearch = ctx.researchBuildWants || [];
@@ -1531,13 +1976,23 @@ class Engine {
       if (!q || q.ok !== 1) return { barracks, unit: {}, error: `barracks queue unreadable (${(q && q.errorMsg) || 'no reply'})` };
       for (const bq of q.allProduceQueue || []) {
         const b = barracks.find((x) => x.positionId === Number(bq.positionId));
-        if (b) b.items = (bq.allProduceQueue || []).map((p) => ({ type: Number(p.type), num: n(p.num) }));
+        // ProduceBean: queueId (what a cancel names), and costTime, the batch's
+        // whole training time in seconds, fixed when it was queued (Barrack.as
+        // adds them up for the queue's total) — troopdelbadque compares it
+        if (b) {
+          b.items = (bq.allProduceQueue || []).map((p) => ({
+            type: Number(p.type), num: n(p.num),
+            queueId: p.queueId === undefined || p.queueId === null ? null : Number(p.queueId),
+            costTime: p.costTime === undefined || p.costTime === null ? null : n(p.costTime),
+          }));
+        }
       }
 
       const mayor = (castle.heros || []).find((h) => Number(h.status) === 1);
       const mayorId = mayor ? mayor.id : null;
-      let cached = this.unitTimes[cid];
+      let cached = this.unitTimes[cid], readNow = false;
       if (fresh || !cached || cached.mayorId !== mayorId || Date.now() - cached.at > UNIT_TIME_TTL) {
+        readNow = true;
         // the highest barracks unlocks the most troop types
         const top = barracks.reduce((a, b) => (b.capacity > a.capacity ? b : a));
         const l = await g.req('troop.getTroopProduceList', { castleId: cid, positionId: top.positionId });
@@ -1555,7 +2010,9 @@ class Engine {
         }
         cached = this.unitTimes[cid] = { at: Date.now(), mayorId, unit };
       }
-      return { barracks, unit: cached.unit };
+      // readNow: the times were read just now, under mayorName (as the city's
+      // hero list has it; the engine names its own new mayor itself)
+      return { barracks, unit: cached.unit, readNow, mayorName: mayor ? mayor.name : null };
     } catch (e) {
       return { barracks, unit: {}, error: e.message };
     }
@@ -1577,6 +2034,27 @@ class Engine {
       return { level, queue };
     } catch (e) {
       return { level, queue: [], error: e.message };
+    }
+  }
+
+  // Whether the city is under attack, by goal-war's reckoning (wiki
+  // DefenseCooldown: while a real wave is inbound, and for defensecooldown after
+  // the last lands; junk under defensepolicy /junktroop never counts), and which
+  // attack it is: the first wave of the first attack group (wiki AttackGap), so
+  // the emergency walls go once an attack. defensepolicy and the constraints
+  // plan keep the same record; asking again in a slice is harmless.
+  underAttackOf(ctx, cityState) {
+    const W = MODULES.find((m) => m.name === './goal-war');
+    if (!W || typeof W.mod.underAttack !== 'function') return null;
+    try {
+      const u = W.mod.underAttack(ctx, cityState);
+      const first = u.attacks && u.attacks.groups && u.attacks.groups[0];
+      const a = first && first.waves && first.waves[0];
+      const key = a ? (a.armyId !== undefined && a.armyId !== null ? `id:${a.armyId}` : `at:${a.from}@${a.reachTime}`)
+        : n(u.inbound) > 0 ? 'untimed' : null;
+      return { on: !!u.on, inbound: n(u.inbound), key };
+    } catch {
+      return null;
     }
   }
 
@@ -1723,30 +2201,151 @@ class Engine {
       note: notes.length ? `${plan.note}; ${notes.join('; ')}` : plan.note };
   }
 
-  // What one of each fortification costs in this city, per unit
-  // (fortifications.getFortificationsProduceList -> fortList[] {typeId,
-  // conditionBean}; CastleDefProduce multiplies it by the batch,
-  // ProduceBuildingResourceData.reCalcDataArray). Read only while the next
-  // construction's cost is kept in the bank, at most every 10 minutes.
+  // What one of each fortification costs in this city, per unit, and how long
+  // one takes to build here (fortifications.getFortificationsProduceList ->
+  // fortList[] {typeId, conditionBean}; CastleDefProduce multiplies both by the
+  // batch, ProduceBuildingResourceData.reCalcDataArray and :778). Read while
+  // wall batches are to be placed, at most every 10 minutes; a failed read is
+  // asked again after a minute.
   async readFortCosts(castle) {
     const g = this.game;
     const cid = g.castleId(castle);
     this.fortCostCache = this.fortCostCache || {};
     const had = this.fortCostCache[cid];
-    if (had && Date.now() - had.at < UNIT_TIME_TTL) return had.costs;
+    if (had && Date.now() - had.at < (had.costs ? UNIT_TIME_TTL : COND_ERROR_TTL)) return had.costs;
+    let costs = null;
     try {
       const r = await g.req('fortifications.getFortificationsProduceList', { castleId: cid });
       const list = (r && r.ok === 1 && r.fortList) || [];
-      if (!list.length) return null;
-      const costs = {};
-      for (const f of list) {
-        const c = f.conditionBean || {};
-        costs[Number(f.typeId)] = { food: n(c.food), wood: n(c.wood), stone: n(c.stone), iron: n(c.iron) };
+      if (list.length) {
+        costs = {};
+        for (const f of list) {
+          const c = f.conditionBean || {};
+          costs[Number(f.typeId)] = { food: n(c.food), wood: n(c.wood), stone: n(c.stone), iron: n(c.iron),
+            time: c.time === undefined || c.time === null ? null : n(c.time) };
+        }
       }
-      this.fortCostCache[cid] = { at: Date.now(), costs };
-      return costs;
     } catch {
-      return null;
+      costs = null;
+    }
+    this.fortCostCache[cid] = { at: Date.now(), costs };
+    return costs;
+  }
+
+  // Put back the production rates troopsusepopmax lowered (runTroops). Kept in
+  // the city's state until the server takes them, so a slice cut short, or a
+  // refusal, has the next slice put them back first.
+  async restoreProduction(castle, mem, acted) {
+    const r0 = mem.restore;
+    if (!r0) return true;
+    const what = `production back to food ${r0.food}%, wood ${r0.wood}%, stone ${r0.stone}%, iron ${r0.iron}%`;
+    if (this.dryRun) { acted.push(`[plan] ${what}`); return true; }
+    try {
+      const g = this.game;
+      const r = await g.req('interior.modifyCommenceRate', { castleId: g.castleId(castle),
+        foodrate: r0.food, woodrate: r0.wood, stonerate: r0.stone, ironrate: r0.iron });
+      const ok = !!(r && r.ok === 1);
+      if (ok) delete mem.restore;
+      acted.push(`${what} -> ${ok ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}${ok ? '' : ' (asked again next slice)'}`);
+      return ok;
+    } catch (e) {
+      acted.push(`${what} -> ${e.message} (asked again next slice)`);
+      return false;
+    }
+  }
+
+  // wiki TroopsUsePopMax: "use your entire population, by dropping production
+  // temporarily". The rates the Town Hall holds are read
+  // (interior.getResourceProduceData -> resourceProduceDataBean[] {typeid 1 food,
+  // 2 wood, 3 stone, 4 iron; commenceRate}, ResourceProduce.as:1165-1203) and
+  // all four are set to 0 (interior.modifyCommenceRate, ResourceProduce.as:918),
+  // so every field worker is idle while the batches go in; runTroops puts them
+  // back straight after. The workers fields need are
+  // maxLabour x commenceRate / 100 of the population less the builders
+  // (ResourceProduce.as:707, 1177), so at 0 the whole of it is idle. Returns
+  // whether production was lowered.
+  async lowerProduction(castle, mem, popmax, acted) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    const what = `lower production to free ${fmt(popmax.workers)} workers for training (usepopmax ${popmax.share})`;
+    if (this.dryRun) { acted.push(`[plan] ${what}, then put it back`); return false; }
+    let rates = null;
+    try {
+      const r = await g.req('interior.getResourceProduceData', { castleId: cid });
+      const beans = (r && r.ok === 1 && (r.resourceProduceDataBean || r.resourceProduceDataBeanArray)) || [];
+      const by = {};
+      for (const b of beans) by[Number(b.typeid)] = b.commenceRate;
+      if ([1, 2, 3, 4].every((k) => setting(by[k]) !== null)) rates = { food: n(by[1]), wood: n(by[2]), stone: n(by[3]), iron: n(by[4]) };
+      else { acted.push(`${what} -> the production rates could not be read (${(r && r.errorMsg) || 'no rates'}), training from idle population`); return false; }
+    } catch (e) {
+      acted.push(`${what} -> the production rates could not be read (${e.message}), training from idle population`);
+      return false;
+    }
+    if (!rates.food && !rates.wood && !rates.stone && !rates.iron) return false;   // nobody works the fields
+    // written down before the change, so it is put back even if this slice dies
+    mem.restore = { ...rates, at: Date.now() };
+    try { saveState(this.state, this.accountId); } catch {}
+    try {
+      const r = await g.req('interior.modifyCommenceRate', { castleId: cid, foodrate: 0, woodrate: 0, stonerate: 0, ironrate: 0 });
+      if (!r || r.ok !== 1) {
+        delete mem.restore;
+        acted.push(`${what} -> ${(r && r.errorMsg) || 'ok=' + (r && r.ok)}, training from idle population`);
+        return false;
+      }
+      acted.push(`${what} (was food ${rates.food}%, wood ${rates.wood}%, stone ${rates.stone}%, iron ${rates.iron}%) -> ok`);
+      return true;
+    } catch (e) {
+      // no answer: it may have gone through, so the rates are put back regardless
+      acted.push(`${what} -> ${e.message}`);
+      return true;
+    }
+  }
+
+  // The troop goal's commands for the slice, with their own allowance
+  // (TROOP_ORDERS) outside the three actions the other goals share: production
+  // left lowered by an earlier slice put back, then at most one bad-queue cancel
+  // (troopdelbadque), then the batches — with production lowered around them
+  // when troopsusepopmax needs the field workers.
+  async runTroops(castle, cityState, plan, acted) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    const mem = cityState.troopGoal || null;
+    if (mem && mem.restore) await this.restoreProduction(castle, mem, acted);
+    if (!plan) return;
+    if (plan.cancel) {
+      const c = plan.cancel;
+      if (this.dryRun) acted.push(`[plan] ${c.label}`);
+      else {
+        const m = troopMemory(cityState);
+        // held for the hour whatever the answer: a refusal is not asked every slice
+        m.badHold[c.type] = Date.now() + BAD_QUEUE_HOLD;
+        try {
+          const r = typeof g.cancelTroop === 'function' ? await g.cancelTroop(cid, c.positionId, c.queueId)
+            : await g.req('troop.cancelTroopProduce', { castleId: cid, positionId: c.positionId, queueId: c.queueId });
+          acted.push(`${c.label} -> ${r && r.ok === 1 ? 'ok, queued again with the right hero next slice' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`);
+        } catch (e) { acted.push(`${c.label} -> ${e.message}`); }
+      }
+    }
+    const orders = (plan.orders || []).slice(0, TROOP_ORDERS);
+    if (!orders.length) return;
+    const lowered = plan.popmax ? await this.lowerProduction(castle, troopMemory(cityState), plan.popmax, acted) : false;
+    try {
+      for (const o of orders) {
+        const per = o.secs != null ? o.secs / o.num : null;
+        const what = (num) => `train ${fmt(num)} ${o.troop.name}${per != null ? ` (~${dur(per * num)})` : ''}${o.idle ? ' in an idle barracks' : ''}`;
+        if (this.dryRun) { acted.push(`[plan] ${what(o.num)}`); continue; }
+        let pos = o.positionId;
+        if (pos === undefined) {
+          const barracks = (castle.buildings || []).find((b) => b.typeId === 2);
+          if (!barracks) { acted.push('no barracks in this city'); break; }
+          pos = barracks.positionId;
+        }
+        try {
+          await orderFitted((num) => g.produceTroop(cid, o.troop.typeId, num, pos), o.num, castle, what, acted);
+        } catch (e) { acted.push(`${what(o.num)} -> ${e.message}`); break; }
+      }
+    } finally {
+      if (lowered) await this.restoreProduction(castle, troopMemory(cityState), acted);
     }
   }
 
@@ -1819,12 +2418,27 @@ class Engine {
     // so the builder is free for this slice's plan.
     const freeSeen = new Set();
     const freeFirst = await this.freeSpeed(castle, parsed.config, cityState, freeSeen);
-    if (parsed.goals.some((x) => x.name === 'troop') && parsed.config.troop !== 0) {
+    const troops = parsed.goals.some((x) => x.name === 'troop') && parsed.config.troop !== 0;
+    if (troops) {
       ctx.training = await this.readTraining(castle);
+      // how fast the city trains under this mayor, kept for when the
+      // traininghero is away (troopidlequeuetime)
+      if (ctx.training.readNow) noteHeroTimes(cityState, ctx.training.mayorName, ctx.training);
+      ctx.troopMemory = troopMemory(cityState);
+      ctx.trainer = trainerOf(g, castle, parsed.goals, cityState);
     }
-    // The Walls queue is only read when what already stands falls short.
+    // A day of the troops' upkeep (the queued troops' too): the troop and wall
+    // batches keep it in the granary (TroopsUseReserved, FortsUseReserved), and
+    // so does comfort's food (goal-upkeep shortOf).
+    ctx.foodDay = FOOD_DAY_HOURS * upkeepPerHour(ctx);
+    // Under attack? The reserved barracks (reservedbarrack) and the emergency
+    // walls (FortificationGoal) act on it.
+    if (troops || parsed.goals.some((x) => x.name === 'fortification')) ctx.underAttack = this.underAttackOf(ctx, cityState);
+    ctx.fortEmergency = cityState.fortEmergency || null;
+    // The Walls queue is only read when what already stands falls short, or an
+    // attack is inbound (the emergency needs its free slots).
     let fort = fortPlan(ctx);
-    if (fort && !fort.done) {
+    if (fort && !fort.paused && (!fort.done || (ctx.underAttack && ctx.underAttack.inbound > 0))) {
       ctx.walls = await this.readWalls(castle);
       fort = fortPlan(ctx);
     }
@@ -1874,7 +2488,9 @@ class Engine {
     }
     if (research && research.buildWants && research.buildWants.length) cityState.researchBuildWants = research.buildWants;
     else delete cityState.researchBuildWants;
-    if (ctx.buildReserve && fort && fort.orders && fort.orders.length) {
+    // What one of each fortification costs and takes here: for the batch length
+    // (wallqueuetime), the day of food (fortsusereserved) and the reserve above.
+    if (fort && fort.orders && fort.orders.length) {
       ctx.fortCosts = await this.readFortCosts(castle);
       fort = fortPlan(ctx);
     }
@@ -1933,7 +2549,7 @@ class Engine {
     // (CastleChief.as:377-394): discharging first and then having the promotion
     // refused used to leave the city with no mayor at all. A refusal backs off
     // on the retry ladder rather than being asked again every slice.
-    let newMayor = false;
+    let newMayor = false, newMayorName = null;
     if (report.mayor && report.mayor.actions) {
       for (const a of report.mayor.actions) {
         const mkey = `mayor:${a.hero.id}`;
@@ -1941,7 +2557,7 @@ class Engine {
         if (this.dryRun) { report.acted.push(`[plan] ${a.label}`); continue; }
         try {
           const r = await g.promoteToChief(g.castleId(castle), a.hero.id);
-          if (r.ok === 1) newMayor = true;
+          if (r.ok === 1) { newMayor = true; newMayorName = a.hero.name || null; }
           recordResult(cityState, mkey, r.ok === 1, r.errorMsg || ('ok=' + r.ok));
           report.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
         } catch (e) { report.acted.push(`${a.label} -> ${e.message}`); }
@@ -1952,7 +2568,27 @@ class Engine {
     // re-size the troop batches before any are placed.
     if (newMayor && ctx.training && report.troop && report.troop.orders && report.troop.orders.length) {
       ctx.training = await this.readTraining(castle, true);
+      // under the hero just appointed: the city's hero list may not show it yet
+      noteHeroTimes(cityState, newMayorName, ctx.training);
       report.troop = troopPlan(ctx);
+    }
+
+    // wiki FortificationGoal: under attack, 1 of each type on the first line
+    // "with emergency priority" — ahead of every other goal this slice, and
+    // outside the action budget. Each type is tried once per attack.
+    if (report.fort && report.fort.emergency && report.fort.emergency.length) {
+      for (const o of report.fort.emergency) {
+        const what = `emergency: build 1 ${o.wall.name} (under attack)`;
+        if (this.dryRun) { report.acted.push(`[plan] ${what}`); continue; }
+        const rec = cityState.fortEmergency && cityState.fortEmergency.key === o.key ? cityState.fortEmergency : { key: o.key, done: [] };
+        cityState.fortEmergency = rec;
+        rec.at = Date.now();
+        if (!rec.done.includes(o.wall.typeId)) rec.done.push(o.wall.typeId);
+        try {
+          const r = await g.produceWall(g.castleId(castle), o.wall.typeId, 1);
+          report.acted.push(`${what} -> ${r && r.ok === 1 ? 'ok' : (r && r.errorMsg) || 'ok=' + (r && r.ok)}`);
+        } catch (e) { report.acted.push(`${what} -> ${e.message}`); }
+      }
     }
 
     // Something backed off is not tried, costs no action and writes no log line
@@ -2005,22 +2641,8 @@ class Engine {
       if (held.length) p.note = (p.note || '') + heldBack(held);
     }
 
-    if (report.troop && report.troop.orders) {
-      for (const o of report.troop.orders) {
-        if (budget-- <= 0) break;
-        const per = o.secs != null ? o.secs / o.num : null;
-        const what = (num) => `train ${fmt(num)} ${o.troop.name}${per != null ? ` (~${dur(per * num)})` : ''}`;
-        if (this.dryRun) { report.acted.push(`[plan] ${what(o.num)}`); continue; }
-        let pos = o.positionId;
-        if (pos === undefined) {
-          const barracks = (castle.buildings || []).find((b) => b.typeId === 2);
-          if (!barracks) { report.acted.push('no barracks in this city'); break; }
-          pos = barracks.positionId;
-        }
-        await orderFitted((num) => g.produceTroop(g.castleId(castle), o.troop.typeId, num, pos),
-          o.num, castle, what, report.acted);
-      }
-    }
+    // The troop goal: its own allowance, outside the budget above (runTroops).
+    await this.runTroops(castle, cityState, report.troop && report.troop.orders ? report.troop : null, report.acted);
 
     if (report.fort && report.fort.orders) {
       const held = [];
@@ -2217,4 +2839,7 @@ class Engine {
 module.exports = { Engine, troopPlan, cityMarches, fortPlan, buildPlan, buildLabel, buildOutlook, fitFromError, DEFAULT_SLOT_MIN,
   inboundArmy, incomingByCity, WAKE_SLACK_MS, resolvePrereqs, PREREQ_READS, COND_TTL,
   // the research goal tests its ?condition? the way a build line does (goal-research.js)
-  conditionFails };
+  conditionFails,
+  // Step 17: the troop and wall settings
+  troopSettings, upkeepPerHour, trainerOf, noteHeroTimes, troopMemory,
+  DEFAULT_WALL_MIN, FOOD_DAY_HOURS, TROOP_ORDERS, BAD_QUEUE_HOLD };

@@ -745,15 +745,18 @@ function oldGoals(OLD, src) {
       assert.ok(NEAT_KEYS.includes(k), `${k} is not a NEAT key`);
       assert.ok(typeof why === 'string' && why.length > 10, k);
     }
-    for (const k of ['abandon', 'abandonflats', 'acquireflats', 'fortification', 'fortsusereserved', 'plan',
-      'troopdelbadque', 'valley', 'valleyfarming', 'valleymin', 'troopsusepopmax', 'wallqueuetime']) {
+    // Step 17 built the troop and wall keys (fortification, fortsusereserved,
+    // troopdelbadque, troopsusepopmax, wallqueuetime and the rest), so they left this list.
+    for (const k of ['abandon', 'abandonflats', 'acquireflats', 'plan', 'valley', 'valleyfarming', 'valleymin']) {
       assert.ok(k in list, `${k} does nothing here yet and should be listed`);
       assert.strictEqual(parseGoals(`config ${k}:1`).lines[0].status, 'idle', k);
     }
     // trade: built in Step 14 (goal-trade.js); research: Step 16 (goal-research.js)
     for (const k of ['npc', 'buildnpc', 'comfort', 'hero', 'troop', 'hiding', 'gate', 'warrules', 'wartown', 'defensecooldown',
       'keepatthome', 'attackgap', 'building', 'feastinghallspace', 'nomayor', 'farmingcycle', 'farmingcyclemin', 'npclimit',
-      'training', 'training10', 'monitorarmy', 'trade', 'research']) {
+      'training', 'training10', 'monitorarmy', 'trade', 'research',
+      'fortification', 'fortsusereserved', 'troopdelbadque', 'troopsusepopmax', 'troopsusereserved', 'troopqueuetime',
+      'troopidlequeuetime', 'troopincrement', 'reservedbarrack', 'wallqueuetime']) {
       assert.ok(!(k in list), `${k} is implemented (or, for monitorarmy, a no-op in NEAT too)`);
     }
   });
@@ -779,9 +782,9 @@ npcheroes !OTTO,any
 farmingpolicy 10 /distance:5
 farmingpolicy 5 /distance:10`;
     const p = clean(MIG.migrateText(full).src);
-    // every line blue, except the one config key that does nothing yet
+    // every line blue: troopsusepopmax, the one config key that did nothing, works since Step 17
     assert.deepStrictEqual(p.lines.filter((l) => l.status !== 'ok' && l.status !== 'comment' && l.status !== 'blank')
-      .map((l) => [l.n, l.status]), [[1, 'idle']]);
+      .map((l) => [l.n, l.status]), []);
     assert.strictEqual(p.goals.filter((g) => g.name === 'requestresources' && g.ok).length, 5);
     assert.deepStrictEqual(p.goals.find((g) => g.name === 'troop').troops, { ballista: 5000, carriage: 5000 });
     assert.deepStrictEqual(p.goals.find((g) => g.name === 'fortification').forts, { abatis: 5000 });

@@ -649,14 +649,18 @@ function pickHero(ctx, castle, st, busy = new Set()) {
 }
 
 // Marching food, the way the client charges it (constants.marchFood): the city
-// must have it, and the army carries it in its own hold.
-function marchOf(game, home, target, troops, castle) {
+// must have it, and the army carries it in its own hold. `keep` is the day of
+// the troops' upkeep the troop and wall goals keep in the granary (ctx.foodDay,
+// Engine.focus; wiki TroopsUseReserved): a valley march leaves it there too.
+function marchOf(game, home, target, troops, castle, keep = 0) {
   const keys = Object.keys(troops).filter((k) => n(troops[k]) > 0);
   const oneWayMs = n(C.marchTimeMs(home, target, keys, n(game && game.marchSkillParam) || 100));
   const food = C.marchFood(troops, oneWayMs);
   const hold = NI.capacityOf(troops, n(game && game.loadSkillParam) || 100);
   const have = n(castle && castle.resource && castle.resource.food && castle.resource.food.amount);
-  if (food > have) return { ok: false, why: `the march needs ${fmt(food)} food and the city has ${fmt(have)}` };
+  if (food > have - n(keep)) {
+    return { ok: false, why: `the march needs ${fmt(food)} food and the city has ${fmt(have)}${n(keep) ? `, keeping ${fmt(keep)} for a day of its troops' upkeep` : ''}` };
+  }
   if (food > hold) return { ok: false, why: `the march eats ${fmt(food)} food, more than the troops can carry (${fmt(hold)})` };
   return { ok: true, oneWayMs, food };
 }
@@ -696,7 +700,7 @@ function planAttack({ ctx, state, game, castle, home, st, target, purpose, captu
   if (teams) return { why: teams };
   const pick = pickHero(ctx, castle, st, busyHeroes);
   if (!pick.hero) return { why: pick.why };
-  const march = marchOf(game, home, target, load.troops, castle);
+  const march = marchOf(game, home, target, load.troops, castle, ctx.foodDay);
   if (!march.ok) return { why: march.why };
   const hero = pick.hero;
   const dist = Math.round(n(target.dist) * 10) / 10;
@@ -990,7 +994,7 @@ function safeFarmPlan(ctx, state, game) {
   if (n(avail.scouter) < troops.scouter) return { note: [`${head} — waiting to scout ${where(fresh)}: short of scouts (need ${fmt(troops.scouter)}, have ${fmt(avail.scouter)})`, ...notes].join(' | '), actions: [] };
   const rally = rallyFor(ctx, castle, 'v', st);
   if (rally.room <= 0) return { note: [`${head} — waiting to scout ${where(fresh)}: no rally slot — ${rally.why}`, ...notes].join(' | '), actions: [] };
-  const march = marchOf(game, home, fresh, troops, castle);
+  const march = marchOf(game, home, fresh, troops, castle, ctx.foodDay);
   if (!march.ok) return { note: [`${head} — waiting to scout ${where(fresh)}: ${march.why}`, ...notes].join(' | '), actions: [] };
   const action = {
     kind: 'valleyScout', fieldId: fresh.id, target: { x: fresh.x, y: fresh.y }, level: fresh.level, type: fresh.kind, troops,
@@ -1265,10 +1269,14 @@ function claimedFlats(ctx) {
 // abandon the city once it reaches 0 loyalty."
 //
 // OUR CHOICE, as this destroys for good: it waits while anything else in the
-// city would rebuild what it takes down or fight the loyalty drain — troop or
-// fortification lines, taxpolicy or comfortpolicy, or comfort not written as
+// city would rebuild what it takes down or fight the loyalty drain — troop
+// lines (unless config troop:0), fortification lines (unless config
+// fortification:0), taxpolicy or comfortpolicy, or comfort not written as
 // config comfort:0 (it is on unless 0) — and it never runs in the account's
-// only city. "Queues" are read as the troop and wall queues.
+// only city. With no troop line training, the troop goal's batches, its
+// reserved barracks and its bad-queue cancels (engine troopPlan) do nothing
+// here, and with no wall line neither do the wall batches or the emergency
+// walls (fortPlan). "Queues" are read as the troop and wall queues.
 function abandonState(state) {
   const v = (state.valley = state.valley || {});
   return (v.abandon = v.abandon || {});
@@ -1287,10 +1295,13 @@ function abandonPlan(ctx, state, game) {
   const cities = (game && game.castles) || [];
   if (cities.length <= 1) return held('this is the account\'s only city — nothing is destroyed');
   const blockers = [];
-  for (const name of ['troop', 'fortification', 'taxpolicy', 'comfortpolicy']) if (goalsNamed(ctx, name).length) blockers.push(`${name} lines`);
-  if (!(isSet(cfg.comfort) && whole(cfg.comfort) === 0)) blockers.push('config comfort:0');
+  const off = (k) => isSet(cfg[k]) && whole(cfg[k]) === 0;
+  if (goalsNamed(ctx, 'troop').length && !off('troop')) blockers.push('the troop lines (or write config troop:0)');
+  if (goalsNamed(ctx, 'fortification').length && !off('fortification')) blockers.push('the fortification lines (or write config fortification:0)');
+  for (const name of ['taxpolicy', 'comfortpolicy']) if (goalsNamed(ctx, name).length) blockers.push(`the ${name} line`);
+  if (!off('comfort')) blockers.push('comfort (write config comfort:0)');
   if (blockers.length) {
-    return held(`waiting: remove or change ${blockers.join(', ')} first — they would rebuild what this takes down, or comfort the loyalty back up. Run EvacuateTown and move the heroes out before you set this (wiki Abandon)`);
+    return held(`waiting: first take off ${blockers.join(', ')} — they would rebuild what this takes down, or comfort the loyalty back up. Run EvacuateTown and move the heroes out before you set this (wiki Abandon)`);
   }
   const ab = abandonState(state);
   const cid = game && game.castleId ? game.castleId(castle) : castle.castleId;

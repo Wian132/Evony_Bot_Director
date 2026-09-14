@@ -383,6 +383,14 @@ farmingpolicy 5 /distance:10`;
     eq(plan('valley', 'config valley:5\nvalleylimit w:400k', { tiles: RING() }).p.actions.length, 1);
   });
 
+  await t('a valley march leaves the day of the troops\' upkeep in the granary (ctx.foodDay, as the troop goal does)', () => {
+    const c = city({ resource: { ...city().resource, food: { amount: 5000 } } });
+    const { p } = plan('valley', 'config valley:5', { castle: c, tiles: RING(), ctx: { foodDay: 4900 } });
+    eq(p.actions, []);
+    has(p.note, 'keeping 4,900 for a day of its troops\' upkeep');
+    eq(plan('valley', 'config valley:5', { castle: c, tiles: RING(), ctx: { foodDay: 10 } }).p.actions.length, 1);
+  });
+
   await t('short of troops: the march waits and says what for', () => {
     const c = city({ troop: { militia: 100, archer: 10 } });
     const { p } = plan('valley', 'config valley:5', { castle: c, tiles: RING() });
@@ -857,6 +865,34 @@ farmingpolicy 5 /distance:10`;
     w = plan('abandon', 'config abandon:1,comfort:0\ntroop a:1k', two()).p;
     has(w.note, 'troop lines');
     eq(plan('abandon', 'config abandon:0', two()).p, null);
+  });
+
+  await t('config troop:0 and fortification:0 (Step 17\'s switches) stand the troop and wall lines down, so it may go on', () => {
+    const a = city();
+    const game = fakeGame([a, city({ castleId: 8, id: 8, fieldId: fid(50, 50) })]);
+    const w = plan('abandon', 'config abandon:1,comfort:0,troop:0,fortification:0\ntroop a:1k\nfortification ab:500', { castle: a, game }).p;
+    eq(w.actions.length, 1);
+    eq(w.actions[0].step, 'queues');
+    has(plan('abandon', 'config abandon:1,comfort:0,troop:0\ntroop a:1k\nfortification ab:500', { castle: a, game }).p.note, 'the fortification lines (or write config fortification:0)');
+  });
+
+  await t('through the engine: while abandon strips a city, the troop goal trains nothing there (no batch, no barracks read)', async () => {
+    const a = city({ castleId: 21, id: 21, name: 'Leaving', fieldId: fid(60, 60), troop: { archer: 100 } });
+    const home = city({ castleId: 22, id: 22, name: 'Home', fieldId: fid(70, 70) });
+    const game = fakeGame([home, a]);
+    const produced = [];
+    game.produceTroop = async (...x) => { produced.push(x); return { ok: 1 }; };
+    const e = new Engine(game, () => {});
+    e.state = {};
+    const src = { Leaving: 'config hero:0,abandon:1,comfort:0,troop:0,reservedbarrack:1\ntroop a:100k' };
+    e.goalsFor = (_, name) => (src[name] ? G.parseGoals(src[name]) : null);
+    e.controlsFor = () => ({ gate: 'auto', wartown: 'auto' });
+    e.dryRun = false;
+    await e.tick();
+    await e.tick();
+    eq(produced, [], 'a troop batch was placed in the city being abandoned');
+    eq(reqsOf(game, 'troop.getTroopProduceList').length, 0, 'the barracks were read for training');
+    eq(reqsOf(game, 'troop.disbandTroop'), [{ castleId: 21, troopType: 7, num: 100 }]);
   });
 
   await t('the steps, one a slice: queues, troops, walls, tax 100, then a levy every 15 minutes', async () => {

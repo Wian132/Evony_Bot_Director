@@ -414,38 +414,163 @@ function fortPlan(ctx) {
 }
 
 // --------------------------------------------------------------- build targets
-// build <type>:<level>:<qty> states the END STATE for that building type:
-// exactly <qty> of them, each at <level>.
-//   f:10:37  -> 37 farms, all level 10
-//   f:0:10   -> keep 10 farms, don't upgrade them
-//   s:0:0    -> no sawmills at all (demolish every one)
-//   s:0:1    -> one sawmill, the strongest; the rest come down
+// A build line is a TARGET, the NEAT way (wiki: Build): how many of a type the
+// city should end up with, at a level or higher.
+//   f:10:37  -> at least 37 farms at L10 or higher. More farms, or higher ones,
+//               are left alone: nothing is torn down to meet a target.
+//   c:10     -> no quantity reads as 1: one cottage at L10. The wiki doesn't
+//               settle it, and 1 is the reading that can never demolish.
+//   c:0:8    -> level 0: at most 8 cottages; the weakest spares come down
+//   inn:2:0  -> quantity 0: no inn at L2 or higher; each comes down to L1
+//   s:0:0    -> no sawmills at all
+// Only a 0 demolishes, and never the Town Hall or the Walls. Targets for one
+// type combine: b:4:15,b:9:2 is 15 barracks, two of them at L9, not 17. The
+// strongest buildings meet the highest target, and the lowest level is raised
+// first. Lines never undo each other: when two disagree the first-written
+// target wins (c:10:9 then c:0:8 keeps 9) and the note says so.
 //
 // A demolition order takes a building down ONE level, so an L10 sawmill is ten
 // orders. The weakest spare goes first and stays the weakest, so it is taken
 // all the way down before the next is touched.
 //
+// Lines run in order, like troop stages: the first line not yet met is worked
+// on. Within it, demolitions go first, since they free the plots its new
+// buildings need (the wiki is silent on mixing the two). Then the fastest work:
+// a new building, then upgrades from the lowest level up. A line that can't
+// finish because every plot of the kind it needs is taken is skipped, and taken
+// up again once a plot frees. A building a city can have only one of, with no
+// plot for it, stops the lines there: "Needs space: Academy". A group's
+// ?condition? leaves its targets out until it holds; a line with nothing left
+// is skipped.
+//
 // A city has ONE builder: the server takes one construction at a time ("One
 // building allowed to be built at a time."). So the plan is a ranked list of
 // candidates and the engine places the first that goes through:
-//   1. demolitions
-//   2. new buildings, but only on plots that are open. Outside, the Town Hall
-//      decides how many are (C.plotRange). A full city used to propose "new
-//      Farm" every tick, and those doomed attempts took the slots the upgrades
-//      needed, so nothing was ever built. Now it moves straight on:
-//   3. the Walls level a fortification goal needs for space (fortPlan.wallsFor)
-//   4. upgrades toward the goal levels.
+//   1. the Walls level a fortification goal needs for space (fortPlan.wallsFor)
+//   2. the current line's orders
+//   3. the later lines' orders. The engine only gets this far while every order
+//      above is held back after a refusal, so a line the server keeps refusing
+//      (a prerequisite, resources) doesn't leave the builder idle for hours.
+// New buildings only go on plots that are open. Outside, the Town Hall decides
+// how many are (C.plotRange). A full city used to propose "new Farm" every
+// tick, and those doomed attempts took the slots the upgrades needed.
 // While something is being built, the plan holds everything and says what it
 // is waiting on. It plans from the city as it will stand once that is done, so
 // what it names next is what the builder really takes on next: the same
 // building's next level down, or the plot a finished demolition opens.
+const { MULTI_BUILDINGS } = require('./goals');
+// Research levels are re-read at most this often, and only while a build
+// ?condition? names one (Engine.readTechs).
+const TECH_TTL = 10 * 60e3;
+
+const isFixed = (typeId) => typeId === C.TOWN_HALL || typeId === C.WALLS_TYPE;
+
+// Is a build target met, given the levels of that type standing?
+function buildMet(levels, t) {
+  const at = levels.filter((l) => l >= Math.max(1, t.level)).length;
+  if (t.quantity === 0) return at === 0;                 // none at that level or higher
+  if (t.level === 0) return levels.length <= t.quantity;  // at most that many
+  return at >= t.quantity;
+}
+
+// Why a group's ?condition? does not hold, or null when it does. Buildings are
+// read as they stand now, so one under construction has not reached its new
+// level yet. Research comes from ctx.techs (Engine.readTechs). Unknown research
+// is NOT met: a conditional demolition never runs on a guess.
+function conditionFails(when, live, techs) {
+  for (const c of when || []) {
+    if (c.tech) {
+      const lv = techs && techs.levels ? techs.levels[c.tech] : undefined;
+      if (lv === undefined || lv === null) return `${c.raw}: research levels unknown${techs && techs.error ? ` (${techs.error})` : ''}`;
+      if (n(lv) < c.level) return `${c.raw}: ${c.name} is L${n(lv)}`;
+      continue;
+    }
+    const levels = live.filter((b) => b.typeId === c.typeId).map((b) => n(b.level)).filter((l) => l > 0);
+    if (!buildMet(levels, c)) {
+      return `${c.raw}: ${levels.length ? `${c.building} ${levels.length > 1 ? `x${levels.length}, highest ` : ''}L${Math.max(...levels)}` : `no ${c.building}`}`;
+    }
+  }
+  return null;
+}
+
+// What the lines so far want of each type, all taken together:
+//   floors  [{level, qty}]  at least qty at that level or higher
+//   cap     at most this many
+//   top     none above this level
+// The first-written target wins a conflict.
+function addWant(want, t, notes) {
+  if (!want.has(t.typeId)) want.set(t.typeId, { floors: [], cap: Infinity, top: Infinity });
+  const w = want.get(t.typeId);
+  if (t.level > 0 && t.quantity > 0) {
+    const qty = Math.min(t.quantity, w.cap), level = Math.min(t.level, w.top);
+    if (qty < t.quantity) notes.push(`${t.raw} would undo ${w.capBy}: ${qty} kept`);
+    else if (level < t.level) notes.push(`${t.raw} would undo ${w.topBy}: L${level} kept`);
+    if (qty > 0 && level > 0) w.floors.push({ level, qty, raw: t.raw });
+    return;
+  }
+  if (isFixed(t.typeId)) return;     // never demolished or taken down (goals.js refuses it too)
+  if (t.level === 0) {
+    const most = w.floors.reduce((m, f) => (f.qty > m.qty ? f : m), { qty: 0 });
+    const cap = Math.max(t.quantity, most.qty);
+    if (cap > t.quantity) notes.push(`${t.raw} would undo ${most.raw}: ${cap} kept`);
+    if (cap < w.cap) Object.assign(w, { cap, capBy: t.raw });
+    return;
+  }
+  const high = w.floors.reduce((m, f) => (f.level > m.level ? f : m), { level: 0 });
+  const top = Math.max(t.level - 1, high.level);
+  if (top > t.level - 1) notes.push(`${t.raw} would undo ${high.raw}: L${top} kept`);
+  if (top < w.top) Object.assign(w, { top, topBy: t.raw });
+}
+
+// The orders that bring one type to what is wanted, from the city as it will
+// stand once the builder's current job is done. `claim` gives each building one
+// order at most, whoever asks. New buildings are left to the caller (`short`),
+// since plots are shared between types.
+function typeOrders(def, w, have, claim) {
+  const out = { orders: [], notes: [], short: 0, unmet: false };
+  const order = (b, o) => { if (n(b.status) === 0 && claim(b.positionId)) out.orders.push({ def, positionId: b.positionId, ...o }); };
+  const weakFirst = (a, b) => n(a.level) - n(b.level) || n(a.positionId) - n(b.positionId);
+  const strongFirst = (a, b) => n(b.level) - n(a.level) || n(a.positionId) - n(b.positionId);
+
+  // too many: the weakest spares come down
+  const spare = isFixed(def.typeId) ? [] : have.slice().sort(weakFirst).slice(0, Math.max(0, have.length - w.cap));
+  for (const b of spare) order(b, { kind: 'demolish', level: b.level });
+  if (spare.length) out.notes.push(`${def.name} ${have.length}->${w.cap} (demolish ${spare.length})`);
+  const kept = have.filter((b) => !spare.includes(b));
+
+  // too high: each comes down to the highest level allowed, the lowest first
+  const high = isFixed(def.typeId) ? [] : kept.filter((b) => n(b.level) > w.top).sort(weakFirst);
+  for (const b of high) order(b, { kind: 'demolish', level: b.level, to: w.top });
+  if (high.length) out.notes.push(`${def.name} ${high.length} down to L${w.top}`);
+
+  // too few or too low: the strongest meet the highest target
+  const most = Math.max(0, ...w.floors.map((f) => f.qty));
+  const need = (i) => Math.max(0, ...w.floors.filter((f) => f.qty > i).map((f) => f.level));
+  const low = [];
+  kept.slice().sort(strongFirst).slice(0, most).forEach((b, i) => {
+    const to = need(i);
+    if (n(b.level) >= to) return;
+    low.push(to);
+    order(b, { kind: 'upgrade', from: b.level, to });
+  });
+  if (low.length) {
+    const lo = Math.min(...low), hi = Math.max(...low);
+    out.notes.push(`${def.name} upgrade ${low.length} to L${lo}${hi > lo ? `-L${hi}` : ''}`);
+  }
+  out.short = Math.max(0, most - kept.length);
+  out.unmet = spare.length > 0 || high.length > 0 || low.length > 0 || out.short > 0;
+  return out;
+}
+
 function buildPlan(ctx, wallsFor = 0) {
-  const goals = ctx.goals.filter((g) => g.name === 'build');
-  if (!goals.length && !wallsFor) return null;
-  const now = Date.now();
+  const lines = ctx.goals.filter((g) => g.name === 'build');
   const live = standing(ctx.castle);
+  if (!lines.length && !wallsFor) return null;
+  if (ctx.config && ctx.config.building === 0) {
+    return { actions: [], ranked: [], busy: false, paused: true, note: 'build: construction paused by config building:0' };
+  }
+  const now = Date.now();
   const all = live.map(finished).filter((b) => n(b.level) > 0);
-  const idle = (b) => n(b.status) === 0;
   const { used, townHall } = Game.plotsInUse({ ...ctx.castle, buildings: all });
   const openPlots = (outside) => {
     const { from, to } = C.plotRange(outside, townHall);
@@ -454,82 +579,142 @@ function buildPlan(ctx, wallsFor = 0) {
     return out;
   };
   const plots = { inside: openPlots(false), outside: openPlots(true) };
-
-  const demolish = [], create = [], walls = [], upgrade = [];
-  const summary = [], noRoom = [];
-  const upgrading = new Set();          // one upgrade per building, whoever asks
-
-  // First, so it keeps its place even when a build goal also names the Walls.
-  if (wallsFor) {
-    const w = all.find((b) => b.typeId === C.WALLS_TYPE);
-    if (w && n(w.level) < wallsFor && idle(w)) {
-      upgrading.add(n(w.positionId));
-      walls.push({ kind: 'upgrade', def: C.BUILDING_BY_ID[C.WALLS_TYPE], positionId: w.positionId, from: w.level, to: wallsFor, why: 'fortified space' });
-    }
-    summary.push(`Walls to L${wallsFor} for fortified space`);
-  }
-
-  for (const g of goals) {
-    for (const t of g.targets) {
-      const def = C.BUILDING_BY_CODE[t.building.toLowerCase().replace(/[^a-z]/g, '')];
-      if (!def) continue;
-      // The Town Hall and the Walls have fixed places: never built new or torn down.
-      const fixed = def.typeId === C.TOWN_HALL || def.typeId === C.WALLS_TYPE;
-      const existing = all.filter((b) => b.typeId === def.typeId);
-      const want = Math.max(0, n(t.quantity));
-
-      if (existing.length > want && !fixed) {
-        // too many: tear down the weakest first
-        const excess = existing.filter(idle).sort((a, b) => n(a.level) - n(b.level)).slice(0, existing.length - want);
-        for (const b of excess) demolish.push({ kind: 'demolish', def, positionId: b.positionId, level: b.level });
-        summary.push(`${def.name} ${existing.length}->${want} (demolish ${existing.length - want})`);
-      } else if (existing.length < want && !fixed) {
-        const kind = def.outside ? 'outside' : 'inside';
-        const short = want - existing.length;
-        const fit = Math.min(short, plots[kind].length);
-        for (let i = 0; i < fit; i++) create.push({ kind: 'new', def, positionId: plots[kind].shift() });
-        if (fit) summary.push(`${def.name} ${existing.length}->${want} (build ${fit})`);
-        if (fit < short) noRoom.push({ def, kind, more: short - fit });
-      }
-
-      // only chase levels when a level was actually asked for
-      if (t.level > 0) {
-        const keep = existing.slice().sort((a, b) => n(b.level) - n(a.level)).slice(0, want);
-        const low = keep.filter((b) => n(b.level) < t.level);
-        const ready = low.filter((b) => idle(b) && !upgrading.has(n(b.positionId))).sort((a, b) => n(b.level) - n(a.level));
-        for (const b of ready) {
-          upgrading.add(n(b.positionId));
-          upgrade.push({ kind: 'upgrade', def, positionId: b.positionId, from: b.level, to: t.level });
-        }
-        if (low.length) summary.push(`${def.name} upgrade ${low.length} to L${t.level}`);
-      }
-    }
-  }
+  const claimed = new Set();
+  const claim = (pos) => !claimed.has(n(pos)) && !!claimed.add(n(pos));
+  const WALLS = C.BUILDING_BY_ID[C.WALLS_TYPE];
 
   // "no free field plot for 7 more Farm (Town Hall L7 opens 31 of 40)"
-  const room = noRoom.map(({ def, kind, more }) => {
+  const roomText = ({ def, kind, more }) => {
     if (kind === 'inside') return `no free city plot for ${more} more ${def.name} (all ${C.SLOTS.insideTo - C.SLOTS.insideFrom + 1} in use)`;
     const { from, to } = C.plotRange(true, townHall);
     const all40 = C.SLOTS.outsideTo - C.SLOTS.outsideFrom + 1;
     return `no free field plot for ${more} more ${def.name} (${to - from + 1 < all40 ? `Town Hall L${townHall} opens ${to - from + 1} of ${all40}` : `all ${all40} in use`})`;
-  });
+  };
 
-  const actions = [...demolish, ...create, ...walls, ...upgrade];
+  const ranked = [], summary = [], skipped = [], conflicts = [];
+  let room = [];
+
+  // 1. The Walls a fortification goal needs, first, so they keep their place
+  // even when a build line also names the Walls.
+  if (wallsFor) {
+    const w = all.find((b) => b.typeId === C.WALLS_TYPE);
+    if (w && n(w.level) < wallsFor && n(w.status) === 0 && claim(w.positionId)) {
+      ranked.push({ kind: 'upgrade', def: WALLS, positionId: w.positionId, from: w.level, to: wallsFor, why: 'fortified space' });
+    }
+    summary.push(`Walls to L${wallsFor} for fortified space`);
+  }
+
+  // 2 and 3. The lines, in order.
+  const want = new Map();
+  const planned = {};          // new buildings already given a plot, per type
+  let active = 0, stop = null;
+  for (let k = 0; k < lines.length && !stop; k++) {
+    const line = lines[k], tag = `line ${k + 1}/${lines.length}`;
+    const on = [], waits = [];
+    for (const gr of line.groups || [{ targets: line.targets || [] }]) {
+      const why = gr.when ? conditionFails(gr.when, live, ctx.techs) : null;
+      if (why) waits.push(`?${gr.condition}? not met (${why})`);
+      else on.push(...gr.targets.filter((t) => C.BUILDING_BY_ID[t.typeId]));
+    }
+    if (!on.length) {
+      if (waits.length && !active) skipped.push(`${tag} waits: ${waits.join('; ')}`);
+      continue;
+    }
+    for (const t of on) addWant(want, t, conflicts);
+
+    const types = [...new Set(on.map((t) => t.typeId))];
+    const orders = [], lineSum = [], lineRoom = [], fixedMissing = [], shorts = [];
+    let unmet = false, needsSpace = null;
+    types.forEach((typeId, rank) => {
+      const def = C.BUILDING_BY_ID[typeId];
+      const have = all.filter((b) => b.typeId === typeId);
+      const r = typeOrders(def, want.get(typeId), have, claim);
+      orders.push(...r.orders.map((o) => ({ ...o, rank })));
+      lineSum.push(...r.notes);
+      unmet = unmet || r.unmet;
+      if (r.short) shorts.push({ def, rank, missing: r.short, have: have.length });
+    });
+    // New buildings. One a city can have only one of takes a plot first:
+    // without it the lines stop ("Needs space"), the others can wait for one.
+    shorts.sort((a, b) => MULTI_BUILDINGS.has(a.def.typeId) - MULTI_BUILDINGS.has(b.def.typeId) || a.rank - b.rank);
+    for (const { def, rank, missing, have } of shorts) {
+      // The Town Hall and the Walls have fixed places and are never built new here.
+      if (isFixed(def.typeId)) { fixedMissing.push(def.name); continue; }
+      const kind = def.outside ? 'outside' : 'inside';
+      const short = Math.max(0, missing - n(planned[def.typeId]));
+      const fit = Math.min(short, plots[kind].length);
+      for (let i = 0; i < fit; i++) orders.push({ kind: 'new', def, positionId: plots[kind].shift(), rank });
+      planned[def.typeId] = n(planned[def.typeId]) + fit;
+      if (fit) lineSum.push(`${def.name} ${have}->${have + missing} (build ${fit})`);
+      if (fit < short) {
+        lineRoom.push({ def, kind, more: short - fit });
+        if (!MULTI_BUILDINGS.has(def.typeId)) needsSpace = needsSpace || def.name;
+      }
+    }
+    if (!unmet) {                                // this line is met: on to the next
+      if (waits.length && !active) skipped.push(`${tag} waits: ${waits.join('; ')}`);
+      continue;
+    }
+
+    // demolitions first, the weakest first; then a new building (L0->L1), then
+    // upgrades from the lowest level up — the fastest work first
+    const speed = (o) => (o.kind === 'demolish' ? n(o.level) : 100 + (o.kind === 'new' ? 1 : n(o.from) + 1));
+    orders.sort((a, b) => speed(a) - speed(b) || a.rank - b.rank || n(a.positionId) - n(b.positionId));
+    const clean = orders.map(({ rank, ...o }) => o);
+
+    if (active) {
+      // a later line: only reached while everything above is held back
+      if (needsSpace && !clean.length) break;
+      ranked.push(...clean);
+      if (needsSpace) break;
+      continue;
+    }
+    if (clean.length) {
+      active = k + 1;
+      ranked.push(...clean);
+      summary.push(`${tag}: ${lineSum.slice(0, 3).join('; ')}${lineSum.length > 3 ? ` (+${lineSum.length - 3} more)` : ''}`);
+      if (waits.length) summary.push(`${tag} also waits: ${waits.join('; ')}`);
+      room = room.concat(lineRoom);
+      // a line held up for space goes no further than itself
+      if (needsSpace) stop = `Needs space: ${needsSpace}`;
+      continue;
+    }
+    if (needsSpace) {
+      stop = `Needs space: ${needsSpace}`;
+      room = room.concat(lineRoom);
+      break;
+    }
+    if (lineRoom.length) {
+      skipped.push(`${tag} waits for a plot: ${[...new Set(lineRoom.map(roomText))].join('; ')}`);
+      continue;
+    }
+    if (fixedMissing.length) {
+      skipped.push(`${tag}: no ${fixedMissing.join(', ')} to raise`);
+      continue;
+    }
+    // what it needs is already under way (the Walls above, a queued building)
+    skipped.push(`${tag}: waiting on work already under way`);
+  }
+
   const busy = live.filter((b) => underway(b, now));
   const parts = [];
   if (busy.length) {
     const b = busy[0];
     const left = n(b.endTime) > now ? `, ${dur((n(b.endTime) - now) / 1000)} left` : '';
     parts.push(`builder busy: ${n(b.status) === 2 ? 'demolishing' : 'building'} ${b.name || (C.BUILDING_BY_ID[b.typeId] || {}).name || 'type ' + b.typeId} (pos ${b.positionId}) L${n(b.level)}->L${n(finished(b).level)}${left}`);
-    if (actions.length) parts.push(`next: ${buildLabel(actions[0])}`);
-  } else if (actions.length) {
-    parts.push(`${summary.slice(0, 3).join('; ')}${summary.length > 3 ? ` (+${summary.length - 3} more)` : ''}`);
+    if (ranked.length) parts.push(`next: ${buildLabel(ranked[0])}`);
+  } else if (ranked.length) {
+    parts.push(...summary);
   }
-  parts.push(...new Set(room));      // two goals naming farms say it once
+  parts.push(...new Set(room.map(roomText)));     // two lines naming farms say it once
+  parts.push(...skipped);
+  if (stop) parts.push(stop);
+  parts.push(...new Set(conflicts));
   return {
-    actions: busy.length ? [] : actions,
-    ranked: actions,            // in order, even while busy: what comes next
+    actions: busy.length ? [] : ranked,
+    ranked,                     // in order, even while busy: what comes next
     busy: busy.length > 0,
+    line: active || null, lines: lines.length, stop,
     note: parts.length ? `build: ${parts.join('; ')}` : 'all build targets met',
   };
 }
@@ -553,10 +738,12 @@ const buildKey = (a) => (a.kind === 'new' ? `build:new:${a.def.typeId}:new` : `b
 // Pure: the live building list, the goals and the city's engine state; nothing
 // is sent. It is the plan the next tick makes, less the candidates the engine
 // has backed off. `wallsFor` comes from the last tick, because the Walls level a
-// fortification goal needs takes a Walls queue read that only a tick makes.
-function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0 }) {
-  const plan = buildPlan({ castle, goals: goals || [] }, wallsFor);
+// fortification goal needs takes a Walls queue read that only a tick makes. The
+// research levels a ?condition? tests are the engine's last reading.
+function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0, config = {}, techs = null }) {
+  const plan = buildPlan({ castle, goals: goals || [], config: config || {}, techs: techs || cityState.techs || null }, wallsFor);
   if (!plan) return { next: null, idle: 'no build goals for this city' };
+  if (plan.paused) return { next: null, held: [], idle: 'nothing: construction paused by config building:0', note: plan.note };
   const held = [];
   let next = null;
   for (const a of plan.ranked) {
@@ -572,7 +759,8 @@ function buildOutlook({ castle, goals, cityState = {}, wallsFor = 0 }) {
     wait: plan.busy ? 'once the builder is free'
       : hold > 0 ? `the server says the builder is busy, asking again in ${dur(hold / 1000)}` : null,
     held,
-    idle: plan.ranked.length ? null : 'nothing: all build targets met',
+    idle: plan.ranked.length ? null
+      : plan.note === 'all build targets met' ? 'nothing: all build targets met' : `nothing to place: ${plan.note.replace(/^build: /, '')}`,
     note: plan.note,
   };
 }
@@ -959,6 +1147,34 @@ class Engine {
     }
   }
 
+  // Research levels for a build line's ?condition? (build ?met:10?q:0:0). The
+  // server lists them per city (tech.getResearchList, AvailableResearchListBean:
+  // typeId, level). Read at most every 10 minutes, only while a condition asks,
+  // and kept in the city's state so the console's outlook tests the same
+  // levels. A level once researched stays, so an older reading is still a safe
+  // floor when a read fails.
+  async readTechs(castle, cityState = {}) {
+    const g = this.game;
+    const cid = g.castleId(castle);
+    this.techLevels = this.techLevels || {};
+    const had = this.techLevels[cid] || cityState.techs || null;
+    if (had && Date.now() - n(had.at) < TECH_TTL) return had;
+    let out;
+    try {
+      const r = await g.req('tech.getResearchList', { castleId: cid });
+      const beans = r && (r.acailableResearchBeans || r.availableResearchBeans);
+      if (!r || r.ok !== 1 || !Array.isArray(beans)) throw new Error((r && r.errorMsg) || 'no research list');
+      const levels = {};
+      for (const t of beans) levels[Number(t.typeId)] = n(t.level);
+      out = { at: Date.now(), levels };
+    } catch (e) {
+      out = { at: Date.now(), levels: (had && had.levels) || null, error: `research list unreadable: ${e.message}` };
+    }
+    this.techLevels[cid] = out;
+    cityState.techs = out;
+    return out;
+  }
+
   async focus(castle) {
     const g = this.game;
     const key = castle.name || String(g.castleId(castle));
@@ -1011,6 +1227,10 @@ class Engine {
     if (fort && !fort.done) {
       ctx.walls = await this.readWalls(castle);
       fort = fortPlan(ctx);
+    }
+    // A build line's ?condition? may name a research level (build ?met:10?...).
+    if (parsed.config.building !== 0 && parsed.goals.some((x) => x.name === 'build' && x.needsTech)) {
+      ctx.techs = await this.readTechs(castle, cityState);
     }
     const report = {
       city: key,

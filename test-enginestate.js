@@ -517,9 +517,11 @@ function stubGame() {
       mk(7, 'Farm', 1038, 4),
     ] });
     const plan = buildPlan({ goals: goalsOf('build s:0:1,i:0:1,q:0:1,f:0:37\nbuild f:10:37'), castle });
+    // The weakest spare of each type; across the line the quickest demolition
+    // first (NEAT's "fastest ones first"), so the L3 quarry leads.
     assert.deepStrictEqual(plan.actions.filter((a) => a.kind === 'demolish').map((a) => a.positionId),
-      [1032, 1033, 1034, 1037], 'wrong spares, or the strongest was not the one kept');
-    assert.strictEqual(buildLabel(plan.actions[0]), 'demolish Sawmill (pos 1032) L7->L6');
+      [1037, 1032, 1033, 1034], 'wrong spares, or the strongest was not the one kept');
+    assert.strictEqual(buildLabel(plan.actions[0]), 'demolish Quarry (pos 1037) L3->L2');
     const firstOther = plan.actions.findIndex((a) => a.kind !== 'demolish');
     assert.strictEqual(firstOther, 4, 'something else was ranked ahead of a demolition');
     assert.strictEqual(plan.actions[firstOther].kind, 'new');

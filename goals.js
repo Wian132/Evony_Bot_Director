@@ -27,13 +27,95 @@ const NUM = (s) => {
   return Number.isInteger(v) ? v : (v >= 1 ? Math.round(v * 1000) / 1000 : v);
 };
 
-// building abbreviations used by the `build` goal (wiki: Build)
+// building abbreviations used by the `build` goal (wiki: Build, Abbreviations).
+// NEAT's Town Hall is `t`; `th` stays for goals written before. `t` comes first
+// because the console shows the last code listed for a building.
 const BUILD_ABBR = {
+  t: 'Town Hall',
   a: 'Academy', b: 'Barracks', be: 'Beacon Tower', c: 'Cottage', e: 'Embassy',
   fh: 'Feasting Hall', fo: 'Forge', f: 'Farm', s: 'Sawmill', q: 'Quarry',
   i: 'Ironmine', inn: 'Inn', rs: 'Relief Station', m: 'Marketplace',
   st: 'Stable', ws: 'Workshop', w: 'Walls', th: 'Town Hall', wh: 'Warehouse', r: 'Rally Spot',
 };
+
+// Research a build ?condition? may test (wiki: Research, Abbreviations). Inside a
+// condition `st` is the Stable, so Stockpile is `sp` there (wiki: Research, Plan).
+const TECH_ABBR = {
+  ag: 'Agriculture', lu: 'Lumbering', mas: 'Masonry', mi: 'Mining', met: 'Metal Casting',
+  in: 'Informatics', ms: 'Military Science', mt: 'Military Tradition', ir: 'Iron Working',
+  lo: 'Logistics', com: 'Compass', ho: 'Horseback Riding', ar: 'Archery', sp: 'Stockpile',
+  med: 'Medicine', con: 'Construction', en: 'Engineering', mac: 'Machinery', pr: 'Privateering',
+};
+
+// The types a city can have many of: "barracks/resource buildings/warehouses/
+// cottages" (wiki: Build). Every other type stands once per city.
+const MULTI_BUILDINGS = new Set([1, 2, 3, 4, 5, 6, 7]);
+
+const slugOf = (s) => String(s || '').toLowerCase().replace(/[^a-z]/g, '');
+
+// A building by NEAT code or full name: t, th, b, barrack, barracks, beacontower.
+function buildingOf(code) {
+  const k = String(code || '').toLowerCase();
+  const name = BUILD_ABBR[k];
+  return C.BUILDING_BY_CODE[name ? slugOf(name) : slugOf(k)] || null;
+}
+
+function techOf(code) {
+  const k = String(code || '').toLowerCase();
+  const name = TECH_ABBR[k];
+  return C.TECH_BY_CODE[name ? slugOf(name) : slugOf(k)] || null;
+}
+
+// Full names with a space ("iron mine:10:5") would fall apart into two groups,
+// since a space separates groups on a build line. Join the known ones first.
+const TWO_WORDS = /\b(beacon|feasting|iron|rally|relief|town|metal|military|horseback)\s+(tower|hall|mine|spot|station|working|casting|science|tradition|riding)\b/gi;
+
+// A level or quantity: a whole number, never NaN read as 0 (f:10:* once
+// demolished every farm).
+const whole = (s) => {
+  const v = s === undefined ? null : NUM(s);
+  return v !== null && Number.isInteger(v) && v >= 0 ? v : null;
+};
+
+// type:level[:quantity] -> { building, typeId, level, quantity, raw } or null.
+// No quantity reads as 1: the wiki doesn't say more, and 1 is the reading that
+// can never demolish anything.
+function buildTarget(part, errs, where = '') {
+  const bits = part.split(':');
+  const def = buildingOf(bits[0]);
+  if (!def) { errs.push(`unknown building "${bits[0]}"${where}`); return null; }
+  if (bits.length < 2 || bits.length > 3) { errs.push(`"${part}" needs buildingType:level[:quantity]${where}`); return null; }
+  const level = whole(bits[1]);
+  const quantity = bits.length === 3 ? whole(bits[2]) : 1;
+  if (level === null) { errs.push(`"${part}": level "${bits[1]}" is not a whole number${where}`); return null; }
+  if (quantity === null) { errs.push(`"${part}": quantity "${bits[2]}" is not a whole number${where}`); return null; }
+  if (level > 10) { errs.push(`"${part}": buildings go to level 10 at most${where}`); return null; }
+  return { building: def.name, typeId: def.typeId, level, quantity, raw: part };
+}
+
+// ?w:10?  ?met:10,w:10?  ?i:4:0?  Every part must hold. A building part reads
+// like a target and holds when that target is met (i:4:0: no iron mine at L4 or
+// higher); a research part holds at that level or higher.
+function buildCondition(src) {
+  const terms = [], errors = [];
+  for (const raw of String(src).split(',')) {
+    const part = raw.trim();
+    if (!part) { errors.push(`empty part in ?${src}?`); continue; }
+    const bits = part.split(':');
+    if (buildingOf(bits[0])) {
+      const t = buildTarget(part, errors, ` in ?${src}?`);
+      if (t) terms.push(t);
+      continue;
+    }
+    const tech = techOf(bits[0]);
+    if (!tech) { errors.push(`unknown building or research "${bits[0]}" in ?${src}?`); continue; }
+    const level = bits.length === 2 ? whole(bits[1]) : null;
+    if (level === null) { errors.push(`"${part}" in ?${src}? needs research:level`); continue; }
+    terms.push({ tech: tech.typeId, name: tech.name, level, raw: part });
+  }
+  if (!terms.length && !errors.length) errors.push('empty ?condition?');
+  return { terms, errors };
+}
 
 // fortification abbreviations used by the `fortification` goal
 const FORT_ABBR = { ab: 'abatis', tra: 'trap', at: 'tower', rl: 'logs', rf: 'rocks' };
@@ -44,6 +126,8 @@ const CONFIG_KEYS = new Set([
   'warrules', 'wartown', 'keepatthome', 'reservedbarrack', 'feastinghallspace',
   'troopincrement', 'attackgap', 'embassy', 'farmingcycle', 'troopslot',
 ]);
+// config building:0 pauses construction; building:1 is implied by any build line (wiki: Build)
+CONFIG_KEYS.add('building');
 
 // name -> { kind, multi, parse(args, raw) }
 const GOALS = {
@@ -61,6 +145,10 @@ const GOALS = {
         // NUM reads "30m" as 30 million, which would silently mean "no cap"
         if (k.toLowerCase() === 'troopslot' && !/^\d+(\.\d+)?$/.test(v)) {
           errs.push(`troopslot is minutes per training batch as a plain number, e.g. troopslot:30`);
+          continue;
+        }
+        if (k.toLowerCase() === 'building' && !/^[01]$/.test(v)) {
+          errs.push('building is 0 (construction paused) or 1');
           continue;
         }
         out[k.toLowerCase()] = NUM(v) ?? v;
@@ -112,23 +200,60 @@ const GOALS = {
     },
   },
 
+  // build <type>:<level>[:<qty>][,...] — a target, the NEAT way (engine.js
+  // buildPlan says what each form means). Groups are separated by spaces and each
+  // may carry its own ?condition?, before or after its targets:
+  //   build ?w:10?q:0:0,ws:0:0 w:10
   build: {
     kind: 'directive', multi: true,
     parse(args) {
-      const errs = [], targets = [];
-      const raw = args.join(' ');
-      const condition = (raw.match(/\?([^?]+)\?/) || [])[1] || null;
-      for (const part of raw.replace(/\?[^?]+\?/g, '').split(',')) {
-        const t = part.trim();
-        if (!t) continue;
-        const bits = t.split(':');
-        const name = BUILD_ABBR[bits[0].toLowerCase()];
-        if (!name) { errs.push(`unknown building "${bits[0]}"`); continue; }
-        const level = parseInt(bits[1], 10);
-        if (Number.isNaN(level)) { errs.push(`"${t}" needs a level (buildingType:level[:quantity])`); continue; }
-        targets.push({ building: name, level, quantity: bits[2] !== undefined ? parseInt(bits[2], 10) : 1 });
+      const errs = [], targets = [], groups = [];
+      const raw = args.join(' ').replace(TWO_WORDS, '$1$2')
+        .replace(/\?[^?]*\?/g, (m) => m.replace(/\s+/g, ''));
+      for (const text of raw.split(/\s+/)) {
+        if (!text) continue;
+        const m = text.match(/^(?:\?([^?]*)\?)?([^?]*)(?:\?([^?]*)\?)?$/);
+        if (!m || !m[2]) {
+          // "?w:10? q:0:0": whichever targets that condition was meant for, none
+          // of them may run without it, so nothing on the line runs
+          errs.push(`"${text}": a ?condition? goes right before or right after its targets, e.g. ?w:10?q:0:0 or q:0:0?w:10?; the whole line is left out`);
+          return { targets: [], groups: [], condition: null, needsTech: false, errors: errs };
+        }
+        const conds = [m[1], m[3]].filter((c) => c !== undefined);
+        let when = null;
+        if (conds.length) {
+          const c = buildCondition(conds.join(','));
+          // never run a conditional target without its condition
+          if (c.errors.length) { for (const e of c.errors) errs.push(`${e}; "${text}" is left out`); continue; }
+          when = c.terms;
+        }
+        const group = { condition: conds.length ? conds.join(',') : null, when, targets: [] };
+        for (const part of m[2].split(',')) {
+          if (!part.trim()) continue;
+          const t = buildTarget(part.trim(), errs);
+          if (!t) continue;
+          if ((t.typeId === C.TOWN_HALL || t.typeId === C.WALLS_TYPE) && t.quantity === 0) {
+            errs.push(`"${t.raw}": the bot never demolishes or takes down the ${t.building}`);
+            continue;
+          }
+          if (!MULTI_BUILDINGS.has(t.typeId) && t.level > 0 && t.quantity > 1) {
+            errs.push(`"${t.raw}": a city has one ${t.building}, so this reads as quantity 1`);
+            t.quantity = 1;
+          }
+          Object.assign(t, { when, condition: group.condition });
+          group.targets.push(t);
+          targets.push(t);
+        }
+        if (group.targets.length) groups.push(group);
       }
-      return { targets, condition, errors: errs };
+      // a bare "build" would read as a line that works (the editor paints it blue)
+      if (!raw.trim()) errs.push('needs at least one buildingType:level[:quantity]');
+      return {
+        targets, groups, errors: errs,
+        condition: (groups.find((g) => g.condition) || {}).condition || null,
+        // the engine reads research levels only for a line that asks
+        needsTech: groups.some((g) => (g.when || []).some((c) => c.tech)),
+      };
     },
   },
 
@@ -361,7 +486,12 @@ function describe(parsed) {
       out.push(`fortification: ${list.length} stage(s)`);
       list.forEach((g, i) => out.push(`   ${i + 1}. ${Object.entries(g.forts).map(([k, v]) => `${k} ${v.toLocaleString('en-US')}`).join(', ')}`));
     } else if (name === 'build') {
-      for (const g of list) out.push(`build: ${g.targets.map((t) => `${t.quantity} x ${t.building} to L${t.level}`).join(', ')}${g.condition ? ` (only when ${g.condition})` : ''}`);
+      const what = (t) => (t.level > 0 && t.quantity > 0 ? `${t.quantity} x ${t.building} to L${t.level}`
+        : t.level === 0 && t.quantity > 0 ? `at most ${t.quantity} ${t.building}`
+          : t.level === 0 ? `no ${t.building}` : `no ${t.building} at L${t.level} or higher`);
+      out.push(`build: ${list.length} line(s), worked on in order, moving on while one waits for a free plot`);
+      list.forEach((g, i) => out.push(`   ${i + 1}. ${(g.groups || []).map((gr) => gr.targets.map(what).join(', ')
+        + (gr.condition ? ` (only when ${gr.condition})` : '')).join('; ') || '(nothing readable on this line)'}`));
     } else if (name === 'traininghero') {
       for (const g of list) out.push(`traininghero: ${g.hero} stays ${g.minStaySec}s min${g.maxStaySec ? `, ${g.maxStaySec}s max` : ''}${g.npcHits != null ? `, or after ${g.npcHits} npc hits` : ''}, then rotates to the next city`);
     } else if (name === 'comfortpolicy') {
@@ -388,4 +518,4 @@ function describe(parsed) {
   return out;
 }
 
-module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED };
+module.exports = { parseGoals, describe, GOALS, BUILD_ABBR, TECH_ABBR, MULTI_BUILDINGS, buildingOf, FORT_ABBR, CONFIG_KEYS, NOT_IMPLEMENTED };

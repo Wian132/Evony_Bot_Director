@@ -1484,9 +1484,11 @@ class Session {
       const key = c.name || String(id);
       const e = this.engine;
       const last = e && e.lastReport[key];
+      const parsed = entry ? parseGoals(entry.src) : { goals: [], config: {} };
       return buildOutlook({
         castle: c,
-        goals: entry ? parseGoals(entry.src).goals : [],
+        goals: parsed.goals,
+        config: parsed.config,          // config building:0 pauses construction
         cityState: (e && e.state[key]) || {},
         wallsFor: (last && last.fort && last.fort.wallsFor) || 0,
       });

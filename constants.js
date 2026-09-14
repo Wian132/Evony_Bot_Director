@@ -61,6 +61,10 @@ const BUILDING_DISPLAY_ORDER = [
 
 const slug = (s) => s.toLowerCase().replace(/[^a-z]/g, '');
 const BUILDING_BY_CODE = Object.fromEntries(BUILDINGS.map((b) => [slug(b.name), b]));
+// The other full names NEAT accepts (wiki: Build, Abbreviations): barrack, market, wall.
+Object.assign(BUILDING_BY_CODE, {
+  barrack: BUILDING_BY_CODE.barracks, market: BUILDING_BY_CODE.marketplace, wall: BUILDING_BY_CODE.walls,
+});
 const BUILDING_BY_ID = Object.fromEntries(BUILDINGS.map((b) => [b.typeId, b]));
 
 // Embedded <techEum> XML -- tech.research takes these ids.

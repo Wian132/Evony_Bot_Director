@@ -215,8 +215,13 @@ function listNeeded(parsed, cityState = {}) {
   const cfg = (parsed && parsed.config) || {};
   if (cfg.research === 0) return false;
   if (((parsed && parsed.goals) || []).some((x) => x.name === 'research')) return true;
-  return cfg.research === 1 && (cityState.researchWants || []).length > 0;
+  return (cfg.research === 1 || planOn(parsed && parsed.goals, cfg)) && (cityState.researchWants || []).length > 0;
 }
+
+// Step 19: a city working plan lines researches, as one with a research line
+// does: the plan line in work comes to researchPlan as a research line of its
+// own (goal-plan.js expand), and the techs its buildings need are researched too.
+const planOn = (goals, cfg) => (goals || []).some((x) => x.name === 'plan') && (cfg || {}).plan !== 0;
 
 // How often the list is worth reading, from the last one read:
 //   0             now: a target is open and a building the list's answer hangs
@@ -488,7 +493,7 @@ function researchPlan(ctx, cityState = {}, g = ctx.game) {
   // researches what the research lines say. So the techs the build lines need
   // are researched only in a city that researches at all: one with a research
   // line, or config research:1. Elsewhere the build note and this one say so.
-  if (!lines.length && cfg.research !== 1) {
+  if (!lines.length && cfg.research !== 1 && !planOn(ctx.goals, cfg)) {
     return idle(`the build lines need ${buildNeeds()} — nothing researches it: add a research line, or config research:1, and the bot researches what the build lines need`);
   }
   const env = envOf(ctx, cityState, g);
@@ -512,7 +517,10 @@ function researchPlan(ctx, cityState = {}, g = ctx.game) {
     tiers.push({ tag: 'for the build lines', lead: true,
       targets: fromBuild.map((w) => ({ techId: n(w.techId), level: n(w.level), for: w.for || null })) });
   }
-  lines.forEach((line, k) => tiers.push({ tag: `line ${k + 1}/${lines.length}`, line, index: k + 1 }));
+  // the plan line in work (Step 19) comes first with its own tag, "plan line 1/2"
+  const own = lines.filter((l) => !l.plan);
+  lines.forEach((line) => tiers.push(line.plan ? { tag: line.tag || `plan line ${line.plan}`, line, index: null, plan: line.plan }
+    : { tag: `line ${own.indexOf(line) + 1}/${own.length}`, line, index: own.indexOf(line) + 1 }));
 
   let pick = null, hold = null, active = null, open = 0, condHeld = false, sawRunning = false;
   const parts = [], skipped = [], wants = [];
@@ -583,8 +591,8 @@ function researchPlan(ctx, cityState = {}, g = ctx.game) {
     out.push(`researching ${techName(n(runningHere.typeId))}${lv !== null ? ` L${lv}->L${lv + 1}` : ''} here${left(runningHere.endTime)}`);
   }
   out.push(...parts);
-  if (!open && lines.length && !condHeld) out.push(`all ${lines.length} research line(s) met`);
-  else if (!open && lines.length) out.push('every research target not held by a ?condition? is met');
+  if (!open && own.length && !condHeld) out.push(`all ${own.length} research line(s) met`);
+  else if (!open && own.length) out.push('every research target not held by a ?condition? is met');
   out.push(...skipped);
   if (stale) out.push(`nothing starts until the research list reads again (${env.list.error})`);
   if (buildWants.length && cfg.building === 0) {
@@ -610,7 +618,7 @@ function researchPlan(ctx, cityState = {}, g = ctx.game) {
   return {
     note: `research: ${out.join('; ') || 'nothing to research'}`,
     actions, buildWants, reserve: reserve && costText(reserve) ? reserve : null,
-    line: active && active.index ? active.index : null, lines: lines.length,
+    line: active && active.index ? active.index : null, plan: active && active.plan ? active.plan : null, lines: own.length,
     running: runningHere ? n(runningHere.typeId) : null,
   };
 }

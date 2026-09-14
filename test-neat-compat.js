@@ -746,20 +746,18 @@ function oldGoals(OLD, src) {
       assert.ok(typeof why === 'string' && why.length > 10, k);
     }
     // Step 17 built the troop and wall keys (fortification, fortsusereserved,
-    // troopdelbadque, troopsusepopmax, wallqueuetime and the rest), and Step 20
-    // the valley and flat keys, so they left this list.
-    for (const k of ['plan']) {
-      assert.ok(k in list, `${k} does nothing here yet and should be listed`);
-      assert.strictEqual(parseGoals(`config ${k}:1`).lines[0].status, 'idle', k);
-    }
+    // troopdelbadque, troopsusepopmax, wallqueuetime and the rest), Step 20
+    // the valley and flat keys, and Step 19 plan, so the list is empty.
+    assert.deepStrictEqual(Object.keys(list), []);
+    assert.strictEqual(parseGoals('config plan:1').lines[0].status, 'ok');
     // trade: built in Step 14 (goal-trade.js); research: Step 16 (goal-research.js);
-    // valley, flats, hunting and abandon: Step 20 (goal-valley.js)
+    // valley, flats, hunting and abandon: Step 20 (goal-valley.js); plan: Step 19 (goal-plan.js)
     for (const k of ['npc', 'buildnpc', 'comfort', 'hero', 'troop', 'hiding', 'gate', 'warrules', 'wartown', 'defensecooldown',
       'keepatthome', 'attackgap', 'building', 'feastinghallspace', 'nomayor', 'farmingcycle', 'farmingcyclemin', 'npclimit',
       'training', 'training10', 'monitorarmy', 'trade', 'research',
       'fortification', 'fortsusereserved', 'troopdelbadque', 'troopsusepopmax', 'troopsusereserved', 'troopqueuetime',
       'troopidlequeuetime', 'troopincrement', 'reservedbarrack', 'wallqueuetime',
-      'abandon', 'abandonflats', 'acquireflats', 'valley', 'valleyfarming', 'valleymin', 'hunting']) {
+      'abandon', 'abandonflats', 'acquireflats', 'valley', 'valleyfarming', 'valleymin', 'hunting', 'plan']) {
       assert.ok(!(k in list), `${k} is implemented (or, for monitorarmy, a no-op in NEAT too)`);
     }
   });

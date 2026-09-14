@@ -44,6 +44,10 @@ const D = require('./db');
 const W = require('./goal-war');
 const R = require('./rally');
 const V = require('./goal-valley');
+// processingpolicy (processing.js): buildnpc is its task b — the capture of a
+// flat (claimFlat) and the founding march onto it (foundCity)
+const PROC = require('./processing');
+PROC.register('b', { kinds: ['claimFlat', 'foundCity'] });
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -331,6 +335,10 @@ function buildNpcPlan(ctx, state, game) {
   // while the city is locked down for war. It picks up again once lifted.
   const war = W.lockdown(ctx);
   if (war.on) return { note: `buildnpc — standing down: ${war.why}`, actions: [] };
+  // processingpolicy !b "would disable npc building completely" (wiki): the
+  // whole goal stands down, as for a war town — no flat occupied, no city abandoned
+  const pp = PROC.allowed(ctx, 'b');
+  if (!pp.on) return { note: `buildnpc — standing down: ${pp.why}`, actions: [] };
 
   const P = policyFor(ctx);
   const st = (state.buildnpc = state.buildnpc || {});

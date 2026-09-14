@@ -58,6 +58,15 @@ const H = require('./goal-heroes');
 const W = require('./goal-war');
 const NPC = require('./goal-npc');
 const MB = require('./mailbox');
+// processingpolicy (processing.js): a valley march's task is what it is for —
+// valley acquisition (config valley) a, valley farming v, safe valley farming s
+// (its scouting too), medal hunting m, and a flat taken for npc building
+// (acquireflats, buildnpc's own capture) b, as rallypolicy counts it
+const PROC = require('./processing');
+const TASK_OF = { capture: 'a', farm: 'v', safe: 's', hunt: 'm', flat: 'b', build: 'b' };
+const taskIs = (code) => (a) => a.kind === 'valleyAttack' && TASK_OF[a.purpose] === code;
+for (const code of ['a', 'v', 'm', 'b']) PROC.register(code, { match: taskIs(code) });
+PROC.register('s', { kinds: ['valleyScout'], match: taskIs('s') });
 
 const NI = NPC._internals;
 const n = (x) => Number(x || 0);
@@ -687,6 +696,9 @@ const kindWord = (k) => (k === 'flat' ? 'flat' : k);
 //   troops     a fixed load (safe farming), else valleytroops / the table
 function planAttack({ ctx, state, game, castle, home, st, target, purpose, capture = false, needFull = false,
   rallyKind, table, troops = null, release = null, reserve = 0, busyHeroes = new Set(), tag = '' }) {
+  // processingpolicy: this march's task turned off (processing.js) sends none
+  const pp = TASK_OF[purpose] ? PROC.allowed(ctx, TASK_OF[purpose]) : null;
+  if (pp && !pp.on) return { why: pp.why };
   const load = troops ? { troops, why: 'the wiki\'s safe load' } : troopsFor(ctx, target.level, target.kind, table);
   if (!load) return { why: `no troop load for a level ${target.level} ${kindWord(target.kind)}` };
   const avail = homeTroops(ctx, castle);
@@ -990,6 +1002,8 @@ function safeFarmPlan(ctx, state, game) {
   const fresh = pool.list.find((t) => !V[t.id] && !busy.has(t.id));
   if (!fresh) return { note: [`${head} — ${due.length ? 'waiting' : stats.scouting ? 'waiting for the scouts' : 'every valley in range is scouted'}`, ...notes].join(' | '), actions: [] };
   const troops = { scouter: SAFE_SCOUTS(fresh.level) };
+  const pp = PROC.allowed(ctx, 's');
+  if (!pp.on) return { note: [`${head} — waiting to scout ${where(fresh)}: ${pp.why}`, ...notes].join(' | '), actions: [] };
   const avail = homeTroops(ctx, castle);
   if (n(avail.scouter) < troops.scouter) return { note: [`${head} — waiting to scout ${where(fresh)}: short of scouts (need ${fmt(troops.scouter)}, have ${fmt(avail.scouter)})`, ...notes].join(' | '), actions: [] };
   const rally = rallyFor(ctx, castle, 'v', st);
@@ -1192,8 +1206,13 @@ function flatsPlan(ctx, state, game) {
     else if (!want.on) notes.push('abandonflats: config buildnpc says which levels to build; without it no flat is let go');
     else if (want.all) notes.push('abandonflats: buildnpc:20 builds on every flat, so none is let go');
     else {
-      const drop = flatsHeld.filter((f) => !want.levels.includes(f.level));
-      if (!drop.length) notes.push(`abandonflats: ${flatsHeld.length} flat(s) held, all at a level to build on`);
+      // wiki ExcludeList "can replace NoAbandonFlats": a flat on the excludelist
+      // (NEAT's older noabandonflats reads as one, goals.js) is never let go
+      const excl = excludedIds(ctx);
+      const kept = flatsHeld.filter((f) => !want.levels.includes(f.level) && excl.has(f.id));
+      if (kept.length) notes.push(`abandonflats: ${kept.map((f) => where(f)).join(', ')} on the excludelist, kept`);
+      const drop = flatsHeld.filter((f) => !want.levels.includes(f.level) && !excl.has(f.id));
+      if (!drop.length) notes.push(`abandonflats: ${flatsHeld.length} flat(s) held, ${kept.length ? 'the rest' : 'all'} at a level to build on`);
       else if (!window) notes.push(`abandonflats: ${drop.length} flat(s) below or above L${want.levels.join('/')} go at the next maintenance warning`);
       else {
         const action = {

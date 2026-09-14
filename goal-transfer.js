@@ -109,6 +109,13 @@
 const C = require('./constants');
 const R = require('./rally');
 const U = require('./goal-upkeep');
+// processingpolicy (processing.js): a resource transport is task r
+// (sendresources), a troop reinforcement task t (sendtroops) — pushed from this
+// city or pulled from it by another city's request: the march leaves this city,
+// so it is this city's policy and points
+const PROC = require('./processing');
+PROC.register('r', { kinds: ['transport'] });
+PROC.register('t', { kinds: ['reinforceTroops'] });
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -558,6 +565,9 @@ function transferPlan(ctx, state, game) {
       for (const c of pool) {
         const war = warTownOf(c);
         if (war) { why.push(`${c.name} is a war town (${war})`); continue; }
+        // the sender's own processingpolicy: sendresources (r) / sendtroops (t)
+        const pp = PROC.allowed({ goals: goalsOf(c) || [], game }, spec.kind);
+        if (!pp.on) { why.push(`${c.name}: ${pp.why}`); continue; }
         const s = senderOf(c);
         let busy = 0;
         if (!s.march[spec.kind]) {
@@ -909,7 +919,10 @@ function pushPlan(ctx, state, game) {
     return groups;
   };
 
+  // processingpolicy: sendresources (r) and sendtroops (t) off here send nothing
+  const offer = { r: PROC.allowed(ctx.game ? ctx : { ...ctx, game }, 'r'), t: PROC.allowed(ctx.game ? ctx : { ...ctx, game }, 't') };
   for (const [nm, lines] of byName('r')) {
+    if (!offer.r.on) { notes.push(`${nm}: held — ${offer.r.why}`); continue; }
     const said = serve(lines.flatMap(pushItems), {
       kind: 'r', mission: C.MISSION.transport, request: 'requestresources', keyOf: (g) => g.type, name: (k) => k,
       stock: (k) => stock[k],
@@ -933,6 +946,7 @@ function pushPlan(ctx, state, game) {
   for (const [k, amount] of Object.entries(loaded)) home[k] = Math.max(0, n(home[k]) - Math.ceil(amount / loadOf(k)));
 
   for (const [nm, lines] of byName('t')) {
+    if (!offer.t.on) { notes.push(`${nm}: held — ${offer.t.why}`); continue; }
     const said = serve(lines.flatMap(pushItems), {
       kind: 't', mission: C.MISSION.reinforce, request: 'requesttroops', keyOf: (g) => g.troop, name: troopName,
       stock: (k) => n(home[k]),

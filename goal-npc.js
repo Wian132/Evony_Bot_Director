@@ -53,6 +53,10 @@ const C = require('./constants');
 const R = require('./rally');
 const H = require('./goal-heroes');
 const W = require('./goal-war');
+// processingpolicy (processing.js): npc farming is its task n, and the engine
+// ranks these runs against the city's other missions by it
+const P = require('./processing');
+P.register('n', { kinds: ['npcAttack'] });
 
 const n = (x) => Number(x || 0);
 const fmt = (x) => Math.round(n(x)).toLocaleString('en-US');
@@ -896,6 +900,9 @@ function npcPlan(ctx, state, game) {
   // Town Mode counts the same), and none inside wartownpolicy's hours.
   const war = W.lockdown(ctx);
   if (war.on) return { note: `npc:${lowest} — held: ${war.why}`, actions: [] };
+  // processingpolicy !n (or n:0, or inside a timed line's hours): no runs
+  const pp = P.allowed(ctx, 'n');
+  if (!pp.on) return { note: `npc:${lowest} — held: ${pp.why}`, actions: [] };
 
   const castle = ctx.castle || {};
   const now = n(ctx.now) || Date.now();

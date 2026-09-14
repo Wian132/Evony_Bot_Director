@@ -620,9 +620,11 @@ const inRange = (src, cache, level = 5, home = HOME) => I.targetsFor(ctxOf(src),
     for (const src of ['config npc:0', 'config npc:5,farmingcycle:8.4,farmingcyclemin:1,smartfarming:3,mapscan:0,trainint:1,trainpol:1,training:2,training10:1',
       'distancepolicy 10 20 5 10 25', 'distancepolicy 10.5', 'npcbounds 5 790 810 95 105', 'npcbounds 200 215 400 415',
       'farmingpolicy /level:8 /mindistance:1 /maxdistance:5 /farmingcycle:1', 'farmingpolicy 5 /mindistance:1 /maxdistance:7 /mincycle:1',
-      'farmingpolicy 10 /cyclemax:1', 'npclimits a:100k', 'npc10heroes any']) {
+      'farmingpolicy 10 /cyclemax:1', 'npclimits a:100k']) {
       eq([src, line(src)], [src, { n: 1, status: 'ok', msg: null }]);
     }
+    // Step 19: NEAT's Obsolete page lists npc10heroes, so its line says what it is read as
+    eq(line('npc10heroes any'), { n: 1, status: 'ok', msg: 'obsolete in NEAT — read as "npcheroes 10 any"' });
     const bare = G.parseGoals('farmingcycle 8.4');
     eq([bare.config.farmingcycle, bare.lines[0].status], [8.4, 'ok'], 'a bare config key reads as the config line it means');
     eq(G.parseGoals('smartfarming 9').lines[0].status, 'error');

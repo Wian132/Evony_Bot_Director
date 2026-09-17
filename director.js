@@ -152,8 +152,11 @@ async function pollCycle() {
 // server is ignoring us, which looks identical to healthy on a plain ping.
 const PROBE_DEFAULTS = [{ probe: 'console', url: 'http://localhost:8711' }];
 
+// An org with no probes of its own (or no org at all, on a route that has none)
+// gets the defaults: this runs inside request handlers, where a throw would
+// take the whole Director down with it.
 function probeList(org) {
-  const extra = org.settings.get('probes', null);
+  const extra = org && org.settings ? org.settings.get('probes', null) : null;
   return Array.isArray(extra) && extra.length ? extra : PROBE_DEFAULTS;
 }
 
@@ -406,7 +409,7 @@ http.createServer(async (req, res) => {
     return send(200, 'application/json', JSON.stringify({
       hours, bucketMs, sampleMs: UPTIME_MS, slots, now: Date.now(),
       firstSample: firstEver,
-      probes, summary, configured: probeList(),
+      probes, summary, configured: probeList(ORG),
     }));
   }
 
@@ -414,9 +417,9 @@ http.createServer(async (req, res) => {
     const b = await body(req);
     if (Array.isArray(b.probes)) {
       ORG.settings.set('probes', b.probes.filter((p) => p && p.probe && p.url));
-      note(`uptime probes updated: ${probeList().map((p) => p.probe).join(', ')}`);
+      note(`uptime probes updated: ${probeList(ORG).map((p) => p.probe).join(', ')}`);
     }
-    return send(200, 'application/json', JSON.stringify({ ok: true, probes: probeList() }));
+    return send(200, 'application/json', JSON.stringify({ ok: true, probes: probeList(ORG) }));
   }
 
   // ---- per-account history for the fleet charts ----

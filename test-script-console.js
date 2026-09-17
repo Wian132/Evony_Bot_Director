@@ -324,7 +324,26 @@ class StubSession {
       paused: false, maintenance: {} };
   }
   cities() { return this.game.castles.map((c) => ({ id: c.id, name: c.name, ...this.game.castleXY(c), incoming: 0, trainingHeroes: [] })); }
-  city(id) { const c = this.game.castles.find((x) => String(x.id) === String(id)); return c ? { id: c.id, name: c.name } : {}; }
+  // Enough of a city for the page's Heroes tab, shaped the way session.js
+  // shapes it: the attribute buffs are a percentage beside an untouched base.
+  city(id) {
+    const c = this.game.castles.find((x) => String(x.id) === String(id));
+    if (!c) return {};
+    const pct = (h, k) => Number(h[k + 'BuffAdded'] || 0);
+    const eff = (h, k, v) => Math.round(v * (1 + pct(h, k) / 100));
+    return { id: c.id, name: c.name, heroes: (c.heros || []).map((h) => ({
+      id: h.id, name: h.name, level: h.level, loyalty: h.loyalty, status: h.status,
+      statusName: { 0: 'Idle', 1: 'Mayor', 4: 'Captured' }[h.status] || String(h.status),
+      type: 'Att', base: 100, unspent: h.remainPoint || 0,
+      attack: Number(h.power || 0), politics: Number(h.management || 0), intel: Number(h.stratagem || 0),
+      attackBuff: pct(h, 'power'), politicsBuff: pct(h, 'management'), intelBuff: pct(h, 'stratagem'),
+      attackEff: eff(h, 'power', Number(h.power || 0)),
+      politicsEff: eff(h, 'management', Number(h.management || 0)),
+      intelEff: eff(h, 'stratagem', Number(h.stratagem || 0)),
+      buffs: (h.buffs || []).map((b) => ({ type: b.typeId, text: b.descName,
+        endTime: Number(b.endTime || 0), msLeft: Math.max(0, Number(b.endTime || 0) - Date.now()) })),
+    })) };
+  }
   logView() { return { lines: [], total: 0, cities: [], filtered: false }; }
   marches() { return []; }
   engineReport() { return null; }
@@ -372,6 +391,26 @@ const post = async (u, b) => {
 const get = async (u) => (await call('GET', u)).json;
 const runs = () => get('/api/script/runs');
 const saveLoad = (city, slot, src) => post('/api/loadouts', { city, slot, src });
+
+t('/api/items carries the buffs the panel\'s third tab shows', async () => {
+  const now = W.g.now();
+  W.g.player.buffs = [{ typeId: 'FurloughBuff', descName: '', endTime: now + 569 * 60000 }];
+  W.g.castles[0].buffs = [{ typeId: 'ForceopenclosegateBuff', descName: 'The gates are held open.', endTime: now + 600000 }];
+  try {
+    const r = await get('/api/items?city=101');
+    assert.strictEqual(r.ok, true);
+    const account = r.buffs.filter((b) => b.scope === 'account');
+    const city = r.buffs.filter((b) => b.scope === 'city');
+    assert.deepStrictEqual(account.map((b) => [b.name, b.left]), [['Holiday mode', '9h29m']]);
+    assert.deepStrictEqual(city.map((b) => b.text), ['The gates are held open.'], "the game's own sentence is kept");
+    assert.strictEqual(r.protection.kind, 'holiday');
+    assert.ok(Array.isArray(r.items), 'items still come with it');
+    const other = await get('/api/items?city=102');
+    assert.deepStrictEqual(other.buffs.filter((b) => b.scope === 'city'), [], "another city's tab shows only its own");
+  } finally {
+    W.g.player.buffs = []; W.g.castles[0].buffs = [];
+  }
+});
 
 t('the server is up and signed in', async () => {
   await until(async () => { try { return (await call('GET', '/api/session')).status === 200; } catch { return false; } }, 5000, 'the server');
@@ -633,6 +672,7 @@ t('autorun: a reconnect starts nothing again', async () => {
   SESSION.connected = false;
   await sleep(2200);
   const g2 = world();
+  W.g = g2;                   // W.g is the session's world; the page tests below set up in it
   SESSION.game = g2;
   SESSION.connected = true;
   await sleep(4500);
@@ -684,7 +724,12 @@ t('the page loads, signed in, with a city open', async () => {
     if (window.speechSynthesis) speechSynthesis.speak = (u) => __said.push({ text: u.text, lang: u.lang });
     HTMLMediaElement.prototype.play = function () { __played.push(this.src); return Promise.resolve(); };` });
   await cdp('Page.navigate', { url: 'http://127.0.0.1:8799/' });
-  await until(() => ev('typeof S === "object" && S.city'), 15000, 'a city to open');
+  // whatever the page threw on the way up is worth more than "timed out"
+  try {
+    await until(() => ev('typeof S === "object" && S.city'), 15000, 'a city to open');
+  } catch (e) {
+    throw new Error(e.message + (pageErrors.length ? ' — the page threw: ' + pageErrors.join(' | ') : ' — the page threw nothing'));
+  }
 });
 t('Script tab: the Run box sits beside Run; the loadout picker marks autorun loadouts', async () => {
   if (browserOff) return 'skipped';
@@ -696,6 +741,41 @@ t('Script tab: the Run box sits beside Run; the loadout picker marks autorun loa
   assert.ok(s.opts.some((o) => /^Load 3 · north auto · autorun$/.test(o)), s.opts.join(' | '));
   assert.ok(s.opts.some((o) => /^Load 2 · farm upgrades$/.test(o)), s.opts.join(' | '));
 });
+t('the Items panel\'s Buffs tab lists what the account and the city are under', async () => {
+  if (browserOff) return 'skipped';
+  // the game the SERVER holds: section 3 swapped a fresh world into both
+  const g = SESSION.game;
+  const now = g.now();
+  g.player.buffs = [{ typeId: 'FurloughBuff', descName: '', endTime: now + 569 * 60000 }];
+  g.castles[0].buffs = [{ typeId: 'ForceopenclosegateBuff', descName: 'The gates are held open.', endTime: now + 600000 }];
+  const wasOn = await ev(`S.logs`);          // put the panel back for the tests after this one
+  try {
+    await ev(`document.querySelector('#logTabs .t[data-k=items]').click()`);
+    await ev('renderItems(true)');          // the panel polls on a timer; ask now
+    const seen = await ev(`(async () => { const r = await (await fetch('/api/items?city=' + (S.city || ''))).json();
+      return { ok: r.ok, buffs: (r.buffs || []).map((b) => b.name + '/' + b.scope), logs: S.logs, city: S.city,
+        tabs: [...$('itemKind').children].map((c) => c.textContent) }; })()`);
+    assert.deepStrictEqual(seen.buffs, ['Holiday mode/account', 'Gates forced/city'], JSON.stringify(seen));
+    await until(() => ev(`[...$('itemKind').children].some((b) => /^Buffs \\([1-9]\\d*\\)/.test(b.textContent))`), 8000,
+      'the buff count — the page saw ' + JSON.stringify(seen));
+    await ev(`[...$('itemKind').children].find((b) => b.dataset.k === 'buffs').click()`);
+    await until(() => ev(`$('logBody').textContent.includes('Holiday mode')`), 8000, 'the holiday row');
+    const t = await ev(`$('logBody').textContent`);
+    assert.match(t, /Holiday mode/);
+    assert.match(t, /9h29m/, t.slice(0, 200));
+    assert.match(t, /The gates are held open\./, 'the open city\'s own buff is there too');
+    assert.match(t, /account/);
+    assert.match(t, /this city/);
+    // and back to the items, which still work
+    await ev(`[...$('itemKind').children].find((b) => b.dataset.k === 'items').click()`);
+    await until(() => ev(`!$('logBody').textContent.includes('Holiday mode')`), 8000, 'the items table');
+  } finally {
+    g.player.buffs = []; g.castles[0].buffs = [];
+    await ev(`[...$('itemKind').children].find((b) => b.dataset.k === 'items').click()`);
+    await ev(`document.querySelector('#logTabs .t[data-k=${String(wasOn || 'activity')}]').click()`);
+  }
+});
+
 t('Run from a line, pause at stop, Resume, and say reaches the tab', async () => {
   if (browserOff) return 'skipped';
   await ev(`(() => { $('loadSel').value = '1'; $('loadSel').onchange();
@@ -750,6 +830,84 @@ t('with the goals branch\'s editor colours (skipped without them): each Script l
   assert.match(cls[0], /gl-ok/);
   assert.match(cls[2], /gl-comment/);
 });
+// The hero row's + (heroitems.js): the window it opens, what it says is held,
+// and the one command it sends. W.g has no network, so hero.useItem is answered
+// here; nothing in this file logs in.
+t('Heroes tab: every hero line has a +, except a prisoner we hold', async () => {
+  if (browserOff) return 'skipped';
+  W.g.castles[0].heros = [
+    { id: 7, name: 'OTTO', level: 40, status: 0, power: 120, management: 40, stratagem: 30, loyalty: 100, remainPoint: 0,
+      powerBuffAdded: 25, buffs: [{ typeId: 'HeroPowerBuff', descName: 'Attack +25%', endTime: Date.now() + 6 * 86400000 }] },
+    { id: 8, name: 'Bob', level: 20, status: 4, power: 60, management: 30, stratagem: 30, loyalty: 100, remainPoint: 0, buffs: [] },
+  ];
+  W.g.player.items = [{ id: 'hero.power.1', count: 3 }, { id: 'hero.intelligence.1', count: 1 }];
+  await ev(`(() => { S.mon = 'heroes'; document.querySelector('#monTabs .ib[data-k=heroes]').click(); })()`);
+  await ev('refresh(true)');
+  await until(() => ev(`$('monBody').textContent.includes('OTTO')`), 8000, 'the Feasting Hall');
+  const b = await ev(`[...$('monBody').querySelectorAll('button[data-act=heroitem]')].map((x) => [x.dataset.hero, x.textContent, x.className])`);
+  assert.deepStrictEqual(b, [['OTTO', '+', 'sm buffadd has']], 'only OTTO, and marked as already buffed');
+  assert.match(await ev(`$('monBody').querySelector('button[data-act=heroitem]').title`), /Attack \+25%/);
+});
+const clickPlus = async () => {
+  await until(() => ev(`(() => { const b = $('monBody').querySelector('button[data-act=heroitem]');
+    if (!b) return false; b.click(); return true; })()`), 8000, 'the hero row\'s +');
+  await until(() => ev(`$('hiDlg').open`), 8000, 'the hero-item window');
+};
+t('the + window lists what is held, Excalibur first, with none-held greyed', async () => {
+  if (browserOff) return 'skipped';
+  await clickPlus();
+  await until(() => ev(`$('hiList').querySelector('input[name=hiPick]') !== null`), 8000, 'the item list');
+  const rows = await ev(`[...$('hiList').querySelectorAll('label')].map((l) => l.textContent.replace(/\\s+/g, ' ').trim())`);
+  assert.match(rows[0], /^Excalibur\+25% attack for 7 days 3$/, rows.join(' | '));
+  assert.match(rows[1], /^The Wealth of Nations\+25% politics.* 0$/, rows.join(' | '));
+  assert.match(rows[2], /^The Art of War\+25% intelligence.* 1$/, rows.join(' | '));
+  assert.deepStrictEqual(await ev(`[...$('hiList').querySelectorAll('input')].map((i) => i.disabled)`), [false, true, false],
+    'the one with none held cannot be picked');
+  assert.strictEqual(await ev(`hiPicked().value`), 'hero.power.1', 'the first one held is picked for you');
+  assert.match(await ev(`$('hiTimesNote').textContent`), /3 held/);
+  assert.match(await ev(`$('hiNow').textContent`), /Attack \+25%.*days left/s, 'it says what the hero is already under');
+  if (process.env.SHOT_HERO) {     // SHOT_HERO=<file.png>: how the hero-item window looks
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(400);
+    fs.writeFileSync(process.env.SHOT_HERO, Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  }
+});
+t('the count held is the ceiling on how many to apply', async () => {
+  if (browserOff) return 'skipped';
+  await ev(`(() => { $('hiTimes').value = '99'; $('hiList').querySelector('input[value="hero.intelligence.1"]').checked = true;
+    $('hiList').dispatchEvent(new Event('change')); })()`);
+  assert.strictEqual(await ev(`$('hiTimes').value`), '1', 'one Art of War held, so one is the most');
+  assert.match(await ev(`$('hiTimesNote').textContent`), /1 held/);
+});
+t('Apply sends one hero.useItem, and the window says what it did', async () => {
+  if (browserOff) return 'skipped';
+  const sent = [];
+  W.g.req = async (cmd, data) => { sent.push({ cmd, data }); return { ok: 1 }; };
+  W.g.heroAfter = async () => ({ ...W.g.castles[0].heros[0], stratagemBuffAdded: 25 });
+  try {
+    await ev(`$('hiGo').click()`);
+    const said = await until(() => ev(`(document.querySelector('dialog.ask') || {}).textContent`), 8000, 'the answer');
+    assert.match(said, /Used 1 x The Art of War \(\+25% intelligence for 7 days\) on OTTO in North/, said);
+    await ev(`document.querySelector('dialog.ask button[value=ok]').click()`);
+  } finally { W.g.req = async (cmd) => { throw new Error('no network in this test: ' + cmd); }; }
+  assert.deepStrictEqual(sent.map((x) => [x.cmd, x.data.castleId, x.data.heroId, x.data.itemId]),
+    [['hero.useItem', 101, 7, 'hero.intelligence.1']]);
+  assert.ok(SESSION.notes.some((n) => /^manual: useheroitem OTTO hero\.intelligence\.1 x1 -> 1 used$/.test(n.m)),
+    SESSION.notes.slice(-3).map((n) => n.m).join(' | '));
+});
+t('more than one is asked about first, and dropping the ask sends nothing', async () => {
+  if (browserOff) return 'skipped';
+  await clickPlus();
+  await until(() => ev(`$('hiList').querySelector('input[name=hiPick]') !== null`), 8000, 'the item list');
+  await ev(`(() => { $('hiTimes').value = '3'; $('hiGo').click(); })()`);
+  const q = await until(() => ev(`(document.querySelector('dialog.ask') || {}).textContent`), 8000, 'the question');
+  assert.match(q, /Apply 3 x Excalibur to OTTO\?/);
+  assert.match(q, /spends 3 of the 3 held/);
+  await ev(`document.querySelector('dialog.ask button[value=no]').click()`);
+  await sleep(300);
+  assert.ok(!SESSION.notes.some((n) => /hero\.power\.1/.test(n.m)), 'no Excalibur was sent');
+});
+
 t('play reaches the tab too', async () => {
   if (browserOff) return 'skipped';
   await post('/api/script', { city: '102', src: 'play "SingleAttack.mp3"' });

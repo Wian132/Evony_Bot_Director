@@ -242,6 +242,8 @@
   .ico { display:inline-block; width:1.3em; text-align:center; margin-right:3px; }
   .buffdot { color:#fff; background:var(--ok); border-radius:50%; display:inline-block; width:14px; height:14px;
              line-height:14px; font-size:11px; text-align:center; font-weight:bold; }
+  button.sm.buffadd { padding:0 5px; font-size:12px; font-weight:bold; line-height:14px; }
+  button.sm.buffadd.has { color:var(--ok); }
   .soon { color:var(--bad); font-weight:bold; }
   .mtag { font-weight:bold; }
   .m-attack { color:var(--bad); } .m-scout { color:var(--amber); } .m-transport { color:var(--blue); }
@@ -496,6 +498,7 @@
         <span class="seg" id="itemKind" hidden>
           <button class="sm on" data-k="items" aria-pressed="true">Items</button>
           <button class="sm" data-k="medals" aria-pressed="false">Medals</button>
+          <button class="sm" data-k="buffs" aria-pressed="false" title="What this account and this city are under">Buffs</button>
         </span>
         <input id="logFind" placeholder="search…" spellcheck="false" aria-label="Search the log">
         <select id="logCity" aria-label="City"><option value="">all cities</option></select>
@@ -567,6 +570,27 @@
     <div id="hwNote" style="color:var(--dim);font-size:11px;margin-top:6px;max-width:300px">After a reset the highest stat is the one the hero was born with, so an intel-born hero built into attack comes back an intel hero.</div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="water" id="hwGo">Use Holy Water</button>
+      <button value="cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Hero items: Excalibur and the rest, applied to one hero (heroitems.js) -->
+<dialog id="hiDlg" aria-labelledby="hiCap">
+  <form method="dialog" id="hiForm">
+    <b id="hiCap">Hero item for <span id="hiHero"></span></b>
+    <div id="hiInfo" style="color:var(--dim);font-size:11px;margin:5px 0 4px"></div>
+    <div id="hiNow" style="font-size:11px;margin:0 0 8px;white-space:pre-line"></div>
+    <div id="hiList" role="group" aria-label="Hero items held"
+         style="max-height:210px;overflow:auto;border:1px solid var(--grid);padding:3px;min-width:320px"></div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <label for="hiTimes" style="font-size:11px;color:var(--dim)">Apply</label>
+      <input id="hiTimes" type="number" min="1" max="50" value="1" style="width:64px">
+      <span class="muted" style="font-size:11px" id="hiTimesNote">time(s)</span>
+    </div>
+    <div style="color:var(--dim);font-size:11px;margin-top:6px;max-width:330px">An attribute item is a timed +25% buff, not a permanent gain: the base attribute never moves, and the hero drops back when the 7 days are up.</div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button value="use" id="hiGo">Apply</button>
       <button value="cancel">Cancel</button>
     </div>
   </form>
@@ -1970,7 +1994,11 @@ function renderHeroes(d) {
       // marching red, returning green, defending blue
       cls: mayor ? 'mayor' : st === 3 ? 'bad' : st === 5 ? 'good' : st === 2 ? 'defend' : '',
       cells: [h.n, name, esc(h.statusName || ''), h.type || '',
-        (h.buffs || []).length ? `<span class="buffdot" title="${esc(buffTip)}">+</span>` : '',
+        // The Buff column is the way in: + opens the hero-item window, and shows
+        // what is already on the hero on hover. A prisoner takes no item, so it
+        // keeps the plain dot.
+        prisoner ? ((h.buffs || []).length ? `<span class="buffdot" title="${esc(buffTip)}">+</span>` : '')
+          : `<button class="sm buffadd${(h.buffs || []).length ? ' has' : ''}" data-act="heroitem" data-hero="${esc(h.name)}" title="${esc(buffTip ? buffTip + '\n\nClick to apply another hero item.' : 'Apply a hero item: Excalibur, The Wealth of Nations, The Art of War')}">+</button>`,
         h.level, h.base ?? '', h.unspent ? `<b class="warnc">${h.unspent}</b>` : '0',
         attr(h, 'politics'), attr(h, 'attack'), attr(h, 'intel'), h.loyalty, act],
     };
@@ -2282,6 +2310,7 @@ $('monBody').addEventListener('click', async (e) => {
   }
   if (act === 'points') return openPoints(hero);
   if (act === 'water') return openWater(hero);
+  if (act === 'heroitem') return openHeroItem(hero);
   if (act === 'vdrop' || act === 'vbuild') {
     const drop = act === 'vdrop';
     const yes = drop
@@ -2397,6 +2426,72 @@ $('hwForm').addEventListener('submit', async (e) => {
   if (custom && !rule) { e.preventDefault(); $('hwCustom').focus(); return; }
   const r = await post('/api/hero', { city: S.city, action: 'water', heroName: name, heropoints: rule || undefined });
   tell(r.lines && r.lines.length ? r.lines.join('\n') : r.error || 'unknown', { title: r.ok ? `Holy Water — ${name}` : 'Holy Water failed' });
+  refresh();
+});
+
+// Hero items, from the + in the hero's Buff column (heroitems.js). The counts
+// are read when the window opens rather than carried in the city payload, so
+// they are what the account holds at that moment; an item with none held is
+// still listed, greyed, so the window also answers "any Excalibur left?".
+let HITEMS = [];
+const hiPicked = () => $('hiList').querySelector('input[name=hiPick]:checked');
+async function openHeroItem(name) {
+  const h = ((S.cityData && S.cityData.heroes) || []).find((x) => x.name === name) || {};
+  $('hiHero').textContent = name;
+  $('hiInfo').textContent = `L${h.level} · atk ${h.attack} · pol ${h.politics} · int ${h.intel}`;
+  $('hiNow').textContent = (h.buffs || []).length
+    ? 'On this hero now:\n' + h.buffs.map((b) => `  ${b.text || b.type}${b.msLeft > 0 ? ` — ${(b.msLeft / 86400000).toFixed(1)} days left` : ''}`).join('\n')
+    : 'No buff on this hero.';
+  $('hiTimes').value = 1;
+  $('hiTimes').max = 50;
+  $('hiTimesNote').textContent = 'time(s)';
+  $('hiList').innerHTML = '<div class="muted" style="font-size:11px;padding:4px">Reading the inventory…</div>';
+  $('hiGo').disabled = true;
+  $('hiDlg').dataset.hero = name;
+  $('hiDlg').showModal();
+  const p = await post('/api/hero', { city: S.city, action: 'itemspreview' });
+  if ($('hiDlg').dataset.hero !== name || !$('hiDlg').open) return;
+  HITEMS = (p && p.items) || [];
+  if (!HITEMS.length) {
+    $('hiList').innerHTML = `<div class="muted" style="font-size:11px;padding:4px">${esc((p && p.error) || 'no hero items held')}</div>`;
+    return;
+  }
+  $('hiList').innerHTML = HITEMS.map((it) => `<label style="display:flex;gap:6px;align-items:baseline;padding:3px 2px${it.count ? '' : ';opacity:.5'}">
+      <input type="radio" name="hiPick" value="${esc(it.id)}"${it.count ? '' : ' disabled'}>
+      <span style="flex:1"><b>${esc(it.label)}</b><br><span class="muted">${esc(it.effect || '')}</span></span>
+      <b class="${it.count ? 'pos' : 'muted'}">${fmt(it.count)}</b>
+    </label>`).join('');
+  const first = $('hiList').querySelector('input[name=hiPick]:not([disabled])');
+  if (first) { first.checked = true; }
+  hiPick();
+}
+// The count held is the ceiling: asking for more than that only has the console
+// stop short partway, so the field says how many there are and caps itself.
+function hiPick() {
+  const sel = hiPicked();
+  const it = sel ? HITEMS.find((x) => x.id === sel.value) : null;
+  $('hiGo').disabled = !it;
+  const max = Math.min(50, (it && it.count) || 1);
+  $('hiTimes').max = max;
+  if (Number($('hiTimes').value) > max) $('hiTimes').value = max;
+  $('hiTimesNote').textContent = it ? `time(s) — ${fmt(it.count)} held` : 'time(s)';
+}
+$('hiList').addEventListener('change', hiPick);
+$('hiForm').addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  const name = $('hiDlg').dataset.hero;
+  const sel = hiPicked();
+  if (!sel) { e.preventDefault(); return; }
+  const it = HITEMS.find((x) => x.id === sel.value) || {};
+  const times = Math.max(1, Math.min(Number($('hiTimes').value) || 1, it.count || 1, 50));
+  // One is an ordinary click; several spend several, so say how many first.
+  if (times > 1 && !await ask(`Apply ${times} x ${it.label} to ${name}?`, {
+    title: 'Hero item', ok: `Use ${times}`,
+    detail: `This spends ${times} of the ${fmt(it.count)} held, one command at a time, and stops early if the server refuses one.`,
+  })) return;
+  const r = await post('/api/hero', { city: S.city, action: 'useitem', heroName: name, itemId: it.id, times });
+  tell(r.lines && r.lines.length ? r.lines.join('\n') : r.error || 'unknown',
+    { title: r.ok ? `${it.label} — ${name}` : `${it.label || 'Hero item'} failed` });
   refresh();
 });
 
@@ -2933,10 +3028,44 @@ const ITEM_ORDER = ['General', 'Speed Up', 'Produce', 'Chest', 'Stratagem', 'Mat
 
 async function renderItems(force) {
   if (force) paintItems(true);            // what we already have, at once
-  const r = await getJSON('/api/items');
+  // the open city, so its own buffs come with the account's
+  const r = await getJSON('/api/items' + (S.city ? '?city=' + encodeURIComponent(S.city) : ''));
   if (S.logs !== 'items') return;
   if (r || ITEMS.data === undefined) ITEMS.data = r;   // a failed poll keeps the last list
   paintItems(false);
+}
+
+// The game's own Buffs tab: what is running now and how long is left, the
+// account's first, then the open city's. A protection (holiday, truce, peace)
+// is the same row the city's Status shows.
+function paintBuffs(force, r, buffs) {
+  const body = $('logBody');
+  const needle = ITEMS.find.toLowerCase();
+  const shown = buffs.filter((b) => !needle || [b.text, b.name, b.type, b.scope].some((s) => String(s || '').toLowerCase().includes(needle)));
+  const cols = [
+    { h: 'Buff', sort: true, by: (a, b) => String(a.text).localeCompare(String(b.text)) },
+    { h: 'Where', a: 'c', sort: true, by: (a, b) => String(a.scope).localeCompare(String(b.scope)) },
+    { h: 'Remaining time', a: 'n', sort: true, by: (a, b) => (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity) },
+  ];
+  const s = ITEMS.sort && cols[ITEMS.sort.i] && cols[ITEMS.sort.i].by ? ITEMS.sort : null;
+  shown.sort(s ? (a, b) => s.dir * cols[s.i].by(a, b) : (a, b) => (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity));
+
+  let html;
+  if (r === undefined) html = '<div class="empty">loading…</div>';
+  else if (!r) html = '<div class="empty">The console did not answer. If it was started before the Buffs tab existed, restart it.</div>';
+  else if (!r.ok) html = `<div class="empty">${S.head && S.head.connected ? 'loading…' : 'Connect to see what this account is under.'}</div>`;
+  else if (!shown.length) html = `<div class="empty">${needle ? 'nothing matches' : 'Nothing is running on this account or city.'}</div>`;
+  else {
+    html = grid(cols, shown.map((b) => ({
+      title: `${b.type}${b.endTime ? '\nends ' + new Date(b.endTime).toLocaleString() : ''}`,
+      cells: [
+        markIn(b.text, needle) + (b.text !== b.name ? ` <span class="muted">${esc(b.name)}</span>` : ''),
+        b.scope === 'city' ? 'this city' : 'account',
+        b.msLeft === null ? '<span class="muted">no end</span>' : esc(b.left),
+      ],
+    })), { cls: 'items', sort: s });
+  }
+  if (force || body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; }
 }
 
 function paintItems(force) {
@@ -2945,9 +3074,12 @@ function paintItems(force) {
   const all = (r && r.ok && r.items) || [];
   const medals = ITEMS.kind === 'medals';
   const nMedals = all.filter((it) => it.medal).length;
-  const [bItems, bMedals] = $('itemKind').children;
+  const buffs = (r && r.ok && r.buffs) || [];
+  const [bItems, bMedals, bBuffs] = $('itemKind').children;
   bItems.textContent = r && r.ok ? `Items (${all.length - nMedals})` : 'Items';
   bMedals.textContent = r && r.ok ? `Medals (${nMedals})` : 'Medals';
+  bBuffs.textContent = r && r.ok ? `Buffs (${buffs.length})` : 'Buffs';
+  if (ITEMS.kind === 'buffs') return paintBuffs(force, r, buffs);
 
   const needle = ITEMS.find.toLowerCase();
   const pick = all.filter((it) => it.medal === medals);
@@ -2991,7 +3123,7 @@ function paintItems(force) {
 $('itemKind').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   ITEMS.kind = b.dataset.k;
-  ITEMS.sort = null;                      // the two tables have different columns
+  ITEMS.sort = null;                      // the three tables have different columns
   for (const c of $('itemKind').children) { c.classList.toggle('on', c === b); c.setAttribute('aria-pressed', String(c === b)); }
   paintItems(true);
 });

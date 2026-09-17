@@ -1191,11 +1191,20 @@ class Session {
         const info = p.playerInfo || {};
         const STATUS = { 0: 'Normal', 1: 'Truce', 2: 'Under attack', 3: 'Occupied' };
         const played = info.registerTime ? Date.now() - Number(info.registerTime) : null;
+        // A castle under an account-wide protection still reports status 0, so
+        // "Normal" was shown for a lord on holiday or truce. The protection is
+        // in the player's buffs (buffs.js); an attack or an occupation is about
+        // this city and still outranks it.
+        const prot = require('./buffs').protectionOf(this.game);
+        const own = STATUS[Number(c.status)] || String(c.status ?? '?');
         return {
           town: c.name,
           location: `${xy.x},${xy.y}`,
           fieldId: c.fieldId,
-          status: STATUS[Number(c.status)] || String(c.status ?? '?'),
+          status: prot && (own === 'Normal' || own === 'Truce')
+            ? `${prot.label}${prot.left && prot.left !== 'expired' ? ` (${prot.left} left)` : ''}`
+            : own,
+          protection: prot ? { kind: prot.kind, label: prot.label, left: prot.left, msLeft: prot.msLeft } : null,
           hasEnemy: !!c.hasEnemy,
           gates: c.goOutForBattle ? 'Open' : 'Closed',
           allowAlliance: !!c.allowAlliance,
@@ -1388,7 +1397,8 @@ class Session {
       alliance: info.alliance || null,
       office: info.office || null,
       playedMs: created ? g.now() - created : null,
-      furlough: !!(g.player && g.player.furlough),
+      // holiday mode is an account buff, not a field on the player bean
+      furlough: (require('./buffs').protectionOf(g) || {}).kind === 'holiday' || !!(g.player && g.player.furlough),
       grievance: num(res.complaint),
     });
 

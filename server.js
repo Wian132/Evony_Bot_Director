@@ -517,10 +517,20 @@ const server = http.createServer(async (req, res) => {
   // The Items tab: everything the account holds, named (items.js). Read from the
   // session's own copy, which server.ItemUpdate keeps current — the tab polls,
   // so this never connects or asks the server anything.
+  // The panel's three tabs come from here: Items, Medals (both from the
+  // inventory) and Buffs — what the account and its cities are under, which the
+  // game shows in the same place (buffs.js).
   if (url.pathname === '/api/items') {
     const g = SESSION.game;
     if (!g || !g.player) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected' }));
-    return send(200, 'application/json', JSON.stringify({ ok: true, ...require('./items').inventory(g) }));
+    const b = require('./buffs').active(g);
+    const open = q.get('city');
+    const city = open && b.cities[String(open)] ? b.cities[String(open)] : [];
+    return send(200, 'application/json', JSON.stringify({
+      ok: true, ...require('./items').inventory(g),
+      buffs: [...b.player.map((x) => ({ ...x, scope: 'account' })), ...city.map((x) => ({ ...x, scope: 'city' }))],
+      protection: b.protection,
+    }));
   }
   if (url.pathname === '/api/city') {
     return send(200, 'application/json', JSON.stringify(SESSION.city(q.get('id')) || {}));
@@ -731,6 +741,46 @@ const server = http.createServer(async (req, res) => {
         const went = await WH.run(g, a, { log: (m) => lines.push(m.trim()) });
         for (const l of lines) SESSION.note(`manual: waterhero ${hero.name}: ${l}`, { city: castle.name, kind: 'act' });
         return send(200, 'application/json', JSON.stringify({ ok: went, lines }));
+      }
+
+      // The hero items held, for the hero row's + window. A preview only: it
+      // sends the game nothing, it reads the inventory the session already has.
+      if (b.action === 'itemspreview') {
+        const HI = require('./heroitems');
+        return send(200, 'application/json', JSON.stringify({ ok: true, items: HI.heroItemChoices(g) }));
+      }
+
+      // Apply a hero item (Excalibur and the rest), as the useheroitem script
+      // line does, and send its lines back for the page to show. The item sets a
+      // timed percentage buff rather than moving the attribute, so the summary
+      // reports the buff and how many are left.
+      if (b.action === 'useitem') {
+        if (!hero) throw new Error('hero not found in this city');
+        if (Number(hero.status) === 4) throw new Error(`${hero.name} is a prisoner you hold, not one of your heroes`);
+        const HI = require('./heroitems');
+        const itemId = HI.resolveItem(b.itemId);
+        if (!itemId) throw new Error(`unknown hero item "${b.itemId}"`);
+        if (itemId === 'hero.reset.1') throw new Error('Holy Water is the Reset button, not this one');
+        const times = Math.min(50, Math.max(1, Math.floor(Number(b.times) || 1)));
+        const lines = [];
+        const r2 = await HI.useOnHero(g, {
+          heroName: hero.name, heroId: hero.id, castleId: cid, itemId, times,
+          log: (m) => lines.push(String(m).trim()),
+        });
+        if (r2.used) {
+          const pct = { power: 'attack', management: 'politics', stratagem: 'intel' };
+          const moved = Object.entries(pct)
+            .map(([k, word]) => [word, r2.after[k + 'Buff'] - r2.before[k + 'Buff']])
+            .filter(([, d]) => d)
+            .map(([word, d]) => `${word} +${d}%`);
+          lines.push(`Used ${r2.used} x ${HI.describeItem(itemId)} on ${r2.hero} in ${r2.castle}`
+            + (r2.heldAfter === undefined ? '' : ` — ${r2.heldAfter} left`)
+            + (moved.length ? `, now ${moved.join(', ')}` : ''));
+        }
+        if (r2.error) lines.push(r2.error);
+        SESSION.note(`manual: useheroitem ${hero.name} ${itemId} x${times} -> ${r2.used || 0} used${r2.error ? ': ' + r2.error : ''}`,
+          { city: castle.name, kind: 'act' });
+        return send(200, 'application/json', JSON.stringify({ ok: !!r2.used && !r2.error, used: r2.used || 0, lines, error: r2.error }));
       }
 
       // What the next inn refresh would spend; the page asks before paying coins.

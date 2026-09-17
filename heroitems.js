@@ -3,47 +3,44 @@
 //
 //   hero.useItem {castleId, heroId, itemId}      (HeroCommand.as)
 //
-// The ids below come out of the decompiled client. The NAMES do not: the client
-// ships its item catalogue as an XML asset, and `common.getItemDefXml` only
-// returns items added after that build shipped — so asking the server for
-// "which id is Excalibur" comes back empty. The names here are therefore the
-// operator's, matched to the ids by what each one does.
+// The ids come out of the decompiled client; the names and effects come out of
+// the item catalogue extracted from WarReport.swf (itemcatalog.json), which is
+// the client's own wording — `common.getItemDefXml` only returns items added
+// after that build shipped, so the server itself never names these.
 //
-// Because of that, every command also accepts the raw id, and `heroitems`
-// prints what you actually hold. If a name here is wrong, the id still works.
+// Every command also accepts the raw id, so an id the catalogue does not name
+// still works, and `heroitems` prints what you actually hold.
 
-// +25% to one attribute, permanently.
+// +25% to one attribute for 7 days. It is a TIMED BUFF, not a permanent gain:
+// it lands in powerBuffAdded / managementBuffAdded / stratagemBuffAdded and adds
+// an entry to the hero's `buffs`, and the base attribute never moves.
 const ATTRIBUTE_ITEMS = {
   'hero.power.1': {
-    names: ['excalibur', 'exc', 'attack', 'power'],
+    names: ['excalibur', 'exc', 'excal', 'attack', 'power'],
     label: 'Excalibur',
-    effect: '+25% attack',
+    effect: '+25% attack for 7 days',
     attr: 'power',
   },
   'hero.management.1': {
-    names: ['wealthofnations', 'wealth', 'won', 'politics', 'management', 'pol'],
-    label: 'Wealth of Nations',
-    effect: '+25% politics',
+    names: ['wealthofnations', 'thewealthofnations', 'wealth', 'won', 'politics', 'management', 'pol'],
+    label: 'The Wealth of Nations',
+    effect: '+25% politics for 7 days',
     attr: 'management',
   },
   'hero.intelligence.1': {
-    names: ['intelligence', 'intel', 'int', 'stratagem', 'strat'],
-    label: 'Intelligence tome',        // UNCONFIRMED NAME — the id is right
-    effect: '+25% intelligence',
+    names: ['artofwar', 'theartofwar', 'aow', 'intelligence', 'intel', 'int', 'stratagem', 'strat'],
+    label: 'The Art of War',
+    effect: '+25% intelligence for 7 days',
     attr: 'stratagem',
   },
 };
 
-// A percentage of the hero's experience, which is what makes levelling cheap.
-//
-// UNCONFIRMED: which of a/b/c is Anabasis, which is Epitome of Military Science
-// and which is On Wars. They are ordered small -> large here, the usual
-// convention for an a/b/c triple, and every one of them is accepted by name AND
-// by id so a wrong guess costs nothing but a relabel.
+// Experience, which is what makes levelling cheap: a flat figure or a share of
+// the level cap, whichever is greater. a/b/c really do run small -> large.
 const EXPERIENCE_ITEMS = {
-  'player.experience.1.a': { names: ['anabasis', 'exp1', 'expsmall'], label: 'Anabasis', effect: 'hero experience (small)' },
-  'player.experience.1.b': { names: ['epitome', 'epitomeofmilitaryscience', 'ems', 'exp2'], label: 'Epitome of Military Science', effect: 'hero experience (medium)' },
-  'player.experience.1.c': { names: ['onwars', 'onwar', 'ow', 'exp3', 'explarge'], label: 'On Wars', effect: 'hero experience (large)' },
+  'player.experience.1.a': { names: ['anabasis', 'exp1', 'expsmall'], label: 'Anabasis', effect: '+1,000 experience or 8% of the level cap' },
+  'player.experience.1.b': { names: ['epitome', 'epitomeofmilitaryscience', 'ems', 'exp2'], label: 'Epitome of Military Science', effect: '+10,000 experience or 30% of the level cap' },
+  'player.experience.1.c': { names: ['onwar', 'onwars', 'ow', 'exp3', 'explarge'], label: 'On War', effect: '+100,000 experience or 100% of the level cap' },
 };
 
 // Holy Water is named here so `useheroitem <hero> holy water` finds it, but it is
@@ -72,7 +69,9 @@ function resolveItem(word) {
 
 const describeItem = (id) => (ALL[id] ? `${ALL[id].label} (${ALL[id].effect})` : id);
 
-// Everything this account holds that can be applied to a hero.
+// Everything this account holds that can be applied to a hero. Ids ALL does not
+// name (the nine loyalty medals, and anything the game adds later) are named
+// from the item catalogue when it has them, and by their id when it does not.
 function heldHeroItems(game) {
   const items = ((game.player && game.player.items) || [])
     .reduce((m, i) => { m[i.id] = Number(i.count || 0); return m; }, {});
@@ -80,12 +79,30 @@ function heldHeroItems(game) {
   for (const [id, def] of Object.entries(ALL)) {
     if (items[id]) rows.push({ id, count: items[id], label: def.label, effect: def.effect });
   }
+  let cat = null;
   for (const [id, count] of Object.entries(items)) {
     if (!ALL[id] && /^hero\./.test(id) && count) {
-      rows.push({ id, count, label: id, effect: 'hero item' });
+      if (!cat) { try { cat = require('./items').catalogue(); } catch { cat = new Map(); } }
+      const d = cat.get(id) || {};
+      rows.push({ id, count, label: d.name || require('./items').MEDALS[id] || id, effect: d.desc || 'hero item' });
     }
   }
   return rows.sort((a, b) => b.count - a.count);
+}
+
+// The rows the console's hero-item window offers. The three attribute items come
+// first and always, even at zero, so the window says outright that none is held
+// rather than leaving a gap; then everything else held that hero.useItem takes.
+// Holy Water is left out: it does not go through hero.useItem at all, and the
+// hero row has its own Reset button for it.
+function heroItemChoices(game) {
+  const rows = Object.entries(ATTRIBUTE_ITEMS).map(([id, def]) => ({
+    id, count: countOf(game, id), label: def.label, effect: def.effect, attr: def.attr,
+  }));
+  for (const r of heldHeroItems(game)) {
+    if (!ATTRIBUTE_ITEMS[r.id] && r.id !== 'hero.reset.1') rows.push(r);
+  }
+  return rows;
 }
 
 const countOf = (game, itemId) => {
@@ -98,17 +115,27 @@ const countOf = (game, itemId) => {
 // Stops early rather than pushing on when the hero cannot be found, the item
 // runs out, or the server refuses — repeating a refused command is how an
 // account gets throttled.
-async function useOnHero(game, { heroName, itemId, times = 1, log = () => {} }) {
+async function useOnHero(game, { heroName, heroId, castleId, itemId, times = 1, log = () => {} }) {
   if (itemId === 'hero.reset.1') {
     return { ok: false, used: 0, error: `Holy Water goes through hero.resetPoint, not hero.useItem — use  waterhero ${heroName || '<hero>'}` };
   }
+  // Without a castleId this takes the first city holding the name, which is what
+  // the script line does. The console has the city the operator clicked in, and
+  // passes it, so two heroes of the same name in two cities stay apart.
   const wanted = String(heroName || '').toLowerCase();
+  const where = castleId === undefined || castleId === null ? (game.castles || [])
+    : (game.castles || []).filter((c) => String(game.castleId(c)) === String(castleId));
   let castle = null, hero = null;
-  for (const c of game.castles || []) {
-    const h = (c.heros || []).find((x) => String(x.name || '').toLowerCase() === wanted);
+  for (const c of where) {
+    const h = (c.heros || []).find((x) => (heroId === undefined || heroId === null
+      ? String(x.name || '').toLowerCase() === wanted
+      : String(x.id) === String(heroId)));
     if (h) { castle = c; hero = h; break; }
   }
-  if (!hero) return { ok: false, used: 0, error: `no hero called "${heroName}" in any city` };
+  if (!hero) {
+    return { ok: false, used: 0,
+      error: `no hero called "${heroName}" in ${where.length === 1 ? where[0].name : 'any city'}` };
+  }
 
   const have = countOf(game, itemId);
   if (!have) return { ok: false, used: 0, error: `no ${describeItem(itemId)} in the inventory` };
@@ -158,5 +185,5 @@ async function useOnHero(game, { heroName, itemId, times = 1, log = () => {} }) 
 
 module.exports = {
   ATTRIBUTE_ITEMS, EXPERIENCE_ITEMS, OTHER_ITEMS, ALL,
-  resolveItem, describeItem, heldHeroItems, countOf, useOnHero,
+  resolveItem, describeItem, heldHeroItems, heroItemChoices, countOf, useOnHero,
 };

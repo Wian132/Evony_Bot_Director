@@ -786,7 +786,13 @@ recover <hero> [to <city>]
 - **`useheroitem <hero> <item> [repeat <n>]`** (`heroitems.js`): `useheroitem OTTO excalibur
   repeat 5`, `useheroitem OTTO nation medal`, `useheroitem OTTO hero.power.1`. Never on a
   prisoner; `useheroitem <hero> holy water` runs `waterhero`, because the game never resets
-  through `hero.useItem`. **`heroitems`** lists the hero items held.
+  through `hero.useItem`. **`heroitems`** lists the hero items held. The Heroes tab's **+**,
+  in the Buff column of each hero's line, does the same from the console: it lists what is
+  held and how many of each, greys out the ones you have none of, and applies the one you
+  pick. Excalibur is `hero.power.1` (+25% attack), The Wealth of Nations `hero.management.1`
+  (+25% politics) and The Art of War `hero.intelligence.1` (+25% intelligence); each is a
+  buff that lasts 7 days rather than a permanent gain, so the base attribute never moves and
+  the Heroes tab shows the buffed figure in colour beside the percentage.
 - **`lostheroes`** and **`recover`** (`stone-of-finding.js`) do what the Stone of Finding
   does in the game: it opens a list of heroes you have lost, and restoring one spends a
   stone. A hero captured by the city it attacked is on that list, and comes home with it.

@@ -1213,8 +1213,13 @@ async function goalsCall(save) {
 
 async function saveLoadout() {
   if (acctWhich()) return acctCall(true);
-  const city = String(S.city), L = loadOf(city), hint = hintIn(city, 'script');
+  const city = String(S.city), hint = hintIn(city, 'script');
+  // A console restarted under an open tab answers nothing for a moment, and the
+  // first read of this city's loadouts fails. Ask again here rather than refuse
+  // every save until the page is reloaded.
+  const L = loadOf(city) || await loadLoadouts(city);
   if (!L) return hint('this city\'s loadouts have not loaded — try again', true);
+  if (String(S.city) !== city) return;                 // moved on while it loaded
   const slot = L.slot, src = $('editor').value, key = edcKey();
   const r = await post('/api/loadouts', { city, slot, src });
   if (r.ok === false) return hint('not saved — ' + (r.error || 'failed'), true);
@@ -1410,8 +1415,10 @@ $('clearScript').onclick = async () => {
 // different cities go side by side, and each city's Output shows its own run.
 $('runScript').onclick = async () => {
   if (acctWhich()) return;             // the new-city script runs by itself, in new cities
-  const src = $('editor').value, L = loadOf();
+  const src = $('editor').value;
   if (!S.city) return paintEditHint('no city is open yet', true);
+  // as in saveLoadout: a restarted console leaves the first read failed
+  const L = loadOf() || await loadLoadouts(String(S.city));
   if (!L) return paintEditHint('this city\'s loadouts have not loaded — try again', true);
   if (!src.trim()) return paintEditHint(`Load ${L.slot} is empty — nothing to run`, true);
   const slot = L.slot, name = loadName(src), city = String(S.city);

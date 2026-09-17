@@ -731,6 +731,23 @@ t('the page loads, signed in, with a city open', async () => {
     throw new Error(e.message + (pageErrors.length ? ' — the page threw: ' + pageErrors.join(' | ') : ' — the page threw nothing'));
   }
 });
+t('a loadout read that failed is asked again, not refused until the page is reloaded', async () => {
+  if (browserOff) return 'skipped';
+  // what a console restart does to an open tab: the first read of this city's
+  // loadouts fails, and Save used to refuse for ever afterwards
+  await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);
+  await until(() => ev('!!loadOf()'), 8000, 'the loadouts');
+  const broke = await ev(`(async () => {
+    delete LOAD.cities[String(S.city)];                       // as if the first read had failed
+    const before = !!loadOf();
+    await saveLoadout();
+    return { before, after: !!loadOf(), hint: ($('editHint') || {}).textContent || '' };
+  })()`);
+  assert.strictEqual(broke.before, false, 'the test started with no loadouts, as after a failed read');
+  assert.strictEqual(broke.after, true, 'Save asked again and got them');
+  assert.doesNotMatch(String(broke.hint), /have not loaded/, broke.hint);
+});
+
 t('Script tab: the Run box sits beside Run; the loadout picker marks autorun loadouts', async () => {
   if (browserOff) return 'skipped';
   await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);

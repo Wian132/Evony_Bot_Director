@@ -381,9 +381,18 @@ t('StartResearch: the examples, every abbreviation, quickest/cheapest/dearest, /
 t('Research: research <tech> stays OTTObot\'s; research lo:5 and the conditions are the research goal', () => {
   assert.deepStrictEqual(P('research archery'), { cmd: 'research', tech: C.TECH_BY_ID[14] });
   assert.strictEqual(P('research military science').tech.typeId, 8);
-  for (const l of ['research lo:5', 'research lo:5,ho:5,com:4', 'research ?a:10?pr:10', 'research ?ho:10?st:0:0', 'research st:0:0?ho:10?']) {
+  for (const l of ['research lo:5', 'research lo:5,ho:5,com:4', 'research ?a:10?pr:10']) {
     assert.deepStrictEqual([P(l).cmd, P(l).text, P(l).via], ['goal', l, 'research'], l);
   }
+  // The wiki's `research ?ho:10?st:0:0` / `research st:0:0?ho:10?` demolish the
+  // Stable from a research line. The research goal takes research:level only
+  // (goal-research.js), so the line is refused where it is written, with the
+  // build line to put it on — a script error like any other bad argument.
+  for (const l of ['research ?ho:10?st:0:0', 'research st:0:0?ho:10?']) {
+    assert.match(parseErr(l), /^research: "st:0:0" reads as a building target \(type:level:quantity\) — a research line takes research:level; put it on a build line \(build st:0:0\)$/, l);
+    assert.strictEqual(script.parse(l)[0].cmd, 'error', l);
+  }
+  assert.deepStrictEqual([P('build ?ho:10?st:0:0').cmd, P('build ?ho:10?st:0:0').via], ['goal', 'build']);
 });
 
 t('CancelResearch, CheckResearch, CancelBuilding: bare words', () => {

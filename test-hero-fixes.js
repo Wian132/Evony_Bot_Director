@@ -661,9 +661,11 @@ t('"any" is refused in fire, release, mayor, levelup and addpoint; levelup all s
 });
 
 t('the script editor paints a refused "any" red with the reason (script.lineStatus)', () => {
-  const s = script.lineStatus('fire any\nfire Bob\ninnrefresh force');
+  const s = script.lineStatus('fire any\nfire Bob\ninnrefresh');
   eq(s.lines.map((l) => l.status), ['error', 'ok', 'ok']);
   has(s.lines[0].msg, /fire: name the hero — "any" is refused here/);
+  // innrefresh force is gone (scripts spend cents only through buyitem): red too
+  eq(script.lineStatus('innrefresh force').lines[0].status, 'error');
 });
 
 t('the goals editor: keepcapturedheroes now acts (ok), and since step 12 fasthero too', () => {
@@ -752,12 +754,13 @@ t('script mayor: never a prisoner or a hero away, straight over the sitting mayo
   eq(w.sent, ['hero.promoteToChief'], 'one promotion, no dischargeChief');
 });
 
-t('script innrefresh refuses to pay coins unless told to', async () => {
+t('script innrefresh never pays coins: it spends a Hero Hunting or does nothing', async () => {
   const none = scriptWorld([hero({})], []);
-  has(await runScript(none, 'innrefresh'), /not refreshed: no Hero Hunting held, so the server charges game coins — write {2}innrefresh force {2}to go ahead/);
+  has(await runScript(none, 'innrefresh'), /not refreshed: no Hero Hunting held, so the server charges game coins — buy a Hero Hunting with buyitem first \(buyitem Hero Hunting\)/);
   eq(none.sent, [], 'nothing sent');
-  await runScript(none, 'innrefresh force');
-  eq(none.sent, ['hero.refreshHerosListFromTavern', 'hero.getHerosListFromTavern']);
+  // there is no "force": a refresh paid in coins can only be bought as an item
+  has(parseErr('innrefresh force'), /scripts spend cents only through buyitem/);
+  eq(none.sent, [], 'still nothing sent');
   const held = scriptWorld([hero({})], [{ id: 'consume.refreshtavern.1', count: 2 }]);
   has(await runScript(held, 'innrefresh'), /refresh the inn: spends 1 Hero Hunting \(2 held\)/);
   eq(held.sent[0], 'hero.refreshHerosListFromTavern');
@@ -765,7 +768,7 @@ t('script innrefresh refuses to pay coins unless told to', async () => {
   unknown.g.player.items = undefined;
   has(await runScript(unknown, 'innrefresh'), /not refreshed: the inventory has not loaded/);
   eq(unknown.sent, []);
-  has(parseErr('innrefresh please'), /usage {2}innrefresh \[force\]/);
+  has(parseErr('innrefresh please'), /usage {2}innrefresh {3}— nothing goes after it/);
 });
 
 // The Heroes tab's Actions cell, from the real app.html source.

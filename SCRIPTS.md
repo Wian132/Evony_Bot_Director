@@ -837,9 +837,9 @@ dreamtruce hh:mm[:ss] | dreamtruce hh mm [ss] | dreamtruce /cancel   (server tim
   111,222`** is that Broken Gates, and `/close` shuts the gates instead.
 - **`truce`** spends a Truce Agreement for the whole account. **`dreamtruce 10:20`** sets the
   Dream Truce's start, in **server** time: 10 hours truced every 24 while they last
-  (`/cancel` ends it). Both ask for the account password, signed with the hash the login
-  sent, which only the goals update keeps (`goals/integration`): until it is merged they
-  fail and say so.
+  (`/cancel` ends it). Both ask for the account password: they are signed with the hash
+  the login sent (the console keeps it and never logs it), so a session that never logged
+  in with a password sends nothing and says so.
 
 The lord, quests, reports and logging out:
 
@@ -1051,10 +1051,9 @@ prints a summary); `$error` is what the goals could not take. NEAT's NewCityScri
 if $error == null goal $result
 ```
 
-A goal line for a goal OTTObot doesn't have (`tradepolicy`, `keepresources`,
-`valleyheroes`, `config abandon`) is refused like any other bad line. Goal lines need the
-goals update's goal layer (`goallayers.js`, on `goals/integration`). Until it is merged,
-every goal line fails, clearly, and the script goes on.
+A goal line for a goal OTTObot doesn't have (`capturedfirelimit`) is refused like any
+other bad line. Goal lines go into the goal layer (`goallayers.js`); on a build without
+one every goal line fails, clearly, and the script goes on.
 
 ## Objects and functions
 

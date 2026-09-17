@@ -12,8 +12,8 @@
 //   goal $result                       an expression: every line of its text is a goal line
 //                                      (NewCityScript: @get "NewCityGoals.txt" / if $error == null goal $result)
 //   buildinggoals st:0:0,b:9:12        = goal build st:0:0,b:9:12 (wiki BuildingGoals)
-//   techgoals ar:10,ho:10,mt:9         = goal research ...; OTTObot has no research goal yet, so
-//                                      this fails with the goals' reason (wiki TechGoals: deprecated)
+//   techgoals ar:10,ho:10,mt:9         = goal research ... (wiki TechGoals: deprecated; the research
+//                                      goal is OTTObot's own since the goals build-out)
 //   loadgoals 3 | loadgoals Fla | loadgoals 12345
 //                                      goal set 3 (the console's "Goal set 3"), or that city's saved
 //                                      goals, in place of this city's goals, global ones too (wiki LoadGoals)
@@ -53,20 +53,17 @@ const isGoalWord = (w) => {
   const G = goalsMod();
   return !!(G && G.GOALS && Object.prototype.hasOwnProperty.call(G.GOALS, w));
 };
-// Goals NEAT has that the goals side is still adding: let through here, and the
-// goal layer says when it runs whether it can take them.
-const COMING = new Set(['research']);
-
 // A goal line as written -> the reasons it cannot be read ([] when it reads,
 // or cannot be checked here).
 function goalErrors(text) {
   const G = goalsMod();
   if (!G || typeof G.parseGoals !== 'function') return [];
   const w = firstWord(text);
-  if (!isGoalWord(w)) return COMING.has(w) ? [] : [`"${w}" is not a goal`];
+  if (!isGoalWord(w)) return [`"${w}" is not a goal`];
   let p;
-  try { p = G.parseGoals(text); } catch (e) { return [e.message]; }
-  return (p.errors || []).map((e) => e.error);
+  // never let a parser's own throw out of a parse: it is this line's error
+  try { p = G.parseGoals(text); } catch (e) { return [String((e && e.message) || e)]; }
+  return ((p && p.errors) || []).map((e) => String((e && e.error) || e));
 }
 
 // A goal line -> its action; a goal line that cannot be read refuses the script
@@ -191,7 +188,7 @@ async function runGoal(a, env) {
     return { ok: false, error: msg, result: layerResult(layerNow(GL, p)) };
   }
   const errors = [];
-  let layer, noResearch = false;
+  let layer;
   for (const l of lines) {
     if (many) env.log('  + ' + l);
     const r = GL.addScriptLine(p.accountId, p.castleId, l);
@@ -201,21 +198,13 @@ async function runGoal(a, env) {
       env.log(`  ${many ? '  ' : '-> '}FAILED - ${e}`);
       errors.push(many ? `"${l}": ${e}` : e);
     }
-    if (got.errors.length && firstWord(l) === 'research' && !isGoalWord('research')) noResearch = true;
     if (r && r.layer !== undefined) layer = r.layer;
     if (!r || r.error) break;                 // the layer is full: the rest cannot go in either
   }
   if (layer === undefined) layer = layerNow(GL, p);
   if (!errors.length) env.log('  -> ok — ' + describeLayer(layer));
   else if (layer) env.log('  ' + describeLayer(layer));
-  let error = errors.join('; ');
-  if (noResearch) {
-    // techgoals, goal research ..., and city's `research lo:5` (NEAT's research goal)
-    const why = 'OTTObot has no research goal yet — research <tech> (no level) researches it now';
-    env.log('  ' + why);
-    error += ` (${why})`;
-  }
-  return { ok: !errors.length, error, result: layerResult(layer) };
+  return { ok: !errors.length, error: errors.join('; '), result: layerResult(layer) };
 }
 
 const commands = {
@@ -225,7 +214,7 @@ const commands = {
       const rest = String(args).trim();
       if (!rest) throw usage('goal', 'goal <goal line>', 'goal config npc:5 | goal build c:10:9 | goal $result');
       const w = firstWord(rest);
-      if (isGoalWord(w) || COMING.has(w)) return goalAction(rest, 'goal');
+      if (isGoalWord(w)) return goalAction(rest, 'goal');
       try { E.parseExpression(rest); } catch {
         if (!goalsMod()) return { cmd: 'goal', text: rest, via: 'goal' };   // cannot tell: the goal layer will
         throw new Error(`goal: "${w}" is not a goal — write a goal line after it (goal config npc:5, goal build c:10:9), `
@@ -254,8 +243,8 @@ const commands = {
     run: runGoal,
   },
 
-  // Deprecated in NEAT (`research` in a script edits the research goals now).
-  // OTTObot has no research goal yet: the goal layer says so when it runs.
+  // Deprecated in NEAT (`research` in a script edits the research goals now);
+  // = goal research ..., which the goals build-out's research goal takes.
   techgoals: {
     usage: 'techgoals <research goal>',
     parse(args) {

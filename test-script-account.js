@@ -41,8 +41,9 @@ function fakeClient(handlers, sent) {
 
 const HASH = '5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8';
 
-// Lord02 with two cities. `items` is what is held; `goals` gives the Game
-// the goals update's password hash and useTruce (goals/integration game.js).
+// Lord02 with two cities. `items` is what is held; `goals` gives the session
+// the login's password hash, which the requests that re-ask for the password are
+// signed with (evony.js passwordHash; Game.useTruce reads it).
 function world({ items = {}, handlers = {}, goals = false, buffs = [], userName = 'Lord02' } = {}) {
   const g = new Game();
   g.player = {
@@ -56,10 +57,7 @@ function world({ items = {}, handlers = {}, goals = false, buffs = [], userName 
   ];
   const sent = [];
   g.c = fakeClient(handlers, sent);
-  if (goals) {
-    g.c.passwordHash = () => HASH;
-    g.useTruce = async (itemId) => g.req('city.setStopWarState', { ItemId: itemId, passWord: g.c.passwordHash() });
-  }
+  if (goals) g.c.passwordHash = () => HASH;
   return { g, sent, of: (cmd) => sent.filter((s) => s.cmd === cmd).map((s) => s.data) };
 }
 
@@ -231,11 +229,13 @@ t('OTTObot\'s id-and-count line still sends the count', async () => {
 // ---------------------------------------------------------------------------
 section('truce and dreamtruce (Truce, DreamTruce)');
 
-t('truce needs the goals update, and says so', async () => {
+t('a session that cannot sign sends no truce, and says why', async () => {
+  // no password hash on this session (it never logged in with a password), so
+  // Game.useTruce refuses before anything goes out
   const w = world({ items: { 'player.peace.1': 1 } });
   const r = await runIn(w, 'truce\nkeep("e", $error)');
   assert.strictEqual(w.sent.length, 0);
-  assert.match(r.kept.e, /^truce needs the goals update \(goals\/integration\)/);
+  assert.match(r.kept.e, /this session never logged in with a password, so it cannot sign a truce/);
 });
 t('with it, the truce is city.setStopWarState signed with the login\'s hash, never logged', async () => {
   const w = world({ items: { 'player.peace.1': 1 }, goals: true });

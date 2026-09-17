@@ -210,7 +210,8 @@ t('build c:10:9, build ?w:10?q:0:0,ws:0:0 and research lo:5 are NEAT\'s goals (c
   assert.strictEqual(script.parseLine('research archery').cmd, 'research');
   const r = await runIn('build b:9:15\nresearch lo:5\nif $error echo "ERR " + $error');
   assert.deepStrictEqual(adds(r.GL), ['build b:9:15', 'research lo:5']);
-  assert.match(printed(r, 'ERR')[0], /unknown goal "research" \(not added\) \(OTTObot has no research goal yet/);
+  // the research goal is OTTObot's own since the goals build-out: no refusal any more
+  assert.deepStrictEqual(printed(r, 'ERR'), [], r.text);
 });
 t('a mistyped command is still an unknown command, not a goal', () => {
   assert.match(parseErr('atack 1,2 any a:1'), /unknown command: atack/);
@@ -218,10 +219,15 @@ t('a mistyped command is still an unknown command, not a goal', () => {
   assert.match(parseErr('troops a:5'), /unknown command: troops/);
 });
 t('a NEAT goal OTTObot has no goal for, or a config switch written as a line, says so', () => {
-  assert.match(parseErr('processingpolicy t b r a s v n'), /^processingpolicy is a NEAT goal OTTObot has no goal for yet/);
-  assert.match(parseErr('valleytroops s:50k'), /^valleytroops is a NEAT goal OTTObot has no goal for yet/);
-  assert.match(parseErr('npc 5'), /^npc is a config switch, not a line of its own — write {2}config npc:5$/);
-  assert.match(parseErr('buildnpc 5'), /write {2}config buildnpc:5$/);
+  // the goals build-out brought processingpolicy, valleytroops, npc and buildnpc:
+  // they are goal lines now, and a bare config key is read as its config line
+  for (const l of ['processingpolicy t b r a s v n', 'valleytroops s:50k', 'npc 5', 'buildnpc 5']) {
+    assert.strictEqual(script.parseLine(l).cmd, 'goal', l);
+  }
+  // the ones it still has no goal for
+  assert.match(parseErr('capturedfirelimit 5'), /^capturedfirelimit is a NEAT goal OTTObot has no goal for yet/);
+  assert.match(parseErr('nomayor 1'), /^nomayor is a config switch, not a line of its own — write {2}config nomayor:1$/);
+  assert.match(parseErr('feastinghallspace 2'), /write {2}config feastinghallspace:2$/);
   // comfort is also NEAT's comfort command (city's module), which wins: never a goal
   assert.strictEqual(script.parseLine('comfort 1').cmd, 'comfort', 'comfort is NEAT\'s comfort command, never a goal');
 });
@@ -302,24 +308,27 @@ t('goal <line>, a bare goal line and buildinggoals all add a line', async () => 
   assert.doesNotMatch(r.text, /FAILED/);
 });
 t('a line the goal layer could not use is an error, not silence', async () => {
-  const r = await runIn('goal $t\nif $error echo "ERR " + $error\necho "count " + $result.count', { globals: { $t: 'plan x' } });
-  assert.deepStrictEqual(adds(r.GL), ['plan x']);
-  assert.match(r.text, /-> FAILED - unknown goal "plan" \(not added\)/);
-  assert.deepStrictEqual(printed(r, 'ERR'), ['unknown goal "plan" (not added)']);
+  // no goal word at all (plan is a goal since the goals build-out), so the layer
+  // takes nothing from it
+  const r = await runIn('goal $t\nif $error echo "ERR " + $error\necho "count " + $result.count', { globals: { $t: 'nosuchgoal x' } });
+  assert.deepStrictEqual(adds(r.GL), ['nosuchgoal x']);
+  assert.match(r.text, /-> FAILED - unknown goal "nosuchgoal" \(not added\)/);
+  assert.deepStrictEqual(printed(r, 'ERR'), ['unknown goal "nosuchgoal" (not added)']);
   assert.deepStrictEqual(printed(r, 'count'), ['0']);
 });
-t('goal research ...: the goals\' refusal, and there is no research goal yet', async () => {
+t('goal research ...: the research goal takes it (the goals build-out)', async () => {
   const r = await runIn('goal research ar:4,ms:5\nif $error echo "ERR " + $error');
   assert.deepStrictEqual(adds(r.GL), ['research ar:4,ms:5']);
-  assert.match(r.text, /-> FAILED - unknown goal "research" \(not added\)\n {2}OTTObot has no research goal yet/);
-  assert.deepStrictEqual(printed(r, 'ERR'), ['unknown goal "research" (not added) (OTTObot has no research goal yet — research <tech> (no level) researches it now)']);
+  assert.match(r.text, /-> ok — 1 script goal line on top of the saved goals/);
+  assert.deepStrictEqual(printed(r, 'ERR'), []);
+  // a research line the goals cannot read still refuses the script at load time
+  assert.match(parseErr('goal research nosuchtech:4'), /^goal: RESEARCH: unknown research "nosuchtech"/);
 });
-t('techgoals passes the goals\' refusal through, and says there is no research goal yet', async () => {
+t('techgoals is goal research ... (NEAT deprecated it)', async () => {
   const r = await runIn('techgoals ar:10,ho:10,mt:9\nif $error echo "ERR " + $error');
   assert.deepStrictEqual(adds(r.GL), ['research ar:10,ho:10,mt:9']);
-  const [err] = printed(r, 'ERR');
-  assert.match(err, /unknown goal "research" \(not added\)/);
-  assert.match(err, /OTTObot has no research goal yet/);
+  assert.deepStrictEqual(printed(r, 'ERR'), [], r.text);
+  assert.match(r.text, /-> ok — 1 script goal line on top of the saved goals/);
 });
 t('an error on a line that still set something: $error, and the line counts', async () => {
   const GL = fakeLayers({

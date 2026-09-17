@@ -636,12 +636,20 @@ class Game {
     const cid = Number(castleId);
     const asked = Date.now();
     const fresh = () => { const c = this.injured && this.injured[cid]; return c && c.at >= asked ? c : null; };
-    const r = await this.req('army.getInjuredTroop', { castleId: cid });
-    if (!r || r.ok !== 1) return r || { ok: 0, errorMsg: 'no reply to army.getInjuredTroop' };
-    // a reply that carries the camp itself counts the same as the push
-    if (r.troop && typeof r.troop === 'object') this.applyInjuredUpdate({ ...r, castleId: cid });
-    while (!fresh() && Date.now() - asked < graceMs) await new Promise((res) => setTimeout(res, 100));
-    return { ok: 1, camp: fresh() };
+    // connect() applies this push for a live session; listening here as well
+    // means a Game that was never connected (a script run against a bare Game,
+    // the offline suites) still hears the camp while this call waits.
+    const c = this.c;
+    const on = (cmd, data) => { if (cmd === 'server.InjuredTroopUpdate' && data && Number(data.castleId) === cid) this.applyInjuredUpdate(data); };
+    if (c && typeof c.on === 'function') c.on('cmd', on);
+    try {
+      const r = await this.req('army.getInjuredTroop', { castleId: cid });
+      if (!r || r.ok !== 1) return r || { ok: 0, errorMsg: 'no reply to army.getInjuredTroop' };
+      // a reply that carries the camp itself counts the same as the push
+      if (r.troop && typeof r.troop === 'object') this.applyInjuredUpdate({ ...r, castleId: cid });
+      while (!fresh() && Date.now() - asked < graceMs) await new Promise((res) => setTimeout(res, 100));
+      return { ok: 1, camp: fresh() };
+    } finally { if (c && typeof c.off === 'function') c.off('cmd', on); }
   }
 
   // army.cureInjuredTroop {castleId} heals the whole camp. The client sends it

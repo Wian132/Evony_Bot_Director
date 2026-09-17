@@ -734,7 +734,8 @@ for t in test-enginestate test-goals test-war test-npc test-heroes test-buildnpc
 done
 ```
 
-TESTCOUNT_PLACEHOLDER
+2,813 tests in 59 suites, no network required. `test-holiday-snipe` has 10 known
+failures, which it had before the goals and scripts build-outs.
 
 **Never run `test-*.js` as a glob.** `test-scope`, `test-login`, `test-raw`, `test-block`,
 `test-buy`, `test-wall`, `test-clean`, `test-castle`, `test-ctx`, `test-shapes` and

@@ -81,7 +81,6 @@
 const C = require('./constants');
 const W = require('./script-words');
 const H = require('./goal-heroes');
-const { Game } = require('./game');
 
 // deploy's march types: NEAT's Deploy (at bu re sc), BigDeploy (atk bld rei sct),
 // our tr, and the full names.
@@ -178,12 +177,12 @@ function parseForts(s, what) {
 
 // ------------------------------------------------------------- hero strings
 
-// goal-heroes reads base as attribute − *Added, and the live roster sends 0 for
-// every *Added field, so there it comes out as the attribute itself (a level-40
-// hero with 100 attack reads as base 100). Game.heroBase is what the roster
-// supports: the top attribute less the point a level gave it, unspent points
-// added back. Every other field is goal-heroes' own.
-const fieldOf = (name) => (name === 'base' || name === 'bse' ? (h) => Game.heroBase(h) : H.FIELDS[name]);
+// Every field is goal-heroes' own, `base` included: since the goals build-out
+// it reads Game.heroBase (the top attribute less the point a level gave it,
+// unspent points added back), which is what the live roster supports — it sends
+// 0 in every *Added field, so the old attribute − *Added read the whole
+// attribute as the base.
+const fieldOf = (name) => H.FIELDS[name];
 function cmp(op, a, b) {
   switch (op) {
     case '>': return a > b;

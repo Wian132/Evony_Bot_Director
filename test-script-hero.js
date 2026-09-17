@@ -17,7 +17,8 @@ const parseErr = (line) => { try { script.parseLine(line); } catch (e) { return 
 const errs = (src) => script.parse(src).filter((x) => x.cmd === 'error').map((x) => x.error);
 
 // City 9: Ken (idle), QUEEN (mayor), Rider (marching), Bob (a prisoner we
-// hold, asking 2 Nation Medals), Smarty (intel, no experience to spare), Junk
+// hold, asking 2 Nation Medals; base 80, over the captured default's 69), Smarty
+// (intel, no experience to spare), Junk
 // (low level, low base), Tiny (a low prisoner). Fla: Farmer1 and BigGuy.
 function world({ gold = 500000, items = {}, replies = {}, inn = null } = {}) {
   const g = new Game();
@@ -30,7 +31,7 @@ function world({ gold = 500000, items = {}, replies = {}, inn = null } = {}) {
       { id: 11, name: 'Ken', status: 0, level: 40, power: 120, management: 30, stratagem: 20, loyalty: 80, experience: 200000, upgradeExp: 160000, remainPoint: 0 },
       { id: 12, name: 'QUEEN', status: 1, level: 193, power: 67, management: 254, stratagem: 21, loyalty: 100, experience: 4737560, upgradeExp: 3724900, remainPoint: 0 },
       { id: 13, name: 'Rider', status: 3, level: 60, power: 200, management: 10, stratagem: 10, loyalty: 90, experience: 500000, upgradeExp: 360000 },
-      { id: 14, name: 'Bob', status: 4, level: 90, power: 150, management: 10, stratagem: 12, loyalty: 10, itemId: 'hero.loyalty.9', itemAmount: 2, experience: 1e7, upgradeExp: 810000 },
+      { id: 14, name: 'Bob', status: 4, level: 90, power: 170, management: 10, stratagem: 12, loyalty: 10, itemId: 'hero.loyalty.9', itemAmount: 2, experience: 1e7, upgradeExp: 810000 },
       { id: 15, name: 'Smarty', status: 0, level: 30, power: 20, management: 40, stratagem: 90, loyalty: 100, experience: 10, upgradeExp: 90000 },
       { id: 16, name: 'Junk', status: 0, level: 10, power: 55, management: 20, stratagem: 10, loyalty: 60, experience: 20000, upgradeExp: 10000, remainPoint: 0 },
       { id: 17, name: 'Tiny', status: 4, level: 5, power: 30, management: 5, stratagem: 5, loyalty: 0 },
@@ -225,24 +226,25 @@ t('a hero this script just sent on a march is left alone, before the server says
 t('firehero any:level<50 all: only heroes no keep rule protects (the default keeps base 69+)', async () => {
   const w = world();
   const r = await runIn(w, 'firehero any:level<50 all' + TAIL);
-  assert.deepStrictEqual(writes(w).map((s) => s.data.heroId), [16], r.text);
-  assert.match(r.text, /Ken \(L40, base 120\): kept — keepheroes any:level>=50\|any:base>=69 \(the default\)/);
-  assert.match(r.text, /Smarty \(L30, base 90\): kept/);
+  // base = Game.heroBase (top attribute − level + unspent points): Ken 80, Smarty 60, Junk 45
+  assert.deepStrictEqual(writes(w).map((s) => s.data.heroId), [15, 16], r.text);
+  assert.match(r.text, /Ken \(L40, base 80\): kept — keepheroes any:level>=50\|any:base>=69 \(the default\)/);
+  assert.match(r.text, /fire Smarty \(id 15, L30\) -> ok/);
   assert.match(r.text, /fire Junk \(id 16, L10\) -> ok/);
   assert.doesNotMatch(r.text, /Bob|Tiny/, 'prisoners are not fired');
-  assert.strictEqual(tail(r)[1], 1);
+  assert.strictEqual(tail(r)[1], 2, '$result: how many went');
 });
 t('the city\'s keepheroes goal decides instead of the default', async () => {
   const w = world();
   const r = await runIn(w, 'firehero any:level<50 all', { session: session(w, { 9: 'keepheroes any:level>=35' }) });
   assert.deepStrictEqual(writes(w).map((s) => s.data.heroId), [15, 16], r.text);
-  assert.match(r.text, /Ken \(L40, base 120\): kept — keepheroes any:level>=35$/m);
+  assert.match(r.text, /Ken \(L40, base 80\): kept — keepheroes any:level>=35$/m);
 });
 t('a dry run lists who would go and sends nothing', async () => {
   const w = world();
   const r = await runIn(w, 'firehero any:level<50 all', { dryRun: true });
   assert.deepStrictEqual(w.sent, []);
-  assert.match(r.text, /fire Junk \(id 16, L10, base 55\)\n {2}\[dry run\] not sent/);
+  assert.match(r.text, /fire Junk \(id 16, L10, base 45\)\n {2}\[dry run\] not sent/);
 });
 t('nothing matching is no failure', async () => {
   const w = world();
@@ -267,7 +269,7 @@ t('releasehero any:level<100 all: prisoners only, keepcapturedheroes (default) p
   const w = world();
   const r = await runIn(w, 'releasehero any:level<100 all' + TAIL);
   assert.deepStrictEqual(writes(w).map((s) => [s.cmd, s.data.heroId]), [['hero.releaseHero', 17]], r.text);
-  assert.ok(r.text.includes(`Bob (L90, base 150): kept — keepcapturedheroes ${require('./goal-heroes').DEFAULT_KEEP_CAPTURED} (the default)`), r.text);
+  assert.ok(r.text.includes(`Bob (L90, base 80): kept — keepcapturedheroes ${require('./goal-heroes').DEFAULT_KEEP_CAPTURED} (the default)`), r.text);
   assert.doesNotMatch(r.text, /release (Ken|Junk|Smarty)/);
   assert.strictEqual(tail(r)[1], 1);
 });
@@ -306,7 +308,7 @@ t('a marching hero or a prisoner is not made mayor', async () => {
 t('setmayor att / int: the most of it among idle heroes and the mayor', async () => {
   const w = world();
   const r = await runIn(w, 'setmayor att\nsetmayor int');
-  // Rider has 200 attack but is marching; Bob 150 but a prisoner
+  // Rider has 200 attack but is marching; Bob 170 but a prisoner
   assert.deepStrictEqual(w.sent.map((s) => [s.cmd, s.data.heroId]), [['hero.promoteToChief', 11], ['hero.promoteToChief', 15]], r.text);
   assert.match(r.text, /most attack: Ken \(attack 120, L40\)/);
 });

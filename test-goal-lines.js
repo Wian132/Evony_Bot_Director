@@ -361,11 +361,13 @@ t('the live goals: every other goal line is blue (the counts)', () => {
 // ---------------------------------------------------------------------------
 section('script lines (the loadout editor)');
 
-t('comment, ok, error and blank lines; # is not a comment in a script', () => {
+t('comment, ok, error and blank lines; # starts a comment, as // does', () => {
   const r = S.lineStatus('// farm upgrades\ntrain a 10k\n\nbogus 1\n# note\nupgrade academy // why');
-  assert.deepStrictEqual(r.lines.map((l) => l.status), ['comment', 'ok', 'blank', 'error', 'error', 'ok']);
+  // the editor paints the bad line red and leaves the comments grey (NEAT's
+  // Comments page: # and // both start one)
+  assert.deepStrictEqual(r.lines.map((l) => l.status), ['comment', 'ok', 'blank', 'error', 'comment', 'ok']);
   assert.deepStrictEqual(r.lines[3], { n: 4, status: 'error', msg: 'unknown command: bogus' });
-  assert.deepStrictEqual(r.errors, [{ line: 4, error: 'unknown command: bogus' }, { line: 5, error: 'unknown command: #' }]);
+  assert.deepStrictEqual(r.errors, [{ line: 4, error: 'unknown command: bogus' }]);
 });
 
 t('a check never expands a big repeat or loop', () => {
@@ -373,8 +375,10 @@ t('a check never expands a big repeat or loop', () => {
   const r = S.lineStatus('train a 1\nrepeat 100000000\nloop 99999999\ntrain s 1\nendloop');
   assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
   assert.deepStrictEqual(r.lines.map((l) => l.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
-  assert.strictEqual(S.parse('train a 1\nrepeat 5', { check: true }).length, 3, 'the check parse reads repeat 5 as 2');
-  assert.strictEqual(S.parse('train a 1\nrepeat 5').length, 6, 'a run still gets all 5');
+  // repeat is never expanded now: one statement, run N times in total, so a
+  // check costs the same as a run's parse
+  assert.strictEqual(S.parse('train a 1\nrepeat 5', { check: true }).length, 2, 'one statement per line');
+  assert.strictEqual(S.parse('train a 1\nrepeat 5').length, 2, 'a run parses the same two lines');
 });
 
 t('a check finds exactly the errors a full parse finds', () => {

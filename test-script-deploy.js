@@ -28,8 +28,8 @@ async function until(cond, ms = 3000) {
 Object.assign(L.TIMING, { tickMs: 5, waveMs: 30, spamGapMs: 5, idleMs: 10, reportMs: 10, guardPollMs: 5, findArmyMs: 300, marginMs: 50, stopWaitMs: 1000, offlineMs: 10 });
 Object.assign(D.TIMING, { heroPollMs: 10, lostGraceMs: 40 });
 
-// base = top attribute − level (Game.heroBase): Ken 60, Biggy 200, Polly 70,
-// att69int 69 (goal-heroes would read 99), Spammy 40, Disloyal 35.
+// base = top attribute − level (Game.heroBase, which goal-heroes reads too):
+// Ken 60, Biggy 200, Polly 70, att69int 69, Spammy 40, Disloyal 35.
 const hero = (id, name, o = {}) => ({ id, name, status: 0, level: 10, power: 50, management: 20, stratagem: 20, loyalty: 100, remainPoint: 0, experience: 0, ...o });
 function world({ loadSkill = 0, relief = 0, armyReplies = [], items = [{ id: 'player.troop.1.a', count: 2 }], params = true } = {}) {
   const g = new Game();
@@ -279,11 +279,13 @@ t('wildcards, and | between alternatives', async () => {
   await runIn(w, 'attack 111,222 att??int:base>=69 a:1\nreinforce 111,222 nobody|Pol* a:1');
   assert.deepStrictEqual([heroSent(w, 0), heroSent(w, 1)], [17, 13]);
 });
-t('base is the top attribute less the levels (goal-heroes reads the *Added fields the roster sends as 0)', async () => {
+t('base is the top attribute less the levels (goal-heroes and the deploy lines read the same base)', async () => {
   const w = world();
   const h17 = heroOf(w, 17);
   assert.strictEqual(Game.heroBase(h17), 69);
-  assert.strictEqual(H.matchHero(h17, 'any:base<=69'), false, 'goal-heroes: base 99');
+  // since the goals build-out both sides read Game.heroBase; the deploy module
+  // keeps no base of its own (it used to, while goal-heroes read attribute − *Added)
+  assert.strictEqual(H.matchHero(h17, 'any:base<=69'), true, 'goal-heroes: base 69');
   assert.strictEqual(D.heroMatches(h17, 'any:base<=69'), true);
   await runIn(w, 'attack 111,222 any:base<=69,level<50 a:1');
   assert.strictEqual(heroSent(w), 17, 'att69int, strongest of the three that fit');
@@ -590,7 +592,9 @@ t('spamattack: the waves go with idle SpamHeroes at 100 loyalty, and it outlives
   const session = sessionFor(w);
   const r = await runIn(w, 'spamattack 111,222 c:500,s:500 3' + probe, { session });
   assert.match(r.text, /3 waves of 500 Scout, 500 Cavalry at 111,222|3 waves of 500 Cavalry, 500 Scout at 111,222/);
-  assert.match(r.text, /SpamHeroes: any:base<=69,level<50 \(NEAT's default — this city has no spamheroes goal\) — free now: att69int, Spammy/);
+  // goal-heroes.spamHeroPool (the goals build-out) explains the picks: the rule,
+  // who it held back and who is free now
+  assert.match(r.text, /SpamHeroes: any:base<=69,level<50 \(NEAT's default — this city has no spamheroes goal\); held back: Disloyal \(loyalty 80 \(under 100\)\) — free now: att69int, Spammy/);
   assert.match(r.text, /started as #\d+ — it goes on after this script ends/);
   assert.match(resultOf(r), /^\d+$/, '$result is the task id');
   await until(() => w.sends().length === 2);

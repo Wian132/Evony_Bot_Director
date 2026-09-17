@@ -246,15 +246,8 @@ const ITEM_NAMES = { [SCRIPT_ITEM]: "Michelangelo's Script", [DYNAMITE]: 'Dynami
 
 // The jobs the game finishes free: preset (base) time of 300 s or less
 // (CommonConstants.FREE_SPEED_TIME_LIMIT; SpeedUpCheckOut.as), by the level the
-// job starts from. goals/integration's C.FREE_SPEED, copied until that merges.
-const FREE = C.FREE_SPEED || {
-  item: FREE_ITEM, limitSec: 300,
-  building: {
-    1: [75, 150, 300], 2: [300], 4: [45, 90, 180], 5: [60, 120, 240], 6: [90, 180],
-    7: [30, 60, 120, 240], 20: [270], 21: [240], 22: [180], 27: [300], 29: [150, 300],
-  },
-  research: { 7: [300] },
-};
+// job starts from. The table is constants.js's, from the client's own.
+const FREE = C.FREE_SPEED;
 function freePreset(kind, typeId, level) {
   const row = (kind === 'research' ? FREE.research : FREE.building)[n(typeId)];
   const s = row && row[n(level)];

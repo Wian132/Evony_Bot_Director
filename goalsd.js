@@ -28,6 +28,15 @@ const ts = () => new Date().toLocaleTimeString();
 const log = (m) => console.log(`${ts()}  ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A sleep a changed hostile army list can cut short (Engine.onHostile), so a
+// new attack gets its war pass without waiting out the rest of the nap.
+let cutNap = null;
+const nap = (ms) => new Promise((r) => {
+  const t = setTimeout(() => { cutNap = null; r(); }, Math.max(0, ms));
+  cutNap = () => { clearTimeout(t); cutNap = null; r(); };
+});
+const WAR_GAP_MS = 1000;
+
 (async () => {
   const env = loadEnv();
   let game = null, engine = null;
@@ -70,6 +79,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     engine = new Engine(g, log, acct && acct.id);
     if (prevState) engine.state = prevState;       // carry timers across a reconnect
     engine.dryRun = !LIVE;
+    engine.onHostile = () => { if (cutNap) cutNap(); };
     lastPing = Date.now();
     log(`connected as ${acct ? acct.label : env.EVONY_EMAIL} — ${LIVE ? 'LIVE (will act)' : 'PLAN ONLY'}, `
       + `tick ${EVERY_MS / 1000}s, ${g.castles.length} city(ies)`);
@@ -95,10 +105,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       log('tick error: ' + e.message);
     }
 
-    // keep the socket warm between ticks, and notice a silent death
+    // keep the socket warm between ticks, and notice a silent death. Hiding and
+    // the gate race a wave's arrival, so they get a pass of their own at each
+    // moment the engine names (Engine.nextWakeAt), never two within a second.
     const waitUntil = Date.now() + EVERY_MS;
+    let warAt = 0;
     while (Date.now() < waitUntil) {
-      await sleep(Math.min(5000, waitUntil - Date.now()));
+      let wake = null;
+      try { wake = engine.nextWakeAt(); } catch (e) { log('war clock: ' + e.message); }
+      const wakeIn = wake ? Math.max(0, wake - Date.now(), warAt + WAR_GAP_MS - Date.now()) : Infinity;
+      if (wakeIn <= 0) {
+        try { await engine.tick({ urgent: true }); } catch (e) { log('war pass error: ' + e.message); }
+        warAt = Date.now();
+        continue;
+      }
+      await nap(Math.min(5000, waitUntil - Date.now(), wakeIn));
       if (!game.alive) { log('socket died between ticks'); break; }
       if (game.idleMs > IDLE_LIMIT_MS) { log(`no traffic for ${Math.round(game.idleMs / 1000)}s — cycling`); game.close(); break; }
       if (Date.now() - lastPing > HEARTBEAT_MS) {

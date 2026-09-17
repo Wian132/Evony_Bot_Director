@@ -25,7 +25,16 @@ function getServerConfig(serverId) {
   });
 }
 
+// The game never sees the password itself: login, the truce and every other
+// password prompt send SHA1.hash(text), lowercase hex of the UTF-8 bytes
+// (EvonyClient.as:4778, StageChangeWin.as:447, GiveupCastle.as:417).
+const passwordHash = (password) => crypto.createHash('sha1').update(password, 'utf8').digest('hex');
+
 class EvonyClient extends EventEmitter {
+  // The hash the login sent. A private field: JSON, util.inspect and the logs
+  // cannot reach it, and nothing writes it to disk.
+  #pwHash = null;
+
   constructor() {
     super();
     this.buf = Buffer.alloc(0);
@@ -126,12 +135,17 @@ class EvonyClient extends EventEmitter {
 
   async login(email, password) {
     this.send('gameClient.version', VERSION);
-    const pwd = crypto.createHash('sha1').update(password, 'utf8').digest('hex');
+    const pwd = passwordHash(password);
+    this.#pwHash = pwd;
     this.send('login', { user: email, pwd });
     return this.await(['server.LoginResponse', 'login', 'server.ErrorResponse'], 25000);
   }
 
+  // Commands that re-ask for the password (city.setStopWarState for a truce)
+  // take the same hash the login used. Null until this client has logged in.
+  passwordHash() { return this.#pwHash; }
+
   close() { if (this.sock) this.sock.destroy(); }
 }
 
-module.exports = { EvonyClient, getServerConfig, VERSION };
+module.exports = { EvonyClient, getServerConfig, VERSION, passwordHash };

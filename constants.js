@@ -61,6 +61,10 @@ const BUILDING_DISPLAY_ORDER = [
 
 const slug = (s) => s.toLowerCase().replace(/[^a-z]/g, '');
 const BUILDING_BY_CODE = Object.fromEntries(BUILDINGS.map((b) => [slug(b.name), b]));
+// The other full names NEAT accepts (wiki: Build, Abbreviations): barrack, market, wall.
+Object.assign(BUILDING_BY_CODE, {
+  barrack: BUILDING_BY_CODE.barracks, market: BUILDING_BY_CODE.marketplace, wall: BUILDING_BY_CODE.walls,
+});
 const BUILDING_BY_ID = Object.fromEntries(BUILDINGS.map((b) => [b.typeId, b]));
 
 // Embedded <techEum> XML -- tech.research takes these ids.
@@ -115,6 +119,91 @@ const WALL_BY_TYPE = Object.fromEntries(WALLS.map((w) => [w.typeId, w]));
 // fortifications both take from it (Wall.as countSpace).
 const WALL_SPACE = [0, 1000, 3000, 6000, 10000, 15000, 21000, 28000, 36000, 45000, 55000];
 
+// ------------------------------------------------------------------ goal words
+// The words a goal line may use for a troop, a fortification or a resource. ONE
+// table, read by every goal parser (goals.js troop and fortification,
+// goal-npc.js, goal-transfer.js, goal-war.js hidingpolicy /keep), so a spelling
+// that works in one goal works in all of them. Matching ignores case, spaces,
+// "_" and "-", and a plural of four letters or more also finds its singular.
+//
+// NEAT's list is the wiki's Abbreviations page: warrior w, worker wo, scout s,
+// pikemen p, swordsmen sw, archer a, cavalry c, cataphract cata, transport t,
+// ballista b, battering ram ram/br/r, catapult cp/pult. The Troop page and
+// NEAT's own !NewCityGoals.txt add warr, cav, phract, arch, trans; the rest are
+// the full names, the protocol keys (TroopStrBean) and what our parsers took
+// before this table existed (ball, balls, cat, pike, sword, worker...).
+// Note cata is the CATAPHRACT; the catapult is cp, cat or pult.
+const TROOP_WORDS = {
+  peasants:     ['wo', 'work', 'worker', 'workers', 'peasant', 'peasants'],
+  militia:      ['w', 'warr', 'warrior', 'warriors', 'militia'],
+  scouter:      ['s', 'scout', 'scouts', 'scouter', 'scouters'],
+  pikemen:      ['p', 'pike', 'pikes', 'pikeman', 'pikemen'],
+  swordsmen:    ['sw', 'sword', 'swords', 'swordsman', 'swordsmen'],
+  archer:       ['a', 'arch', 'archer', 'archers'],
+  carriage:     ['t', 'trans', 'transport', 'transports', 'transporter', 'transporters', 'carriage', 'carriages'],
+  lightCavalry: ['c', 'cav', 'cavs', 'cavalry', 'lightcavalry'],
+  heavyCavalry: ['cata', 'phract', 'phracts', 'cataphract', 'cataphracts', 'heavycavalry'],
+  ballista:     ['b', 'ball', 'balls', 'ballista', 'ballistas', 'ballistae'],
+  batteringRam: ['r', 'br', 'ram', 'rams', 'batteringram', 'batteringrams'],
+  catapult:     ['cp', 'cat', 'cats', 'pult', 'pults', 'catapult', 'catapults'],
+};
+
+// Fortifications, keyed by WALLS code. NEAT's goal codes (FortificationGoal,
+// Abbreviations) are tra, ab, at, r and tre; its "defenders:" status line
+// prints tr, rl and dt (InLineCommands), and !NewCityGoals.txt writes trap and
+// rock. NEAT's TREBUCHET is our Rock Fall, type 18: the client renames
+// "Rockfall" to "Defensive Trebuchet" everywhere it shows it
+// (CastleDefTypeUI.as:474-476, DescribeTooltip.as:183-186), and the wiki's
+// Fortification page counts trebs with city.fortification.rockfall.
+// "r" is rolling logs HERE and a battering ram in a troop list, as in NEAT.
+// "ro" stays unknown: the wiki never uses it and it could mean either.
+const FORT_WORDS = {
+  trap:   ['tra', 'tr', 'trap', 'traps'],
+  abatis: ['ab', 'abatis'],
+  tower:  ['at', 'tower', 'towers', 'arrowtower', 'arrowtowers', 'archertower', 'archertowers'],
+  logs:   ['r', 'rl', 'log', 'logs', 'rollinglog', 'rollinglogs'],
+  rocks:  ['tre', 'treb', 'trebs', 'trebuchet', 'trebuchets', 'dt', 'defensivetrebuchet', 'defensivetrebuchets',
+           'rf', 'rock', 'rocks', 'rockfall', 'rockfalls'],
+};
+
+// Resources (wiki Abbreviations: gold g, food f, wood w, stone s, iron i; NEAT's
+// own pages also say lumber).
+const RES_WORDS = {
+  food: ['f', 'food'], wood: ['w', 'wood', 'l', 'lumber'], stone: ['s', 'stone'],
+  iron: ['i', 'iron'], gold: ['g', 'gold'],
+};
+
+const wordKey = (s) => String(s == null ? '' : s).toLowerCase().replace(/[\s_-]+/g, '');
+const invert = (words) => {
+  const out = {};
+  for (const [key, list] of Object.entries(words)) for (const w of list) out[w] = key;
+  return out;
+};
+const TROOP_KEY_BY_WORD = invert(TROOP_WORDS);
+const FORT_CODE_BY_WORD = invert(FORT_WORDS);
+const RES_KEY_BY_WORD = invert(RES_WORDS);
+const lookupWord = (table, tok) => {
+  const k = wordKey(tok);
+  if (Object.prototype.hasOwnProperty.call(table, k)) return table[k];
+  // "archers", "ballistas": a plural of a word the table has. Short words are
+  // left alone so "ws" or "cs" can never turn into a code by accident.
+  const one = k.length >= 4 && k.endsWith('s') ? k.slice(0, -1) : null;
+  return one && Object.prototype.hasOwnProperty.call(table, one) ? table[one] : null;
+};
+
+// The TROOPS entry for a word, or null.
+function troopByWord(tok) {
+  const key = lookupWord(TROOP_KEY_BY_WORD, tok);
+  return key ? TROOPS.find((t) => t.key === key) : null;
+}
+// The WALLS entry for a word, or null.
+function fortByWord(tok) {
+  const code = lookupWord(FORT_CODE_BY_WORD, tok);
+  return code ? WALLS.find((w) => w.code === code) : null;
+}
+// 'food' | 'wood' | 'stone' | 'iron' | 'gold', or null.
+const resourceByWord = (tok) => lookupWord(RES_KEY_BY_WORD, tok);
+
 // interior.pacifyPeople typeId -- view/module/office/PacifyPeopleView.as switch
 const PACIFY = {
   relief: 1,     // 赈灾  +5 loyalty, -15 complaint
@@ -133,6 +222,37 @@ const DEFENSE_ITEMS = {
   ultracorselet: 'player.defendinc.1.b',
   penicillin: 'player.relive.1',    // Penicillin
 };
+
+// How the client spends each defence item. The command differs by item, and
+// the bot sends exactly what the client sends:
+//   city.setStopWarState {ItemId, passWord}  the Truce Agreement, from Player
+//       Info (StageChangeWin.as:447); the item window will not spend it at all
+//       (UseGoodWin.as:1437-1440). No castleId: it changes the whole account.
+//   shop.useCastleGoods {castleId, itemId}   Speech Text, which works on one
+//       city's loyalty (UseGoodWin.as:1576, SpeedupItemSelector.as:416).
+//   shop.useGoods {castleId, itemId, num}    every other player item, the horns,
+//       corselets and Penicillin included (UseGoodWin.as:1505).
+// `buffs` are the player buff typeIds the item shows up as while it runs
+// (PLayerBuffConstants.as; MainFrame.as:362 lists the truce family), and
+// `lastsMs` is how long it runs, from the item's own description.
+const DEFENSE_ITEM_USE = {
+  'player.peace.1': { key: 'truce', name: 'Truce Agreement', cmd: 'city.setStopWarState', scope: 'account',
+    buffs: ['PlayerPeaceBuff', 'PlayerPeaceUniteServerBuff', 'TruceAgreementBuff'], lastsMs: 12 * 3600000 },
+  'player.heart.1.a': { key: 'speech', name: 'Speech Text', cmd: 'shop.useCastleGoods', scope: 'city', buffs: [], lastsMs: 0 },
+  'player.attackinc.1': { key: 'warhorn', name: 'War Horn', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyAttachBuff'], lastsMs: 24 * 3600000 },
+  'player.attackinc.1.b': { key: 'ivoryhorn', name: 'Ivory Horn', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyAttachBuff'], lastsMs: 7 * 24 * 3600000 },
+  'player.defendinc.1': { key: 'corselet', name: 'Corselet', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyDefenceBuff'], lastsMs: 24 * 3600000 },
+  'player.defendinc.1.b': { key: 'ultracorselet', name: 'Ultra Corselet', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['PlayerIncArmyDefenceBuff'], lastsMs: 7 * 24 * 3600000 },
+  'player.relive.1': { key: 'penicillin', name: 'Penicillin', cmd: 'shop.useGoods', scope: 'account',
+    buffs: ['TroopReliveBuff'], lastsMs: 7 * 24 * 3600000 },
+};
+// While truced, and for the cooldown after, the game will not truce again
+// (PlayerInfoWin.as:1845). NEAT calls these m_context.truced / inTruceCooldown.
+const TRUCE_COOLDOWN_BUFFS = ['PlayerPeaceCoolDownBuff'];
 
 // WARNING: two DIFFERENT resource numberings exist.
 // TradeConstants.as -- market commands only:
@@ -239,12 +359,67 @@ function marchTimeMs(fromXY, toXY, troopKeys, skills = 100) {
   return Math.max(0, ms);
 }
 
+// The food an army takes with it, per hour, the way the client charges it
+// (NewArmyWin.speedFood): every troop costs its upkeep TWICE — costObj =
+// foodRequest * 2 * count (:2852) — for each hour of the ONE-WAY march
+// (portableFood, :3102) and at the same rate for each hour encamped (needFood,
+// :1717). It rides in the army's own hold (leftSpace = loads - needFood, :1719),
+// and the client refuses a march the city cannot feed.
+function marchFoodPerHour(troops) {
+  let perHour = 0;
+  for (const [k, v] of Object.entries(troops || {})) {
+    const x = Number(v);
+    if (BY_KEY[k] && Number.isFinite(x) && x > 0) perHour += BY_KEY[k].food * 2 * x;
+  }
+  return perHour;
+}
+// ...for a march of oneWayMs that then encamps for restMs.
+const marchFood = (troops, oneWayMs, restMs = 0) =>
+  marchFoodPerHour(troops) * ((Number(oneWayMs) || 0) + (Number(restMs) || 0)) / 3600000;
+
+// The free speed-up. castle.speedUpBuildCommand and tech.speedUpResearch with
+// this item finish a job at no cost, but only a job whose PRESET time is five
+// minutes or less: the base time the client's tables give that level, before
+// research and the mayor shorten it. The client compares that base time, not
+// the time left, with the limit (SpeedUpCheckOut.as:18-28, from
+// BuildingBar.onBuildingSpeedUp and TechReseachingUI.onSpeedUp), and says so
+// when it works: "Presetted Constructing Time less than 5 minutes. Free
+// speed-up finished." (Lang 生产时间低于5分钟免费加速).
+const FREE_SPEED = {
+  item: 'free.speed',     // CommonConstants.FREE_SPEED_ITEM_ID
+  limitSec: 300,          // CommonConstants.FREE_SPEED_TIME_LIMIT
+  // Base seconds of the jobs within the limit, by the level the job starts
+  // from (levelData level N is the job from N to N+1; a new building starts at
+  // 0), from the client's building and tech tables (GetDataXML_XMLBuilding,
+  // GetDataXML_XMLTech). Every later level, and every type not listed here,
+  // takes longer than 300 s.
+  building: {
+    1: [75, 150, 300],        // Cottage
+    2: [300],                 // Barracks
+    4: [45, 90, 180],         // Sawmill
+    5: [60, 120, 240],        // Quarry
+    6: [90, 180],             // Ironmine
+    7: [30, 60, 120, 240],    // Farm
+    20: [270],                // Stable
+    21: [240],                // Inn
+    22: [180],                // Forge
+    27: [300],                // Feasting Hall
+    29: [150, 300],           // Rally Spot
+  },
+  research: {
+    7: [300],                 // Informatics
+  },
+};
+
 module.exports = {
   MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
+  TROOP_WORDS, FORT_WORDS, RES_WORDS, troopByWord, fortByWord, resourceByWord,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
   SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
-  TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS,
+  TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS, DEFENSE_ITEM_USE, TRUCE_COOLDOWN_BUFFS,
   MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
+  marchFood, marchFoodPerHour,
   ZONES, zoneOf,
+  FREE_SPEED,
 };

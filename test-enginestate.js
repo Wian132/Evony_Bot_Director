@@ -51,16 +51,17 @@ function stubGame() {
     e.dryRun = true;
     e.state = {};
     // Pretend an earlier slice recorded npc runs and a comfort timestamp.
-    e.state.TestCity = {
+    // State is keyed by castle id (1), not by the name TestCity.
+    e.state['1'] = {
       npc: { runs: [{ fieldId: 5 }], hits: { 5: 1 }, cycles: { 5: { startedAt: 1 } } },
       lastComfort: 12345,
     };
-    const before = e.state.TestCity;
+    const before = e.state['1'];
     e.goalsFor = () => ({ goals: [], config: {} });
 
     await e.focus(g.castle());
 
-    const after = e.state.TestCity;
+    const after = e.state['1'];
     assert.strictEqual(after, before, 'the state object was replaced, not merged');
     assert.ok(after.npc, 'npc bookkeeping was discarded');
     assert.strictEqual(after.npc.runs.length, 1, 'npc.runs was discarded — npcteams would never count');
@@ -76,8 +77,8 @@ function stubGame() {
     e.state = {};
     e.goalsFor = () => ({ goals: [], config: {} });
     await e.focus(g.castle());
-    assert.ok(e.state.TestCity, 'no state row was created');
-    assert.ok(e.state.TestCity.lastFocus > 0, 'lastFocus missing');
+    assert.ok(e.state['1'], 'no state row was created under the castle id');
+    assert.ok(e.state['1'].lastFocus > 0, 'lastFocus missing');
   });
 
   // ---------------------------------------------------------------- troopPlan
@@ -170,11 +171,17 @@ function stubGame() {
     };
   }
 
-  await t('troopsusepopmax no longer orders past the idle population', async () => {
+  // Step 17: troopsusepopmax is NEAT's (wiki TroopsUsePopMax): the whole
+  // population, "by dropping production temporarily". The batch is sized
+  // against it, and the plan asks for the field workers it needs beyond the
+  // idle ones to be freed while it is placed (Engine.runTroops). It used to be
+  // ignored, which kept every order within the 2,503 idle.
+  await t('troopsusepopmax:1 sizes against the whole population and frees the workers for it', async () => {
     const ctx = city({ config: { troopsusepopmax: 1, troopslot: 0 }, troop: { ballista: 84 } });
     const plan = troopPlan(ctx);
     assert.strictEqual(plan.orders.length, 1);
-    assert.strictEqual(plan.orders[0].num, 500, 'sized against max population, the server refuses it whole');
+    assert.strictEqual(plan.orders[0].num, 3500, '17,503 population / 5 a ballista');
+    assert.deepStrictEqual(plan.popmax, { workers: 3500 * 5 - 2503, share: 1 });
   });
 
   await t('troops already in the queue count toward the target', async () => {
@@ -291,6 +298,9 @@ function stubGame() {
     assert.match(plan.note, /waiting on a free barracks queue slot/);
   });
 
+  // Step 17: the line is trained left to right, each type in full, filling the
+  // free slots (wiki TroopIncrement: "The bot will first train 100k warriors,
+  // then 100k scouts"), where it used to place one batch of each type a slice.
   await t('each batch goes to the barracks with the most room', async () => {
     const plan = troopPlan(city({
       goals: [{ troops: { ballista: 5000, carriage: 5000 } }],
@@ -299,14 +309,15 @@ function stubGame() {
         { positionId: 7, capacity: 5, items: [] },
       ],
     }));
-    assert.deepStrictEqual(plan.orders.map((o) => o.positionId), [7, 7]);
+    assert.deepStrictEqual(plan.orders.map((o) => o.positionId), [7, 7, 7, 7, 4, 7]);
+    assert.ok(plan.orders.every((o) => o.troop.key === 'ballista'), 'the transporters wait until the ballista are all queued');
   });
 
   await t('a troop the barracks cannot train yet is skipped, not ordered', async () => {
     const plan = troopPlan(city({
       goals: [{ troops: { catapult: 100, ballista: 5000 } }],
     }));
-    assert.deepStrictEqual(plan.orders.map((o) => o.troop.key), ['ballista']);
+    assert.ok(plan.orders.length && plan.orders.every((o) => o.troop.key === 'ballista'), plan.note);
     assert.match(plan.note, /not trainable here yet: Catapult/);
   });
 
@@ -403,7 +414,8 @@ function stubGame() {
     e.goalsFor = () => ({ goals: [{ name: 'troop', troops: { ballista: 5000 }, switches: {} }], config: {} });
     await e.focus(castle);
     assert.strictEqual(reads.filter((c) => c === 'troop.getTroopProduceList').length, 2);
-    assert.deepStrictEqual(sent.map((s) => s.num), [18], 'batch sized for the old mayor');   // 1,800 / 100
+    // Step 17: every free slot of the L10 barracks takes a batch (was one a slice)
+    assert.deepStrictEqual(sent.map((s) => s.num), Array(10).fill(18), 'batch sized for the old mayor');   // 1,800 / 100
   });
 
   await t('training times are cached, but not across a mayor changed elsewhere', async () => {
@@ -517,9 +529,11 @@ function stubGame() {
       mk(7, 'Farm', 1038, 4),
     ] });
     const plan = buildPlan({ goals: goalsOf('build s:0:1,i:0:1,q:0:1,f:0:37\nbuild f:10:37'), castle });
+    // The weakest spare of each type; across the line the quickest demolition
+    // first (NEAT's "fastest ones first"), so the L3 quarry leads.
     assert.deepStrictEqual(plan.actions.filter((a) => a.kind === 'demolish').map((a) => a.positionId),
-      [1032, 1033, 1034, 1037], 'wrong spares, or the strongest was not the one kept');
-    assert.strictEqual(buildLabel(plan.actions[0]), 'demolish Sawmill (pos 1032) L7->L6');
+      [1037, 1032, 1033, 1034], 'wrong spares, or the strongest was not the one kept');
+    assert.strictEqual(buildLabel(plan.actions[0]), 'demolish Quarry (pos 1037) L3->L2');
     const firstOther = plan.actions.findIndex((a) => a.kind !== 'demolish');
     assert.strictEqual(firstOther, 4, 'something else was ranked ahead of a demolition');
     assert.strictEqual(plan.actions[firstOther].kind, 'new');
@@ -645,7 +659,7 @@ function stubGame() {
     const hold = (msg) => ({ n: 3, until: Date.now() + 3600e3, msg });
     // Three held back: under the old engine these three skips used up the
     // whole slice and nothing was ever built.
-    e.state['7'] = { failures: {
+    e.state['1'] = { failures: {       // city "7" is castle id 1: state is keyed by id
       'build:upgrade:32:-2': hold('Town Hall level too low'),
       'build:upgrade:7:1001': hold('Insufficient resources'),
       'build:upgrade:7:1002': hold('Insufficient resources'),
@@ -660,7 +674,7 @@ function stubGame() {
     const { e, castle, sent } = buildGame({ refuse: { [-2]: 'One building allowed to be built at a time.' } });
     await e.focus(castle);
     assert.strictEqual(sent.length, 1);
-    assert.ok(!(e.state['7'].failures || {})['build:upgrade:32:-2'], 'the Walls were backed off for the builder being busy');
+    assert.ok(!(e.state['1'].failures || {})['build:upgrade:32:-2'], 'the Walls were backed off for the builder being busy');
     const r = await e.focus(castle);
     assert.strictEqual(sent.length, 1, 'asked the busy builder again straight away');
     assert.match(r.build.note, /the server says the builder is busy, asking again in \d+m/);
@@ -670,7 +684,7 @@ function stubGame() {
     const { e, castle, sent } = buildGame({ refuse: { [-2]: 'Insufficient resources. Required Lumber 139300.' } });
     await e.focus(castle);
     assert.deepStrictEqual(sent, [['upgrade', -2]]);
-    assert.ok(e.state['7'].failures['build:upgrade:32:-2'], 'the refusal was not backed off');
+    assert.ok(e.state['1'].failures['build:upgrade:32:-2'], 'the refusal was not backed off');
   });
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

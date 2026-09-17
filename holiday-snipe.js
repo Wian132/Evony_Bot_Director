@@ -220,6 +220,7 @@ class Sniper {
     this.books = {};                // resource -> { asks, bids } from the last read
     this.asksAt = 0;
     this.cool = {};                 // resource -> no new buy round before this time
+    this.buying = new Set();        // resources a dump is being bought of right now (claims)
     this.misses = {};               // resource -> buy rounds in a row where nothing filled
     this.sellCool = {};             // resource -> no selling into buyers before this time
     this.sellMisses = {};
@@ -573,6 +574,7 @@ class Sniper {
     this.stats.dumps++;
     this.say(`${res.toUpperCase()} is being sold at ${ask} — under ${o.under}. ${o.dry ? 'Dry run, placing nothing.' : `Buying at ${bidFor(ask, o)}.`}`);
     let price = ask, rounds = 0, bought = 0, spent = 0;
+    this.buying.add(res);
     try {
       while (this.running) {
         const bid = bidFor(price, o);
@@ -614,6 +616,7 @@ class Sniper {
       }
     } finally {
       if (!o.dry) { await sleep(o.settleMs); await this.sweep(g, res).catch(() => {}); }
+      this.buying.delete(res);
     }
     if (!o.dry) {
       this.say(`${res.toUpperCase()} — bought ${fmt(bought)} in ${rounds} round(s), about ${fmt(spent)} gold`
@@ -966,6 +969,24 @@ class Sniper {
     this.say(`${l.res} offer of ${fmt(l.amount)} @ ${l.price} has gone from the book${when} — counted as sold, about ${fmt(n * Number(l.price))} gold`, c ? c.name : null);
   }
 
+  // What this run is working on, for the market goals (goal-trade.js), which
+  // keep out of its way: the resources it is buying a dump of right now, the
+  // cities with its buy orders open, and each city/resource it keeps a sell
+  // offer listed for. A dry run places nothing and claims nothing.
+  claims(g) {
+    const cities = new Set(), listed = new Set();
+    if (!this.o.dry) {
+      for (const l of this.listings.values()) listed.add(`${l.cid}:${l.res}`);
+      for (const c of (g && g.castles) || []) {
+        if ((c.trades || []).some((t) => RESOURCES.some((res) => this.isOurs(g, c, t, res)))) cities.add(g.castleId(c));
+      }
+    }
+    return {
+      dry: !!this.o.dry, buying: new Set(this.o.dry ? [] : this.buying), cities, listed,
+      floor: this.o.floor, keep: this.o.keep, sellAt: this.o.sellAt,
+    };
+  }
+
   summary() {
     const list = (m) => Object.entries(m || {}).filter(([, v]) => v > 0).map(([k, v]) => `${fmt(v)} ${k}`).join(', ');
     const b = list(this.stats.bought), s = list(this.stats.sold);
@@ -1050,4 +1071,13 @@ function resume(session, { store = null } = {}) {
   return s;
 }
 
-module.exports = { command, resume, parseArgs, bidFor, sellPriceFor, listPriceFor, ordersFor, Sniper, DEFAULTS, MAX_OFFERS, MAX_AMOUNT, USAGE };
+// The running sniper's claims (Sniper.claims) when one runs for this account
+// in this process, else null. goal-trade.js asks before it trades.
+function claims(accountId, g) {
+  if (!current || !current.running) return null;
+  if (accountId != null && current.accountId != null && String(current.accountId) !== String(accountId)) return null;
+  return current.claims(g);
+}
+
+module.exports = { command, resume, claims, parseArgs, bidFor, sellPriceFor, listPriceFor, ordersFor, priceText, Sniper,
+  DEFAULTS, MAX_OFFERS, MAX_AMOUNT, USAGE };

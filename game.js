@@ -81,6 +81,16 @@ class Game {
         else if (count > 0) this.player.items.push(it);
       }
     });
+    // And the player buffs (truce, horns, corselets...), which defensepolicy
+    // reads to know what is already running. See applyPlayerBuffUpdate.
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.PlayerBuffUpdate') this.applyPlayerBuffUpdate(data); });
+    // And each city's medic camp, which the healing goal reads (goal-upkeep.js).
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.InjuredTroopUpdate') this.applyInjuredUpdate(data); });
+    // Each city's own buffs (a forced gate, slowed marches...): castle.buffs.
+    // See applyCastleBuffUpdate.
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.CastleBuffUpdate') this.applyCastleBuffUpdate(data); });
+    // And the end of a research (applyResearchComplete).
+    this.c.on('cmd', (cmd, data) => { if (cmd === 'server.ResearchCompleteUpdate') this.applyResearchComplete(data); });
 
     // march/load skill params (affects march time)
     try {
@@ -242,6 +252,23 @@ class Game {
     return b ? { userName: b.userName, allianceName: b.allianceName } : null;
   }
 
+  // The whole answer, for a goal that is about to march on a valley or flat:
+  // {ok, bean: MapCastleBean {userName, canOccupy, canScout, ...}}. The client
+  // offers Attack only when canOccupy and Scout only when canScout
+  // (FieldInfoWin.as:1127, :1590), and an unowned tile has no userName.
+  fieldInfo(fieldId) { return this.req('field.getOtherFieldInfo', { fieldId }, 8000); }
+
+  // field.giveUpField {fieldId}: let a valley or flat go (FieldCommand.as:25,
+  // the Abandon button in CurFieldView.as:758). No castle id: the server knows
+  // whose it is. Irreversible, so callers check it is one of ours first.
+  giveUpField(fieldId) { return this.req('field.giveUpField', { fieldId }); }
+
+  // troop.disbandTroop {castleId, troopType, num} (TroopCommands.as:72) and
+  // fortifications.destructWallProtect {castleId, typeId, num}
+  // (FortificationsCommands.as:70): both destroy what they name, for good.
+  disbandTroop(castleId, troopType, num) { return this.req('troop.disbandTroop', { castleId, troopType, num }); }
+  destructWall(castleId, typeId, num) { return this.req('fortifications.destructWallProtect', { castleId, typeId, num }); }
+
   // The item catalogue, straight from the server. Item NAMES are not in the
   // decompiled client — it fetches this XML at runtime — so this is the only
   // authoritative answer to "which id is Excalibur".
@@ -298,6 +325,88 @@ class Game {
   useCastleItem(castleId, itemId) { return this.req('shop.useCastleGoods', { castleId, itemId }); }
   packageList(castleId) { return this.req('common.getPackageList', { castleId }); }
 
+  // ---- defence items (defensepolicy) ----
+  // Each goes through the command the client uses for it (constants.js
+  // DEFENSE_ITEM_USE). The outcome is kept per item id for the whole account,
+  // so a second city knows a truce or a horn has just gone out, even before the
+  // server's buff push arrives: itemUses[itemId] = {at, ok, castleId, errorMsg}.
+  async useDefenceItem(castleId, itemId) {
+    const how = C.DEFENSE_ITEM_USE[itemId];
+    if (!how) return { ok: 0, errorMsg: `${itemId} is not a defence item` };
+    this.itemUses = this.itemUses || {};
+    const note = (ok, errorMsg) => { this.itemUses[itemId] = { at: Date.now(), ok, castleId, errorMsg: errorMsg || null }; };
+    let r;
+    try {
+      r = how.cmd === 'city.setStopWarState' ? await this.useTruce(itemId)
+        : how.cmd === 'shop.useCastleGoods' ? await this.useCastleItem(castleId, itemId)
+        : await this.useItem(castleId, itemId, 1);
+    } catch (e) { note(null, e.message); throw e; }   // no reply: it may or may not have gone through
+    note(r && r.ok === 1 ? 1 : 0, r && r.errorMsg);
+    return r;
+  }
+
+  // Truce Agreement: city.setStopWarState {ItemId, passWord} — capital I and a
+  // camelCase passWord, exactly as CityCommands.as:134-142 sends them. It has no
+  // castleId because it changes the whole account's status. passWord is the
+  // SHA1 the login sent (evony.js keeps it private); it is never logged.
+  async useTruce(itemId = C.DEFENSE_ITEMS.truce) {
+    const passWord = this.c && typeof this.c.passwordHash === 'function' ? this.c.passwordHash() : null;
+    if (!passWord) return { ok: 0, errorMsg: 'this session never logged in with a password, so it cannot sign a truce' };
+    return this.req('city.setStopWarState', { ItemId: itemId, passWord });
+  }
+
+  // server.PlayerBuffUpdate {updateType, buffBean}, applied the way
+  // Context.onPlayerBuffUpdate does: 0 adds, 1 deletes the first buff of that
+  // typeId, anything else updates it. Without this the login's buff list goes
+  // stale, and a truce or horn already running would look absent.
+  applyPlayerBuffUpdate(data) {
+    const b = data && data.buffBean;
+    if (!b || b.typeId === undefined || b.typeId === null) return;
+    this.player = this.player || {};
+    const list = (this.player.buffs = this.player.buffs || []);
+    if (Number(data.updateType) === 0) { list.push(b); return; }
+    const i = list.findIndex((x) => x && x.typeId === b.typeId);
+    if (i < 0) return;
+    if (Number(data.updateType) === 1) list.splice(i, 1);
+    else list[i] = { ...list[i], ...b };
+  }
+
+  // server.CastleBuffUpdate {castleid, updateType, buffBean} — note the
+  // lowercase castleid (CastleBuffUpdate.as). Context.as does not listen for
+  // it; the buff bar does (PLayerBuffBar.as:190-240, castlebuffRefresh; its
+  // addCastleBuff, :262-282, shows ForceopenclosegateBuff, IncArmyActionTimeBuff,
+  // MoveCastleCoolDownBuff and a few more off the city): on the city whose
+  // id is castleid, 1 removes the buff of that typeId, 0 and 2 add it or copy
+  // its typeId/descName/endTime onto the one already there, and any other
+  // type only updates one already there. One difference: the client's 0 for
+  // a buff it already holds adds a second copy; here the one copy is updated,
+  // so a castle holds one buff per type, as the login's list does. Without
+  // this castle.buffs stays as it was at login (timed marches read it).
+  applyCastleBuffUpdate(data) {
+    const b = data && data.buffBean;
+    if (!b || b.typeId === undefined || b.typeId === null) return;
+    const cid = data.castleid ?? data.castleId;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(cid));
+    if (!c) return;
+    const list = (c.buffs = Array.isArray(c.buffs) ? c.buffs : []);
+    const type = Number(data.updateType);
+    if (type === 1) {
+      for (let i = list.length - 1; i >= 0; i--) if (list[i] && list[i].typeId === b.typeId) list.splice(i, 1);
+      return;
+    }
+    const i = list.findIndex((x) => x && x.typeId === b.typeId);
+    if (i >= 0) list[i] = { ...list[i], ...b };
+    else if (type === 0 || type === 2) list.push({ ...b });
+  }
+
+  // The embassy's "allow alliance troops to station" box: army.setAllowAllianceArmy
+  // {castleId, isAllow} (ArmyCommands.as:156-167), sent by the Embassy window
+  // (Embassy.as:545-549), which sets castle.allowAlliance itself; the reply is a
+  // plain CommandResponse.
+  setAllowAlliance(castleId, isAllow) {
+    return this.req('army.setAllowAllianceArmy', { castleId, isAllow: !!isAllow });
+  }
+
   // ---- teleporting a city (CityCommands.as) ----
   // Each one spends its item server-side; none goes through shop.useGoods.
   // targetId is a fieldId, y * 800 + x (DesignatedMoveCityWin.changeZone). The
@@ -315,8 +424,49 @@ class Game {
 
   // ---- heroes ----
   // Attribute names: power = Attack, management = Politics, stratagem = Intelligence.
-  tavernList(castleId) { return this.req('hero.getHerosListFromTavern', { castleId }); }
-  refreshTavern(castleId) { return this.req('hero.refreshHerosListFromTavern', { castleId }); }
+  // Both inn replies are a HeroListResponse, which also carries posCount: the
+  // Feasting Hall's free hero slots (HeroListResponse.as:18,44-46; the hire
+  // window shows it as its free-slot line, Tavern.as:586-591, HireHero.as:735-738).
+  // Every read notes it (noteHall), so goals can use the server's own number,
+  // and the offers too (noteInn), which the hiring goal works from.
+  async tavernList(castleId) { return this.noteHall(castleId, this.noteInn(castleId, await this.req('hero.getHerosListFromTavern', { castleId }))); }
+  async refreshTavern(castleId) { return this.noteHall(castleId, this.noteInn(castleId, await this.req('hero.refreshHerosListFromTavern', { castleId }))); }
+
+  // The inn's offers as last read, per city: the reply's heros, each a HeroBean
+  // with its level, attributes and the item a hire needs (itemId x itemAmount,
+  // HireHero.as:735-747). goal-heroes' hiring step judges them and takes a hired
+  // one off the list, as the client does (Tavern.as onHireHeroResponse).
+  noteInn(castleId, r) {
+    if (!r || r.ok !== 1 || !Array.isArray(r.heros)) return r;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(castleId));
+    this.innSeen = this.innSeen || {};
+    this.innSeen[c ? this.castleId(c) : castleId] = { at: Date.now(), offers: r.heros.slice() };
+    return r;
+  }
+
+  // posCount is the free slots at that moment. The hall's size is that plus the
+  // heroes then on the roster, which stays true through hires, fires and
+  // arrivals until the Feasting Hall itself changes level — so the level is kept
+  // too, and goal-heroes.feastingHall ignores a reading taken at another level.
+  // A reply without posCount says nothing (the client's field would default to
+  // 0, "full"), so it is not noted.
+  noteHall(castleId, r) {
+    const raw = r && r.posCount;
+    if (!r || r.ok !== 1 || raw === undefined || raw === null || raw === '' || !Number.isFinite(Number(raw))) return r;
+    const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(castleId));
+    if (!c) return r;
+    const heroes = (c.heros || []).length;
+    const fh = (c.buildings || []).find((b) => Number(b.typeId) === 27);   // 27 = Feasting Hall
+    this.hallSeen = this.hallSeen || {};
+    this.hallSeen[this.castleId(c)] = {
+      at: Date.now(), posCount: Number(raw), heroes, capacity: Number(raw) + heroes,
+      fhLevel: fh ? Number(fh.level) : null,
+    };
+    return r;
+  }
+  // A hire names the inn offer (HireHero.as:526); the hero then arrives on the
+  // roster by a server.HeroUpdate add. awardGold is the Reward window's gold
+  // choice (AwardHero.as:647).
   hireHero(castleId, heroName) { return this.req('hero.hireHero', { castleId, heroName }); }
   fireHero(castleId, heroId) { return this.req('hero.fireHero', { castleId, heroId }); }
   releaseHero(castleId, heroId) { return this.req('hero.releaseHero', { castleId, heroId }); }
@@ -363,6 +513,14 @@ class Game {
     return top - Number(h.level || 0) + Number(h.remainPoint || 0);
   }
 
+  // What a hero costs, by the client's own sums: a hire takes level x 1000 gold
+  // (HireHero.as:743, its gold row) besides a free slot and any item the offer
+  // names; a gold reward takes level x 100 (AwardHero.as:647, 693); the salary is
+  // level x 20 gold an hour (HireHero.as:598-599).
+  static hireCost(h) { return Number((h && h.level) || 0) * 1000; }
+  static awardCost(h) { return Number((h && h.level) || 0) * 100; }
+  static heroSalary(h) { return Number((h && h.level) || 0) * 20; }
+
   // HeroConstants.as: 0 free, 1 chief (mayor), 2 guard, 3 marching, 4 captured, 5 returning, 8 farming
   static HERO_STATUS = { free: 0, mayor: 1, garrison: 2, marching: 3, captured: 4, returning: 5, farming: 8 };
   static isMayor(h) { return Number(h && h.status) === 1; }
@@ -374,10 +532,51 @@ class Game {
     return scores[0].k;
   }
 
+  // Why the client would not offer this action on this hero, or null. A prisoner
+  // we hold (status 4) is offered Release (and Persuade) and nothing else; Fire
+  // is for anyone else (HeroProperties.as:1195-1218), and the mayor's window
+  // offers only idle heroes beside the sitting mayor (HerosMansion.as:448-467).
+  // Releasing a captured hero from the captor's side loses it — its owner
+  // brings it home with a Stone of Finding — so release is never sent for one of
+  // our own heroes. The script and the console both ask this.
+  static heroActionRefusal(action, h) {
+    if (!h) return 'hero not found in this city';
+    const st = Number(h.status), prisoner = st === 4;
+    if (action === 'release' && !prisoner) return `${h.name} is not a prisoner (${Game.STATUS_WORD[st] || `status ${h.status}`}) — release only dismisses a prisoner you hold; fire dismisses your own hero`;
+    if (action === 'fire' && prisoner) return `${h.name} is a prisoner you hold — a prisoner is dismissed with release, not fire`;
+    if (action === 'mayor') {
+      if (prisoner) return `${h.name} is a prisoner you hold — only your own heroes can be mayor`;
+      if (st !== 0 && st !== 1) return `${h.name} is ${Game.STATUS_WORD[st] || `status ${h.status}`}, not idle at home — only an idle hero can be made mayor`;
+    }
+    return null;
+  }
+  static STATUS_WORD = { 0: 'idle', 1: 'mayor', 2: 'guarding a valley', 3: 'marching', 4: 'a prisoner', 5: 'returning', 8: 'farming' };
+
+  // What the next inn refresh would cost. It spends a Hero Hunting when one is
+  // held (Tavern.as:548); with none the client offers to buy one and sends the
+  // same command, and the server charges game coins (Tavern.as:473-479, 515-528).
+  // held is null when the inventory has never loaded.
+  static HERO_HUNTING = 'consume.refreshtavern.1';
+  innRefreshCost() {
+    const items = this.player && this.player.items;
+    const held = Array.isArray(items) ? Number((items.find((i) => i.id === Game.HERO_HUNTING) || {}).count || 0) : null;
+    return {
+      held, item: held > 0,
+      text: held > 0 ? `spends 1 Hero Hunting (${held} held)`
+        : held === 0 ? 'no Hero Hunting held, so the server charges game coins'
+          : 'the inventory has not loaded, so it cannot tell whether this costs a Hero Hunting or game coins',
+    };
+  }
+
+  // One hero, by its name. "any" and an empty name used to mean the city's first
+  // hero, so `fire any`, `release any` or a bare `levelup attack` acted on
+  // whichever hero happened to be listed first; now only a real name matches.
+  // (Marches pick "any" through pickHero, which is a different thing.)
   findHero(castle, name) {
-    const heros = castle.heros || [];
-    if (!name || name === 'any') return heros[0] || null;
-    return heros.find((h) => (h.name || '').toLowerCase() === String(name).toLowerCase()) || null;
+    const heros = (castle && castle.heros) || [];
+    const want = String(name == null ? '' : name).trim().toLowerCase();
+    if (!want) return null;
+    return heros.find((h) => (h.name || '').toLowerCase() === want) || null;
   }
 
   // Re-read a hero after an action (the server pushes server.HeroUpdate).
@@ -394,6 +593,60 @@ class Game {
     return this.req('interior.modifyCommenceRate', { castleId, foodrate: food, woodrate: wood, stonerate: stone, ironrate: iron });
   }
   setTax(castleId, tax) { return this.req('interior.modifyTaxRate', { castleId, tax }); }
+
+  // ---- town hall: comforting and levies (goal-upkeep.js) ----
+  // interior.pacifyPeople {castleId, typeId}: 1 disaster relief, 2 praying,
+  // 3 blessing, 4 population raising (InteriorCommands.as:87-98, the
+  // PacifyPeopleView.as combo box and comChange :443-472).
+  pacify(castleId, typeId) { return this.req('interior.pacifyPeople', { castleId, typeId }); }
+  // interior.taxation {castleId, typeId} is the Levy window: 1 gold, 2 food,
+  // 3 lumber, 4 stone, 5 iron, and every levy costs the city 20 loyalty
+  // (InteriorCommands.as:41-52, CollectionMaterialsView.as:398-414 and 835).
+  levy(castleId, typeId) { return this.req('interior.taxation', { castleId, typeId }); }
+
+  // ---- warehouse protection (goal-upkeep.js warehousepolicy) ----
+  // city.getStoreList {castleId} -> {totalCap, storeBeans: [{storeTypeId, storePercent, ...}]},
+  // storeTypeId 1 food, 2 lumber, 3 stone, 4 iron; city.modifyStorePercent sends
+  // the four percentages together (CityCommands.as:55-69 and 122-132;
+  // WareHouse.as:556 and 884-941).
+  storeList(castleId) { return this.req('city.getStoreList', { castleId }); }
+  setStorePercent(castleId, { food = 0, wood = 0, stone = 0, iron = 0 }) {
+    return this.req('city.modifyStorePercent', { castleId, foodrate: food, woodrate: wood, stonerate: stone, ironrate: iron });
+  }
+
+  // ---- the medic camp (goal-upkeep.js healing) ----
+  // army.getInjuredTroop {castleId} answers with a bare CommandResponse; the
+  // camp itself comes as a server.InjuredTroopUpdate push {castleId, goldNeed,
+  // troop} (ArmyCommands.as:118-128; HospitalWin.as:228-252 and 557). Every
+  // push is kept here, asked for or not: injured[castleId] = {at, goldNeed,
+  // troop, total}, `at` on this machine's clock.
+  applyInjuredUpdate(data) {
+    if (!data || data.castleId === undefined || data.castleId === null) return;
+    const troop = data.troop && typeof data.troop === 'object' ? data.troop : {};
+    let total = 0;
+    for (const v of Object.values(troop)) { const x = Number(v); if (Number.isFinite(x) && x > 0) total += x; }
+    this.injured = this.injured || {};
+    this.injured[Number(data.castleId)] = { at: Date.now(), goldNeed: Number(data.goldNeed || 0), troop, total };
+  }
+
+  // Ask for a city's camp and wait a moment for the push, which may trail the
+  // reply. camp is null when no push came: the server said nothing about any
+  // wounded there.
+  async readInjured(castleId, graceMs = 2000) {
+    const cid = Number(castleId);
+    const asked = Date.now();
+    const fresh = () => { const c = this.injured && this.injured[cid]; return c && c.at >= asked ? c : null; };
+    const r = await this.req('army.getInjuredTroop', { castleId: cid });
+    if (!r || r.ok !== 1) return r || { ok: 0, errorMsg: 'no reply to army.getInjuredTroop' };
+    // a reply that carries the camp itself counts the same as the push
+    if (r.troop && typeof r.troop === 'object') this.applyInjuredUpdate({ ...r, castleId: cid });
+    while (!fresh() && Date.now() - asked < graceMs) await new Promise((res) => setTimeout(res, 100));
+    return { ok: 1, camp: fresh() };
+  }
+
+  // army.cureInjuredTroop {castleId} heals the whole camp. The client sends it
+  // only when goldNeed is within the city's gold (HospitalWin.as:490-504).
+  cureInjured(castleId) { return this.req('army.cureInjuredTroop', { castleId }); }
 
   // ---- construction ----
   async req(cmd, data, ms = 12000) {
@@ -429,11 +682,41 @@ class Game {
   // Conditions for constructing a NEW building of this type.
   async buildConditions(castleId, typeId) {
     const d = await this.req('castle.getAvailableBuildingBean', { castleId, typeId });
-    const entry = (d.builingList || []).find((x) => x.typeId === typeId) || (d.builingList || [])[0];
+    const entry = (d.builingList || []).find((x) => Number(x.typeId) === Number(typeId)) || (d.builingList || [])[0];
     return entry ? entry.conditionBean : null;
   }
 
-  researchList(castleId) { return this.req('tech.getResearchList', { castleId }); }
+  // What one construction order needs, read the way the client's own windows
+  // read it before they offer the button (CastleCommands.as:103-127):
+  //   a new building   castle.getAvailableBuildingBean {castleId, typeId}
+  //                    -> builingList[] (sic) {typeId, conditionBean}
+  //   the next level   castle.checkOutUpgrade {castleId, positionId}
+  //                    -> conditionBean (BuildingInfoWin.sendCheckRequest)
+  // Returns { cond } — null when the reply names none — or { error }. Only
+  // `req` is used, so the goal engine can run it on a stand-in game too.
+  async constructionCondition(castleId, { kind, typeId, positionId }) {
+    try {
+      if (kind === 'upgrade') {
+        const r = await this.req('castle.checkOutUpgrade', { castleId, positionId });
+        if (!r || r.ok !== 1) return { error: (r && r.errorMsg) || 'no reply' };
+        return { cond: r.conditionBean || null };
+      }
+      const r = await this.req('castle.getAvailableBuildingBean', { castleId, typeId });
+      if (!r || r.ok !== 1) return { error: (r && r.errorMsg) || 'no reply' };
+      const list = r.builingList || [];
+      const entry = list.find((x) => Number(x.typeId) === Number(typeId)) || (list.length === 1 ? list[0] : null);
+      return { cond: (entry && entry.conditionBean) || null };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  // Every list read also notes what is being researched (noteResearchList).
+  async researchList(castleId) {
+    const r = await this.req('tech.getResearchList', { castleId });
+    this.noteResearchList(castleId, r);
+    return r;
+  }
 
   // Queues: what is actually being made right now, per building.
   troopQueue(castleId) { return this.req('troop.getProduceQueue', { castleId }); }
@@ -482,7 +765,79 @@ class Game {
       outside: span(C.plotRange(true, townHall)),
     };
   }
-  research(castleId, techId) { return this.req('tech.research', { castleId, techId }); }
+  // The reply carries the tech as it now stands (ResearchResponse.tech).
+  async research(castleId, techId) {
+    const r = await this.req('tech.research', { castleId, techId });
+    if (r && r.ok === 1) this.noteResearch(castleId, { typeId: techId, ...(r.tech || {}), upgradeing: true });
+    return r;
+  }
+
+  // ---- free finishes and speed-ups (speedups.js) ----
+  // castle.speedUpBuildCommand {castleId, positionId, itemId} (CastleCommands.as:175-187)
+  // and tech.speedUpResearch {castleId, itemId} (TechCommand.as:84-95). The
+  // itemId C.FREE_SPEED.item costs nothing on a job whose preset time is five
+  // minutes or less. Neither reply names the city or the job, so each command
+  // waits in its own lane.
+  speedUpBuild(castleId, positionId, itemId) {
+    return this.lane('castle.speedUpBuildCommand',
+      () => this.req('castle.speedUpBuildCommand', { castleId, positionId, itemId }));
+  }
+
+  async speedUpResearch(castleId, itemId) {
+    const r = await this.lane('tech.speedUpResearch', () => this.req('tech.speedUpResearch', { castleId, itemId }));
+    // Finished, or still running with a new end time (ResearchResponse.tech).
+    if (r && r.ok === 1) this.noteResearch(castleId, r.tech && r.tech.upgradeing ? r.tech : null);
+    return r;
+  }
+
+  // What each city is researching, as the last research list or research reply
+  // showed it. The server pushes the END of a research (server.ResearchCompleteUpdate,
+  // which carries only the castleId, and clears the city here: connect) but
+  // never its start, and the free finish must not read the list every tick to
+  // look for one, so every read and every start leaves its answer here: the
+  // console's Research tab, the script's `research` line, the research goal
+  // (goal-research.js, which also asks it what the other cities research).
+  noteResearch(castleId, bean) {
+    const map = (this._research = this._research || new Map());
+    const cid = Number(castleId);
+    if (!bean || !bean.upgradeing) { map.delete(cid); return; }
+    const level = bean.level === undefined || bean.level === null || bean.level === '' ? null : Number(bean.level);
+    map.set(cid, {
+      typeId: Number(bean.typeId), level: Number.isFinite(level) ? level : null,
+      // on the server's clock, like the start and end times
+      startTime: Number(bean.startTime || 0), endTime: Number(bean.endTime || 0), seenAt: this.now(),
+    });
+  }
+
+  // The list names, on the one tech being researched in a city, that city
+  // (AvailableResearchListBean.castleId; BottomToolBar.onRefreshResearchList
+  // shows the one whose castleId is the city in view). A list that shows none
+  // for the city it was read for means nothing runs there.
+  noteResearchList(castleId, r) {
+    if (!r || (r.ok !== undefined && r.ok !== 1)) return;
+    const beans = r.acailableResearchBeans || r.availableResearchBeans || [];
+    let here = null;
+    for (const b of beans) {
+      if (!b || !b.upgradeing || b.castleId === undefined || b.castleId === null) continue;
+      if (Number(b.castleId) === Number(castleId)) here = b;
+      else this.noteResearch(b.castleId, b);
+    }
+    this.noteResearch(castleId, here);
+  }
+
+  runningResearch(castleId) {
+    return (this._research && this._research.get(Number(castleId))) || null;
+  }
+
+  // A research has ended in that city: server.ResearchCompleteUpdate carries
+  // only its castleId (ResearchCompleteUpdate.as), and the client's research
+  // window reads the list again on it (Technology.onResearchComplete). Nothing
+  // runs there now, so the research goal reads the list for its next decision
+  // rather than waiting out the end time.
+  applyResearchComplete(data) {
+    if (!data || data.castleId === undefined || data.castleId === null) return;
+    this.noteResearch(data.castleId, null);
+  }
 
   findBuildings(castle, typeId) {
     return (castle.buildings || []).filter((b) => b.typeId === typeId);
@@ -496,21 +851,83 @@ class Game {
     return null;
   }
 
-  // Turn a conditionBean into readable "what's missing" lines.
-  unmet(cond) {
+  // Turn a conditionBean into readable "what's missing" lines. Give the castle
+  // and the bank is checked too, as the client's build window does before it
+  // enables the button (UIUtil.isConditionMatch + isResourceConditionMatch).
+  unmet(cond, castle = null) {
+    const items = this.player && Array.isArray(this.player.items) ? this.player.items : null;
+    return Game.unmetOf(cond, { resource: castle ? castle.resource || null : null, items });
+  }
+
+  // The same, pure. ConditionBean.as: buildings[] {typeId, level, curLevel,
+  // successFlag}; techs[] {id, level, curLevel, successFlag} — the tech's key
+  // is `id`, not typeId (ConditionDependTechBean.as:32-34), which is why this
+  // used to print "tech undefined"; items[] {id, num, curNum, successFlag}
+  // (ConditionDependItemBean.as); and the cost: food, wood, stone, iron, gold,
+  // population. `items` is the inventory (player.items, kept current by
+  // server.ItemUpdate) and beats the bean's flag, which is as old as the read;
+  // without it the flag decides. The bank is checked only when `resource`
+  // (castle.resource) is given: food/wood/stone/iron are {amount}, gold a number.
+  static unmetOf(cond, { resource = null, items = null } = {}) {
     if (!cond) return [];
     const out = [];
+    const num = (x) => Number(x || 0);
+    const fmt = (x) => Math.round(num(x)).toLocaleString('en-US');
     for (const b of cond.buildings || []) {
       if (b.successFlag) continue;
-      const name = (C.BUILDING_BY_ID[b.typeId] || {}).name || `building ${b.typeId}`;
-      out.push({ kind: 'building', typeId: b.typeId, need: b.level, have: b.curLevel, text: `${name} level ${b.level} (you have ${b.curLevel})` });
+      const typeId = num(b.typeId);
+      const name = (C.BUILDING_BY_ID[typeId] || {}).name || `building ${typeId}`;
+      out.push({ kind: 'building', typeId, name, need: num(b.level), have: num(b.curLevel), text: `${name} level ${num(b.level)} (you have ${num(b.curLevel)})` });
     }
     for (const t of cond.techs || []) {
       if (t.successFlag) continue;
-      const name = (C.TECH_BY_ID[t.typeId] || {}).name || `tech ${t.typeId}`;
-      out.push({ kind: 'tech', typeId: t.typeId, need: t.level, have: t.curLevel, text: `${name} level ${t.level} (you have ${t.curLevel})` });
+      const id = num(t.id ?? t.typeId);
+      const name = (C.TECH_BY_ID[id] || {}).name || `tech ${id}`;
+      out.push({ kind: 'tech', id, typeId: id, name, need: num(t.level), have: num(t.curLevel), text: `research ${name} level ${num(t.level)} (you have ${num(t.curLevel)})` });
+    }
+    for (const it of cond.items || []) {
+      const need = Math.max(1, num(it.num));
+      const held = items ? Game.countOf(items, it.id) : (it.successFlag ? need : num(it.curNum));
+      if (held >= need) continue;
+      const name = Game.itemName(it.id);
+      out.push({ kind: 'item', id: String(it.id), name, need, have: held, text: `${need} ${name} (you have ${held})` });
+    }
+    if (resource) {
+      for (const key of ['food', 'wood', 'stone', 'iron', 'gold']) {
+        const need = num(cond[key]);
+        const have = Game.bankOf(resource, key);
+        if (need > 0 && need > have) out.push({ kind: 'resource', key, need, have, text: `${key} ${fmt(need)} (you have ${fmt(have)})` });
+      }
+      // what is free once the fields and the builder are staffed, as troop
+      // training counts it (engine.js idleOf)
+      const pop = num(cond.population);
+      const idle = Math.max(0, num(resource.curPopulation) - num(resource.workPeople) - num(resource.buildPeople));
+      if (pop > 0 && idle < pop) out.push({ kind: 'population', need: pop, have: idle, text: `idle population ${fmt(pop)} (you have ${fmt(idle)})` });
     }
     return out;
+  }
+
+  // castle.resource: food/wood/stone/iron are ResourceOutputBeans {amount, ...};
+  // gold is a plain number (UIUtil.isResourceConditionMatch reads both so).
+  static bankOf(resource, key) {
+    const v = resource && resource[key];
+    return Number((v && typeof v === 'object' ? v.amount : v) || 0);
+  }
+
+  static countOf(items, id) {
+    const it = (items || []).find((x) => x && String(x.id) === String(id));
+    return it ? Number(it.count || 0) : 0;
+  }
+
+  // An item's name from the catalogue (items.js), or the few the engine talks
+  // about itself, or its id.
+  static ITEM_NAMES = { 'consume.blueprint.1': "Michelangelo's Script" };
+  static itemName(id) {
+    try {
+      const d = require('./items').catalogue().get(String(id));
+      if (d && d.name) return d.name;
+    } catch { /* no catalogue */ }
+    return Game.ITEM_NAMES[id] || String(id);
   }
 
   // ---- market ----
@@ -537,9 +954,22 @@ class Game {
     return this.lane('trade.newTrade', () => this.req('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) }));
   }
 
-  searchTrades(resource) {
-    return this.lane('trade.searchTrades', () => this.req('trade.searchTrades', { resType: C.TRADE_RES[resource] }));
+  // The top of one resource's book (the client shows five a side: Market.as
+  // "the five highest buy offers" / "the five lowest sell offers"). Every read,
+  // whoever asks — the console's Market panel, holidaysnipe, goal-trade — leaves
+  // its answer in marketBook(), so the market goals can price a plan without a
+  // read of their own each time.
+  async searchTrades(resource) {
+    const d = await this.lane('trade.searchTrades', () => this.req('trade.searchTrades', { resType: C.TRADE_RES[resource] }));
+    if (d && (d.ok === undefined || d.ok === 1) && (Array.isArray(d.sellers) || Array.isArray(d.buyers))) {
+      this._books = this._books || {};
+      this._books[resource] = { at: Date.now(), sellers: d.sellers || [], buyers: d.buyers || [] };
+    }
+    return d;
   }
+
+  // { at, sellers, buyers } as the last read found it, or null.
+  marketBook(resource) { return (this._books && this._books[resource]) || null; }
 
   myTrades(castleId) {
     return this.lane('trade.getMyTradeList', () => this.req('trade.getMyTradeList', { castleId }));
@@ -550,16 +980,22 @@ class Game {
   }
 
   // ---- reports ----
+  // reportType is ObjConstants' 0 trade, 1 army, 2 other. A type it does not
+  // know is refused: it used to fall back to 0, so `cleanreports armies` (not
+  // `army`) deleted every trade report.
+  // A report reply names its command and nothing else, and the console's
+  // Reports window and the reportstokeep goal (goal-reports.js) both ask, so
+  // each report command waits in its own lane, as the market's do.
   async reportList(type = 'trade', pageNo = 1, pageSize = 50) {
-    this.c.send('report.receiveReportList', { pageNo, pageSize, reportType: C.REPORT_TYPE[type] ?? 0 });
-    const r = await this.c.await(['report.receiveReportList'], 12000);
-    return r.data;
+    const reportType = C.REPORT_TYPE[type];
+    if (reportType === undefined) throw new Error(`unknown report type "${type}" — trade, army or other`);
+    return this.lane('report.receiveReportList',
+      () => this.req('report.receiveReportList', { pageNo, pageSize, reportType }));
   }
 
-  async deleteReports(ids) {
-    this.c.send('report.deleteReport', { idStr: ids.join(',') });   // ReportCommands.as: idStr
-    const r = await this.c.await(['report.deleteReport'], 12000);
-    return r.data;
+  deleteReports(ids) {
+    // ReportCommands.as: idStr
+    return this.lane('report.deleteReport', () => this.req('report.deleteReport', { idStr: ids.join(',') }));
   }
 
   async cleanReports(type = 'trade') {
@@ -582,7 +1018,11 @@ class Game {
   // report.markAsRead is how the client OPENS a report (PublicReportCanvas
   // .showDetail): the reply is a ReportResponse whose `report` is the full
   // ReportBean, XML `content` included — receiveReportList is only the index.
-  readReport(reportId) { return this.req('report.markAsRead', { reportId: Number(reportId) }); }
+  readReport(reportId) {
+    const ask = () => this.req('report.markAsRead', { reportId: Number(reportId) });
+    // (an object that borrows Game's methods without its lanes still reads)
+    return typeof this.lane === 'function' ? this.lane('report.markAsRead', ask) : ask();
+  }
   // The "mark as read" button: ids comma-joined (PublicReportCanvas.onMarkAsReadSelected).
   markReportsRead(ids) { return this.req('report.readOverReport', { reportIds: ids.join(',') }); }
 

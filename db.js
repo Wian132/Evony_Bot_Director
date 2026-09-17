@@ -327,6 +327,16 @@ const snapshots = {
 
 // -------------------------------------------------------------------- goals
 
+// Keys in the goals table that belong to the ACCOUNT, not to a city: the
+// new-city template ('default'), the global goals run before and after every
+// city's own ('prepend', 'append'), the new-city script ('newcity') and the
+// goal sets a script loads ('set1' to 'set9'). See goallayers.js. A city's own
+// key is its castle id, so these never collide with one; they are kept out of
+// the by-NAME lookup, so a city that happens to be called "prepend" is not
+// seeded from the prepend goals.
+const NOT_A_CITY = new Set(['default', 'prepend', 'append', 'newcity',
+  ...Array.from({ length: 9 }, (_, i) => `set${i + 1}`)]);
+
 const goals = {
   // Try each key in turn for this account, then the account's own default, then
   // the shared default. Returns {src, cityKey, accountId} or null.
@@ -350,17 +360,52 @@ const goals = {
   // it keeps running what it ran before, and from then on the row is its own. A
   // row saved empty stays empty and never falls back to the default again.
   own(accountId, cityId, cityName, kind = 'goal') {
-    if (cityId === null || cityId === undefined || cityId === '') return null;
+    return goals.seed(accountId, cityId, cityName, kind).row;
+  },
+
+  // own(), saying what happened: { row, seeded, from, had }. `had` is true when
+  // the city already had a row of its own (an empty one included), `seeded`
+  // when this call copied one in, and `from` names the row it was copied from
+  // ({accountId, cityKey}; cityKey 'default' is the new-city template). The
+  // session calls this the moment a city appears (server.CastleUpdate), so the
+  // copy is made then and logged, rather than on the engine's first read.
+  seed(accountId, cityId, cityName, kind = 'goal') {
+    const none = { row: null, seeded: false, from: null, had: false };
+    if (cityId === null || cityId === undefined || cityId === '') return none;
     const key = String(cityId);
     const get = () => one('SELECT * FROM goals WHERE accountId = ? AND cityKey = ? AND kind = ?', accountId || '', key, kind);
     let row = get();
-    if (!row) {
-      const seed = goals.find(accountId, [key, cityName], kind);
-      if (!seed) return null;
-      goals.set(accountId, key, kind, seed.src);
-      row = get();
+    if (row) return { row: row.src ? row : null, seeded: false, from: null, had: true };
+    const name = NOT_A_CITY.has(String(cityName || '').trim().toLowerCase()) ? null : cityName;
+    let seed = goals.find(accountId, [key, name], kind);
+    // An account that saved its template EMPTY has said "no template": the
+    // install-wide rows find() falls through to must not seed its cities instead.
+    if (seed && accountId && seed.accountId === '') {
+      const tpl = goals.exact(accountId, 'default', kind);
+      if (tpl && !tpl.src) seed = null;
     }
-    return row && row.src ? row : null;
+    if (!seed) return none;
+    goals.set(accountId, key, kind, seed.src);
+    row = get();
+    return { row: row && row.src ? row : null, seeded: true, from: { accountId: seed.accountId, cityKey: seed.cityKey }, had: false };
+  },
+
+  // One exact row, no fallback: an account's template, prepend or append text.
+  exact(accountId, cityKey, kind = 'goal') {
+    return one('SELECT * FROM goals WHERE accountId = ? AND cityKey = ? AND kind = ?',
+      accountId || '', String(cityKey), kind) || null;
+  },
+
+  // What the engine evaluates in one city (NEAT's GlobalGoals): the account's
+  // prepend goals, the city's own (seeded as own() does), the append goals.
+  // Each is the text or null; goallayers.parseLayered puts them together.
+  layers(accountId, cityId, cityName) {
+    const text = (r) => (r && r.src ? r.src : null);
+    return {
+      prepend: text(goals.exact(accountId, 'prepend', 'goal')),
+      city: text(goals.own(accountId, cityId, cityName, 'goal')),
+      append: text(goals.exact(accountId, 'append', 'goal')),
+    };
   },
 
   // One city's script loadouts as [{slot, src, savedAt}], the empty ones left
@@ -420,6 +465,12 @@ const engineState = {
         accountId || '', k, JSON.stringify(v), t);
     }
   },
+  // save() only ever upserts, so a key the engine has moved (a city's state
+  // re-keyed from its name to its castle id) has to be dropped here, or the
+  // next load brings it back.
+  remove(keys, accountId = '') {
+    for (const k of keys || []) run('DELETE FROM engine_state WHERE accountId = ? AND key = ?', accountId || '', String(k));
+  },
 };
 
 // ---------------------------------------------------------------- map cache
@@ -442,8 +493,10 @@ const mapCache = {
     const levelStmt = db.prepare(
       `INSERT INTO tile_levels (fieldId,at,level,kind) VALUES (?,?,?,?)
        ON CONFLICT(fieldId,at) DO UPDATE SET level=excluded.level`);
-    const prevLevel = new Map(
-      all('SELECT id, level FROM map_cache WHERE level IS NOT NULL').map((r) => [Number(r.id), Number(r.level)]));
+    // Each tile's old level by its id, not the whole table up front: the table
+    // also holds every flat and valley the background map scan reads, and that
+    // scan writes a few blocks every minute.
+    const prevStmt = db.prepare('SELECT level FROM map_cache WHERE id = ? AND level IS NOT NULL');
     db.exec('BEGIN');
     try {
       for (const t of tiles) {
@@ -452,7 +505,8 @@ const mapCache = {
         // unowned tiles becomes observable instead of being silently lost.
         const lvl = n(t.level);
         if (lvl !== null) {
-          const prev = prevLevel.get(Number(t.id));
+          const row = prevStmt.get(Number(t.id));
+          const prev = row ? Number(row.level) : undefined;
           if (prev === undefined || prev !== lvl) {
             levelStmt.run(Number(t.id), Number(t.seen || now()), lvl, bind(t.kind));
           }
@@ -477,6 +531,36 @@ const mapCache = {
     }
     const u = one('SELECT max(seen) m FROM map_cache');
     return { updatedAt: (u && u.m) || 0, castles };
+  },
+
+  // The NPC camps alone, in the same shape as asJson's entries. NPC farming
+  // reads these every slice; the rest of the table (flats, valleys, players)
+  // stays unparsed.
+  npcs() {
+    return all("SELECT json FROM map_cache WHERE kind = 'npc' OR npc = 1")
+      .map((r) => { try { return JSON.parse(r.json); } catch { return null; } }).filter(Boolean);
+  },
+
+  // One tile by its field id (y*800+x), in asJson's shape, or null. The
+  // reportstokeep goal asks it for each report's target (goal-reports.js).
+  tile(fieldId) {
+    const r = one('SELECT json FROM map_cache WHERE id = ?', Number(fieldId));
+    if (!r) return null;
+    try { return JSON.parse(r.json); } catch { return null; }
+  },
+
+  // When one map block (the size x size square at x1,y1) was last read, from the
+  // tiles it left here: { at, tiles, unleveled } — at 0 when none are cached.
+  // `unleveled` counts NPC tiles cached without a level (an old mapscan.js
+  // sweep), which the background scan reads again. The field id is y*800+x, so
+  // the block is one primary-key range filtered by column.
+  blockSeen(x1, y1, size = 20) {
+    const W = 800;
+    const r = one(`SELECT max(seen) m, count(*) c,
+        sum(CASE WHEN (kind = 'npc' OR npc = 1) AND level IS NULL THEN 1 ELSE 0 END) u
+      FROM map_cache WHERE id BETWEEN ? AND ? AND (id % ${W}) BETWEEN ? AND ?`,
+    Number(y1) * W + Number(x1), (Number(y1) + size - 1) * W + Number(x1) + size - 1, Number(x1), Number(x1) + size - 1);
+    return { at: (r && n(r.m)) || 0, tiles: (r && n(r.c)) || 0, unleveled: (r && n(r.u)) || 0 };
   },
 
   count() { return n(one('SELECT count(*) c FROM map_cache').c) || 0; },

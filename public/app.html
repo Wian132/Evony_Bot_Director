@@ -148,6 +148,8 @@
   .bar .hint { color:var(--dim); font-size:11px; margin-left:auto; text-align:right; }
   .bar .hint .neg { font-weight:bold; }
   #loadSel { max-width:200px; }
+  #acctSel { max-width:190px; }
+  #clearScript { white-space:nowrap; flex:0 0 auto; }
 
   /* the row above the editor: editor icons, Gate Control, War Town Mode */
   .ctlrow { display:flex; align-items:flex-end; gap:14px; padding:2px 0 4px; flex:0 0 auto; }
@@ -163,10 +165,38 @@
   .gatestate { font-size:11px; padding-bottom:4px; }
   .gatestate b.open { color:var(--amber); } .gatestate b.closed { color:var(--ok); }
 
-  textarea#editor {
-    width:100%; height:100%; background:var(--panel); color:var(--ink); border:0; padding:4px 6px;
-    font:12px/1.45 "Courier New", Consolas, monospace; resize:none; outline:none; display:block;
+  /* The editor is a textarea over a layer (#edHl) that repeats its text line for
+     line, coloured by what the parser made of each line: blue works, red has an
+     error or does nothing yet, grey is a comment. Both must lay the text out
+     identically, so every text metric is set on both here; the textarea's own text
+     turns transparent only once the layer is painting (.hl-on). */
+  .edbox { position:relative; height:100%; }
+  textarea#editor, .edhl {
+    margin:0; border:0; padding:4px 6px;
+    font:11px/16px Consolas, "Lucida Console", "Courier New", monospace;
+    font-variant-ligatures:none; letter-spacing:0; word-spacing:0; tab-size:8; text-align:left;
+    white-space:pre-wrap; overflow-wrap:break-word; word-break:normal;
   }
+  textarea#editor {
+    position:relative; z-index:1; width:100%; height:100%; background:transparent; color:var(--ink);
+    caret-color:var(--ink); resize:none; outline:none; display:block;
+  }
+  textarea#editor::placeholder { color:var(--faint); }
+  .edbox.hl-on textarea#editor { color:transparent; }
+  .edbox.hl-on textarea#editor::selection { color:transparent; background:rgba(42,98,216,.28); }
+  :root[data-theme="dark"] .edbox.hl-on textarea#editor::selection { background:rgba(141,180,255,.32); }
+  .edhl { position:absolute; top:0; left:0; overflow:hidden; pointer-events:none; color:var(--ink); }
+  .edhl::after { content:''; display:block; height:32px; }   /* never less to scroll than the textarea */
+  .edhl .gl:empty::before { content:'\200b'; }                /* an empty line still takes its height */
+  .edhl .gl-ok { color:var(--blue); }
+  .edhl .gl-idle, .edhl .gl-error { color:var(--bad); }
+  .edhl .gl-error { text-decoration:underline wavy; text-decoration-skip-ink:none; text-underline-offset:2px; }
+  .edhl .gl-comment { color:var(--faint); }
+  /* under the editor: why the cursor's line is red, or how the lines stand */
+  .edline { flex:0 0 auto; padding:3px 1px 0; min-height:18px; font-size:11px; color:var(--dim);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .edline.bad { color:var(--bad); }
+  .edline .c-ok { color:var(--blue); } .edline .c-bad { color:var(--bad); }
   pre.out { margin:0; padding:5px 7px; font:11.5px/1.5 "Courier New", Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
 
   /* monitor icon toolbar */
@@ -423,8 +453,11 @@
           </select>
         </div>
       </div>
-      <div class="well" id="editWell"><textarea id="editor" spellcheck="false"></textarea><pre class="out" id="engView" hidden></pre></div>
+      <div class="well" id="editWell"><div class="edbox" id="edBox"><div class="edhl" id="edHl" aria-hidden="true"></div><textarea id="editor" spellcheck="false" aria-describedby="edLine"></textarea></div><pre class="out" id="engView" hidden></pre></div>
+      <div class="edline" id="edLine"></div>
       <div class="bar">
+        <select id="acctSel" title="This city's own text, or one the whole account shares: the new-city template, the goals every city runs first (prepend) and last (append), the new-city script, the goal sets a script loads"></select>
+        <button id="clearScript" title="A script changed the goals this city is running. Clear them to go back to the saved goals" hidden>Clear script goals</button>
         <select id="loadSel" title="This city's script loadouts — every city has its own ten; the first line names one"></select>
         <button id="apply">Apply</button>
         <button id="save">Save</button>
@@ -1036,11 +1069,14 @@ async function loadEditor() {
   $('apply').title = 'Check for errors — nothing is saved';
   $('save').title = k === 'script' ? 'Save into the selected loadout' : 'Save the goals — the engine works them from its next tick';
   $('editor').placeholder = k === 'script' ? '// the first line names this loadout' : '';
-  $('editor').hidden = k === 'engine';
+  $('edBox').hidden = k === 'engine';
+  $('edLine').hidden = k === 'engine';
   $('engView').hidden = k !== 'engine';
-  if (k === 'engine') { renderEngineView(); return; }
+  paintAcctSel();
+  if (k === 'engine') { showTipHtml(null, null); renderEngineView(); return; }
+  if (acctWhich()) return loadAcctText(mine);     // an account-wide text, not this city's
   paintEditHint();
-  if (!city) { ed.value = ''; paintLoadSel(); return; }
+  if (!city) { ed.value = ''; edcShow(); paintLoadSel(); return; }
   // Read-only until this city's text is in, so nothing typed meanwhile is
   // taken for this city's draft while another city's text is still showing.
   ed.readOnly = true;
@@ -1048,13 +1084,15 @@ async function loadEditor() {
     const L = await loadLoadouts(city);
     if (mine !== editLoads) return;     // moved on while it loaded
     paintLoadSel();
-    if (!L) { ed.value = ''; return; }  // stays read-only: nothing to save into
+    if (!L) { ed.value = ''; edcShow(); return; }  // stays read-only: nothing to save into
     ed.value = slotSrc(L, L.slot);
+    edcShow();
     ed.readOnly = false;
     paintEditHint();
     return;
   }
   ed.value = GOALED.drafts[city] ?? GOALED.saved[city] ?? '';
+  edcShow();
   const r = await getJSON(`/api/editor?city=${encodeURIComponent(city)}&kind=goal`);
   if (mine !== editLoads) return;
   // A failed read must not show as empty goals that Save would then write back.
@@ -1062,6 +1100,7 @@ async function loadEditor() {
   GOALED.saved[city] = r.src || '';
   if (GOALED.drafts[city] === GOALED.saved[city]) delete GOALED.drafts[city];
   ed.value = GOALED.drafts[city] ?? GOALED.saved[city];
+  edcShow();
   ed.readOnly = false;
   paintEditHint();
 }
@@ -1070,12 +1109,15 @@ async function loadEditor() {
 // warning stays until the text is edited (or a minute passes).
 function paintEditHint(extra, bad) {
   if (extra) S.hintUntil = Date.now() + (bad ? 60000 : 10000);
+  paintScriptBtn();
+  if (!extra && acctWhich()) { $('editHint').innerHTML = acctHint(); return; }
   const h = S.head;
   const city = S.cityData ? esc(S.cityData.name) : 'the open city';
-  const L = loadOf();
+  const L = loadOf(), SL = scriptOf();
   $('editHint').innerHTML = extra ? (bad ? `<span class="neg">&#9888; ${esc(extra)}</span>` : esc(extra))
     : S.edit === 'goals' ? `${city}'s standing intentions, re-evaluated every tick`
       + (String(S.city) in GOALED.drafts ? ' · <b>not saved</b>' : '') + (h && h.paused ? ' · engine <b>PAUSED</b>' : '')
+      + (SL ? scriptHint(SL) : '')
     : S.edit === 'script' ? `runs top to bottom, once, in ${city}${L && L.slot in L.drafts ? ' · <b>not saved</b>' : ''}`
       + (RUNS.has(String(S.city)) ? ' · <b>running here</b>' : '')
     : '';
@@ -1084,7 +1126,8 @@ function paintEditHint(extra, bad) {
 // An edit is a draft of the open city's text only.
 $('editor').addEventListener('input', () => {
   const v = $('editor').value, city = String(S.city), L = loadOf(city);
-  if (S.edit === 'script' && L) {
+  if (acctWhich()) acctInput();          // an account-wide text is open, not the city's
+  else if (S.edit === 'script' && L) {
     if (v === (L.saved[L.slot] ?? '')) delete L.drafts[L.slot];
     else L.drafts[L.slot] = v;
     paintLoadSel();
@@ -1102,6 +1145,7 @@ $('loadSel').onchange = () => {
   LOAD_SLOTS[city] = L.slot;
   store.set('evony_loadslots', LOAD_SLOTS);
   $('editor').value = slotSrc(L, L.slot);
+  edcShow();
   S.hintUntil = 0;
   paintEditHint();
 };
@@ -1115,32 +1159,42 @@ const hintIn = (city, edit) => (m, bad) => {
 };
 
 async function goalsCall(save) {
+  if (acctWhich()) return acctCall(save);
   if (!S.city) return paintEditHint('no city is open yet', true);
-  const city = String(S.city), src = $('editor').value, hint = hintIn(city, 'goals');
+  const city = String(S.city), src = $('editor').value, hint = hintIn(city, 'goals'), key = edcKey();
   if (save && !(city in GOALED.saved)) return hint('this city\'s goals have not loaded — nothing was saved', true);
   const r = await post('/api/goals', { src, city, save });
   if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
   if (save) {
     GOALED.saved[city] = src;
     if (GOALED.drafts[city] === src) delete GOALED.drafts[city];     // unless it was edited again meanwhile
   }
   const errs = r.errors || [];
+  // lines that read fine but that nothing acts on yet: red in the editor too
+  const idle = (r.lines || []).filter((l) => l.status === 'idle');
   if (errs.length) {
     hint(save ? `saved with ${errs.length} error(s) — these goals won't work as written until they're fixed. See Output.`
       : `${errs.length} error(s) — these goals won't work as written. See Output.`, true);
+  } else if (idle.length) {
+    hint(save ? `${r.engineNote || 'saved'} ${idle.length} line(s) do nothing yet — see Output.`
+      : `no errors, but ${idle.length} line(s) do nothing yet — see Output. Not saved yet, press Save`);
   } else hint(save ? (r.engineNote || 'saved') : 'no errors — not saved yet, press Save');
   showOutput([
     ...(errs.length ? [`${errs.length} error(s) — these lines won't work as written:`, ...errs.map((e) => `  line ${e.line}: ${e.error}`), ''] : []),
+    ...(idle.length ? [`${idle.length} line(s) read fine but nothing acts on them yet:`, ...idle.map((l) => `  line ${l.n}: ${l.msg}`), ''] : []),
     ...(r.described || []),
   ].join('\n'), city);
 }
 
 async function saveLoadout() {
+  if (acctWhich()) return acctCall(true);
   const city = String(S.city), L = loadOf(city), hint = hintIn(city, 'script');
   if (!L) return hint('this city\'s loadouts have not loaded — try again', true);
-  const slot = L.slot, src = $('editor').value;
+  const slot = L.slot, src = $('editor').value, key = edcKey();
   const r = await post('/api/loadouts', { city, slot, src });
   if (r.ok === false) return hint('not saved — ' + (r.error || 'failed'), true);
+  edcTake(key, src, r);
   if (src.trim()) L.saved[slot] = src; else delete L.saved[slot];
   if (L.drafts[slot] === src) delete L.drafts[slot];     // unless it was edited again meanwhile
   if (String(S.city) === city) paintLoadSel();
@@ -1153,10 +1207,12 @@ async function saveLoadout() {
 }
 
 $('apply').onclick = async () => {
+  if (acctWhich()) return acctCall(false);
   if (S.edit !== 'script') return goalsCall(false);
-  const city = String(S.city), hint = hintIn(city, 'script');
-  const r = await post('/api/script', { src: $('editor').value, parseOnly: true });
+  const city = String(S.city), hint = hintIn(city, 'script'), src = $('editor').value, key = edcKey();
+  const r = await post('/api/script', { src, parseOnly: true });
   if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
   const n = (r.errors || []).length;
   hint(n ? `${n} error(s) — this script won't run until they're fixed. See Output.`
     : 'no errors — Save keeps it in this loadout, Run runs it', n > 0);
@@ -1164,9 +1220,172 @@ $('apply').onclick = async () => {
 };
 $('save').onclick = () => (S.edit === 'script' ? saveLoadout() : goalsCall(true));
 
+// ---------- account-wide texts: new-city template, prepend / append goals, new-city script ----------
+// NEAT keeps these as files beside the bot (!NewCityGoals.txt, !PrependGoals.txt,
+// !AppendGoals.txt, !NewCityScript.txt). Here they belong to the account and are
+// opened from the selector in the editor bar (goallayers.js, /api/goals/account).
+// ACCT.goals / ACCT.script is the text open in that tab ('' = the city's own);
+// unsaved edits wait per text, as a city's do.
+const ACCT = { goals: '', script: '', saved: {}, drafts: {}, info: {}, offered: {} };
+// NEAT's numbered goal sets, which a script's `loadgoals N` runs (goallayers.js)
+const GOAL_SETS = Array.from({ length: 9 }, (_, i) => `set${i + 1}`);
+const ACCT_OPTS = {
+  goals: [['', 'This city\'s goals'], ['template', 'New-city template'],
+    ['prepend', 'Prepend goals (all cities)'], ['append', 'Append goals (all cities)'],
+    ...GOAL_SETS.map((s) => [s, `Goal set ${s.slice(3)}`])],
+  script: [['', 'This city\'s loadouts'], ['script', 'New-city script']],
+};
+const ACCT_ABOUT = {
+  template: 'copied into a city the first time it appears (founded or captured) if it has no goals of its own',
+  prepend: 'every city runs these before its own goals; a city\'s own lines override them',
+  append: 'every city runs these after its own goals; they override the city\'s own lines',
+  script: 'runs once in each city founded or captured while this console is connected',
+  ...Object.fromEntries(GOAL_SETS.map((s) => [s, `a script's loadgoals ${s.slice(3)} runs these in place of a city's goals `
+    + '(prepend and append too) until loadgoals, Clear script goals, saving that city\'s goals or a restart'])),
+};
+// how an error's place is named in each (goallayers.js TEXTS)
+const ACCT_WHERE = { template: 'template', prepend: 'prepend', append: 'append', script: 'new-city script',
+  ...Object.fromEntries(GOAL_SETS.map((s) => [s, `goal set ${s.slice(3)}`])) };
+const acctWhich = () => ((S.edit === 'goals' || S.edit === 'script') ? ACCT[S.edit] : '');
+const acctLabel = (which) => ((Object.values(ACCT_OPTS).flat().find(([v]) => v === which) || [])[1] || which).replace(/ \(.*\)$/, '');
+
+// The selector, and the loadout picker and Run, which belong to a city's scripts.
+function paintAcctSel() {
+  paintScriptBtn();
+  const opts = ACCT_OPTS[S.edit];
+  $('acctSel').style.display = opts ? '' : 'none';
+  if (!opts) return;
+  const opt = ([v, label]) => `<option value="${v}">${esc(label)}${v && v in ACCT.drafts ? ' *' : ''}</option>`;
+  const sets = opts.filter(([v]) => GOAL_SETS.includes(v));
+  $('acctSel').innerHTML = opts.filter(([v]) => !GOAL_SETS.includes(v)).map(opt).join('')
+    + (sets.length ? `<optgroup label="Goal sets a script loads (loadgoals N)">${sets.map(opt).join('')}</optgroup>` : '');
+  $('acctSel').value = ACCT[S.edit] || '';
+  if (acctWhich()) { $('loadSel').style.display = 'none'; $('runScript').style.display = 'none'; }
+}
+$('acctSel').onchange = () => {
+  if (!ACCT_OPTS[S.edit]) return;
+  ACCT[S.edit] = $('acctSel').value;
+  S.hintUntil = 0;
+  loadEditor();
+};
+
+// Read one into the editor. An account with no template at all is offered
+// NEAT's default new-city goals as an unsaved draft, once.
+async function loadAcctText(mine) {
+  const which = acctWhich(), ed = $('editor');
+  ed.readOnly = true;
+  ed.placeholder = '';
+  ed.value = ACCT.drafts[which] ?? ACCT.saved[which] ?? '';
+  edcShow();                  // coloured like any text in the editor (edcKey knows it)
+  paintEditHint();
+  const r = await getJSON('/api/goals/account?which=' + encodeURIComponent(which));
+  if (mine !== editLoads) return;
+  // A failed read must not show as an empty text that Save would then write back.
+  if (!r || r.ok === false) return paintEditHint(`${acctLabel(which)} did not load${r && r.error ? ': ' + r.error : ''} — switch tabs to try again`, true);
+  ACCT.saved[which] = r.src || '';
+  ACCT.info[which] = r;
+  if (r.suggested && !ACCT.offered[which] && !(which in ACCT.drafts)) ACCT.drafts[which] = r.suggested;
+  if (r.suggested) ACCT.offered[which] = true;
+  if (ACCT.drafts[which] === ACCT.saved[which]) delete ACCT.drafts[which];
+  ed.value = ACCT.drafts[which] ?? ACCT.saved[which];
+  edcShow();
+  ed.readOnly = false;
+  paintAcctSel();
+  paintEditHint();
+}
+
+function acctInput() {
+  const which = acctWhich(), v = $('editor').value;
+  if (!(which in ACCT.saved)) return;
+  if (v === ACCT.saved[which]) delete ACCT.drafts[which]; else ACCT.drafts[which] = v;
+  paintAcctSel();
+}
+
+function acctHint() {
+  const which = acctWhich(), info = ACCT.info[which] || {}, h = S.head;
+  const draft = which in ACCT.drafts;
+  return `<b>${esc(acctLabel(which))}</b>: ${esc(ACCT_ABOUT[which] || '')}`
+    + (info.inherited && !draft ? ' · shown from the install-wide default' : '')
+    + (draft ? (info.suggested && ACCT.drafts[which] === info.suggested ? ' · <b>NEAT\'s default, not saved</b>' : ' · <b>not saved</b>') : '')
+    + ((which === 'prepend' || which === 'append') && h && h.paused ? ' · engine <b>PAUSED</b>' : '');
+}
+
+// Apply checks, Save keeps. The errors say which text they are in: in a city
+// these lines run among its own, so "prepend line 3" is where to look.
+async function acctCall(save) {
+  const which = acctWhich(), edit = S.edit, src = $('editor').value, key = edcKey();
+  const hint = (m, bad) => { if (S.edit === edit && acctWhich() === which) paintEditHint(m, bad); };
+  if (save && !(which in ACCT.saved)) return hint(`${acctLabel(which)} has not loaded — nothing was saved`, true);
+  const r = await post('/api/goals/account', { which, src, save });
+  if (r.ok === false) return hint(r.error || 'failed', true);
+  edcTake(key, src, r);
+  if (save) {
+    ACCT.saved[which] = src.trim() ? src : '';
+    if (ACCT.drafts[which] === src) delete ACCT.drafts[which];     // unless it was edited again meanwhile
+    ACCT.info[which] = { ...(ACCT.info[which] || {}), exists: true, inherited: false };
+    if (S.edit === edit) paintAcctSel();
+  }
+  const errs = r.errors || [];
+  // lines that read fine but that nothing acts on yet, as goalsCall lists them
+  const idle = (r.lines || []).filter((l) => l.status === 'idle');
+  if (errs.length) {
+    hint(save ? `saved with ${errs.length} error(s) — those lines are skipped until they're fixed. See Output.`
+      : `${errs.length} error(s) — these lines won't work as written. See Output.`, true);
+  } else if (idle.length) {
+    hint(save ? `${r.note || 'saved'} ${idle.length} line(s) do nothing yet — see Output.`
+      : `no errors, but ${idle.length} line(s) do nothing yet — see Output. Not saved yet, press Save`);
+  } else hint(save ? (r.note || 'saved') : 'no errors — not saved yet, press Save');
+  const where = ACCT_WHERE[which] || which;
+  showOutput([
+    `${acctLabel(which)}${save ? ' — saved' : ' — checked'}`, '',
+    ...(errs.length ? [`${errs.length} error(s) — these lines won't work as written:`, ...errs.map((e) => `  ${e.where}: ${e.error}`), ''] : []),
+    ...(idle.length ? [`${idle.length} line(s) read fine but nothing acts on them yet:`, ...idle.map((l) => `  ${where} line ${l.n}: ${l.msg}`), ''] : []),
+    ...(r.described || []),
+  ].join('\n'));
+}
+
+// ---------- script goals: what a script set in the open city ----------
+// A script's goal lines (config npc:5, goal ..., loadgoals, resetgoals) change the
+// goals a city is RUNNING, in the console's memory, never the saved text shown in
+// the editor (goallayers.js, the script goal layer). /api/session lists them per
+// city; the hint says so, and Clear script goals puts the city back on its saved
+// goals, as NEAT's Set Goals does (saving the city's goals does the same).
+function scriptOf(city = S.city) {
+  return ((S.cities || []).find((c) => String(c.id) === String(city)) || {}).script || null;
+}
+function scriptHint(L) {
+  const at = new Date(L.setAt).toTimeString().slice(0, 5);
+  const what = L.base === 'reset' ? `goals reset by a script at ${at}${L.count ? `, ${L.count} line(s) set since` : ''}`
+    : L.base === 'loaded' ? `${L.loaded} loaded by a script at ${at}${L.count ? `, ${L.count} line(s) added` : ''}`
+    : `${L.count} line(s) set by a script at ${at}`;
+  return ` · <b class="neg">script goals active</b>: ${esc(what)}; they run over these until cleared, and Save drops them`;
+}
+function paintScriptBtn() {
+  $('clearScript').hidden = !(S.edit === 'goals' && !acctWhich() && scriptOf());
+}
+$('clearScript').onclick = async () => {
+  const city = String(S.city);
+  const name = (S.cityData && S.cityData.name) || ((S.cities || []).find((c) => String(c.id) === city) || {}).name || 'this city';
+  const r = await getJSON('/api/goals/script?city=' + encodeURIComponent(city));
+  const L = r && r.layer;
+  if (!L) { refresh(); return paintEditHint(`no script goals are running in ${name}`); }
+  const lines = L.src ? L.src.split('\n') : [];
+  const what = L.base === 'reset' ? 'A script reset the goals here' : L.base === 'loaded' ? `A script loaded ${L.loaded} here` : 'A script set goals here';
+  const detail = `${what}${lines.length ? `: ${lines.slice(0, 6).join('; ')}${lines.length > 6 ? ` … and ${lines.length - 6} more` : ''}` : ''}. `
+    + 'The city goes back to its saved goals on the engine\'s next tick.';
+  if (!await ask(`Clear the goals a script set in ${name}?`, { title: 'Script goals', detail, ok: 'Clear script goals' })) return;
+  const res = await post('/api/goals/script', { city, clear: true });
+  if (res.ok === false) return tell(res.error || 'failed', { title: 'Script goals' });
+  const sc = (S.cities || []).find((c) => String(c.id) === city);
+  if (sc) sc.script = null;                 // gone now, not at the next poll
+  paintEditHint(res.cleared ? `script goals cleared: ${name} runs its saved goals from the next tick` : 'there were no script goals to clear');
+  refresh();
+};
+
 // Always live. A script with errors is refused whole by the server. Runs in
 // different cities go side by side, and each city's Output shows its own run.
 $('runScript').onclick = async () => {
+  if (acctWhich()) return;             // the new-city script runs by itself, in new cities
   const src = $('editor').value, L = loadOf();
   if (!S.city) return paintEditHint('no city is open yet', true);
   if (!L) return paintEditHint('this city\'s loadouts have not loaded — try again', true);
@@ -1328,6 +1547,156 @@ async function renderEngineView() {
   for (const a of rep.acted) lines.push('  ' + a);
   $('engView').textContent = lines.join('\n');
 }
+
+// ---------- editor colours ----------
+// #edHl sits behind the textarea and repeats its text, one div per line, coloured
+// by what the server's own parser made of each line (goals.js / script.js
+// lineStatus): blue works, red has an error or does nothing yet, grey is a
+// comment. The textarea is still the editor — its text only turns transparent
+// over the layer — so typing, paste, undo, the keyboard and the drafts are its own.
+// A line typed since the last answer keeps its colour if it is unchanged, is
+// grey at once if it is a comment, and is plain ink until the next answer, which
+// is asked for after a pause in typing (EDC_MS). A check never saves.
+const EDC_MS = 300;
+const EDC = { seq: 0, timer: 0, key: null, rows: null, lines: null, shown: [] };
+// the editor an answer belongs to: tab, city and, for scripts, the loadout — or
+// the account-wide text open in that tab (acctWhich), whichever city is open
+const edcKey = () => (acctWhich() ? `${S.edit}:@${acctWhich()}:`
+  : `${S.edit}:${S.city}:${S.edit === 'script' ? ((loadOf() || {}).slot || '') : ''}`);
+
+// Comments and blank lines need no server: // or # in goals, only // in scripts.
+function edcLocal(kind, row) {
+  if (!row.trim()) return { status: 'blank', msg: null };
+  if ((kind === 'goals' ? /^\s*(\/\/|#)/ : /^\s*\/\//).test(row)) return { status: 'comment', msg: null };
+  return null;
+}
+
+// The last answer's colours for the lines typing has not touched: those before
+// the first changed line and after the last one.
+function edcCarry(rows) {
+  const out = [];
+  if (!EDC.lines || EDC.key !== edcKey()) return out;
+  const old = EDC.rows;
+  let a = 0;
+  while (a < rows.length && a < old.length && rows[a] === old[a]) { out[a] = EDC.lines[a]; a++; }
+  for (let b = 0; b < rows.length - a && b < old.length - a && rows[rows.length - 1 - b] === old[old.length - 1 - b]; b++) {
+    out[rows.length - 1 - b] = EDC.lines[old.length - 1 - b];
+  }
+  return out;
+}
+
+function edcPaint() {
+  if (S.edit === 'engine') return;
+  const kind = S.edit, rows = $('editor').value.split('\n'), known = edcCarry(rows);
+  EDC.shown = rows.map((row, i) => known[i] || edcLocal(kind, row) || { status: 'pend', msg: null });
+  $('edHl').innerHTML = rows.map((row, i) => `<div class="gl gl-${EDC.shown[i].status}">${esc(row)}</div>`).join('');
+  $('edBox').classList.add('hl-on');
+  edcFit();
+  edcStrip();
+}
+
+// The layer wraps where the textarea wraps only at the same width, and the
+// textarea loses its scrollbar's width once it has one; clientWidth is that width.
+function edcFit() {
+  const ta = $('editor'), hl = $('edHl');
+  hl.style.width = ta.clientWidth + 'px';
+  hl.style.height = ta.clientHeight + 'px';
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
+// An answer from /api/goals or /api/script (a check, an Apply, a Save). A console
+// older than this page sends no `lines`, only the errors; those still paint red.
+function edcTake(key, src, r) {
+  if (!r || r.ok === false || key !== edcKey()) return;
+  const rows = src.split('\n'), kind = key.split(':')[0];
+  let lines = Array.isArray(r.lines) && r.lines.length === rows.length ? r.lines : null;
+  if (!lines) {
+    const bad = new Map();
+    for (const e of r.errors || []) bad.set(e.line, (bad.has(e.line) ? bad.get(e.line) + '; ' : '') + e.error);
+    lines = rows.map((row, i) => (bad.has(i + 1) ? { status: 'error', msg: bad.get(i + 1) }
+      : edcLocal(kind, row) || { status: 'ok', msg: null }));
+  }
+  Object.assign(EDC, { key, rows, lines });
+  edcPaint();
+}
+
+async function edcCheck() {
+  clearTimeout(EDC.timer);
+  const kind = S.edit;
+  if (kind !== 'goals' && kind !== 'script') return;
+  const key = edcKey(), src = $('editor').value, mine = ++EDC.seq;
+  // parseOnly rides along with lines, so a console older than this page parses and
+  // never runs the script; `check` never saves goals, and an older console saves
+  // only when told to save
+  const r = kind === 'goals'
+    ? await post('/api/goals', { src, check: true })
+    : await post('/api/script', { src, parseOnly: true, lines: true });
+  if (mine === EDC.seq) edcTake(key, src, r);
+}
+// New text in the editor: paint it now, ask about it now.
+function edcShow() { edcPaint(); edcCheck(); }
+
+// Under the editor: why the cursor's line is red, otherwise how the lines stand.
+function edcStrip() {
+  const el = $('edLine'), ta = $('editor');
+  if (S.edit === 'engine') return;
+  const i = ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
+  const s = EDC.shown[i];
+  if (s && s.msg) {
+    const red = s.status === 'error' || s.status === 'idle';
+    el.className = 'edline' + (red ? ' bad' : '');
+    el.textContent = `line ${i + 1}: ${s.msg}`;
+    el.title = el.textContent;
+    return;
+  }
+  const n = { ok: 0, idle: 0, error: 0 };
+  for (const x of EDC.shown) if (x.status in n) n[x.status]++;
+  const part = (k, cls, one, many) => (n[k] ? `<span class="${cls}">${n[k]} ${n[k] === 1 ? one : many}</span>` : '');
+  const bits = [
+    part('ok', 'c-ok', S.edit === 'goals' ? 'line works' : 'line reads fine', S.edit === 'goals' ? 'lines work' : 'lines read fine'),
+    part('idle', 'c-bad', 'does nothing yet', 'do nothing yet'),
+    part('error', 'c-bad', 'has an error', 'have errors'),
+  ].filter(Boolean);
+  el.className = 'edline';
+  el.title = 'Blue works, red has an error or does nothing yet, grey is a comment. '
+    + 'Hover a red line, or put the cursor on it, to see why.';
+  el.innerHTML = bits.length
+    ? bits.join(' · ') + (n.idle || n.error ? ' — hover a red line or put the cursor on it to see why' : '')
+    : '<span class="c-ok">blue</span> works · <span class="c-bad">red</span> has an error or does nothing yet · grey is a comment';
+}
+
+// The line under the pointer: the layer's line divs, top to bottom.
+function edcRowAt(y) {
+  const rows = $('edHl').children;
+  let lo = 0, hi = rows.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1, r = rows[mid].getBoundingClientRect();
+    if (y < r.top) hi = mid - 1; else if (y >= r.bottom) lo = mid + 1; else return mid;
+  }
+  return -1;
+}
+
+(function () {
+  const ta = $('editor');
+  ta.addEventListener('input', () => {
+    showTipHtml(null, null);
+    edcPaint();
+    clearTimeout(EDC.timer);
+    EDC.timer = setTimeout(edcCheck, EDC_MS);
+  });
+  ta.addEventListener('scroll', () => { $('edHl').scrollTop = ta.scrollTop; $('edHl').scrollLeft = ta.scrollLeft; });
+  for (const ev of ['keyup', 'mouseup', 'focus']) ta.addEventListener(ev, edcStrip);
+  ta.addEventListener('keydown', () => showTipHtml(null, null));
+  ta.addEventListener('mousemove', (ev) => {
+    const i = edcRowAt(ev.clientY), s = EDC.shown[i];
+    if (!s || !s.msg || (s.status !== 'error' && s.status !== 'idle')) return showTipHtml(null, null);
+    showTipHtml(ev, `<b class="neg">line ${i + 1}</b><div>${esc(s.msg)}</div>`);
+  });
+  ta.addEventListener('mouseleave', () => showTipHtml(null, null));
+  // the pane's splitters and the window resize the textarea; the layer follows
+  new ResizeObserver(() => edcFit()).observe(ta);
+})();
 
 // ---------- monitors ----------
 // NEAT's icon toolbar. `needs` lists the per-city extras a panel reads; those
@@ -1532,11 +1901,14 @@ function renderValleys(d) {
 
 // ---- Inn -------------------------------------------------------------------
 let INN = null;       // { city, heroes, error, busy }
-async function loadInn(refreshInn) {
+async function loadInn(refreshInn, force) {
   const city = S.city;
   INN = { city, heroes: INN && INN.city === city ? INN.heroes : [], busy: true };
   renderMon(true);
-  if (refreshInn) await post('/api/hero', { city, action: 'refreshinn' });
+  if (refreshInn) {
+    const rr = await post('/api/hero', { city, action: 'refreshinn', force: !!force });
+    if (!rr.ok) tell(rr.error || (rr.result && rr.result.errorMsg) || 'unknown', { title: 'Refresh inn failed' });
+  }
   const r = await getJSON('/api/inn?city=' + city);
   if (S.city !== city) return;
   INN = { city, heroes: (r && r.heroes) || [], error: r && r.error, busy: false };
@@ -1582,11 +1954,14 @@ function renderHeroes(d) {
     const boosted = ['attack', 'politics', 'intel'].some((k) => Number(h[k + 'Buff']));
     const name = boosted ? `<span class="buffed" title="${esc(buffTip)}">${esc(h.name)}</span>` : esc(h.name);
     // Out marching (3) or defending a valley (2): the Feasting Hall offers only
-    // a recall, and so does this.
-    const st = Number(h.status), away = st === 2 || st === 3;
-    const act = away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
+    // a recall, and so does this. A prisoner we hold (4) is not ours to promote,
+    // build or fire — the client offers it only Release/Persuade — so it gets no
+    // buttons here. Only an idle hero (0) can be promoted (the client's mayor window).
+    const st = Number(h.status), away = st === 2 || st === 3, prisoner = st === 4;
+    const act = prisoner ? '<span class="muted" title="A prisoner you hold. The bot never releases one; release &lt;name&gt; in a script does.">prisoner</span>'
+      : away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
       : (mayor ? `<button class="sm" data-act="unmayor" data-hero="${esc(h.name)}">Demote</button>`
-        : `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>`)
+        : st === 0 ? `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>` : '')
       + (h.unspent ? ` <button class="sm" data-act="points" data-hero="${esc(h.name)}">+Pts</button>` : '')
       // Holy Water only for a hero at home (idle or mayor), as waterhero allows
       + (st === 0 || st === 1 ? ` <button class="sm" data-act="water" data-hero="${esc(h.name)}" title="Holy Water: reset its points and spend them again">Reset</button>` : '')
@@ -1891,7 +2266,20 @@ $('monBody').addEventListener('click', async (e) => {
   if (act === 'armiesall') { S.armiesAll = el.checked; return renderMon(true); }
   if (act === 'mktrefresh') { fetchMarket(true); return renderMarket(); }
   if (act === 'innload') return loadInn(false);
-  if (act === 'innrefresh') return loadInn(true);
+  // A refresh spends a Hero Hunting when one is held, and game coins when not
+  // (the client asks the same way, Tavern.as:473-528), so say which first.
+  if (act === 'innrefresh') {
+    const p = await post('/api/hero', { city, action: 'refreshinnpreview' });
+    const held = p && p.ok && typeof p.held === 'number' ? p.held : null;
+    const item = held > 0;
+    if (!await ask('Refresh the inn?', {
+      title: 'Refresh inn', ok: item ? 'Use 1 Hero Hunting' : 'Pay game coins', danger: !item,
+      detail: item ? `This spends 1 Hero Hunting — you hold ${held}.`
+        : held === 0 ? 'You hold no Hero Hunting, so the server charges game coins for this refresh instead.'
+          : 'The inventory has not loaded, so this cannot tell whether it spends a Hero Hunting or game coins.',
+    })) return;
+    return loadInn(true, !item);
+  }
   if (act === 'points') return openPoints(hero);
   if (act === 'water') return openWater(hero);
   if (act === 'vdrop' || act === 'vbuild') {
@@ -3064,6 +3452,7 @@ async function refresh(force) {
     const acctId = h.account ? h.account.id : null;
     if (LOAD.acct !== undefined && LOAD.acct !== acctId) {
       LOAD.cities = {}; GOALED.saved = {}; GOALED.drafts = {};
+      ACCT.saved = {}; ACCT.drafts = {}; ACCT.info = {}; ACCT.offered = {};
       for (const k of Object.keys(OUT)) delete OUT[k];
       S.city = null; S.cityData = null; loadEditor();
     }
@@ -3088,6 +3477,7 @@ async function refresh(force) {
     paintControls();
     if (force) loadExtras(true);
     renderMon(force);
+    paintScriptBtn();                     // a script may have set goals since the last poll
     if (S.edit === 'engine') renderEngineView();
     else if (Date.now() > (S.hintUntil || 0)) paintEditHint();
     renderLogs(); renderChat();

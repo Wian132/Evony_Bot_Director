@@ -1,7 +1,8 @@
 'use strict';
 // Recruit heroes for a city.
-//   base value of an attribute = attribute - points allocated by levelling
-//   (a Lv2 hero showing pol 62 has base 60)
+//   base = the top attribute less one point per level, plus unspent points
+//   (Game.heroBase, the formula the goals and the console use: a Lv2 hero
+//   showing pol 62 has base 60)
 //
 //   node recruit.js            hire from the inn, refreshing as needed
 //   node recruit.js --dry      show what it would hire
@@ -26,9 +27,9 @@ const HERO_BOXES = [
 ];
 
 const label = (k) => (k === 'power' ? 'attack' : k === 'management' ? 'politics' : 'intel');
-const base = (h, k) => Number(h[k] || 0) - Number(h[k + 'Added'] || 0);
-const bestAttr = (h) => ['power', 'management', 'stratagem']
-  .map((k) => ({ k, v: base(h, k) })).sort((a, b) => b.v - a.v)[0];
+const base = (h, k) => Game.attrValue(h, k);
+// the hero's role is its top attribute; its base is Game.heroBase
+const bestAttr = (h) => ({ k: Game.dominant(h), v: Game.heroBase(h) });
 
 function loadEnv() {
   const out = {};

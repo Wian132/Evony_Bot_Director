@@ -51,7 +51,7 @@ const PINNED = process.env.ACCOUNT_ID || null;
 })();
 
 console.log(`  account: ${SESSION.account ? SESSION.account.id + ' ' + SESSION.account.label : '(from .env)'}`
-  + `   port: ${PORT}   engine: live`);
+  + `   port: ${PORT}   engine: ${SESSION.userPaused ? 'PAUSED (ENGINE_PAUSED=1) — press Resume' : 'live'}`);
 
 SESSION.startSupervisor();     // heartbeat + auto-reconnect for the console session
 SESSION.startEngine();         // ticks the goal engine, live, unless paused from the console

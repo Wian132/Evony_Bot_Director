@@ -124,7 +124,10 @@ class Session {
     this.reports = [];
     this.engine = null;
     // The console's pause button — the only thing that stops the engine acting.
-    this.userPaused = false;
+    // ENGINE_PAUSED=1 starts it paused, for a console started after a change to
+    // what the goals do: everything else (the page, scripts, chat, the map) runs,
+    // and the engine waits for Resume.
+    this.userPaused = process.env.ENGINE_PAUSED === '1';
     this.xcache = new Map();          // `${castleId}:${kind}` -> { at, data, pending }
     this.packages = null;             // { at, available, total }
     this.diplo = null;                // { at, alliance, friendly, neutral, enemy } — see diplomacy()

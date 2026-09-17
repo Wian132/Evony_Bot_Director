@@ -27,6 +27,9 @@ CONSOLE_PORT=8713 ACCOUNT_ID=a2 node server.js
 
 **The console's engine is always live** — from the moment it connects it acts on every
 city's goals, once a minute. The pause button is how you stop it; a restart resumes it.
+Start it with `ENGINE_PAUSED=1` to come up paused instead — for a restart after a change
+to what the goals do, when you want the page, scripts and chat but not the engine until
+you have looked things over.
 
 Add an account:
 

@@ -303,6 +303,34 @@ t('not enough Holy Water sends nothing, and names the packs that could be opened
   assert.strictEqual(w.server.sent.length, 0);
 });
 
+t('the inventory not loaded: nothing is sent (a reset without the Holy Water held is paid in cents)', async () => {
+  const w = world();
+  w.g.player.items = undefined;
+  const r = await wh(w, 'waterhero Smarty');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.text, /costs 10 Holy Water \(one per 10 levels\); /, 'no count shown: none is known');
+  assert.match(r.text, /the inventory has not loaded, so whether 10 Holy Water are held cannot be checked — nothing sent \(the game buys what is missing with cents\)/);
+  assert.strictEqual(w.server.sent.length, 0);
+  const p = WH.prepare(w.g, script.parseLine('waterhero Smarty'));
+  assert.deepStrictEqual([p.ok, p.need, p.held], [false, 10, null], 'the Heroes tab\'s preview says the same');
+});
+
+t('the hero and the stock are read again right before each send: a level gained since costs more, and nothing goes', async () => {
+  const stale = H(51, 'Att66A391', { level: 100, experience: 1, spent: { power: 600 } });
+  const w = world([city(1, '9', [stale]), city(5, 'Flat', [{ ...stale, experience: 2 }])], { water: 10 });
+  w.server.homeOf = { 51: 1 };
+  // while the first city's try is refused, the hero's push brings it to L101 (11 Holy Water)
+  const orig = w.server.reset.bind(w.server);
+  w.server.reset = (emit, reply, data) => {
+    if (data.castleId === 5) emit('server.HeroUpdate', { castleId: 1, updateType: 2, hero: { ...w.server.view(w.server.truth[51]), level: 101 } });
+    return orig(emit, reply, data);
+  };
+  const r = await wh(w, 'waterhero Att66A391');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.text, /Att66A391 is L101 now, which costs 11 Holy Water \(not 10\), and 10 are held — nothing sent/);
+  assert.deepStrictEqual(w.server.resets().map((s) => s.data.castleId), [5], 'the second city was never asked');
+});
+
 t('a prisoner is not watered', async () => {
   const w = world([city(1, 'Home', [H(14, 'Captive', { status: 4 })])]);
   const r = await wh(w, 'waterhero Captive');

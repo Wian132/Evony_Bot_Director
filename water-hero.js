@@ -17,6 +17,9 @@
 //   - it asks "需要花费洗髓丹{0}" with ceil(level / 10): one Holy Water
 //     (hero.reset.1) per ten levels begun, as the item's own text says
 //   - it sends hero.resetPoint {castleId, heroId} only when that many are held
+//     (without them the game buys them with cents, UIUtil.checkItem) — so here
+//     nothing goes while the inventory is unknown, and the hero's level and the
+//     count are read again right before the send
 //   - on ok it just re-reads the hero: the new stats come in a server.HeroUpdate
 // It never sends hero.useItem for Holy Water.
 //
@@ -156,7 +159,13 @@ function prepare(game, a) {
   say(`  ${LABEL} on ${hero.name} L${hero.level ?? '?'} in ${castle.name} (id ${hero.id}): ${stats(hero)}`);
   say(`  costs ${fmt(need)} ${LABEL} (one per 10 levels)${held === null ? '' : `, ${fmt(held)} held`}; `
     + `the points then go ${a.rule ? 'by ' + ruleText(a.rule) : 'to its highest stat once reset'}`);
-  if (held !== null && held < need) {
+  // A reset without the Holy Water held is paid in cents (UIUtil.checkItem), so
+  // an unknown count is none held.
+  if (held === null) {
+    say(`  the inventory has not loaded, so whether ${fmt(need)} ${LABEL} are held cannot be checked — nothing sent (the game buys what is missing with cents)`);
+    return out;
+  }
+  if (held < need) {
     say(`  not enough ${LABEL} — nothing sent`);
     for (const [id, name] of Object.entries(PACKS)) {
       const k = heldCount(game, id);
@@ -170,6 +179,19 @@ function prepare(game, a) {
   }
   out.ok = true;
   return out;
+}
+
+// Right before a send: the hero read again from the city's roster (a
+// HeroUpdate replaces the object) and the Holy Water count again. -> null when
+// the Holy Water held still covers what the hero's level now costs, else why not.
+function stillCovered(game, castle, hero, need) {
+  const live = (castle.heros || []).find((h) => String(h.id) === String(hero.id)) || hero;
+  const now = cost(live.level);
+  const held = heldCount(game, ITEM_ID);
+  if (held === null) return `the inventory is not loaded, so whether ${fmt(now)} ${LABEL} are held cannot be checked`;
+  if (!HOME.has(n(live.status))) return `${live.name} is ${H.STATUS_NAME[n(live.status)] || 'status ' + live.status} now, not in the Feasting Hall`;
+  if (held < now) return `${live.name} is L${live.level} now, which costs ${fmt(now)} ${LABEL}${now !== need ? ` (not ${fmt(need)})` : ''}, and ${fmt(held)} are held`;
+  return null;
 }
 
 // `a` is a parsed waterhero line. Resolves true when the reset went through,
@@ -186,6 +208,10 @@ async function run(game, a, { dryRun = false, log = () => {}, waitMs = 5000 } = 
   const before = snap(hero);
   let refused = null;
   for (const e of entries) {
+    // the hero and the stock as they are now, right before this send: a level
+    // gained (a push since) raises the count, and the game would buy the rest
+    const why = stillCovered(game, e.castle, hero, need);
+    if (why) { log(`  ${why} — nothing sent`); return false; }
     const push = waitForHero(game, hero.id, (h) => wasReset(h, before), waitMs);
     let res;
     try { res = await game.resetPoint(game.castleId(e.castle), hero.id); } catch (err) { push.cancel(); throw err; }

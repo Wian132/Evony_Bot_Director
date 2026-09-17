@@ -36,4 +36,11 @@ itemcatalog.json
 ik.txt
 ck.txt
 
+# ── the user's own script files ───────────────────────────────────────────
+# What `call` and `get` read, the sounds `play` plays, and NEAT's startup
+# parameters (script-console.js). Each install's own, like its loadouts.
+/scripts/
+/media/
+/CmdParms.txt
+
 node_modules/

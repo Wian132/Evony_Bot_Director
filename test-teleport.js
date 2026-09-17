@@ -233,6 +233,22 @@ t('with no teleporter held nothing is sent at all', async () => {
   assert.strictEqual(w.server.sent.length, 0);
 });
 
+t('with the inventory not loaded nothing is sent either (a missing teleporter is bought with cents)', async () => {
+  const w = world({ tiles: { '123,123': 'flat', '410,212': 'npc' } });
+  w.g.player.items = undefined;
+  for (const [line, re] of [['teleport 123,123', /whether an Advanced Teleporter is held cannot be checked — nothing sent/],
+    ['warteleport 410,212', /War Teleporter is held cannot be checked/], ['teleport thuringia', /City Teleporter is held cannot be checked/]]) {
+    const r = await tp(w, line);
+    assert.strictEqual(r.moved, false, line);
+    assert.match(r.text, re, line);
+  }
+  assert.strictEqual(w.server.sent.length, 0, 'not even the map or the states were read');
+  const out = [];
+  const n = await script.run(w.g, script.parse('teleport 123,123'), (m) => out.push(m), { castle: 'Home', session: w.s });
+  assert.strictEqual(n, 0, out.join('\n'));
+  assert.strictEqual(w.server.moves().length, 0);
+});
+
 t('a tile that cannot be read is left to the server', async () => {
   const w = world({ tiles: { '123,123': 'flat' } });
   const r = await tp(w, 'teleport 123,123', { session: null });

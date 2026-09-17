@@ -174,6 +174,12 @@
   .itabs .ib { flex:0 0 auto; }
   .itabs .cap { margin-left:auto; padding-left:10px; color:var(--dim); font-size:11px; white-space:nowrap; }
 
+  /* the Script tab's Run box (NEAT's: a line number or a label to start at); it goes wherever Run goes */
+  #runFrom { width:46px; flex:0 0 auto; }
+  #runScript[style*="none"] ~ #runFrom { display:none; }
+  /* with Stop and Resume up too, a narrow pane wraps the bar rather than cut a button off */
+  #cellEdit > .bar { flex-wrap:wrap; row-gap:4px; }
+
   /* ── NEAT tables ──────────────────────────────────────────────────────── */
   table.nt { width:100%; border-collapse:collapse; font-size:11.5px; }
   table.nt th {
@@ -423,7 +429,9 @@
         <button id="apply">Apply</button>
         <button id="save">Save</button>
         <button id="runScript" title="Run this script in the open city">Run</button>
+        <input id="runFrom" placeholder="line" spellcheck="false" aria-label="Start at line or label" title="Start at this line number or label (NEAT's Run box) — empty starts at line 1">
         <button id="stopScript" class="danger" title="Stop this city's script once the line it is on finishes" hidden>Stop</button>
+        <button id="resumeScript" title="The script is paused at a stop line — carry on from the line after it" hidden>Resume</button>
         <button id="engRefresh">Refresh</button>
         <span class="hint" id="editHint"></span>
       </div>
@@ -477,7 +485,7 @@
       <div class="well" id="chatWell"><div class="chatbody" id="chatBody"><div class="empty">No messages yet.</div></div></div>
       <div class="sendbar">
         <span id="pmTo" hidden></span>
-        <input id="chatInput" placeholder="message…" aria-label="Message">
+        <input id="chatInput" placeholder="message…" aria-label="Message" title="Enter sends it as chat. A line that starts with \ runs an in-line command in the open city instead (\who Bob) — its output goes to Output">
         <button id="chatSend">Send</button>
       </div>
     </div>
@@ -932,11 +940,16 @@ let editLoads = 0;          // a reply for an editor the user has since left is 
 // only (a `repeat 1000` of buys takes about 20 minutes), so another city can
 // run alongside it.
 const RUNS = new Map();
+// Runs waiting at a `stop` line, city id -> { line, next }; RUN_FROM: what started them.
+const PAUSED = new Map(), RUN_FROM = new Map();
 function paintRunBtn() {
   const busy = RUNS.has(String(S.city));
   $('runScript').disabled = busy;
   $('runScript').title = busy ? 'A script is already running in this city' : 'Run this script in the open city';
   $('stopScript').hidden = !(busy && S.edit === 'script');
+  const p = busy ? PAUSED.get(String(S.city)) : null;
+  $('resumeScript').hidden = !(p && S.edit === 'script');
+  if (p) $('resumeScript').title = `Paused at line ${p.line} (a stop line) — carry on${p.next ? ` from line ${p.next}` : ''}; Stop ends it`;
 }
 
 // The server's own list of runs (/api/script/runs) is the truth: a run outlives
@@ -954,15 +967,26 @@ async function syncRuns() {
   let changed = false;
   for (const c of live) if (!RUNS.has(c)) { RUNS.set(c, nameOf(c)); changed = true; }
   for (const c of [...RUNS.keys()]) if (!live.has(c) && !RUN_POSTS.has(c)) { RUNS.delete(c); changed = true; }
+  // paused at a `stop` line (a console older than this page sends no `paused`)
+  const pz = r.runs.filter((x) => x.paused).map((x) => [String(x.city), x.paused]);
+  if (JSON.stringify(pz) !== JSON.stringify([...PAUSED])) { PAUSED.clear(); for (const [c, p] of pz) PAUSED.set(c, p); changed = true; }
+  RUN_FROM.clear();
+  for (const x of r.runs) if (x.source && x.source !== 'console') RUN_FROM.set(String(x.city), x.source);
   if (changed) { paintRunBtn(); if (S.edit === 'script' && Date.now() > (S.hintUntil || 0)) paintEditHint(); }
   if (r.lines && open === String(S.city)) {
-    liveOutput([`running in ${RUNS.get(open) || 'this city'} — Stop ends it after the line it is on`, '',
+    const p = PAUSED.get(open), from = RUN_FROM.get(open), where = RUNS.get(open) || 'this city';
+    liveOutput([p ? `paused at line ${p.line} in ${where} — Resume carries on${p.next ? ` from line ${p.next}` : ''}, Stop ends it`
+      : `running in ${where}${from ? ` (${from})` : ''} — Stop ends it after the line it is on`, '',
       ...(r.dropped ? [`(${r.dropped} earlier line(s) not shown)`] : []), ...r.lines].join('\n'), open);
   }
 }
 // every 2s while anything runs, otherwise every 16s to notice runs started elsewhere
 setInterval(() => { if (RUNS.size || ++runSyncs % 8 === 0) syncRuns(); }, 2000);
 setTimeout(syncRuns, 1500);
+
+// A saved loadout holding `label autorun` starts by itself, from that line, each
+// time the console starts (NEAT's autorun; script-console.js).
+const AUTORUN_RE = /^[ \t]*@?[ \t]*label[ \t]+autorun[ \t]*(?:\/\/.*)?$/im;
 
 // A loadout is named by its first line: "// farm upgrades" -> "farm upgrades".
 function loadName(src) {
@@ -976,8 +1000,8 @@ function paintLoadSel() {
   const L = loadOf();
   const opts = [];
   for (let i = 1; L && i <= LOAD.count; i++) {
-    const name = loadName(slotSrc(L, i));
-    opts.push(`<option value="${i}">Load ${i} · ${name ? esc(name) : 'empty'}${i in L.drafts ? ' *' : ''}</option>`);
+    const name = loadName(slotSrc(L, i)), auto = AUTORUN_RE.test(L.saved[i] || '');
+    opts.push(`<option value="${i}">Load ${i} · ${name ? esc(name) : 'empty'}${auto ? ' · autorun' : ''}${i in L.drafts ? ' *' : ''}</option>`);
   }
   $('loadSel').innerHTML = opts.join('');
   if (L) $('loadSel').value = String(L.slot);
@@ -1124,7 +1148,8 @@ async function saveLoadout() {
   if (errs.length) {
     hint(`saved to Load ${slot} with ${errs.length} error(s) — it won't run until they're fixed. See Output.`, true);
     showOutput(errs.map((e) => `line ${e.line}: ERROR ${e.error}`).join('\n'), city);
-  } else hint(src.trim() ? `saved to Load ${slot}` : `Load ${slot} cleared`);
+  } else hint(!src.trim() ? `Load ${slot} cleared` : `saved to Load ${slot}`
+    + (AUTORUN_RE.test(src) ? ' — it holds label autorun, so it starts by itself from there each time the console starts' : ''));
 }
 
 $('apply').onclick = async () => {
@@ -1149,17 +1174,24 @@ $('runScript').onclick = async () => {
   const slot = L.slot, name = loadName(src), city = String(S.city);
   const cityName = S.cityData ? S.cityData.name : 'the open city';
   if (RUNS.has(city)) return paintEditHint(`a script is already running in ${cityName}`, true);
-  if (!await ask(`Run Load ${slot}${name ? ` (${name})` : ''} in ${cityName} now?`,
+  // NEAT's Run box: a line number or a label to start at (the server checks it)
+  const from = $('runFrom').value.trim();
+  const at = !from || from === '0' ? '' : /^\d+$/.test(from) ? ` from line ${from}` : ` from label ${from}`;
+  if (!await ask(`Run Load ${slot}${name ? ` (${name})` : ''} in ${cityName}${at} now?`,
     { title: 'Run script', ok: 'Run' })) return;
   RUNS.set(city, cityName); RUN_POSTS.add(city); runGen++;
   paintRunBtn(); paintEditHint();
-  showOutput(`running in ${cityName}…`, city);
-  const r = await post('/api/script', { src, city });
+  showOutput(`running in ${cityName}${at}…`, city);
+  // the id stops a browser's re-send after a console restart from running it twice
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const r = await post('/api/script', { src, city, runId, ...(at ? { startLine: from } : {}) });
   RUNS.delete(city); RUN_POSTS.delete(city); runGen++;
   paintRunBtn();
   if (S.edit === 'script' && Date.now() > (S.hintUntil || 0)) paintEditHint();
   const n = (r.errors || []).length;
   if (n && S.city === city) paintEditHint(`${n} error(s) — nothing was run. See Output.`, true);
+  // refused without errors: a start line or label it does not have, a run already going
+  else if (r.ok === false && S.city === city) paintEditHint(((r.log || []).filter((l) => !/^parsed |^nothing was run/.test(l))[0] || r.error || 'not run') + ' — nothing was run', true);
   showOutput([
     `Load ${slot} in ${cityName}${r.stopped ? ' · stopped' : ''}${RUNS.size ? ` · still running in ${[...RUNS.values()].join(', ')}` : ''}`, '',
     ...(r.log || [r.error || 'no output']),
@@ -1175,7 +1207,102 @@ $('stopScript').onclick = async () => {
   $('stopScript').disabled = false;
   paintEditHint(r.ok ? 'stopping — the line it is on finishes first' : (r.error || 'could not stop it'), !r.ok);
 };
+// NEAT's `stop` paused the script; Resume carries on from the line after it.
+$('resumeScript').onclick = async () => {
+  const city = String(S.city);
+  $('resumeScript').disabled = true;
+  const r = await post('/api/script/resume', { city });
+  $('resumeScript').disabled = false;
+  if (r.ok) { PAUSED.delete(city); paintRunBtn(); }
+  paintEditHint(r.ok ? `resumed${r.next ? ` from line ${r.next}` : ''}` : (r.error || 'could not resume it'), !r.ok);
+  runGen++;
+  syncRuns();
+};
 $('engRefresh').onclick = () => renderEngineView();
+
+// ---------- say / play from scripts ----------
+// A script's `say` speaks in this tab with the browser's voice (in the language
+// it names, when the browser has that voice) and `play` plays the sound, or a
+// beep when there is none. Every open tab polls; per browser one tab acts on
+// each. A browser lets a page make sound only once it has been clicked, so
+// until then the hint says what was not heard.
+const NOTE = { boot: null, seq: null, tab: Math.random().toString(36).slice(2, 10), busy: false };
+async function pollNotes() {
+  if (NOTE.busy) return;
+  NOTE.busy = true;
+  try {
+    const qs = `tab=${NOTE.tab}` + (NOTE.seq === null ? '' : `&after=${NOTE.seq}&boot=${encodeURIComponent(NOTE.boot)}`);
+    const r = await getJSON('/api/script/notify?' + qs);
+    if (!r || !r.boot) return;                 // a console older than this page
+    const first = NOTE.seq === null;
+    NOTE.boot = r.boot; NOTE.seq = r.seq;
+    if (first) return;                         // what was said before this tab opened stays unsaid
+    for (const n of r.items || []) {
+      const seen = store.get('evony_note_seen', null);
+      if (seen && seen.boot === r.boot && seen.seq >= n.seq) continue;     // another tab took it
+      store.set('evony_note_seen', { boot: r.boot, seq: n.seq });
+      try { playNote(n); } catch { /* one bad note must not stop the rest */ }
+    }
+  } finally { NOTE.busy = false; }
+}
+setInterval(pollNotes, 2000);
+setTimeout(pollNotes, 300);
+if ('speechSynthesis' in window) speechSynthesis.getVoices();     // Chrome loads its voices lazily
+
+function playNote(n) {
+  const where = `${n.cityName || 'a script'}${n.line ? `, line ${n.line}` : ''}`;
+  if (n.kind === 'say') {
+    paintEditHint(`said (${where}): ${n.text}`);
+    return speak(n.text, n.lang);
+  }
+  const url = String(n.url || ''), mine = url.startsWith('/api/script/media?f=');
+  let what = url || 'a beep';
+  try { if (mine) what = decodeURIComponent(url.slice(20)); } catch { /* shown as sent */ }
+  paintEditHint(`played (${where}): ${what}`);
+  if (!n.url) return beep();
+  const a = new Audio(n.url);
+  a.play().catch((e) => { if (e && e.name === 'NotAllowedError') soundBlocked(); else beep(); });
+}
+function speak(text, lang) {
+  if (!('speechSynthesis' in window)) return soundBlocked('this browser cannot speak');
+  const u = new SpeechSynthesisUtterance(String(text));
+  if (lang) {
+    u.lang = lang;
+    const v = speechSynthesis.getVoices().find((x) => String(x.lang).toLowerCase().startsWith(lang));
+    if (v) u.voice = v;
+  }
+  u.onerror = (e) => { if (e.error === 'not-allowed') soundBlocked(); };
+  speechSynthesis.speak(u);
+}
+function beep() {
+  try {
+    const C = beep.ctx || (beep.ctx = new (window.AudioContext || window.webkitAudioContext)());
+    if (C.state === 'suspended') C.resume();
+    for (const [at, f] of [[0, 880], [0.28, 660]]) {
+      const o = C.createOscillator(), g = C.createGain(), t0 = C.currentTime + at;
+      o.frequency.value = f; o.connect(g); g.connect(C.destination);
+      g.gain.setValueAtTime(0.2, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.24);
+      o.start(t0); o.stop(t0 + 0.25);
+    }
+  } catch { /* no audio in this browser */ }
+}
+function soundBlocked(why) {
+  paintEditHint(why || 'a script asked this tab for a sound, but the browser allows sound only after you have clicked somewhere in the console once', true);
+}
+
+// ---------- NEAT's command line ----------
+// `\who Bob` typed in the chat box runs that in-line command in the open city,
+// as a script's command "who Bob" does. Its output goes to Output; nothing is
+// sent as chat.
+async function inlineCommand(msg) {
+  const city = S.city;
+  $('chatInput').value = '';
+  showOutput(`${msg}\n  …`, city);
+  const r = await post('/api/script/inline', { city, text: msg });
+  const lines = (r.lines || []).map((l) => '  ' + l);
+  const err = r.ok === false && r.error && !lines.some((l) => l.includes(r.error)) ? [`  FAILED: ${r.error}`] : [];
+  showOutput([msg, ...lines, ...err, ...(lines.length || err.length ? [] : ['  (no output)'])].join('\n'), city);
+}
 
 // What the engine made of this city on its last pass: every plan's note and
 // whatever it sent.
@@ -2540,6 +2667,7 @@ $('chatBody').addEventListener('click', (e) => {
 $('pmTo').addEventListener('click', (e) => { if (e.target.id === 'pmClear') { e.preventDefault(); S.pmTo = ''; paintPm(); } });
 $('chatSend').onclick = async () => {
   const msg = $('chatInput').value.trim(); if (!msg) return;
+  if (msg.startsWith('\\')) return inlineCommand(msg);       // NEAT's command line, never chat
   if (S.chat === 'system') return tell('The system channel is read-only.', { title: 'Chat' });
   if (S.chat === 'private' && !S.pmTo) return tell('Click a name in the chat to choose who to whisper to.', { title: 'Chat' });
   $('chatInput').value = '';

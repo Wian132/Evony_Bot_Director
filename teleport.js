@@ -10,7 +10,8 @@
 //
 // The server spends the item and is the judge of every target. But a refused
 // teleport is a confusing error at best, so before sending: the item must be
-// held (UseGoodWin.canUseGood checks the same), the target must not be one of
+// held (UseGoodWin.canUseGood checks the same; an inventory not loaded yet
+// counts as none, since a missing one is bought with cents), the target must not be one of
 // our own cities, and, read live off the map, a coordinate teleport must be
 // the kind of tile its item lands on. A tile that cannot be read is left to
 // the server to judge.
@@ -71,8 +72,8 @@ function parseArgs(cmd, args) {
   return { kind: 'state', zone, from };
 }
 
-// How many of an item we hold, or null when the inventory was never loaded —
-// then the server decides.
+// How many of an item we hold, or null when the inventory was never loaded
+// (run() then sends nothing).
 function heldCount(game, itemId) {
   const items = game.player && game.player.items;
   if (!Array.isArray(items)) return null;
@@ -155,12 +156,19 @@ async function run(game, a, { castle: ref, session = null, dryRun = false, log =
   const here = game.castleXY(castle);
   const at = here ? `${here.x},${here.y} (${C.zoneOf(here.x, here.y)})` : '(position unknown)';
 
+  // The game buys a missing teleporter with cents (the move window's buy
+  // prompt), so an unknown count is none held.
   const held = heldCount(game, kind.itemId);
-  if (held === 0) {
+  if (held === null) {
+    log(`  the inventory is not loaded, so whether ${/^[AEIOU]/.test(kind.label) ? 'an' : 'a'} ${kind.label} is held cannot be checked`
+      + ' — nothing sent (the game would buy one with cents)');
+    return false;
+  }
+  if (held < 1) {
     log(`  no ${kind.label} in the inventory (${kind.itemId}) — nothing sent`);
     return false;
   }
-  const holding = held === null ? '' : `, ${fmt(held)} held`;
+  const holding = `, ${fmt(held)} held`;
 
   let send, targetField = null;
   if (a.target) {

@@ -105,7 +105,9 @@ t('transport goes without a hero, but not without troops', () => {
 });
 t('attack and scout need a hero and troops', () => {
   assert.match(parseErr('attack 1,2 a:100'), /attack: needs a hero/);
-  assert.match(parseErr('attack 1,2 none a:100'), /attack: needs a hero/);
+  // NEAT's Scout page sends `scout 111,222 none s:25000`: none is no hero, and the server decides
+  assert.strictEqual(script.parseLine('attack 1,2 none a:100').hero, null);
+  assert.strictEqual(script.parseLine('scout 1,2 none s:1').hero, null);
   assert.match(parseErr('scout 1,2 s:1'), /scout: needs a hero/);
   assert.match(parseErr('attack 1,2 any'), /no troop string/);
   assert.match(parseErr('scout 1,2 any'), /no troop string/);
@@ -183,25 +185,31 @@ t('repeat N and repeat alone', () => {
   assert.strictEqual(script.parseLine('repeat').times, null);
   assert.match(parseErr('repeat lots'), /give a count/);
 });
-t('repeat N copies the line with a counter', () => {
+// repeat runs when it is reached (NEAT: it repeats whatever ran last, even a
+// line an execute built), so parse lists it as one line instead of copies.
+t('repeat N is one line, run when it is reached', () => {
   const acts = script.parse('train a 1\nrepeat 2');
-  assert.deepStrictEqual(acts.map((a) => [a.cmd, a.round, a.of]), [['train', undefined, undefined], ['train', 1, 2], ['train', 2, 2]]);
+  assert.deepStrictEqual(acts.map((a) => [a.cmd, a.times]), [['train', undefined], ['repeat', 2]]);
 });
-t('a bare repeat leaves one marker after its line', () => {
+t('a bare repeat is one line with no count', () => {
   const acts = script.parse('train a 1\nrepeat\necho after');
-  assert.deepStrictEqual(acts.map((a) => a.cmd), ['train', 'forever', 'echo']);
-  assert.strictEqual(acts[1].action.cmd, 'train');
+  assert.deepStrictEqual(acts.map((a) => a.cmd), ['train', 'repeat', 'echo']);
+  assert.strictEqual(acts[1].times, null);
 });
 t('nothing to repeat, and a repeat after an endless one, are errors', () => {
   assert.strictEqual(script.parse('repeat')[0].error, 'repeat with no previous action');
   assert.match(script.parse('train a 1\nrepeat\nrepeat 2').find((a) => a.cmd === 'error').error, /never ends/);
 });
-t('the counter shows in the output', async () => {
+// NEAT's count: repeat N runs the line N times in all, the run above included.
+t('the counter shows in the output, counting the line itself', async () => {
   const w = world();
-  const r = await runIn(w, 'train a 1\nrepeat 2');
+  const r = await runIn(w, 'train a 1\nrepeat 3');
   assert.strictEqual(w.sent.length, 3);
-  assert.match(r.text, /train a 1 \(repeat 1 of 2\)/);
-  assert.match(r.text, /train a 1 \(repeat 2 of 2\)/);
+  assert.match(r.text, /train a 1 \(run 2 of 3\)/);
+  assert.match(r.text, /train a 1 \(run 3 of 3\)/);
+  const one = world();
+  await runIn(one, 'train a 1\nrepeat 1');
+  assert.strictEqual(one.sent.length, 1, 'repeat 1 adds nothing');
 });
 t('an endless repeat keeps going until the server refuses, then runs the rest', async () => {
   const w = world({ trainReplies: [{ ok: 1 }, { ok: 1 }, { ok: 1 }, { ok: -5, errorMsg: 'not enough food' }] });
@@ -250,7 +258,7 @@ t('Stop cuts a sleep short', async () => {
 });
 t('repeat N runs every round, whatever the rounds before it got back', async () => {
   const w = world({ trainReplies: [{ ok: 1 }, { ok: -5, errorMsg: 'not enough food' }, new Error('no reply to troop.produceTroop'), { ok: 1 }] });
-  const r = await runIn(w, 'train a 1\nrepeat 3\necho after');
+  const r = await runIn(w, 'train a 1\nrepeat 4\necho after');
   assert.strictEqual(w.sent.length, 4, r.text);
   assert.match(r.text, /\n {2}after$/);
 });
@@ -261,18 +269,18 @@ section('market orders');
 const FULL = { ok: -38, errorMsg: 'too many trades' };
 t('a full marketplace skips that order, and the repeat carries on', async () => {
   const w = world({ tradeReplies: [{ ok: 1 }, FULL, FULL, { ok: 1 }] });
-  const r = await runIn(w, 'buy stone 99999999 @0.11\nrepeat 4\necho after', { tradeGapMs: 0 });
+  const r = await runIn(w, 'buy stone 99999999 @0.11\nrepeat 5\necho after', { tradeGapMs: 0 });
   assert.strictEqual(w.sent.length, 5, r.text);
   assert.deepStrictEqual([w.sent[0].resource, w.sent[0].type, w.sent[0].amount, w.sent[0].price], ['stone', 'buy', 99999999, '0.11']);
   assert.strictEqual((r.text.match(/marketplace full \(10 offers max\) — this one is skipped/g) || []).length, 2);
-  assert.match(r.text, /\(repeat 4 of 4\)/);
+  assert.match(r.text, /\(run 5 of 5\)/);
   assert.match(r.text, /\n {2}after$/);
   assert.strictEqual(r.done, 5, 'refusals count as replies');
 });
 t('an unanswered order does not end the run; each one in a row doubles the gap', async () => {
   const miss = () => new Error('no reply to trade.newTrade');
   const w = world({ tradeReplies: [miss(), miss(), miss(), { ok: 1 }, { ok: 1 }] });
-  const r = await runIn(w, 'sell wood 1000 @0.55\nrepeat 4', { tradeGapMs: 20 });
+  const r = await runIn(w, 'sell wood 1000 @0.55\nrepeat 5', { tradeGapMs: 20 });
   const at = w.sent.map((s) => s.at);
   assert.strictEqual(at.length, 5, r.text);
   const gaps = at.slice(1).map((x, i) => x - at[i]);
@@ -293,12 +301,12 @@ t('after a reconnect the next order goes out on the new connection', async () =>
   // the first order goes to a dead socket; while it waits, the session logs back in
   const dead = w.g.newTrade;
   w.g.newTrade = (o) => { Object.assign(s, { connected: true, game: relogin(w, 'Lord02') }); return dead(o); };
-  const r = await runIn(w, 'buy stone 5 @0.11\nrepeat 2', { tradeGapMs: 0, session: s });
+  const r = await runIn(w, 'buy stone 5 @0.11\nrepeat 3', { tradeGapMs: 0, session: s });
   assert.deepStrictEqual(w.sent.map((x) => x.cmd), ['trade', 'trade as Lord02', 'trade as Lord02'], r.text);
 });
 t('but never on another account the console switched to', async () => {
   const w = world();
-  const r = await runIn(w, 'buy stone 5 @0.11\nrepeat 1', { tradeGapMs: 0, session: { connected: true, game: relogin(w, 'Lord22') } });
+  const r = await runIn(w, 'buy stone 5 @0.11\nrepeat 2', { tradeGapMs: 0, session: { connected: true, game: relogin(w, 'Lord22') } });
   assert.deepStrictEqual(w.sent.map((x) => x.cmd), ['trade', 'trade'], r.text);
 });
 

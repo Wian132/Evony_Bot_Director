@@ -81,123 +81,38 @@ for it: give it the game's link (`…evony.com/default.html?logfile/….xml`) an
 fetches the log from the game's report server, with no game login needed. A report's
 *Open as a battle log* opens it there, and battle-log links pasted in chat link to it.
 
-**`holidaysnipe`** (`holiday-snipe.js`) is a script command that keeps running after
-the script returns. It watches the market, and when food, wood, stone or iron is
-offered under 1 gold it bids the best ask + 0.01 in every city with over 1b gold:
-ten 99m orders each, all cities at once, and ten more for as long as they fill. It
-never takes a city under 1b and cancels whatever does not fill. The server keeps the
-0.5% fee on a cancelled order, and charges your bid, not the seller's price, so after a
-round where nothing fills it leaves that resource alone for 30s, doubling each time it
-happens again (up to 10 min). `holidaysnipe dry`
-only says what it would buy; `holidaysnipe status` and `holidaysnipe stop` do what
-they say. Every default can be changed on the line, e.g. `holidaysnipe under:0.5 floor:2b`.
+### Scripts
 
-**`teleport`** (`teleport.js`) moves the open city tab, or any city with `from <city>`.
-Which teleporter it spends depends on the target:
+A script is NEAT's script language, run from a city's loadouts: labels, `goto` and
+`gosub`, `if`, variables and expressions, functions, NEAT's objects
+(`city.troop.archer`, `m_context.ItemCount(...)`) and its function library, and some 130
+commands for marches, building, research, troops, heroes, the market, items, quests, chat
+and the alliance. NEAT's example scripts run as the wiki writes them. **[SCRIPTS.md](SCRIPTS.md)**
+is the reference: the language, every command with its usage and how it differs from
+NEAT, the objects and functions, and the safety switches.
 
-| line | spends | lands |
-|---|---|---|
-| `teleport 212,312` | Advanced Teleporter | on that empty flat |
-| `warteleport 212,312` | War Teleporter | on that NPC camp |
-| `teleport thuringia` | City Teleporter | somewhere random in that state |
-| `teleport random` | City Teleporter | in a state picked at random |
+The box beside **Run** starts at a line number or a label (NEAT's Run box), and a `stop`
+line pauses the run until **Resume**. Autorun is off until `AUTOSCRIPTS=1` (or NEAT's
+`-autoscripts 1`) switches it on; then a saved loadout holding `label autorun` starts by
+itself once each time the console starts, after the startup file, unless the console last
+started it under 10 minutes ago. Nothing a script does spends cents except `buyitem`, and
+that stops at 100 items a run without `confirm`. A line typed in the chat
+box that starts with `\` runs an in-line command (`\who Bob`) instead of going out as chat.
+Scripts use the console's own session and never log in. `holidaysnipe` and NEAT's
+background attacks (`spamattack`, `capture`...) keep running after the script that started
+them ends. The timed marches behind the extra-cities trick (`deploy bu … @:14:30:07.500`,
+`marchcheck`, `buildstatus`, `logout now`) are in
+[SCRIPTS.md](SCRIPTS.md#timed-marches-and-extra-cities).
 
-Before it sends anything, it checks that the item is held and that the target isn't
-one of your own cities. Coordinates are read off the live map first: a flat for
-`teleport`, an NPC camp for `warteleport`. When the tile type is wrong it refuses and
-names the command that would work. The move itself is the server's call, and a refusal
-comes back with the server's reason. Once a city has moved it is never abandonable
-by `buildnpc`.
-
-**`lostheroes`** and **`recover`** (`stone-of-finding.js`) do what the Stone of Finding
-does in the game: it opens a list of heroes you have lost, and restoring one spends a
-stone. A hero captured by the city it attacked is on that list, and comes home with it.
-Don't `release` a captured hero from the captor's side: that loses it. `lostheroes`
-prints the list, with each hero's level, base attributes (points not included), when it
-was lost and its id, plus how many stones you hold. `recover Aldric` restores Aldric into the open city
-tab, and `recover Aldric to Second City` restores that hero into another city. A name is
-matched in any case, and an id always works. Nothing is sent without a stone, or for a
-name that isn't on the list, or for a name two heroes share (it lists both so you can
-pick by id). A dry run reads the list and stops there. When the server refuses and the
-city's Feasting Hall looks full, the refusal says so. `useitem player.item.stoneoffinding`
-is refused and points you to `recover`.
-
-**`renamehero <hero> <new name>`** (`rename-hero.js`) does what the Feasting Hall's Change
-Name button does, for a hero in any of your cities: `renamehero Att66A391 OTTO`. The hero
-can be given by name, in any case, or by id. The game's own rules are checked before
-anything is sent: no quotes, backslashes or spaces, and 10 letters at most (a Chinese
-character counts as 2). It won't touch a prisoner, and it won't guess between two heroes
-that share a name (rename one by its id). When another hero already has the new name, it
-refuses, because `useheroitem` finds a hero by name and takes the first match, so two heroes
-with one name could get each other's items. Add `anyway` to go ahead regardless. Scripts
-and goals that named the hero by its old name need the new name afterwards.
-
-**`waterhero <hero> [/heropoints="..."]`** (`water-hero.js`) is NEAT's command for Holy
-Water: it resets a hero's attribute points, then spends them again. On its own
-(`waterhero Smarty`) every point goes to the hero's highest stat. After a reset that is the
-stat the hero was born with, so an intel-born hero built into attack comes back an intel
-hero. The `/heropoints` switch takes what a `heropoints` goal takes: `/heropoints="att"`
-puts every point into attack, `/heropoints="pol:300,int:100 att"` brings politics to 300
-and intel to 100 in proportion and the rest into attack, `/heropoints="pol:300 int:100 att"`
-does them in turn, and `/heropoints=off` leaves the points unspent. A reset costs one Holy
-Water per ten levels begun (`ceil(level / 10)`: 10 for a level 100 hero, 25 for level 250),
-which is what the game's own button charges. Nothing is sent for a prisoner, a hero that
-is out (marching, returning, farming or defending), a name two heroes share, or when too
-little Holy Water is held. In that last case it names any Holy Water packs you could open
-with `useitem`. The points are spent against the stats the reset sends back, never the old
-ones. The Heroes tab's **Reset** button does the same, and shows the cost first.
-`useheroitem <hero> holy water` runs `waterhero`, because the game never resets through
-`hero.useItem`.
-
-**`canceltroopqueues [n]`** and **`cancelfortifications [n]`** (`queue-cancel.js`) are
-NEAT's commands for emptying the barracks and the Walls queue in the open city tab.
-`n` batches stay in each barrack (or in the Walls queue), and every batch after them is
-cancelled. With no `n`, every batch goes. Batches are cancelled from the back, so the
-one in training goes last. `canceltroops`, `cancelwalls` and `clearwallqueue` do the
-same. To cancel one batch by hand, use the ✖ beside it in the **Barracks queues** or
-**Fortifications** panel. A troop or fortification goal that is still short queues
-more on the engine's next pass, so pause the engine first to keep the queues empty.
-
-### Timed marches and extra cities
-
-Marches read the way NEAT reads them. `deploy <type> x,y <hero> <troops> <resources> <time>`
-takes `at` attack, `bu` build city, `re` reinforce, `sc` scout and `tr` transport.
-Troops come first and resources second, so `s:` and `w:` mean scouts and warriors in the
-first list and stone and wood in the second (`f w s i g`, `l` for lumber, or the full
-names). `@:14:30:07.500` lands the march at that moment on this machine's clock.
-`@0:30:00`, or a bare `0:30:00`, camps it that long. Plain `@hh:mm:ss` used to be a landing
-time here; like NEAT, it is camp time now. `set name value` and then `%name%` swaps text
-into later lines.
-
-An `@:` march (`timed-march.js`) is sent to the millisecond. Its march time is worked out
-the way the client does it (`C.marchTimeMs`): the slowest speed held in an int, the drive
-skill for mounted troops and siege, the sending city's Relief Station when the target is
-yours or your alliance's, the map's wrap-around, and the march-time buffs. Camp is whole
-seconds, so the fraction is taken up by holding the send back. After the send, the
-server's own `reachTime` for the new army is checked, against the aimed moment for the
-first march and against the marches already due for every later one, from any city's
-script. A march that misses the second is recalled at once and sent again, up to three
-tries. The miss is learned (a network lead, or a speed factor for that city and kind of
-tile), so the next march is right first time. A stamp that no speed rule could explain is
-reported and left alone. Aim mid-second (`.500`): an aim on a second boundary can be split
-across two seconds by a few ms of network jitter. **`marchcheck`** holds the formula
-against the server's own start and arrival times for every march the account has out,
-with and without the Relief Station. It costs nothing in game, so it's worth running
-before a real attempt.
-
-This is what the extra-cities trick needs. The server checks the city limit
-(`titleId + 1`: 10 cities for a Prinzessin) when a build is sent, not against the builds
-already on their way, so many `deploy bu` marches sent with one slot open, all landing in
-the same second, can go over it. `city-build.js` refuses a build before it is sent when the
-target isn't a flat you hold, when another build march is already heading there, or when
-no city slot is open. `buildstatus` lists every build march on its way, grouped by the
-second it lands in. Flats taken after login now reach the console (`server.CastleFieldUpdate`).
-
-**`logout <when> <back>`** (`logout.js`) takes the console off the game, the way the
-recipe says to once the builds are out: `logout now @:14:35` or `logout now 1:05:00`. It
-waits for the other cities' scripts to finish first, blocks every login until the time
-(the maintenance override doesn't lift it), survives a restart, and logs back in on its
-own. **Connect** ends it early. Nothing can follow it in a script.
+| variable | what it does |
+|---|---|
+| `AUTOSCRIPTS` | `1` switches autorun on (NEAT's `-autoscripts 1`); it is off otherwise |
+| `RUNSCRIPT` | the startup file every city runs first (NEAT's `-runscript`); default `AutoRunScript.txt` |
+| `EVONY_SCRIPTS_DIR` | where `call`, `get` and the startup file are read, default `scripts\` |
+| `EVONY_MEDIA_DIR` | where `play` finds sounds, default `media\` |
+| `EVONY_CMDPARMS` | NEAT's parameter file, default `CmdParms.txt`; the variables above win over it, and its `-name value` pairs reach scripts as `Config.<name>` |
+| `OTTO_ALLOW_RESET_PLAYER` | `1` lets `resetplayer` delete the lord; off otherwise, whatever a script says |
+| `OTTO_ALLOW_ABANDON_TOWN` | `1` lets `abandontown` give up a city, and then only one `buildnpc` built; off otherwise |
 
 ## Goals
 
@@ -362,10 +277,10 @@ uptime samples and the city registry.
 ## Tests
 
 ```bash
-for t in test-war test-heroes test-npc test-enginestate test-buildnpc test-maint test-auth test-tenancy test-holiday-snipe test-teleport test-queue-cancel test-stone-of-finding test-mail test-transfer test-script test-timed-march; do node $t.js; done
+for t in test-war test-heroes test-npc test-enginestate test-buildnpc test-maint test-auth test-tenancy test-holiday-snipe test-teleport test-queue-cancel test-stone-of-finding test-mail test-transfer test-script test-timed-march test-script-lang test-script-objects test-script-functions test-script-regex test-script-net test-script-deploy test-script-city test-script-hero test-script-account test-script-market test-script-info test-script-social test-script-post test-script-goals test-script-console test-script-compat test-script-safety; do node $t.js; done
 ```
 
-615 tests, no network required.
+1,570 tests, no network required.
 
 ## Not in this repo
 

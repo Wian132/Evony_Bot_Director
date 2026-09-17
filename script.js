@@ -1,459 +1,727 @@
 'use strict';
-// NEAT-style script parser + executor.
+// NEAT-style scripts: a line-by-line language with labels, jumps, conditions,
+// variables and expressions, whose commands live in script-cmd-*.js.
 //
-//   attack 123,456 any:level<500,attack>400 a:99k,c:500,cata:500 @07:00:00.500
-//   scout 500,500 any s:1
-//   transport 123,456 any t:1000 wood:100000
-//   reinforce 123,456 any a:5000
-//   reinforce Fla                          (a city of yours by name; no hero, 1 scout)
-//   reinforce "Home City" none a:500 wood:50k,food:20k
-//   deploy bu 123,456 any wo:500 f:26k,l:26k,s:26k,i:12k,g:10k @:14:30:07.500
-//                                          (NEAT: at attack, bu build city, re reinforce, sc scout, tr transport)
-//     troops come first, resources second: s: and w: are scouts and warriors in
-//     the first list, stone and wood in the second (f w/l s i g, or full names)
-//     @:14:30:07.500   land then, on this machine's clock (timed-march.js lands it,
-//                      checks the server's stamp, and recalls and resends a miss)
-//     @0:30:00 / 0:30:00   camp that long (NEAT)
-//   buildstatus                            (build marches on the way, by landing second; city-build.js)
-//   marchcheck                             (the march formula against the server's times for every march out)
-//   set target 111,222   then %target%     (NEAT's replacement variables)
-//   logout now @:14:35 | logout now 1:05:00   (off the game until then; logout.js)
-//   sell wood 1000 @0.55
-//   buy food 1000 @1.2
-//   repeat 10 | repeat                     (the line above 10 more times, failed goes too | until it fails or Stop)
-//   cleanreports trade
-//   holidaysnipe [dry] | holidaysnipe stop | holidaysnipe status   (holiday-snipe.js)
-//   teleport 123,456 | teleport thuringia | teleport random | warteleport 123,456   (teleport.js)
-//   lostheroes | recover <hero> [to <city>]   (stone-of-finding.js)
-//   renamehero <hero> <new name> [anyway]   (rename-hero.js)
-//   waterhero <hero> [/heropoints="pol:300 att"]   (water-hero.js: Holy Water, then re-spend the points)
-//   canceltroopqueues [n] | cancelfortifications [n]   (queue-cancel.js)
-//   sleep 5 | sleep 1:30 | sleep 1:00:00 | sleep @:14:15
-//   echo hello
+// ------------------------------------------------------------------ language
+//   // comment   # comment          whole line; // also after code (never inside "quotes")
+//   @echo "quiet"                   @ first on a line runs it silently (@: is a time, not this)
+//   set target 111,222              NEAT's replacement variable: %target% in a line is
+//                                   swapped in when that line runs (so it can change in a
+//                                   loop); with no `set`, %x% reads the true variable x
+//   x = 5 | x += 2 | x++ | a.b = 1 | list[0] = "a"      true variables (see script-expr.js)
+//   echo "My city is at " + city.coords + " with" cavs "cavalry"
+//                                   expressions side by side are joined with a space;
+//                                   text in quotes is literal, {expr} inside "..." is filled in,
+//                                   and a line that is not an expression prints as written
+//   print text                      plain text, %vars% only
+//   label name | goto name | gosub name ... return (also gosubreturn)
+//   if (cond) <any line>            the brackets are optional: if $error goto retry
+//                                   if a == 1 if b == 1 echo "both" | if x item = "y"
+//   ifgoto (cond) name | ifgosub (cond) name       (NEAT's older forms)
+//   loop | loop 0                   back to the top, forever
+//   loop 5 | loop name | loop 5 name | loop name 5   the whole script / the part from label
+//                                   `name` runs 5 times in all (forever without a count)
+//   loop 3 ... endloop              OTTObot's block: the lines between run 3 times
+//   repeat 10 | repeat | repeat 0   the last line that ran, until it has run 10 times in all
+//                                   (NEAT's count: `repeat 1` adds nothing) | until it fails or Stop
+//                                   A line the server refuses, reached again (goto, loop, repeat),
+//                                   waits repeatGapMs (200 ms) before it is sent again; the same
+//                                   line refused 10 times in a row ends the run
+//   sleep 5 | sleep 1:30 | sleep 1:00:00 | sleep @:14:15 | sleep rnd:300 | sleep rnd:300:600
+//   end | exit                      the script ends here (exit never closes the console)
+//   stop                            pause here until resumed (without a resume, the script ends)
+//   die "message"                   end with an error
+//   execute "goto city" + city.timeSlot    build a line and run it
+//   call "farm upgrades"            run another script (a loadout) with these true variables;
+//                                   it comes back at its end or at a top-level return
+//   command "who " + name           an in-line command; its output in $result, a failure in $error
+//   function name(a, b) ... return x       (up to the next function, endfunction or the end)
+//   callfunc name(1, 2)             or call it in an expression: y = name(1, 2)
+//   $result, $error                 set after every command ($error is null when it worked)
+//   any other first word            a command from script-cmd-*.js, e.g.
+//     attack 123,456 any a:99k @:07:00:00.500 | train a 10k | upgrade cottage | sell wood 1000 @0.55
 //
-// from <castle> may be appended to any march:  attack 1,2 any a:100 from MyCity
-const C = require('./constants');
-const { Game } = require('./game');
+// run(game, actions, log, opts) -> actions done. Beside the options server.js
+// passes (dryRun, castle, autoReq, session, shouldStop, otherScripts, atLogout,
+// repeatGapMs, tradeGapMs, stopOnError):
+//   startLine       a line number (NEAT's Run box) or a label ('autorun') to start at
+//   loadScript(name) -> text | null   what `call` runs (no hook: `call` fails, clearly)
+//   onPause({line, next}) -> Promise  `stop` waits for it; it resolves false to end instead
+//   parseGoalLine(text) / applyGoalLine(text, goal, env)   goal lines in scripts (config npc:5)
+//   globals         extra global names (tests); modules: extra command modules (tests)
+//   mapSource       handed to script-functions/objects through ctx (tests)
+//   timeScale       (tests) every wait lasts this fraction of its time: 0.001 = 1000x faster
+//   trace(line, top)  (tools) called with each statement's line number as it starts
+//                   (top: false inside a called script)
+//
+// ------------------------------------------------------------ command modules
+// Commands live in script-cmd-<area>.js (deploy, city, hero, account, market,
+// info, social, goals). Each exports:
+//
+//   commands: {
+//     <name>: {
+//       usage: 'tax <0-100>',                // shown in docs and errors
+//       aliases: ['settax'],                 // more words that start such a line
+//       words: [...],                        // OR exactly these words (<name> itself is not one)
+//       parse(args, { word, line, tok }),    // load time -> action (plain data)
+//       async run(action, env),              // run time -> { ok, done, result, error, end }
+//       parseAtRunTime: true,                // optional: parse only when the line runs
+//     },
+//   },
+//   functions: (ctx) => ({ ... }),           // optional: more globals (getters for game state)
+//   readOnly: new Set(['NAME']),             // optional: globals a script may not assign
+//   inline: { <name>: { usage, aliases, async run(argsText, env) } },   // optional: `command "<name> ..."`
+//   goalLines: { parse(text, info), async run(action, env) },   // optional: lines no command claims
+//
+// Words are matched in any case; the first module (in MODULE_FILES order) to
+// claim a word has it, and the language's keywords (if, goto, echo...) cannot be
+// claimed. Each module loads on its own: one that fails to load brings no
+// commands, and every line that then reads as an unknown command names it
+// (parse(...).loadErrors and lineStatus(...).loadErrors list them too).
+//
+// goalLines.parse(text, info) gets a whole line whose first word is no command
+// (nor an expression like `list.push(1)`); info = { word: that first word in lower
+// case, words: the registry's Map of command words, failed: the modules that did
+// not load ([{ file, error }]) }. It returns an action, null to leave the line
+// alone (then it is an unknown command), or throws for a bad goal line.
+// run()'s parseGoalLine/applyGoalLine hooks, when given, are asked first.
+// goalLines.run(action, env) is called like a command's run.
+//
+// parse(args, info) gets the text after the command word, with comments, the @
+// prefix and %vars% already dealt with; info.word is the command word as written
+// (lower case), info.line the whole line, info.tok = line.split(/\s+/). It returns
+// the action — plain data only, so the editor can show it — or throws
+// Error('what to write instead'): a script with such a line is refused before
+// anything runs. The action's `cmd` defaults to <name>; a parse may put another
+// command's name there (deploy bu -> construct, useheroitem X holy water ->
+// waterhero) and that command's run gets it. A command without parse is no word
+// (construct: only `deploy bu` makes one). parseAtRunTime: the line is parsed when
+// it is reached; a line holding {expr}, or a %name% whose value can change, is
+// parsed then anyway, and a parse error then fails only that line.
+//
+// run(action, env) does the work; action is what parse returned, plus line and raw.
+//   env.game, env.castle, env.cid   getters: the CURRENT Game (a run follows reconnects)
+//                             and the run's city; read them again after any wait
+//   env.session, env.opts, env.dryRun    opts is run()'s opts
+//   env.log(msg)              a line of output, '  '-indented under the line's header;
+//                             silenced by @, and collected for $result
+//   env.say(reply)            'ok' | 'FAILED (ok=-5) - msg'; a refusal marks the line failed
+//   env.verdict(reply)        the same text, marking nothing
+//   env.refused()             has say() seen a refusal on this line?
+//   env.stopped(), env.pause(ms)   Stop pressed? / wait, cut short by Stop
+//   env.follow()              take the session's new Game after a reconnect
+//   env.state                 an object per module per run (the market's pacing)
+//   env.sentHeroes            Map heroId -> ms: heroes this run sent on marches
+//   env.ctx                   the run's ctx (DESIGN.md); env.line: the source line number
+//   env.registry()            the run's commands as plain frozen data: { commands: [{ name,
+//                             usage, words, aliases }], inline: [{ name, usage, words }], keywords }
+//   env.evaluate(src)         an expression, in the line's own scope (a function's arguments)
+//   env.echoText(src)         the text `echo <src>` would print (bare words as written)
+// It returns (every field optional):
+//   ok      it did what was asked; default: no reply through say() was a refusal
+//   done    how many actions count toward run()'s return (server replies, refusals
+//           included); default 0
+//   result  the value for $result; default: the text the line logged
+//   error   $error when ok is false; default: the last refused verdict ($error is null when ok)
+//   end     true ends the run after this line (logout; Stop in the middle of a wait)
+//   refused true: count this failure as a refusal though nothing was sent (buyitem past
+//           the run's limit) — the same line refused 10 times in a row ends the run
+// A throw is logged as "  FAILED: <message>", sets $error and the script goes on
+// (unless opts.stopOnError). After every command the VM sets $error (null when
+// ok, else the message) and $result. A dry run logs what would go out and
+// "  [dry run] not sent", sends nothing and returns {} (done 0). A bare `repeat`
+// stops when ok is false. The VM logs "line N: <line>" before a command runs;
+// a module logs only its own '  '-indented lines. Modules must not
+// require('./script') at load time (it requires them): shared helpers are in
+// script-words.js (troop/resource/building words, num, parseTroops, times).
 
-// attack = power, politics = management, intel = stratagem
-const ATTR = Game.ATTR;
+const W = require('./script-words');
+const E = require('./script-expr');
 
-const num = (s) => {
-  const m = String(s).trim().match(/^([\d.]+)\s*([kmb])?$/i);
-  if (!m) throw new Error('bad number: ' + s);
-  const mult = { k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1;
-  return Math.round(parseFloat(m[1]) * mult);
-};
+const MODULE_FILES = ['./script-cmd-deploy', './script-cmd-city', './script-cmd-hero', './script-cmd-account',
+  './script-cmd-market', './script-cmd-info', './script-cmd-social', './script-cmd-goals'];
+const PROVIDERS = ['./script-functions', './script-objects'];
 
-function parseTroops(s) {
-  const troops = {};
-  for (const part of s.split(',')) {
-    const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?)$/i);
-    if (!m) throw new Error('bad troop string: ' + part);
-    const t = C.BY_CODE[m[1].toLowerCase()];
-    if (!t) throw new Error('unknown troop code: ' + m[1]);
-    troops[t.key] = num(m[2]);
+// `repeat N` runs the line N times IN ALL, counting the run just before it (so
+// `repeat 1` adds nothing), as NEAT means it: the wiki's Goto page prints
+// `echo ... / repeat 2` twice a round, the Gosub page's `upgrade house / repeat 2`
+// "upgrades the cottage twice", IfGosub's `train arch:250 Bubba / repeat 4`
+// queues archers "4 times", and the tutorial's "attack it 8 times" is
+// `attack ... / repeat 8`. OTTObot's old meaning (N MORE runs) is false here.
+const REPEAT_COUNTS_TOTAL = true;
+// The same line refused this many times in a row ends the run (Run.countRefusal).
+const MAX_REFUSALS = 10;
+
+const KEYWORDS = new Set(['label', 'goto', 'gosub', 'return', 'gosubreturn', 'if', 'ifgoto', 'ifgosub', 'loop',
+  'endloop', 'repeat', 'end', 'exit', 'stop', 'die', 'echo', 'print', 'sleep', 'set', 'execute', 'call', 'command',
+  'function', 'endfunction', 'callfunc']);
+// Lines that do something a `repeat` can do again.
+const ACTIONS = new Set(['cmd', 'echo', 'print', 'sleep', 'assign', 'expr', 'command', 'callfunc', 'call', 'goal', 'goalmod']);
+const VAR_RE = /%([A-Za-z_][A-Za-z0-9_]*)%/g;
+
+// ------------------------------------------------------------------ registry
+
+// Each module on its own: one that does not load (a half-edited file) brings no
+// commands, and every line that then reads as an unknown command says why.
+function buildRegistry(extra = []) {
+  const mods = [...extra];
+  const failed = [];
+  for (const f of MODULE_FILES) {
+    try { mods.push(require(f)); } catch (e) { failed.push({ file: f.slice(2) + '.js', error: String(e.message).split('\n')[0] }); }
   }
-  return troops;
-}
-
-// deploy's march types (NEAT's Deploy, plus the full names).
-const DEPLOY = {
-  at: 'attack', attack: 'attack', bu: 'construct', build: 'construct', buildcity: 'construct', construct: 'construct',
-  re: 'reinforce', reinforce: 'reinforce', sc: 'scout', scout: 'scout', tr: 'transport', transport: 'transport',
-};
-
-// NEAT's resource codes f w s i g (Abbreviations), l for lumber, or the names.
-const RES_CODE = {
-  f: 'food', food: 'food', w: 'wood', l: 'wood', wood: 'wood', lumber: 'wood',
-  s: 'stone', stone: 'stone', i: 'iron', iron: 'iron', g: 'gold', gold: 'gold',
-};
-
-function parseResources(s) {
-  const out = {};
-  for (const part of s.split(',')) {
-    const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?)$/i);
-    const key = m && RES_CODE[m[1].toLowerCase()];
-    if (!key) throw new Error('bad resource string: ' + part + ' (f w s i g, l for lumber, or food/wood/stone/iron/gold)');
-    out[key] = num(m[2]);
-  }
-  return out;
-}
-
-// A clock time: "@:14:30", "@:14:30:07", "@:14:30:07.500" (NEAT: "local time
-// when prefaced with @:", 24-hour). The seconds may carry a fraction, so .04 is
-// 40 ms and .5 is 500 ms. One digit will do for any part: `set timem 5` then
-// @:%timeh%:%timem% reads 14:05.
-function parseLandTime(s) {
-  const m = String(s).replace(/^@:?/, '').match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.:](\d{1,3}))?)?$/);
-  if (!m || +m[1] > 23 || +m[2] > 59 || (m[3] !== undefined && +m[3] > 59)) {
-    throw new Error('bad time: ' + s + ' (24-hour clock, e.g. @:14:30:07.500)');
-  }
-  return { h: +m[1], m: +m[2], s: +(m[3] || 0), ms: m[4] ? +String(m[4]).padEnd(3, '0') : 0 };
-}
-
-// A length of time in whole seconds: "1:30" is m:ss, "1:30:00" h:mm:ss. NEAT
-// writes a march's camp time this way, with or without an @ in front.
-function parseDuration(s, what = 'camp time') {
-  const t = String(s).replace(/^@/, '');
-  const m = t.match(/^(?:(\d+):)?(\d{1,2}):(\d{2})$/);
-  if (m) return Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]);
-  if (/\.\d/.test(t)) throw new Error(`${what} is whole seconds; for a landing time put a colon after the @: @:${t}`);
-  throw new Error(`bad ${what}: ${s} (h:mm:ss or m:ss)`);
-}
-
-// next occurrence of that wall-clock time, on the server clock
-function nextOccurrence(t, serverNow) {
-  const d = new Date(serverNow);
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.h, t.m, t.s, t.ms).getTime();
-  return target <= serverNow ? target + 86400000 : target;
-}
-
-function parseLine(raw) {
-  const line = raw.replace(/\/\/.*$/, '').trim();
-  if (!line) return null;
-
-  const tok = line.split(/\s+/);
-  const cmd = tok[0].toLowerCase();
-
-  // sleep 15 | sleep 1:43 | sleep 4:22:32 | sleep @:14:15:00   (NEAT's Sleep)
-  if (cmd === 'sleep') {
-    if (String(tok[1] || '').startsWith('@:')) return { cmd, until: parseLandTime(tok[1]) };
-    if (/:/.test(tok[1] || '')) return { cmd, seconds: parseDuration(tok[1], 'sleep time') };
-    return { cmd, seconds: parseFloat(tok[1]) };
-  }
-  if (cmd === 'buildstatus' || cmd === 'marchcheck') return { cmd };
-  if (cmd === 'logout') return { cmd, ...require('./logout').parseArgs(tok.slice(1)) };
-  if (cmd === 'echo') return { cmd, text: line.slice(5) };
-  if (cmd === 'cleanreports') return { cmd, type: (tok[1] || 'trade').toLowerCase() };
-  // A bare `repeat` has no count: it runs the line above until that fails or
-  // the run is stopped (see expand and run).
-  if (cmd === 'repeat') {
-    if (tok[1] === undefined) return { cmd, times: null };
-    if (!/^\d+$/.test(tok[1])) throw new Error('repeat: give a count (repeat 10), or none to repeat until it fails or you press Stop');
-    return { cmd, times: Math.max(1, parseInt(tok[1], 10)) };
-  }
-  if (cmd === 'loop') return { cmd, times: Math.max(1, parseInt(tok[1] || '1', 10)) };
-  if (cmd === 'endloop') return { cmd };
-
-  // wall abatis 1000     (aliases: trap, abatis, tower, logs, rocks)
-  if (cmd === 'wall' || cmd === 'walls') {
-    const w = C.WALL_BY_CODE[(tok[1] || '').toLowerCase()];
-    if (!w) throw new Error('wall: type must be one of ' + C.WALLS.map((x) => x.code).join('/'));
-    return { cmd: 'wall', wall: w, amount: num(tok[2] || '1') };
-  }
-
-  // NEAT's canceltroopqueues / cancelfortifications [n]: leave n batches, cancel
-  // the rest. See queue-cancel.js.
-  const QC = require('./queue-cancel');
-  if (QC.COMMANDS[cmd]) return { cmd: 'cancelqueue', ...QC.parseArgs(cmd, tok.slice(1)) };
-
-  // train a 10k   (troops)
-  if (cmd === 'train') {
-    const t = C.BY_CODE[(tok[1] || '').toLowerCase()];
-    if (!t) throw new Error('train: unknown troop code ' + tok[1]);
-    return { cmd: 'train', troop: t, amount: num(tok[2] || '1') };
-  }
-
-  // production 0 0 0 0   (food wood stone iron, percentages)
-  // zeroing them frees all field labour back into idle population
-  if (cmd === 'production' || cmd === 'produce') {
-    const nums = tok.slice(1).map((x) => parseInt(x, 10));
-    if (nums.length !== 4 || nums.some((x) => Number.isNaN(x) || x < 0 || x > 100)) {
-      throw new Error('production: usage  production <food> <wood> <stone> <iron>   (0-100 each)');
-    }
-    return { cmd: 'production', rates: { food: nums[0], wood: nums[1], stone: nums[2], iron: nums[3] } };
-  }
-  if (cmd === 'tax') {
-    const v = parseInt(tok[1], 10);
-    if (Number.isNaN(v) || v < 0 || v > 100) throw new Error('tax: usage  tax <0-100>');
-    return { cmd: 'tax', rate: v };
-  }
-
-  // ---- items ----
-  if (cmd === 'buyitem') {
-    if (!tok[1]) throw new Error('buyitem: usage  buyitem <itemId> [amount]');
-    return { cmd: 'buyitem', itemId: tok[1], amount: parseInt(tok[2] || '1', 10) };
-  }
-  if (cmd === 'useitem') {
-    if (!tok[1]) throw new Error('useitem: usage  useitem <itemId> [num]');
-    // The client never spends these through shop.useGoods; each has its own move command.
-    if (require('./teleport').ITEM_IDS.has(tok[1])) {
-      throw new Error(`useitem: ${tok[1]} is a teleporter — use  teleport <x,y>  |  teleport <state>  |  teleport random  |  warteleport <x,y>`);
-    }
-    if (tok[1] === require('./stone-of-finding').ITEM_ID) {
-      throw new Error('useitem: the Stone of Finding is spent by  recover <hero>  — run  lostheroes  to see who it can bring back');
-    }
-    if (tok[1] === require('./water-hero').ITEM_ID) {
-      throw new Error('useitem: Holy Water is spent on a hero by  waterhero <hero> [/heropoints="att"]');
-    }
-    return { cmd: 'useitem', itemId: tok[1], amount: parseInt(tok[2] || '1', 10) };
-  }
-  // useheroitem OTTO excalibur repeat 5    (NEAT spelling)
-  // useheroitem OTTO excalibur 5           (same thing)
-  // useheroitem OTTO hero.power.1          (ids always work)
-  if (cmd === 'useheroitem' || cmd === 'heroitem') {
-    const HI = require('./heroitems');
-    if (!tok[1] || !tok[2]) {
-      throw new Error('useheroitem: usage  useheroitem <hero> <item> [repeat <n>]  |  items: '
-        + Object.values(HI.ALL).map((d) => d.names[0]).join(', '));
-    }
-    const rest = tok.slice(2);
-    let times = 1;
-    const ri = rest.findIndex((t) => String(t).toLowerCase() === 'repeat');
-    if (ri !== -1) { times = parseInt(rest[ri + 1] || '1', 10) || 1; rest.splice(ri, 2); }
-    else if (/^\d+$/.test(rest[rest.length - 1] || '')) times = parseInt(rest.pop(), 10) || 1;
-    const word = rest.join('');
-    const itemId = HI.resolveItem(word);
-    if (!itemId) {
-      throw new Error(`useheroitem: unknown item "${rest.join(' ')}". Known: `
-        + Object.values(HI.ALL).map((d) => d.names[0]).join(', ')
-        + ' — or give the raw id, e.g. hero.power.1');
-    }
-    if (times < 1 || times > 500) throw new Error('useheroitem: repeat must be between 1 and 500');
-    // The client resets through hero.resetPoint, never hero.useItem.
-    if (itemId === require('./water-hero').ITEM_ID) {
-      if (times !== 1) throw new Error('useheroitem: Holy Water resets a hero once — a second one only costs more. Use  waterhero <hero>');
-      return { cmd: 'waterhero', ...require('./water-hero').parseArgs(tok[1]) };
-    }
-    return { cmd: 'useheroitem', heroName: tok[1], itemId, times };
-  }
-  if (cmd === 'heroitems') return { cmd: 'heroitems' };
-
-  if (cmd === 'packages' || cmd === 'inventory') return { cmd: 'packages' };
-  // The Stone of Finding's restore window; see stone-of-finding.js.
-  if (cmd === 'lostheroes') return { cmd: 'lostheroes' };
-  if (cmd === 'recover') return { cmd, ...require('./stone-of-finding').parseArgs(tok.slice(1)) };
-  if (cmd === 'find') {
-    if (!tok[1]) throw new Error('find: usage  find <player name>');
-    return { cmd: 'find', query: tok.slice(1).join(' ') };
-  }
-
-  // ---- hero management ----
-  if (cmd === 'heroes' || cmd === 'herolist') return { cmd: 'heroes' };
-  if (cmd === 'inn' || cmd === 'tavern') return { cmd: 'inn' };
-  if (cmd === 'innrefresh' || cmd === 'refreshinn') return { cmd: 'innrefresh' };
-  if (cmd === 'hire') {
-    if (!tok[1]) throw new Error('hire: give a hero name, or "best" / "best politics"');
-    if (tok[1].toLowerCase() === 'best') {
-      const attr = tok[2] ? ATTR[(tok[2] || '').toLowerCase()] : null;
-      if (tok[2] && !attr) throw new Error('hire best: attribute must be attack/politics/intel');
-      return { cmd: 'hire', best: true, attr };
-    }
-    return { cmd: 'hire', name: tok.slice(1).join(' ') };
-  }
-  if (cmd === 'fire' || cmd === 'release') {
-    if (!tok[1]) throw new Error(`${cmd}: give a hero name`);
-    return { cmd, name: tok.slice(1).join(' ') };
-  }
-  if (cmd === 'mayor' || cmd === 'appoint') {
-    if (!tok[1]) throw new Error('mayor: give a hero name');
-    return { cmd: 'mayor', name: tok.slice(1).join(' ') };
-  }
-  if (cmd === 'unmayor' || cmd === 'unappoint' || cmd === 'dischargemayor') return { cmd: 'unmayor' };
-  // Finds the hero in whichever city it is; see rename-hero.js.
-  if (cmd === 'renamehero') return { cmd, ...require('./rename-hero').parseArgs(tok.slice(1)) };
-  // Holy Water; the rest of the line goes whole, as /heropoints="..." may hold spaces.
-  if (cmd === 'waterhero') return { cmd, ...require('./water-hero').parseArgs(line.slice(tok[0].length)) };
-  if (cmd === 'levelup') {
-    if (!tok[1]) throw new Error('levelup: give a hero name (or "all")');
-    const last = (tok[tok.length - 1] || '').toLowerCase();
-    let attr = null, nameToks = tok.slice(1);
-    if (ATTR[last] || last === 'auto') { attr = last === 'auto' ? null : ATTR[last]; nameToks = tok.slice(1, -1); }
-    return { cmd: 'levelup', name: nameToks.join(' '), attr };
-  }
-  if (cmd === 'addpoint' || cmd === 'addpoints') {
-    const attr = ATTR[(tok[tok.length - 2] || '').toLowerCase()];
-    const n = parseInt(tok[tok.length - 1], 10);
-    if (!attr || Number.isNaN(n)) throw new Error('addpoint: usage  addpoint <hero> <attack|politics|intel> <n>');
-    return { cmd: 'addpoint', name: tok.slice(1, -2).join(' '), attr, amount: n };
-  }
-
-  // buildcity 123,456   -- turn an owned flat into a new city
-  if (cmd === 'buildcity' || cmd === 'newcity') {
-    const m = (tok[1] || '').match(/^(\d+)\s*,\s*(\d+)$/);
-    if (!m) throw new Error('buildcity: expected coords like 123,456');
-    return { cmd: 'buildcity', target: { x: +m[1], y: +m[2] } };
-  }
-
-  // build cottage [at 12]   (buildings; troops are `train`)
-  if (cmd === 'build') {
-    const key = (tok[1] || '').toLowerCase().replace(/[^a-z]/g, '');
-    const b = C.BUILDING_BY_CODE[key];
-    if (!b) throw new Error('build: unknown building "' + tok[1] + '" (try cottage, academy, feastinghall, barracks…)');
-    let at = null;
-    const ai = tok.findIndex((t) => t.toLowerCase() === 'at');
-    if (ai > 0) at = parseInt(tok[ai + 1], 10);
-    return { cmd: 'build', building: b, at };
-  }
-
-  // upgrade academy [at 12]
-  if (cmd === 'upgrade') {
-    const key = (tok[1] || '').toLowerCase().replace(/[^a-z]/g, '');
-    const b = C.BUILDING_BY_CODE[key];
-    if (!b) throw new Error('upgrade: unknown building "' + tok[1] + '"');
-    let at = null;
-    const ai = tok.findIndex((t) => t.toLowerCase() === 'at');
-    if (ai > 0) at = parseInt(tok[ai + 1], 10);
-    return { cmd: 'upgrade', building: b, at };
-  }
-
-  // research archery
-  if (cmd === 'research') {
-    const key = tok.slice(1).join('').toLowerCase().replace(/[^a-z]/g, '');
-    const t = C.TECH_BY_CODE[key];
-    if (!t) throw new Error('research: unknown tech "' + tok.slice(1).join(' ') + '"');
-    return { cmd: 'research', tech: t };
-  }
-
-  // Starts a background market sniper and returns at once; see holiday-snipe.js.
-  if (cmd === 'holidaysnipe') return { cmd, ...require('./holiday-snipe').parseArgs(tok.slice(1)) };
-
-  // Coordinates spend an Advanced Teleporter, a state name or `random` a City
-  // Teleporter, and warteleport a War Teleporter; see teleport.js.
-  if (cmd === 'teleport' || cmd === 'warteleport') return { cmd: 'teleport', ...require('./teleport').parseArgs(cmd, tok.slice(1)) };
-
-  if (cmd === 'sell' || cmd === 'buy') {
-    // sell wood 1000 @0.55
-    const priceTok = tok.find((t) => t.startsWith('@'));
-    if (!priceTok) throw new Error(`${cmd}: missing @price`);
-    return { cmd, resource: tok[1].toLowerCase(), amount: num(tok[2]), price: priceTok.slice(1) };
-  }
-
-  // <mission> <where> [hero] [troops] [resources] [time] [from <city>]
-  //   where  x,y, or one of your cities by name ("Home City" in quotes)
-  //   hero   a name, any, any:level<500,attack>400 — or none, or left out
-  //   time   @:14:30:07.500 lands then (timed-march.js); @0:30:00 or 0:30:00 camps that long
-  // `deploy <type> ...` is NEAT's general form of the same line; type bu is a
-  // build-city march. Attack and scout need a hero and troops, a build needs
-  // troops. Reinforce and transport go without a hero if none is named, and a
-  // reinforce with no troop string sends 1 scout.
-  const deploy = cmd === 'deploy';
-  const mission = deploy ? DEPLOY[(tok[1] || '').toLowerCase()] : cmd;
-  if (deploy && !mission) {
-    throw new Error('deploy: say the march type first — at (attack), bu (build city), re (reinforce), sc (scout), tr (transport)');
-  }
-  if (deploy || ['attack', 'scout', 'transport', 'reinforce'].includes(cmd)) {
-    const name = deploy ? `deploy ${tok[1].toLowerCase()}` : cmd;
-    // "123, 456" and "a:100, c:500" read the same as without the spaces
-    const words = (line.replace(/\s*,\s*/g, ',').match(/"[^"]*"|\S+/g) || [])
-      .map((w) => w.replace(/^"(.*)"$/, '$1')).slice(deploy ? 1 : 0);
-    const isList = (t) => /^[a-z]+:[\d.]+[kmb]?(,[a-z]+:[\d.]+[kmb]?)*$/i.test(t);
-    const codes = (t) => t.split(',').map((p) => p.split(':')[0].toLowerCase());
-    const allTroops = (t) => isList(t) && codes(t).every((c) => C.BY_CODE[c]);
-    const allRes = (t) => isList(t) && codes(t).every((c) => RES_CODE[c]);
-    const isTime = (t) => t.startsWith('@') || /^\d+:\d{2}(:\d{2})?$/.test(t);
-
-    const where = words[1] || '';
-    if (!where || /^(any|none)(:|$)/i.test(where) || isTime(where) || /^from$/i.test(where) || isList(where)) {
-      throw new Error(`${name}: say where first — coords like 123,456, or one of your cities by name`);
-    }
-    const coords = where.match(/^(\d+),(\d+)$/);
-    const target = coords ? { x: +coords[1], y: +coords[2] } : null;
-    const targetCity = coords ? null : where;
-    if (mission === 'construct' && !coords) throw new Error(`${name}: a build march goes to a flat's coordinates, like 123,456`);
-
-    // No hero sends no heroId at all; see Game.buildArmyBean.
-    let from = null, land = null, camp = null, hero, troops = null, resources = null;
-    for (let i = 2; i < words.length; i++) {
-      const t = words[i];
-      if (t.toLowerCase() === 'from') {
-        from = words[++i];
-        if (!from) throw new Error(`${name}: "from" needs a city name after it`);
-        continue;
-      }
-      if (isTime(t)) {
-        if (land || camp !== null) throw new Error(`${name}: one time per march — @:hh:mm:ss to land then, or a camp time`);
-        if (t.startsWith('@:')) land = parseLandTime(t); else camp = parseDuration(t);
-        continue;
-      }
-      if (isList(t)) {
-        // NEAT reads troops first and resources second, so in a later list
-        // s: and w: are stone and wood, not scouts and warriors.
-        if (troops === null && allTroops(t)) { troops = parseTroops(t); continue; }
-        if (allRes(t)) { resources = { ...resources, ...parseResources(t) }; continue; }
-        if (allTroops(t)) { troops = { ...troops, ...parseTroops(t) }; continue; }
-        throw new Error(`${name}: "${t}" is neither a troop string nor a resource string`);
-      }
-      if (hero === undefined) { hero = t.toLowerCase() === 'none' ? null : t; continue; }
-      throw new Error(`${name}: unexpected "${t}" — one hero per march${targetCity ? ', and a city name with spaces goes in quotes' : ''}`);
-    }
-    if ((mission === 'attack' || mission === 'scout') && !hero) {
-      throw new Error(`${name}: needs a hero — a name, any, or any:level<500,attack>400`);
-    }
-    let troopsDefault = false;
-    if (!troops) {
-      if (mission !== 'reinforce') throw new Error(`${name}: no troop string (e.g. a:1000,c:500${mission === 'construct' ? ', or wo:500 for a build' : ''})`);
-      troops = { scouter: 1 };
-      troopsDefault = true;
-    }
-    return { cmd: mission, target, targetCity, hero: hero || null, troops, troopsDefault, resources, land, camp, from };
-  }
-
-  throw new Error('unknown command: ' + cmd);
-}
-
-// Expands `repeat N` (NEAT-style: run the previous action N more times) and
-// `loop N` ... `endloop` blocks into a flat action list. A bare `repeat` cannot
-// be flattened, so it leaves a `forever` marker after its action for run().
-function expand(raw) {
-  const out = [];
-  const stack = [];
-  for (const a of raw) {
-    if (a.cmd === 'loop') { stack.push({ times: a.times, body: [], line: a.line }); continue; }
-    if (a.cmd === 'endloop') {
-      const blk = stack.pop();
-      if (!blk) { out.push({ cmd: 'error', line: a.line, raw: a.raw, error: 'endloop without loop' }); continue; }
-      const expanded = [];
-      for (let i = 0; i < blk.times; i++) expanded.push(...blk.body.map((x) => ({ ...x })));
-      (stack.length ? stack[stack.length - 1].body : out).push(...expanded);
-      continue;
-    }
-    const sink = stack.length ? stack[stack.length - 1].body : out;
-    if (a.cmd === 'repeat') {
-      const prev = sink[sink.length - 1];
-      if (!prev) { sink.push({ cmd: 'error', line: a.line, raw: a.raw, error: 'repeat with no previous action' }); continue; }
-      if (prev.cmd === 'forever') { sink.push({ cmd: 'error', line: a.line, raw: a.raw, error: 'the repeat above never ends, so there is nothing after it to repeat' }); continue; }
-      if (a.times === null) { sink.push({ cmd: 'forever', action: prev, line: a.line, raw: a.raw }); continue; }
-      for (let i = 0; i < a.times; i++) sink.push({ ...prev, round: i + 1, of: a.times });
-      continue;
-    }
-    sink.push(a);
-  }
-  for (const blk of stack) out.push({ cmd: 'error', line: blk.line, raw: 'loop', error: 'loop without endloop' });
-  return out;
-}
-
-function parse(text) {
-  const raw = [];
-  // NEAT's replacement variables: `set target 111,222`, then %target% in any
-  // later line reads 111,222. Plain text, swapped in before the line is read.
-  const vars = new Map();
-  text.split(/\r?\n/).forEach((given, i) => {
-    let line = given;
+  const words = new Map(), cmds = new Map(), inline = new Map(), goalLines = [];
+  for (const mod of mods) {
     try {
-      line = given.replace(/%([a-z_][a-z0-9_]*)%/gi, (_, name) => {
-        const v = vars.get(name.toLowerCase());
-        if (v === undefined) throw new Error(`%${name}% is not set — put  set ${name} <value>  above this line`);
-        return v;
-      });
-      const bare = line.replace(/\/\/.*$/, '').trim();
-      if (/^set(\s|$)/i.test(bare)) {
-        const m = bare.match(/^set\s+([a-z_][a-z0-9_]*)\s+(.+)$/i);
-        if (!m) throw new Error('set: usage  set <name> <value>   and then %name% in the lines below');
-        vars.set(m[1].toLowerCase(), m[2].trim());
-        return;
+      for (const [name, spec] of Object.entries(mod.commands || {})) {
+        if (!cmds.has(name)) cmds.set(name, { name, spec, mod });
+        if (typeof spec.parse !== 'function') continue;
+        for (const w of spec.words || [name, ...(spec.aliases || [])]) {
+          const k = String(w).toLowerCase();
+          if (!words.has(k) && !KEYWORDS.has(k)) words.set(k, { name, spec, mod });
+        }
       }
-      const a = parseLine(line);
-      if (a) raw.push({ ...a, line: i + 1, raw: line.trim() });
-    } catch (e) { raw.push({ cmd: 'error', line: i + 1, raw: line.trim(), error: e.message }); }
-  });
-  const out = expand(raw);
-  // After a logout there is no game to run anything against (logout.js).
-  const lo = out.findIndex((a) => a.cmd === 'logout');
-  const after = lo === -1 ? null : out.slice(lo + 1).find((a) => a.cmd !== 'error');
-  if (after) out.push({ cmd: 'error', line: after.line, raw: after.raw, error: 'nothing can run after logout — the console is off the game from then on' });
+      for (const [name, spec] of Object.entries(mod.inline || {})) {
+        for (const w of [name, ...(spec.aliases || [])]) if (!inline.has(String(w).toLowerCase())) inline.set(String(w).toLowerCase(), { name, spec, mod });
+      }
+      if (mod.goalLines && typeof mod.goalLines.parse === 'function') goalLines.push({ mod, spec: mod.goalLines });
+    } catch (e) {
+      failed.push({ file: 'a command module', error: e.message });
+    }
+  }
+  return { mods, words, cmds, inline, goalLines, failed };
+}
+let REGISTRY = null;
+// A failed module is tried again on the next parse: it may have been fixed.
+const registry = (extra) => {
+  if (extra && extra.length) return buildRegistry(extra);
+  if (!REGISTRY || REGISTRY.failed.length) REGISTRY = buildRegistry();
+  return REGISTRY;
+};
+const unknownCommand = (word, reg) => new Error('unknown command: ' + word
+  + (reg.failed.length ? ` — note: ${reg.failed.map((f) => `${f.file} failed to load (${f.error})`).join('; ')}` : ''));
+
+// ------------------------------------------------------------------ lines
+
+// `//` outside quotes ends the line. An apostrophe inside a word (don't) opens nothing.
+function stripComment(t) {
+  let q = null;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
+    if (c === '"') { q = c; continue; }
+    if (c === "'" && (i === 0 || /[\s(,=[+:!&|?{]/.test(t[i - 1]))) { q = c; continue; }
+    if (c === '/' && t[i + 1] === '/') return t.slice(0, i);
+  }
+  return t;
+}
+
+// execute's text as statements: one a line, except that a line with a (, [ or {
+// still open goes on into the next — SortingMemberList builds `members = [ … ]`
+// with a line per member. Brackets in quotes or after // do not count.
+function executeLines(text) {
+  const out = [];
+  let buf = '';
+  for (const line of String(text).split(/\r?\n/)) {
+    buf = buf ? buf + ' ' + line.trim() : line;
+    if (openBrackets(buf) > 0) continue;
+    out.push(buf);
+    buf = '';
+  }
+  if (buf) out.push(buf);
   return out;
+}
+
+function openBrackets(t) {
+  let depth = 0, q = null;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
+    if (c === '"') { q = c; continue; }
+    if (c === "'" && (i === 0 || /[\s(,=[+:!&|?{]/.test(t[i - 1]))) { q = c; continue; }
+    if (c === '/' && t[i + 1] === '/') break;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  return depth;
+}
+
+// One line of source -> { text, silent } or { text: '' } for blank and comment.
+function preprocess(raw) {
+  let t = String(raw).replace(/^\uFEFF/, '').trim();
+  if (!t) return { text: '', blank: true };
+  if (t.startsWith('//') || t.startsWith('#')) return { text: '', comment: true };
+  t = t.replace(/^\d+:\s+(?=\S)/, '');           // the wiki's "1: sleep ..." line numbers
+  let silent = false;
+  if (t.startsWith('@') && !t.startsWith('@:')) { silent = true; t = t.slice(1).trim(); }
+  t = stripComment(t).trim();
+  if (!t) return { text: '', comment: true };
+  return { text: t, silent };
+}
+
+function parseSleep(rest) {
+  const a = rest.split(/\s+/)[0] || '';
+  if (a.startsWith('@:')) return { cmd: 'sleep', until: W.parseLandTime(a) };
+  const r = /^rnd:(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?$/i.exec(a);
+  if (r) {
+    const lo = r[2] === undefined ? 0 : +r[1], hi = r[2] === undefined ? +r[1] : +r[2];
+    if (hi < lo) throw new Error('sleep rnd:min:max — the second number is the longest wait, so it cannot be smaller');
+    return { cmd: 'sleep', rnd: [lo, hi] };
+  }
+  if (/:/.test(a)) return { cmd: 'sleep', seconds: W.parseDuration(a, 'sleep time') };
+  return { cmd: 'sleep', seconds: parseFloat(a) };
+}
+
+const exprErr = (what, e) => new Error(`${what}: ${e.message}`);
+
+// One statement's text -> a node { kind, view, ... }. C: { reg, opts, runtime }.
+function parseStmt(text, C) {
+  const word = (/^[A-Za-z_$][\w$]*/.exec(text) || [''])[0];
+  const lw = word.toLowerCase();
+  const tail = text.slice(word.length);
+  const rest = tail.trim();
+  const restAt = text.length - tail.trimStart().length;
+  const next = tail[0];
+
+  if (E.assignmentStart(text)) {
+    let ast;
+    try { ast = E.parseStatement(text); } catch (e) { throw exprErr('assignment', e); }
+    if (ast.type !== 'assign' && ast.type !== 'update') throw unknownCommand(lw, C.reg);
+    return { kind: 'assign', ast, view: { cmd: 'assign', expr: text } };
+  }
+
+  const single = (what) => {
+    if (!rest || /\s/.test(rest)) throw new Error(`${what}: usage  ${what} <label name>`);
+    return rest.toLowerCase();
+  };
+  const expr = (what, src, at) => { try { return E.parseExpression(src, at); } catch (e) { throw exprErr(what, e); } };
+  // echo/die items; a quote left open at the end of the line closes there, as
+  // NEAT's did (MapFunctions: echo "Distance from {city.coords} to {targ} is {distance}.)
+  const list = (src) => {
+    try { return E.parseList(src); } catch { /* below */ }
+    if (!/"/.test(src)) return null;
+    try { return E.parseList(src + '"'); } catch { return null; }
+  };
+
+  if (KEYWORDS.has(lw)) {
+    switch (lw) {
+      case 'label': {
+        if (!/^[\w$.!-]+$/.test(rest)) throw new Error('label: usage  label <name>   (one word)');
+        return { kind: 'label', name: rest.toLowerCase(), view: { cmd: 'label', name: rest } };
+      }
+      case 'goto': case 'gosub':
+        return { kind: lw, label: single(lw), view: { cmd: lw, label: rest } };
+      case 'return': case 'gosubreturn':
+        return { kind: 'return', expr: rest ? expr('return', rest, restAt) : null, view: { cmd: 'return', ...(rest ? { expr: rest } : {}) } };
+      case 'if': case 'ifgoto': case 'ifgosub': {
+        if (!rest) throw new Error(`${lw}: usage  ${lw === 'if' ? 'if (condition) <line>' : lw + ' (condition) <label>'}`);
+        let pre;
+        try { pre = E.parsePrefix(rest, 0, restAt); } catch (e) { throw exprErr(lw, e); }
+        const cond = rest.slice(0, pre.end).trim();
+        const after = rest.slice(pre.end).trim();
+        if (lw !== 'if') {
+          if (!after || /\s/.test(after)) throw new Error(`${lw}: usage  ${lw} (condition) <label>`);
+          const kind = lw === 'ifgoto' ? 'goto' : 'gosub';
+          return { kind: 'if', cond: pre.ast, then: { kind, label: after.toLowerCase(), view: { cmd: kind, label: after } }, view: { cmd: lw, cond, label: after } };
+        }
+        if (!after) throw new Error('if: say what to do when it is true — e.g.  if city.troop.archer < 20k goto trainarchers');
+        const then = parseStmt(after, C);
+        if (['label', 'function', 'endfunction', 'endloop'].includes(then.kind)) throw new Error(`if: a ${then.kind} cannot depend on a condition`);
+        return { kind: 'if', cond: pre.ast, then, view: { cmd: 'if', cond, then: then.view } };
+      }
+      case 'loop': {
+        const toks = rest ? rest.split(/\s+/) : [];
+        let times = null, label = null;
+        for (const t of toks) {
+          if (/^\d+$/.test(t) && times === null) times = parseInt(t, 10);
+          else if (/^[\w$.!-]+$/.test(t) && !/^\d+$/.test(t) && label === null) label = t;
+          else throw new Error('loop: usage  loop [count] [label]   — no count or 0 is forever');
+        }
+        return { kind: 'loop', times: times || null, label: label && label.toLowerCase(), view: { cmd: 'loop', times: times || null, ...(label ? { label } : {}) } };
+      }
+      case 'endloop': return { kind: 'endloop', view: { cmd: 'endloop' } };
+      case 'repeat': {
+        // A bare `repeat` (or 0) has no count: it runs the line above until that
+        // fails or the run is stopped.
+        if (!rest) return { kind: 'repeat', times: null, view: { cmd: 'repeat', times: null } };
+        if (!/^\d+$/.test(rest)) throw new Error('repeat: give a count (repeat 10), or none to repeat until it fails or you press Stop');
+        const n = parseInt(rest, 10);
+        return { kind: 'repeat', times: n || null, view: { cmd: 'repeat', times: n || null } };
+      }
+      case 'end':
+        if (/^function$/i.test(rest)) return { kind: 'endfunction', view: { cmd: 'endfunction' } };
+        if (rest) throw new Error('end: nothing goes after it');
+        return { kind: 'end', view: { cmd: 'end' } };
+      case 'exit': case 'stop':
+        if (rest) throw new Error(`${lw}: nothing goes after it`);
+        return { kind: lw, view: { cmd: lw } };
+      case 'die': return { kind: 'die', items: rest ? list(rest) : [], text: rest, view: { cmd: 'die', text: rest } };
+      case 'echo': return { kind: 'echo', items: list(rest), text: rest, view: { cmd: 'echo', text: rest } };
+      case 'print': return { kind: 'print', text: rest, view: { cmd: 'print', text: rest } };
+      case 'sleep': { const v = parseSleep(rest); return { kind: 'sleep', ...v, view: v }; }
+      case 'set': {
+        const m = rest.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/i);
+        if (!m) throw new Error('set: usage  set <name> <value>   and then %name% in the lines below');
+        return { kind: 'set', name: m[1].toLowerCase(), value: m[2].trim(), view: { cmd: 'set', name: m[1], value: m[2].trim() } };
+      }
+      case 'execute': case 'command': {
+        if (!rest) throw new Error(`${lw}: usage  ${lw} "<line>"   (an expression: "goto city" + city.timeSlot)`);
+        return { kind: lw, expr: expr(lw, rest, restAt), view: { cmd: lw, expr: rest } };
+      }
+      case 'call': {
+        if (!rest) throw new Error('call: usage  call "<loadout name or number>"');
+        const bare = /^[A-Za-z_$][\w$-]*$/.test(rest) ? rest : null;
+        return { kind: 'call', expr: bare && /-/.test(bare) ? null : expr('call', rest, restAt), bare, view: { cmd: 'call', script: rest } };
+      }
+      case 'function': {
+        const m = rest.match(/^([A-Za-z_$][\w$]*)\s*\(([^)]*)\)$/);
+        if (!m) throw new Error('function: usage  function name(a, b)   — the lines below it, up to return, are its body');
+        const params = m[2].split(',').map((x) => x.trim()).filter(Boolean);
+        for (const p of params) if (!/^[A-Za-z_$][\w$]*$/.test(p)) throw new Error(`function ${m[1]}: "${p}" is not a name`);
+        return { kind: 'function', name: m[1], params, view: { cmd: 'function', name: m[1], params } };
+      }
+      case 'endfunction': return { kind: 'endfunction', view: { cmd: 'endfunction' } };
+      case 'callfunc': {
+        const ast = expr('callfunc', rest, restAt);
+        if (ast.type !== 'call' || ast.callee.type !== 'id') throw new Error('callfunc: usage  callfunc name(arguments)');
+        return { kind: 'callfunc', call: ast, name: ast.callee.name, view: { cmd: 'callfunc', call: rest } };
+      }
+      default: break;
+    }
+  }
+
+  // An expression on its own line: Arr.forEach(f), Settings.autoUseItems([...]).
+  const exprLine = () => {
+    let ast;
+    try { ast = E.parseExpression(text); } catch { return null; }
+    let calls = false;
+    const walk = (n) => {
+      if (!n || typeof n !== 'object' || calls) return;
+      if (n.type === 'call' || n.type === 'assign' || n.type === 'update') { calls = true; return; }
+      for (const v of Object.values(n)) if (v && typeof v === 'object' && v !== n.src) (Array.isArray(v) ? v.forEach(walk) : walk(v));
+    };
+    walk(ast);
+    return calls ? { kind: 'expr', ast, view: { cmd: 'expr', expr: text } } : null;
+  };
+
+  const ent = lw && C.reg.words.get(lw);
+  if (ent && !['(', '.', '['].includes(next)) return commandNode(ent, lw, text, rest, C);
+  if (lw) { const n = exprLine(); if (n) return n; }
+
+  // Goal lines in scripts (config npc:5): run()'s hooks first, then the
+  // modules' goalLines (script-cmd-goals.js).
+  if (C.opts && typeof C.opts.parseGoalLine === 'function') {
+    const g = C.opts.parseGoalLine(text);
+    if (g) return { kind: 'goal', text, goal: g, view: { cmd: 'goal', text } };
+  } else if (C.opts && typeof C.opts.applyGoalLine === 'function') {
+    return { kind: 'goal', text, goal: null, view: { cmd: 'goal', text } };
+  }
+  for (const gl of C.reg.goalLines) {
+    const action = gl.spec.parse(text, { word: lw, words: C.reg.words, failed: C.reg.failed });
+    if (action) return { kind: 'goalmod', runner: gl, action, view: { cmd: 'goal', ...action } };
+  }
+  throw unknownCommand(lw || text.split(/\s+/)[0].toLowerCase(), C.reg);
+}
+
+// A command line: parsed now, or when it runs if it holds {expr}.
+function commandNode(ent, lw, text, rest, C) {
+  if (ent.spec.parseAtRunTime || E.hasSpans(rest)) {
+    return { kind: 'cmd', deferred: true, text, view: { cmd: ent.name, deferred: true } };
+  }
+  const { action, runner } = parseCommand(ent, lw, text, rest, C.reg);
+  return { kind: 'cmd', action, runner, view: action };
+}
+
+function parseCommand(ent, lw, text, rest, reg) {
+  const out = ent.spec.parse(rest, { word: lw, line: text, tok: text.split(/\s+/) });
+  const action = out && out.cmd ? out : { cmd: ent.name, ...out };
+  const runner = reg.cmds.get(action.cmd);
+  if (!runner || typeof runner.spec.run !== 'function') throw new Error(`${lw}: nothing runs "${action.cmd}"`);
+  return { action, runner };
+}
+
+const forEachNode = (n, f) => { f(n); if (n.then) forEachNode(n.then, f); };
+
+// ------------------------------------------------------------------ compile
+
+// Names set with `set` and true variables assigned anywhere: a %x% that is
+// neither can be refused before the run.
+function scanNames(lines) {
+  const sets = new Set(), assigned = new Set();
+  let dynamic = false;
+  for (const t of lines) {
+    for (const m of t.matchAll(/(?:^|\s)set\s+([A-Za-z_][A-Za-z0-9_]*)/gi)) sets.add(m[1].toLowerCase());
+    for (const m of t.matchAll(/([A-Za-z_$][\w$]*)\s*(?:=(?!=)|\+=|-=|\*=|\/=|%=|\+\+|--)/g)) assigned.add(m[1].toLowerCase());
+    for (const m of t.matchAll(/function\s+[A-Za-z_$][\w$]*\s*\(([^)]*)\)/gi)) for (const p of m[1].split(',')) assigned.add(p.trim().toLowerCase());
+    if (/(^|\s)(execute|call)\s/i.test(t)) dynamic = true;
+  }
+  return { sets, assigned, dynamic };
+}
+
+function compile(text, opts = {}) {
+  const reg = registry(opts.modules);
+  const C = { reg, opts };
+  const program = { stmts: [], labels: new Map(), functions: new Map(), reg, opts, warnings: [], cache: new Map() };
+  const pre = String(text == null ? '' : text).split(/\r?\n/).map((raw, i) => ({ n: i + 1, ...preprocess(raw) }));
+  const names = scanNames(pre.map((p) => p.text).filter(Boolean));
+  const known = new Set([...(opts.knownVars || [])].map((v) => String(v).toLowerCase()));
+  const setVals = new Map();
+
+  for (const p of pre) {
+    if (!p.text) continue;
+    const base = { line: p.n, src: p.text, silent: p.silent };
+    let t = p.text;
+    const usesVars = /%[A-Za-z_][A-Za-z0-9_]*%/.test(t);
+    let node;
+    try {
+      if (usesVars) {
+        const missing = [];
+        const subbed = t.replace(VAR_RE, (m, name) => {
+          const v = setVals.get(name.toLowerCase());
+          if (v === undefined) { missing.push(name); return m; }
+          return v;
+        });
+        const unknown = missing.find((n) => !names.sets.has(n.toLowerCase()) && !names.assigned.has(n.toLowerCase())
+          && !known.has(n.toLowerCase()) && !names.dynamic);
+        if (unknown) throw new Error(`%${unknown}% is not set — put  set ${unknown} <value>  above this line`);
+        if (missing.length) {
+          // its value is only known when the line runs
+          const w = (/^[A-Za-z_$][\w$]*/.exec(t) || [''])[0].toLowerCase();
+          node = { kind: 'dynamic', view: { cmd: w === 'set' ? 'set' : w || 'line', deferred: true } };
+        } else t = subbed;
+      }
+      if (!node) node = parseStmt(t, C);
+      if (node.kind === 'set') setVals.set(node.name, node.value);
+    } catch (e) {
+      node = { kind: 'error', error: e.message, view: null };
+    }
+    // lineText: the line as it reads now (%vars% filled in); null until it runs
+    Object.assign(node, base, { lineText: node.kind === 'dynamic' ? null : t, usesVars });
+    program.stmts.push(node);
+  }
+  link(program);
+  return program;
+}
+
+// Labels, functions, loop blocks and the checks that need the whole script.
+function link(P) {
+  const S = P.stmts;
+  const fail = (node, msg) => { if (node.kind !== 'error') Object.assign(node, { kind: 'error', error: msg }); else node.more = [...(node.more || []), msg]; };
+
+  // functions: a body runs to the next function, endfunction, or the end
+  for (let i = 0; i < S.length; i++) {
+    if (S[i].kind !== 'function') continue;
+    const node = S[i];
+    let j = i + 1;
+    while (j < S.length && S[j].kind !== 'function' && S[j].kind !== 'endfunction') j++;
+    const closed = j < S.length && S[j].kind === 'endfunction';
+    const def = { name: node.name, params: node.params, line: node.line, bodyStart: i + 1, bodyEnd: j };
+    node.fn = def;
+    node.skipTo = closed ? j + 1 : j;
+    if (closed) S[j].fn = def;
+    else {
+      // lines after the body's last return still belong to it: say so
+      let lastRet = -1;
+      for (let k = i + 1; k < j; k++) if (S[k].kind === 'return') lastRet = k;
+      if (lastRet !== -1 && lastRet < j - 1) {
+        P.warnings.push({ line: node.line, warning: `function ${node.name} has no endfunction, so line ${S[lastRet + 1].line} to line ${S[j - 1].line}, after its return, are part of it — close it with endfunction` });
+      }
+    }
+    for (let k = i + 1; k < j; k++) S[k].inFn = def;
+    const key = node.name.toLowerCase();
+    if (P.functions.has(key)) fail(node, `function ${node.name} is already on line ${P.functions.get(key).line}`);
+    else P.functions.set(key, def);
+  }
+  for (const n of S) if (n.kind === 'endfunction' && !n.fn) fail(n, 'endfunction without function');
+
+  for (let i = 0; i < S.length; i++) {
+    const n = S[i];
+    if (n.kind !== 'label') continue;
+    if (P.labels.has(n.name)) fail(n, `label ${n.view.name} is already on line ${S[P.labels.get(n.name)].line}`);
+    else P.labels.set(n.name, i);
+  }
+
+  // OTTObot's loop N ... endloop blocks; a loop no endloop closes is NEAT's jump back
+  const stack = [];
+  for (let i = 0; i < S.length; i++) {
+    const n = S[i];
+    if (n.kind === 'loop' && !n.label) stack.push(i);
+    else if (n.kind === 'endloop') {
+      const at = stack.pop();
+      if (at === undefined) { fail(n, 'endloop without loop'); continue; }
+      S[at].block = true;
+      n.loopPc = at;
+    }
+  }
+
+  const labelCheck = (n, name, what) => {
+    const at = P.labels.get(name);
+    if (at === undefined) return `${what}: there is no label "${name}"`;
+    if ((S[at].inFn || null) !== (n.inFn || null)) return `${what} ${name}: the label is ${S[at].inFn ? 'inside function ' + S[at].inFn.name : 'outside the function'} — a jump cannot cross a function's edge`;
+    return null;
+  };
+  const hasReturnAfter = (at) => {
+    for (let k = at + 1; k < S.length; k++) {
+      let found = false;
+      forEachNode(S[k], (x) => { if (x.kind === 'return') found = true; });
+      if (found) return true;
+    }
+    return false;
+  };
+
+  // A command whose spec says noBareRepeat (buyitem) may not be followed by a
+  // repeat without a count: that would run it until it fails, spending as it goes.
+  const noBareRepeat = (x) => {
+    let why = null;
+    forEachNode(x, (y) => {
+      const name = why ? null : y.kind === 'cmd' ? (y.action ? y.action.cmd : y.view && y.view.cmd) : y.kind === 'dynamic' ? y.view && y.view.cmd : null;
+      const ent = name && (P.reg.cmds.get(name) || P.reg.words.get(String(name).toLowerCase()));
+      if (ent && ent.spec && ent.spec.noBareRepeat) why = `repeat after ${name}: ${ent.spec.noBareRepeat}`;
+    });
+    return why;
+  };
+  let prevAction = false, prevForever = false, afterLogout = null, prevNode = null;
+  for (let i = 0; i < S.length; i++) {
+    const n = S[i];
+    if (n.kind === 'error') { prevAction = true; prevNode = null; continue; }
+    forEachNode(n, (x) => {
+      if (x.kind === 'goto' || x.kind === 'gosub') {
+        const bad = labelCheck(n, x.label, x.kind);
+        if (bad) fail(n, bad);
+        else if (x.kind === 'gosub' && !hasReturnAfter(P.labels.get(x.label))) {
+          // a warning, not a refusal: NEAT runs subroutines that never come back
+          // (the LoadGoals page's own example ends at a stop)
+          P.warnings.push({ line: n.line, warning: `gosub ${x.label}: there is no return after label ${x.label} — a subroutine ends with return` });
+        }
+      }
+      if (x.kind === 'loop' && x.label) { const bad = labelCheck(n, x.label, 'loop'); if (bad) fail(n, bad); }
+      if (x.kind === 'callfunc' && !P.functions.has(x.name.toLowerCase())) fail(n, `callfunc: there is no function ${x.name} in this script`);
+    });
+    if (n.kind === 'error') continue;
+
+    if (n.kind === 'repeat') {
+      if (!prevAction) fail(n, 'repeat with no previous action');
+      else if (prevForever) fail(n, 'the repeat above never ends, so there is nothing after it to repeat');
+      else if (n.times === null && prevNode && noBareRepeat(prevNode)) fail(n, noBareRepeat(prevNode));
+    }
+    // After a logout there is no game to run anything against (logout.js).
+    if (afterLogout && !['label', 'function', 'end', 'exit', 'stop', 'die', 'return', 'endfunction'].includes(n.kind)) {
+      fail(n, 'nothing can run after logout now — the run ends there; to carry on once the console is back, give a time to log out: logout 0 <back> (NEAT)');
+      afterLogout = null;
+    }
+    if (['label', 'function'].includes(n.kind)) afterLogout = null;
+    // a NEAT logout (resume: true) waits for the console to log back in and goes on
+    if (n.kind === 'cmd' && n.action && n.action.cmd === 'logout' && !n.action.resume) afterLogout = n;
+
+    if (ACTIONS.has(n.kind) || n.kind === 'if' || n.kind === 'execute' || n.kind === 'dynamic') { prevAction = true; prevNode = n; }
+    prevForever = n.kind === 'repeat' && n.times === null;
+  }
+  lintNames(P);
+}
+
+// Names read but never assigned and not global: a warning, since NEAT reads them
+// as undefined (`ifgosub castle found` relies on that).
+let PROVIDER_NAMES = null;
+function providerNames(reg) {
+  if (PROVIDER_NAMES && PROVIDER_NAMES.reg === reg) return PROVIDER_NAMES.names;
+  const names = new Set(Object.keys(E.builtins()).map((k) => k.toLowerCase()));
+  const fake = { game: null, castle: null, session: undefined, opts: {}, dryRun: true, log() {}, vars: new Map(),
+    evaluate: async () => undefined, call: async () => undefined, busyHeroes: () => false, mapSource: undefined };
+  const add = (obj) => { if (obj) for (const k of Object.getOwnPropertyNames(obj)) names.add(k.toLowerCase()); };
+  let complete = true;
+  for (const mod of reg.mods) if (typeof mod.functions === 'function') { try { add(mod.functions(fake)); } catch { complete = false; } }
+  for (const f of PROVIDERS) {
+    try { const m = require(f); if (m && typeof m.globals === 'function') add(m.globals(fake)); } catch { complete = false; }
+  }
+  if (complete) PROVIDER_NAMES = { reg, names };
+  return names;
+}
+
+function lintNames(P) {
+  const reads = new Map(), writes = new Set(['$result', '$error']);
+  const note = (ast, line, skipBare) => {
+    if (!ast) return;
+    const r = E.names(ast);
+    for (const w of r.writes) writes.add(w.toLowerCase());
+    for (const x of r.reads) if (!(skipBare && skipBare.has(x))) if (!reads.has(x)) reads.set(x, line);
+  };
+  for (const n of P.stmts) {
+    forEachNode(n, (x) => {
+      if (x.kind === 'function') for (const p of x.params) writes.add(p.toLowerCase());
+      if (x.kind === 'assign' || x.kind === 'expr') note(x.ast, n.line);
+      if (x.kind === 'if') note(x.cond, n.line);
+      if (x.kind === 'execute' || x.kind === 'command' || x.kind === 'return' || (x.kind === 'call' && !x.bare)) note(x.expr, n.line);
+      if (x.kind === 'callfunc') for (const a of x.call.args) note(a, n.line);
+      if ((x.kind === 'echo' || x.kind === 'die') && x.items) {
+        // a bare word in an echo prints as written, so it is no mistake
+        const bare = new Set(x.items.filter((it) => it.type === 'id' && !it.paren).map((it) => it.name));
+        for (const it of x.items) note(it, n.line, bare);
+      }
+    });
+  }
+  let globals = null;
+  for (const fn of P.functions.values()) writes.add(fn.name.toLowerCase());
+  for (const [name, line] of reads) {
+    if (writes.has(name.toLowerCase())) continue;
+    globals = globals || providerNames(P.reg);
+    if (globals.has(name.toLowerCase()) || (P.opts.globals && name in P.opts.globals)) continue;
+    P.warnings.push({ line, warning: `"${name}" is never set in this script and is no known name — it reads as undefined` });
+  }
+}
+
+// ------------------------------------------------------------------ public parse
+
+const viewOf = (n) => (n.kind === 'error'
+  ? [{ cmd: 'error', line: n.line, raw: n.lineText || n.src, error: n.error }, ...(n.more || []).map((m) => ({ cmd: 'error', line: n.line, raw: n.lineText || n.src, error: m }))]
+  : [{ ...n.view, line: n.line, raw: n.lineText || n.src }]);
+
+// The script's lines as a list of plain entries: commands as their actions
+// ({ cmd: 'train', troop, amount, line, raw }), control lines as { cmd: 'goto',
+// label, ... }, and a { cmd: 'error', line, raw, error } for every line that
+// cannot run. `set` lines are not listed. The program run() needs rides along
+// as the list's hidden `program`. opts.check: the editor's check (the same parse;
+// nothing is ever expanded any more).
+function parse(text, opts = {}) {
+  const program = compile(text, opts);
+  const out = [];
+  for (const n of program.stmts) if (!(n.view && n.view.cmd === 'set')) out.push(...viewOf(n));
+  Object.defineProperty(out, 'program', { value: program, enumerable: false });
+  Object.defineProperty(out, 'warnings', { value: program.warnings, enumerable: false });
+  Object.defineProperty(out, 'loadErrors', { value: program.reg.failed.slice(), enumerable: false });
+  return out;
+}
+
+// One line on its own: the action (or entry) it reads as, null for a blank or
+// comment line; throws on a bad line. No %vars%.
+function parseLine(raw) {
+  const p = preprocess(String(raw == null ? '' : raw));
+  if (!p.text) return null;
+  return parseStmt(p.text, { reg: registry(), opts: {} }).view;
+}
+
+// Each line's standing for the console editor's colours, in the shape goals.js
+// gives goals ({ n, status: ok|error|comment|blank, msg }), plus the errors as
+// Apply lists them. A warning rides on an ok line's msg.
+function lineStatus(text) {
+  const src = String(text || '');
+  const view = parse(src, { check: true });
+  const errs = new Map();
+  for (const a of view) {
+    if (a.cmd !== 'error') continue;
+    if (!errs.has(a.line)) errs.set(a.line, new Set());
+    errs.get(a.line).add(a.error);
+  }
+  const warns = new Map();
+  for (const w of view.warnings) if (!warns.has(w.line)) warns.set(w.line, w.warning);
+  const lines = src.split(/\r?\n/).map((given, i) => {
+    const n = i + 1;
+    if (errs.has(n)) return { n, status: 'error', msg: [...errs.get(n)].join('; ') };
+    const p = preprocess(given);
+    if (p.blank) return { n, status: 'blank', msg: null };
+    if (!p.text) return { n, status: 'comment', msg: null };
+    return { n, status: 'ok', msg: warns.get(n) || null };
+  });
+  const errors = [...errs].flatMap(([line, set]) => [...set].map((error) => ({ line, error })));
+  return { lines, errors, warnings: view.warnings.slice(), loadErrors: view.loadErrors };
 }
 
 // ---------------------------------------------------------------- executor
@@ -465,563 +733,697 @@ const verdict = (r) => {
   return `FAILED (ok=${r.ok})` + (r.errorMsg ? ` - ${r.errorMsg}` : ` ${JSON.stringify(r)}`);
 };
 
-// A march target given by name is one of your own cities, matched whole.
-function ownCity(game, name) {
-  const c = (game.castles || []).find((x) => String(x.name || '').toLowerCase() === String(name).toLowerCase());
-  if (c) return c;
-  throw new Error(`no city of yours is called "${name}" — yours are ${(game.castles || []).map((x) => x.name).join(', ')}.`
-    + ' Give x,y for anywhere else, and put a name with spaces in quotes');
+const tick = () => new Promise((r) => setImmediate(r));
+
+// Thrown to end the run from anywhere inside it.
+class Halt { constructor(how) { this.how = how; } }
+
+// A list of actions from elsewhere (not parse()'s): each entry one line.
+function programFromActions(actions) {
+  const reg = registry();
+  const stmts = [];
+  for (const a of actions) {
+    const base = { line: a.line, src: a.raw, lineText: a.raw, usesVars: false };
+    let node;
+    if (a.cmd === 'error') node = { kind: 'error', error: a.error };
+    else if (a.cmd === 'forever' || a.cmd === 'repeat') node = { kind: 'repeat', times: a.times || null };
+    else if (a.cmd === 'echo') node = { kind: 'print', text: a.text };
+    else if (a.cmd === 'sleep') node = { kind: 'sleep', ...a };
+    else if (reg.cmds.has(a.cmd)) node = { kind: 'cmd', action: a, runner: reg.cmds.get(a.cmd) };
+    else node = { kind: 'error', error: 'unknown command: ' + a.cmd };
+    stmts.push(Object.assign(node, base));
+  }
+  return { stmts, labels: new Map(), functions: new Map(), reg, opts: {}, warnings: [], cache: new Map() };
 }
 
-// opts.shouldStop() is polled between lines and during waits; once it says yes
-// the run ends where it is. It is the only way an endless `repeat` ends while
-// its line keeps going through.
-async function run(game, actions, log, opts = {}) {
-  const dryRun = !!opts.dryRun;
-  const stopped = () => !!(opts.shouldStop && opts.shouldStop());
-  const pause = async (ms) => {
-    const end = Date.now() + ms;
-    while (!stopped() && Date.now() < end) await new Promise((r) => setTimeout(r, Math.min(250, end - Date.now())));
-  };
-  let done = 0;
-  let lastTradeAt = 0, tradeMisses = 0;
-  const sentHeroes = new Map();         // hero id -> when this run sent it
+function loadProvider(file, ctx, note) {
+  let mod;
+  try { mod = require(file); } catch (e) {
+    if (e && e.code === 'MODULE_NOT_FOUND' && String(e.message).includes(`'${file}'`)) return null;
+    note(`${file.slice(2)}.js did not load (${e.message}) — its names read as undefined`);
+    return null;
+  }
+  if (!mod || typeof mod.globals !== 'function') return null;
+  try { return { globals: mod.globals(ctx), readOnly: mod.readOnly }; } catch (e) {
+    note(`${file.slice(2)}.js did not start (${e.message}) — its names read as undefined`);
+    return null;
+  }
+}
 
-  // `done` counts replies, refusals included, so a refusal is caught here:
-  // every server reply goes through say().
-  let refused = false;
-  const say = (r) => { if (!r || r.ok !== 1) refused = true; return verdict(r); };
+class Run {
+  constructor(game, program, log, opts) {
+    this.game = game;
+    this.program = program;
+    this.out = log;
+    this.opts = opts;
+    this.dryRun = !!opts.dryRun;
+    this.done = 0;
+    this.vars = new Map();
+    // $error is null until a command fails, and again after one that worked (NEAT:
+    // NewCityScript's `if $error == null goal $result`); the message after a failure
+    this.specials = new Map([['$result', ''], ['$error', null]]);
+    this.setVars = new Map();
+    this.sentHeroes = new Map();
+    this.moduleState = new Map();
+    this.silent = 0;
+    this.depth = 0;
+    this.fnDepth = 0;
+    this.last = null;           // the last line that did something: what `repeat` runs again
+    this.stopLogged = false;
+    this.scopes = new Map();
+    this.refusals = new Map();  // refusalKey -> refusals in a row (see paceRefused)
+    this.progIds = new WeakMap();
+    this.progSeq = 0;
+    const R = this;
+    // game and castle follow a reconnect on every read, so a command that waited
+    // (for the builder, a landing time) sends on the session's live Game
+    this.ctx = {
+      get game() { R.follow(); return R.game; },
+      get castle() { R.follow(); return R.game.castle(R.opts.castle); },
+      session: opts.session,
+      opts,
+      dryRun: this.dryRun,
+      log: (m) => R.log(m),
+      vars: this.vars,
+      evaluate: async (src) => E.evaluate(E.parseExpression(String(src)), R.scopeNow || R.scopeFor(R.program)),
+      call: async (fn, args) => E.callValue(fn, args || [], undefined, 'that', R.scopeNow || R.scopeFor(R.program)),
+      busyHeroes: (id) => { const at = R.sentHeroes.get(id); return at !== undefined && Date.now() - at < 60000; },
+      get mapSource() { return R.opts.mapSource; },
+    };
+    // the globals, in DESIGN order after the script's own names
+    this.layers = [];
+    this.readOnly = new Set();
+    if (opts.globals) this.layers.push(opts.globals);
+    for (const mod of program.reg.mods) {
+      for (const n of mod.readOnly || []) this.readOnly.add(n);
+      if (typeof mod.functions !== 'function') continue;
+      try {
+        const g = mod.functions(this.ctx);
+        if (g) this.layers.push(g);
+      } catch (e) { this.out(`note: a command module's functions did not start (${e.message}) — its names read as undefined`); }
+    }
+    for (const f of PROVIDERS) {
+      const p = loadProvider(f, this.ctx, (m) => this.out('note: ' + m));
+      if (!p) continue;
+      this.layers.push(p.globals);
+      for (const n of p.readOnly || []) this.readOnly.add(n);
+    }
+    this.layers.push(E.builtins());
+  }
+
+  log(m) { if (!this.silent) this.out(m); }
+  stopped() { return !!(this.opts.shouldStop && this.opts.shouldStop()); }
+  stopNow() {
+    if (!this.stopLogged) { this.out('stopped — the rest of the script was not run'); this.stopLogged = true; }
+    throw new Halt('stopped');
+  }
+  // opts.timeScale (tests): every wait (sleep, repeat gaps, a module's env.pause)
+  // lasts that fraction of its time, so NEAT's own `sleep 300` lines can run as written
+  async pause(ms) {
+    const scale = Number(this.opts.timeScale) > 0 ? Number(this.opts.timeScale) : 1;
+    const end = Date.now() + Math.max(0, Number(ms) || 0) * scale;
+    // a wait timeScale shrinks under a millisecond still gives the event loop a
+    // turn: a module polling for a push (a building landing) must let it arrive
+    if (ms > 0 && Date.now() >= end) { await new Promise((r) => setImmediate(r)); return; }
+    while (!this.stopped() && Date.now() < end) await new Promise((r) => setTimeout(r, Math.max(1, Math.min(250, end - Date.now()))));
+  }
   // After a reconnect the session holds a new Game, and the one this run began
   // with talks to a closed socket. Take the session's while it is the same
   // player: the console can switch accounts under a running script.
-  const who = (g) => ((g && g.player && g.player.playerInfo) || {}).userName;
-  const follow = () => {
-    const s = opts.session;
-    if (s && s.connected && s.game && s.game !== game && who(s.game) && who(s.game) === who(game)) game = s.game;
-  };
+  follow() {
+    const s = this.opts.session;
+    const who = (g) => ((g && g.player && g.player.playerInfo) || {}).userName;
+    if (s && s.connected && s.game && s.game !== this.game && who(s.game) && who(s.game) === who(this.game)) this.game = s.game;
+  }
 
-  // A `forever` marker puts its action back in front of itself for as long as
-  // the last go went through: counted, not refused, and no exception.
-  const queue = actions.slice();
-  let prev = null, doneBefore = 0;
-  while (queue.length) {
-    const wentThrough = !!prev && !refused && (done > doneBefore || prev.cmd === 'echo' || prev.cmd === 'sleep');
-    refused = false; doneBefore = done;
-    if (stopped()) { log('stopped — the rest of the script was not run'); break; }
-    follow();
-    const a = queue.shift();
-    prev = a;
-    if (a.cmd === 'forever') {
-      const n = a.action.line;
-      if (dryRun) { log(`line ${a.line}: repeat — [dry run] would run line ${n} again until it fails or you press Stop`); continue; }
-      if (!wentThrough) { log(`line ${a.line}: repeat ends — line ${n} did not go through`); continue; }
-      // A line that never waits on the server (echo) would otherwise spin here
-      // without yielding, and Stop could never get through.
-      await new Promise((r) => setImmediate(r));
-      await pause(opts.repeatGapMs ?? 200);
-      const round = (a.round || 0) + 1;
-      queue.unshift({ ...a.action, round, of: null }, { ...a, round });
-      continue;
+  // One Scope per program: its own functions first, then the shared globals.
+  scopeFor(program) {
+    let s = this.scopes.get(program);
+    if (s) return s;
+    const fnLayer = {};
+    for (const def of program.functions.values()) {
+      fnLayer[def.name] = E.makeScriptFunction((args) => this.callFunction(program, def, args), { name: def.name, params: def.params });
     }
-    if (a.cmd === 'error') { log(`line ${a.line}: PARSE ERROR — ${a.error}`); continue; }
-    log(`line ${a.line}: ${a.raw}${a.round ? ` (repeat ${a.round}${a.of ? ' of ' + a.of : ', until it fails or Stop'})` : ''}`);
+    s = new E.Scope({ vars: this.vars, specials: this.specials, layers: [fnLayer, ...this.layers], readOnly: this.readOnly });
+    this.scopes.set(program, s);
+    return s;
+  }
 
+  substVars(text, scope) {
+    return String(text).replace(VAR_RE, (m, name) => {
+      const v = this.setVars.get(name.toLowerCase());
+      if (v !== undefined) return v;
+      const r = scope.lookupVar(name);
+      if (r.found) return E.toStr(r.value);
+      throw new Error(`%${name}% is not set — put  set ${name} <value>  above this line`);
+    });
+  }
+
+  // A line made while running (execute, a %var% that changed): parsed once per text.
+  compileRuntime(program, text, proto) {
+    const key = text;
+    let node = program.cache.get(key);
+    if (!node) {
+      try {
+        node = parseStmt(text, { reg: program.reg, opts: program.opts, runtime: true });
+        let bad = null;
+        forEachNode(node, (x) => { if (['label', 'function', 'endfunction', 'endloop'].includes(x.kind)) bad = x.kind; });
+        if (bad) throw new Error(`a ${bad} cannot be made while the script runs`);
+        if (node.kind === 'loop' && !node.label) node.block = false;
+      } catch (e) { node = { kind: 'error', error: e.message }; }
+      if (program.cache.size > 500) program.cache.clear();
+      program.cache.set(key, node);
+    }
+    return Object.assign(Object.create(node), { line: proto.line, silent: proto.silent, lineText: text, inFn: proto.inFn });
+  }
+
+  jumpTarget(name, frame) {
+    const pc = frame.program.labels.get(name);
+    if (pc === undefined) throw new Error(`there is no label "${name}"`);
+    const target = frame.program.stmts[pc];
+    if ((target.inFn || null) !== (frame.fn || null)) throw new Error(`label ${name} is on the other side of a function's edge`);
+    return pc;
+  }
+
+  // meta: { line, raw, silent, round, of } — the line a node runs for (an if's
+  // inner command, an executed line, a repeat round) and how to show it.
+  header(meta) {
+    const r = !meta.round ? ''
+      : meta.of ? ` (${REPEAT_COUNTS_TOTAL ? 'run' : 'repeat'} ${meta.round} of ${meta.of})`
+        : ` (repeat ${meta.round}, until it fails or Stop)`;
+    this.log(`line ${meta.line}: ${meta.raw}${r}`);
+    meta.logged = true;
+  }
+  remember(node, frame, meta, ok) {
+    this.last = { node, frame, raw: meta.raw, silent: meta.silent, line: meta.line, ok };
+  }
+
+  async execRange(frame, pc, end) {
+    while (pc < end) {
+      if (this.stopped()) this.stopNow();
+      await tick();
+      this.follow();
+      const r = await this.stepTop(frame.program.stmts[pc], frame, pc);
+      if (r.ret) return r;
+      pc = r.next;
+    }
+    return { fell: true };
+  }
+
+  async stepTop(node, frame, pc) {
+    if (typeof this.opts.trace === 'function') this.opts.trace(node.line, frame.program === this.program);
+    let n = node;
+    const meta = { line: node.line, raw: node.lineText || node.src, silent: node.silent };
+    if (node.usesVars) {
+      let text;
+      try { text = this.substVars(node.src, frame.scope); } catch (e) {
+        return this.failed(node, e, meta, frame, pc);
+      }
+      if (text !== node.lineText) { n = this.compileRuntime(frame.program, text, node); meta.raw = text; }
+    }
+    return this.step(n, frame, pc, meta);
+  }
+
+  failed(node, e, meta, frame, pc) {
+    const msg = e && e.message ? e.message : String(e);
+    if (meta.silent) this.silent++;
+    if (!meta.logged) this.header(meta);
+    this.log('  FAILED: ' + msg);
+    if (meta.silent) this.silent--;
+    this.specials.set('$error', msg);
+    if (ACTIONS.has(node.kind) || node.kind === 'if') this.remember(node, frame, meta, false);
+    if (this.opts.stopOnError) throw new Halt('error');
+    return { next: pc + 1 };
+  }
+
+  async step(node, frame, pc, meta) {
+    if (meta.silent) this.silent++;
+    const outer = this.scopeNow;
+    this.scopeNow = frame.scope;          // what ctx.evaluate reads names from
+    let out;
     try {
-      if (a.cmd === 'echo') { log('  ' + a.text); continue; }
-      if (a.cmd === 'sleep') {
-        if (a.until) {
-          const at = nextOccurrence(a.until, game.now());
-          log(`  until ${new Date(at).toLocaleTimeString()} on this machine's clock`);
-          await pause(at - game.now());
-        } else await pause(a.seconds * 1000);
-        continue;
-      }
-
-      if (a.cmd === 'buildstatus') {
-        for (const l of require('./city-build').status(game)) log('  ' + l);
-        continue;
-      }
-      if (a.cmd === 'marchcheck') { await require('./timed-march').check(game, log); continue; }
-
-      // Ends the run: from here the console is off the game (logout.js).
-      if (a.cmd === 'logout') {
-        const out = await require('./logout').run(game, a, {
-          session: opts.session, log, dryRun, stopped, otherScripts: opts.otherScripts, atLogout: opts.atLogout,
-        });
-        if (out) { done++; break; }
-        continue;
-      }
-
-      if (a.cmd === 'cleanreports') {
-        if (dryRun) { log('  [dry run] would delete all ' + a.type + ' reports'); continue; }
-        const n = await game.cleanReports(a.type);
-        log(`  removed ${n} ${a.type} report(s)`);
-        done++; continue;
-      }
-
-      // It needs the console's session, not just this run's game: it outlives
-      // the run, follows reconnects, and writes to the Log tab.
-      if (a.cmd === 'holidaysnipe') {
-        const lines = await require('./holiday-snipe').command(a, { session: opts.session, dryRun });
-        for (const l of lines) log('  ' + l);
-        done++; continue;
-      }
-
-      if (a.cmd === 'production') {
-        const castle = game.castle(opts.castle);
-        const r0 = castle.resource || {};
-        const busy = ['food', 'wood', 'stone', 'iron'].reduce((s2, k) => s2 + Number((r0[k] && r0[k].workPeople) || 0), 0);
-        log(`  set production food ${a.rates.food}% wood ${a.rates.wood}% stone ${a.rates.stone}% iron ${a.rates.iron}% (currently ${busy.toLocaleString('en-US')} on fields)`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.setProduction(game.castleId(castle), a.rates);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'tax') {
-        const castle = game.castle(opts.castle);
-        log(`  set tax rate to ${a.rate}%`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.setTax(game.castleId(castle), a.rate);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      // ---- items ----
-      if (a.cmd === 'buyitem') {
-        log(`  buy ${a.amount} x ${a.itemId} from the shop (costs cents)`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.buyItem(a.itemId, a.amount);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'useitem') {
-        const castle = game.castle(opts.castle);
-        log(`  use ${a.amount} x ${a.itemId} in ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.useItem(game.castleId(castle), a.itemId, a.amount);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'useheroitem') {
-        const HI = require('./heroitems');
-        log(`  ${a.heroName} <- ${a.times} x ${HI.describeItem(a.itemId)}`);
-        if (dryRun) { log('  [dry run] nothing sent'); done++; continue; }
-        const r = await HI.useOnHero(game, { heroName: a.heroName, itemId: a.itemId, times: a.times, log });
-        if (!r.ok && !r.used) { log('  ' + r.error); continue; }
-        const d = (k) => (r.after[k] - r.before[k]);
-        const moved = ['power', 'management', 'stratagem', 'experience']
-          .filter((k) => d(k) !== 0)
-          .map((k) => `${k} ${r.before[k]} -> ${r.after[k]} (+${d(k)})`);
-        const spent = r.heldBefore !== undefined && r.heldAfter !== undefined
-          ? `, ${r.heldBefore} -> ${r.heldAfter} left` : '';
-        log(`  used ${r.used} on ${r.hero} in ${r.castle}${spent}`
-          + (moved.length
-            ? ' — ' + moved.join(', ')
-            : ' — the server accepted and consumed it, but reports no change to the'
-              + ' hero attributes it sends us'));
-        if (r.error) log('  ' + r.error);
-        done++;
-        continue;
-      }
-
-      if (a.cmd === 'heroitems') {
-        const HI = require('./heroitems');
-        const rows = HI.heldHeroItems(game);
-        if (!rows.length) { log('  no hero items in the inventory'); done++; continue; }
-        log('  hero items held:');
-        for (const r of rows) log(`    ${String(r.count).padStart(6)}  ${r.label.padEnd(30)} ${r.id}`);
-        log('  use any of them with:  useheroitem <hero> <name or id> repeat <n>');
-        done++;
-        continue;
-      }
-
-      if (a.cmd === 'packages') {
-        const castle = game.castle(opts.castle);
-        const d = await game.packageList(game.castleId(castle));
-        const ps = d.packages || [];
-        if (!ps.length) { log('  no packages'); continue; }
-        for (const p of ps.slice(0, 25)) log(`  [${p.id}] ${p.packageName} (status ${p.status}, ${(p.itemList || []).length} item(s))`);
-        if (ps.length > 25) log(`  … and ${ps.length - 25} more`);
-        continue;
-      }
-
-      if (a.cmd === 'lostheroes' || a.cmd === 'recover') {
-        const ok = await require('./stone-of-finding').run(game, a, { castle: opts.castle, dryRun, log });
-        if (ok && a.cmd === 'recover') done++;
-        continue;
-      }
-
-      if (a.cmd === 'find') {
-        const D = require('./db');
-        const total = D.mapCache.count();
-        if (!total) { log('  no map cache yet — run:  node mapscan.js'); continue; }
-        const hits = D.mapCache.search(a.query, 500);
-        log(`  cache holds ${total.toLocaleString('en-US')} castles (${Math.round((Date.now() - D.mapCache.updatedAt()) / 60000)} min old)`);
-        if (!hits.length) { log('  no match'); continue; }
-        for (const h of hits.slice(0, 20)) {
-          const xy = C.fieldIdToCoords(Number(h.id));
-          log(`  ${String(h.userName).padEnd(16)} ${String(h.name || '').padEnd(18)} ${xy.x},${xy.y}  ${h.allianceName || '-'}  pres ${Number(h.prestige || 0).toLocaleString('en-US')}`);
-        }
-        continue;
-      }
-
-      // ---- hero management ----
-      if (a.cmd === 'heroes') {
-        const castle = game.castle(opts.castle);
-        const hs = castle.heros || [];
-        if (!hs.length) { log('  no heroes in this city'); continue; }
-        for (const h of hs) {
-          const dom = Game.dominant(h);
-          log(`  ${String(h.name).padEnd(14)} L${String(h.level).padEnd(4)} atk ${String(Game.attrValue(h, 'power')).padStart(4)}  pol ${String(Game.attrValue(h, 'management')).padStart(4)}  int ${String(Game.attrValue(h, 'stratagem')).padStart(4)}  loyalty ${h.loyalty ?? '?'}  unspent ${h.remainPoint || 0}  [${dom === 'power' ? 'attack' : dom === 'management' ? 'politics' : 'intel'} hero]`);
-        }
-        continue;
-      }
-
-      if (a.cmd === 'inn' || a.cmd === 'innrefresh') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-        if (a.cmd === 'innrefresh') {
-          if (dryRun) { log('  [dry run] would refresh the inn'); continue; }
-          const rr = await game.refreshTavern(cid);
-          log('  refresh -> ' + say(rr));
-          done++;
-        }
-        const d = await game.tavernList(cid);
-        const list = d.heros || [];
-        if (!list.length) { log('  inn is empty'); continue; }
-        for (const h of list) {
-          const dom = Game.dominant(h);
-          log(`  ${String(h.name).padEnd(14)} L${String(h.level).padEnd(4)} atk ${String(Game.attrValue(h, 'power')).padStart(4)}  pol ${String(Game.attrValue(h, 'management')).padStart(4)}  int ${String(Game.attrValue(h, 'stratagem')).padStart(4)}  [${dom === 'power' ? 'attack' : dom === 'management' ? 'politics' : 'intel'}]`);
-        }
-        continue;
-      }
-
-      if (a.cmd === 'hire') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-        let name = a.name;
-        if (a.best) {
-          const d = await game.tavernList(cid);
-          const list = d.heros || [];
-          if (!list.length) { log('  inn is empty, nothing to hire'); continue; }
-          const key = a.attr || null;
-          const scored = list.map((h) => ({ h, v: key ? Game.attrValue(h, key) : Math.max(Game.attrValue(h, 'power'), Game.attrValue(h, 'management'), Game.attrValue(h, 'stratagem')) }));
-          scored.sort((x, y) => y.v - x.v);
-          name = scored[0].h.name;
-          log(`  best${a.attr ? ' ' + a.attr : ''} in the inn: ${name} (${scored[0].v})`);
-        }
-        log(`  hire ${name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.hireHero(cid, name);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'fire' || a.cmd === 'release') {
-        const castle = game.castle(opts.castle);
-        const h = game.findHero(castle, a.name);
-        if (!h) { log(`  no hero named "${a.name}" in ${castle.name}`); continue; }
-        log(`  ${a.cmd} ${h.name} (id ${h.id}, L${h.level})`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = a.cmd === 'fire' ? await game.fireHero(game.castleId(castle), h.id)
-                                   : await game.releaseHero(game.castleId(castle), h.id);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'mayor') {
-        const castle = game.castle(opts.castle);
-        const h = game.findHero(castle, a.name);
-        if (!h) { log(`  no hero named "${a.name}"`); continue; }
-        log(`  appoint ${h.name} as mayor of ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.promoteToChief(game.castleId(castle), h.id);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'renamehero') {
-        if (await require('./rename-hero').run(game, a, { dryRun, log })) done++;
-        continue;
-      }
-
-      if (a.cmd === 'waterhero') {
-        if (await require('./water-hero').run(game, a, { dryRun, log })) done++;
-        continue;
-      }
-
-      if (a.cmd === 'unmayor') {
-        const castle = game.castle(opts.castle);
-        log(`  remove the mayor of ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.dischargeChief(game.castleId(castle));
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'levelup') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-        const targets = a.name.toLowerCase() === 'all' ? (castle.heros || []) : [game.findHero(castle, a.name)].filter(Boolean);
-        if (!targets.length) { log(`  no hero named "${a.name}"`); continue; }
-
-        for (const h of targets) {
-          const dom = a.attr || Game.dominant(h);
-          const label = dom === 'power' ? 'attack' : dom === 'management' ? 'politics' : 'intel';
-          log(`  ${h.name} L${h.level} -> level up, points go to ${label}${a.attr ? '' : ' (dominant)'}`);
-          if (dryRun) { log('  [dry run] not sent'); continue; }
-
-          const r = await game.levelUpHero(cid, h.id);
-          log('    levelUp -> ' + say(r));
-          if (r.ok !== 1) continue;
-
-          const fresh = (await game.heroAfter(castle, h.id)) || h;
-          const pts = Number(fresh.remainPoint || 0);
-          if (pts <= 0) { log('    no unspent points to assign'); done++; continue; }
-          const alloc = { management: 0, power: 0, stratagem: 0 };
-          alloc[dom] = pts;
-          const ar = await game.addPoint(cid, fresh, alloc);   // increments; game.js converts to totals
-          log(`    +${pts} ${label} -> ` + say(ar));
-          done++;
-        }
-        continue;
-      }
-
-      if (a.cmd === 'addpoint') {
-        const castle = game.castle(opts.castle);
-        const h = game.findHero(castle, a.name);
-        if (!h) { log(`  no hero named "${a.name}"`); continue; }
-        const label = a.attr === 'power' ? 'attack' : a.attr === 'management' ? 'politics' : 'intel';
-        log(`  ${h.name}: +${a.amount} ${label} (unspent ${h.remainPoint || 0})`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const alloc = { management: 0, power: 0, stratagem: 0 };
-        alloc[a.attr] = a.amount;
-        const r = await game.addPoint(game.castleId(castle), h, alloc);   // increments; game.js converts to totals
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'buildcity') {
-        const castle = game.castle(opts.castle);
-        const fieldId = C.coordsToFieldId(a.target.x, a.target.y);
-        log(`  found city on flat ${a.target.x},${a.target.y} (field ${fieldId}) from ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.constructCastle(game.castleId(castle), fieldId, false);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'teleport') {
-        const moved = await require('./teleport').run(game, a, { castle: opts.castle, session: opts.session, dryRun, log });
-        if (moved) done++;
-        continue;
-      }
-
-      if (a.cmd === 'build') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-
-        // explain prerequisites BEFORE spending a round trip on a doomed build
-        const cond = await game.buildConditions(cid, a.building.typeId).catch(() => null);
-        const missing = game.unmet(cond);
-        if (cond) log(`  ${a.building.name}: costs ${['wood', 'stone', 'iron', 'food'].map((k) => `${k} ${(cond[k] || 0).toLocaleString('en-US')}`).join(', ')}, ${cond.time}s`);
-        if (missing.length) {
-          log(`  BLOCKED - needs ${missing.map((m) => m.text).join('; ')}`);
-          if (opts.autoReq) {
-            for (const m of missing.filter((x) => x.kind === 'building')) {
-              const spot = game.findBuildings(castle, m.typeId)[0];
-              if (!spot) { log(`    cannot auto-fix: no ${(C.BUILDING_BY_ID[m.typeId] || {}).name} in this city to upgrade`); continue; }
-              if (dryRun) { log(`    [dry run] would upgrade ${(C.BUILDING_BY_ID[m.typeId] || {}).name} at pos ${spot.positionId}`); continue; }
-              const ur = await game.upgradeBuilding(cid, spot.positionId);
-              log(`    queued upgrade of ${(C.BUILDING_BY_ID[m.typeId] || {}).name} (pos ${spot.positionId}) -> ${say(ur)}`);
-            }
-            log('    prerequisite queued - re-run this line once it finishes');
-          }
-          continue;
-        }
-
-        const pos = a.at ?? game.freeSlot(castle, !!a.building.outside);
-        if (pos === null || pos === undefined || Number.isNaN(pos)) { log(`  no free ${a.building.outside ? 'field' : 'city'} slot - specify one with "at N"`); continue; }
-        log(`  build ${a.building.name} (type ${a.building.typeId}) at position ${pos}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.newBuilding(cid, pos, a.building.typeId);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'upgrade') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-        const spots = game.findBuildings(castle, a.building.typeId);
-        if (!spots.length) { log(`  no ${a.building.name} in ${castle.name}`); continue; }
-        const spot = a.at != null ? spots.find((s) => s.positionId === a.at) || { positionId: a.at } : spots.sort((x, y) => (x.level || 0) - (y.level || 0))[0];
-
-        const chk = await game.checkUpgrade(cid, spot.positionId).catch(() => null);
-        if (chk && chk.ok !== 1) { log(`  BLOCKED - ${say(chk)}`); continue; }
-        const missing = game.unmet(chk && (chk.conditionBean || chk.condition));
-        if (missing.length) {
-          log(`  BLOCKED - needs ${missing.map((m) => m.text).join('; ')}`);
-          if (!opts.autoReq) continue;
-          for (const m of missing.filter((x) => x.kind === 'building')) {
-            const s2 = game.findBuildings(castle, m.typeId)[0];
-            if (!s2) { log('    cannot auto-fix: prerequisite building not present'); continue; }
-            if (dryRun) { log(`    [dry run] would upgrade ${(C.BUILDING_BY_ID[m.typeId] || {}).name}`); continue; }
-            const ur = await game.upgradeBuilding(cid, s2.positionId);
-            log(`    queued upgrade of ${(C.BUILDING_BY_ID[m.typeId] || {}).name} -> ${say(ur)}`);
-          }
-          continue;
-        }
-
-        log(`  upgrade ${a.building.name} at position ${spot.positionId} (level ${spot.level ?? '?'})`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.upgradeBuilding(cid, spot.positionId);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'research') {
-        const castle = game.castle(opts.castle);
-        const cid = game.castleId(castle);
-        const list = await game.researchList(cid).catch(() => null);
-        const beans = (list && (list.acailableResearchBeans || list.availableResearchBeans)) || [];
-        const bean = beans.find((b) => b.typeId === a.tech.typeId);
-        if (bean) log(`  ${a.tech.name}: level ${bean.level}/${bean.avalevel}${bean.upgradeing ? ' (already researching)' : ''}`);
-        log(`  research ${a.tech.name} (tech ${a.tech.typeId}) in ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.research(cid, a.tech.typeId);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'cancelqueue') {
-        const n = await require('./queue-cancel').run(game, a, { castle: opts.castle, session: opts.session, dryRun, log });
-        if (n) done++;
-        continue;
-      }
-
-      if (a.cmd === 'wall') {
-        const castle = game.castle(opts.castle);
-        log(`  build ${a.amount.toLocaleString('en-US')} x ${a.wall.name} (type ${a.wall.typeId}) in ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.produceWall(game.castleId(castle), a.wall.typeId, a.amount);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'train') {
-        const castle = game.castle(opts.castle);
-        log(`  train ${a.amount.toLocaleString('en-US')} x ${a.troop.name} (type ${a.troop.typeId}) in ${castle.name}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-        const r = await game.produceTroop(game.castleId(castle), a.troop.typeId, a.amount);
-        log('  -> ' + say(r));
-        done++; continue;
-      }
-
-      if (a.cmd === 'sell' || a.cmd === 'buy') {
-        const castle = game.castle(opts.castle);
-        log(`  ${a.cmd} ${a.amount.toLocaleString()} ${a.resource} @ ${a.price} from ${castle.name || game.castleId(castle)}`);
-        if (dryRun) { log('  [dry run] not sent'); continue; }
-
-        // A refused or unanswered order costs only its own go: the lines after
-        // it, and every round of a `repeat N`, still run. Market writes are
-        // paced, and each unanswered one in a row doubles the gap, up to a
-        // minute, rather than hammering a server that has stopped answering.
-        const gapAfter = (misses) => Math.min(60000, Number(opts.tradeGapMs ?? 1200) * 2 ** misses);
-        if (lastTradeAt) {
-          const wait = gapAfter(tradeMisses) - (Date.now() - lastTradeAt);
-          if (wait > 0) await pause(wait);
-          if (stopped()) { log('  stopped before it was sent'); break; }
-          follow();   // the session may have reconnected during a long wait
-        }
-        lastTradeAt = Date.now();
-
-        let r;
-        try {
-          r = await game.newTrade({ castleId: game.castleId(castle), resource: a.resource, type: a.cmd, amount: a.amount, price: a.price });
-        } catch (e) {
-          tradeMisses++;
-          log(`  -> ${e.message} — carrying on, the next order waits ${Math.round(gapAfter(tradeMisses) / 1000)}s`);
-          continue;
-        }
-        tradeMisses = 0;
-        log('  -> ' + say(r));
-        if (r.ok === -38) log('  marketplace full (10 offers max) — this one is skipped, the script carries on');
-        done++; continue;
-      }
-
-      // ---- marches ----
-      const castle = game.castle(a.from ?? opts.castle);
-      const from = game.castleXY(castle);
-      const toCity = a.targetCity ? ownCity(game, a.targetCity) : null;
-      const target = toCity ? game.castleXY(toCity) : a.target;
-      if (!target) throw new Error(`cannot tell where ${toCity.name} is`);
-      if (toCity && game.castleId(toCity) === game.castleId(castle)) throw new Error(`${toCity.name} is the city this march would leave from`);
-      const targetPoint = C.coordsToFieldId(target.x, target.y);
-      const troopKeys = Object.keys(a.troops).filter((k) => a.troops[k] > 0);
-      const construct = a.cmd === 'construct';
-      if (construct) for (const n of require('./city-build').preflight(game, targetPoint)) log('  ' + n);
-
-      const troopText = troopKeys.map((k) => `${a.troops[k].toLocaleString('en-US')} ${(C.BY_KEY[k] || {}).name || k}`).join(', ');
-      // Base load only: research raises it, so this warns rather than refuses.
-      const carried = Object.values(a.resources || {}).reduce((s2, v) => s2 + v, 0);
-      const load = troopKeys.reduce((s2, k) => s2 + a.troops[k] * ((C.BY_KEY[k] || {}).load || 0), 0);
-      if (carried > load) log(`  note: ${troopText} carry about ${load.toLocaleString('en-US')} before research, and this asks for ${carried.toLocaleString('en-US')} — the server may refuse`);
-
-      // Built for each send, so a march that is recalled and sent again can take
-      // another idle hero. An `any` skips the heroes this run sent in the last
-      // minute: the HeroUpdate saying they are away can come after the next line.
-      let hero = null;
-      const makeBean = (restTimeSec) => {
-        const skip = new Set([...sentHeroes].filter(([, at]) => Date.now() - at < 60000).map(([id]) => id));
-        hero = a.hero ? game.pickHero(castle, a.hero, skip) : null;
-        const bean = game.buildArmyBean({
-          missionType: C.MISSION[a.cmd],
-          heroId: hero ? hero.id : undefined,
-          targetPoint,
-          troops: a.troops,
-          resources: a.resources || {},
-          restTimeSec,
-        });
-        log(`  ${construct ? 'build city' : a.cmd} -> ${toCity ? toCity.name + ' ' : ''}(${target.x},${target.y}) field ${targetPoint} from ${castle.name}`
-          + ` · hero ${hero ? (hero.name || hero.id) : 'none'} · ${troopText}${a.troopsDefault ? ' (no troop string given)' : ''} · missionType ${bean.missionType}`);
-        return bean;
-      };
-
-      // Land at a moment: sent to the ms, checked against the server's stamp,
-      // and recalled and resent if it misses (timed-march.js).
-      if (a.land) {
-        if (!from) throw new Error('cannot compute march time (castle coords unknown) — @: needs it');
-        const res = await require('./timed-march').send({
-          game, castle, construct, from, target, targetPoint, toCity, troopKeys,
-          aimMs: nextOccurrence(a.land, game.now()), makeBean, log, stopped, dryRun,
-        });
-        if (res.sent) { done++; if (hero) sentHeroes.set(hero.id, Date.now()); } else if (!dryRun) refused = true;
-        if (res.why === 'stopped') break;
-        continue;
-      }
-
-      const march = from ? C.marchTimeMs(from, target, troopKeys, game.marchSkillParam) : null;
-      const restTimeSec = a.camp || 0;
-      if (march !== null) {
-        log(`  march ${(march / 1000).toFixed(1)}s` + (restTimeSec
-          ? `, camp ${require('./timed-march').dur(restTimeSec * 1000)} (lands when the camp is over)`
-          : ' (no @: time, lands on arrival)'));
-      }
-      const bean = makeBean(restTimeSec);
-      if (dryRun) { log('  [dry run] not sent'); continue; }
-      const r = await game.newArmy(game.castleId(castle), bean);
-      log('  -> ' + say(r));
-      if (r && r.ok === 1 && hero) sentHeroes.set(hero.id, Date.now());
-      done++;
+      out = await this.stepInner(node, frame, pc, meta);
     } catch (e) {
-      log(`  FAILED: ${e.message}`);
-      if (opts.stopOnError) break;
+      if (meta.silent) this.silent--;
+      this.scopeNow = outer;
+      if (e instanceof Halt) throw e;
+      return this.failed(node, e, meta, frame, pc);
+    }
+    if (meta.silent) this.silent--;
+    this.scopeNow = outer;
+    return out;
+  }
+
+  // guards: the conditions of the ifs around this node (`if !x repeat`): a repeat
+  // there checks them again before each round, as NEAT's goes back a line and
+  // reads the if again (MapFunctions: `if data == null repeat`).
+  async stepInner(node, frame, pc, meta, guards = null) {
+    const next = { next: pc + 1 };
+    const scope = frame.scope;
+    switch (node.kind) {
+      case 'error':
+        this.log(`line ${meta.line}: PARSE ERROR — ${node.error}`);
+        this.specials.set('$error', node.error);
+        return next;
+      case 'label': return next;
+      case 'function': return { next: node.skipTo };
+      case 'endfunction': return frame.fn ? { ret: true, value: undefined } : next;
+      case 'set': this.setVars.set(node.name, node.value); return next;
+      case 'goto': return { next: this.jumpTarget(node.label, frame) };
+      case 'gosub': {
+        const to = this.jumpTarget(node.label, frame);
+        if (frame.gosub.length >= 1000) throw new Error('gosub inside gosub more than 1000 deep — a subroutine is missing its return');
+        frame.gosub.push(pc + 1);
+        return { next: to };
+      }
+      case 'return':
+        if (frame.gosub.length) return { next: frame.gosub.pop() };
+        return { ret: true, value: node.expr ? await E.evaluate(node.expr, scope) : undefined };
+      case 'if':
+        if (E.truthy(await E.evaluate(node.cond, scope))) return this.stepInner(node.then, frame, pc, meta, [...(guards || []), node.cond]);
+        return next;
+      case 'loop': return this.loop(node, frame, pc, meta);
+      case 'endloop': return this.endloop(node, frame, pc, meta);
+      case 'repeat': return this.repeat(node, frame, pc, meta, guards);
+      case 'end': throw new Halt('end');
+      case 'exit':
+        this.log(`line ${meta.line}: exit — the script ends here (the console stays on)`);
+        throw new Halt('end');
+      case 'stop': return this.pauseAt(frame, pc, meta);
+      case 'die': {
+        const msg = await this.listText(node.items, node.text, scope);
+        this.log(`line ${meta.line}: die — ${msg}`);
+        this.specials.set('$error', msg || 'died');
+        throw new Halt('die');
+      }
+      case 'echo': case 'print': {
+        this.header(meta);
+        const text = node.kind === 'print' ? node.text : await this.listText(node.items, node.text, scope);
+        for (const l of String(text).split('\n')) this.log('  ' + l);
+        this.remember(node, frame, meta, true);
+        return next;
+      }
+      case 'sleep': {
+        this.header(meta);
+        if (node.until) {
+          const at = W.nextOccurrence(node.until, this.game.now());
+          this.log(`  until ${new Date(at).toLocaleTimeString()} on this machine's clock`);
+          await this.pause(at - this.game.now());
+        } else if (node.rnd) {
+          const [lo, hi] = node.rnd;
+          const s = lo + Math.random() * (hi - lo);
+          this.log(`  ${Math.round(s)}s (a random wait of ${lo}-${hi}s)`);
+          await this.pause(s * 1000);
+        } else await this.pause(node.seconds * 1000);
+        this.remember(node, frame, meta, true);
+        return next;
+      }
+      case 'assign': case 'expr':
+        await E.evaluate(node.ast, scope);
+        this.remember(node, frame, meta, true);
+        return next;
+      case 'execute': return this.execute(node, frame, pc, meta);
+      case 'call': return this.callScript(node, frame, pc, meta);
+      case 'command': return this.inlineCommand(node, frame, pc, meta);
+      case 'callfunc': {
+        const def = frame.program.functions.get(node.name.toLowerCase());
+        if (!def) throw new Error(`there is no function ${node.name}`);
+        const args = [];
+        for (const a of node.call.args) args.push(await E.evaluate(a, scope));
+        const value = await this.callFunction(frame.program, def, args);
+        this.specials.set('$result', value);
+        this.remember(node, frame, meta, true);
+        return next;
+      }
+      case 'cmd': return this.command(node, frame, pc, meta);
+      case 'goal': return this.goal(node, frame, pc, meta);
+      case 'goalmod': {
+        // a bare goal line a module's goalLines took (script-cmd-goals.js)
+        this.header(meta);
+        const a = { ...node.action, line: meta.line, raw: meta.raw };
+        await this.runModule(node.runner, a, node, frame, meta, (env) => node.runner.spec.run(a, env));
+        return next;
+      }
+      case 'dynamic': throw new Error('this line could not be read');
+      default: throw new Error('cannot run a ' + node.kind);
     }
   }
-  return done;
+
+  // echo's items: a bare word nothing defines prints as written.
+  async listText(items, text, scope) {
+    if (!items) return text;
+    const out = [];
+    for (const it of items) {
+      if (it.type === 'id' && !it.paren && !scope.lookup(it.name).found) { out.push(it.name); continue; }
+      out.push(E.toStr(await E.evaluate(it, scope)));
+    }
+    return out.join(' ');
+  }
+
+  loop(node, frame, pc, meta) {
+    if (node.block) { frame.loops.set(pc, 1); return { next: pc + 1 }; }
+    const target = node.label ? this.jumpTarget(node.label, frame) : (frame.fn ? frame.fn.bodyStart : 0);
+    if (node.times === null) {
+      if (this.dryRun) {
+        this.log(`line ${meta.line}: loop — [dry run] would go back to ${node.label ? 'label ' + node.label : 'the top'} and run it again until you press Stop`);
+        return { next: pc + 1 };
+      }
+      return { next: target };
+    }
+    const c = frame.loops.get(pc) || 1;
+    if (c < node.times) { frame.loops.set(pc, c + 1); return { next: target }; }
+    frame.loops.delete(pc);
+    return { next: pc + 1 };
+  }
+
+  endloop(node, frame, pc, meta) {
+    const at = node.loopPc;
+    const head = frame.program.stmts[at];
+    if (head.times === null) {
+      if (this.dryRun) {
+        this.log(`line ${meta.line}: endloop — [dry run] would go back to line ${head.line} again until you press Stop`);
+        frame.loops.delete(at);
+        return { next: pc + 1 };
+      }
+      return { next: at + 1 };
+    }
+    const c = frame.loops.get(at) || 1;
+    if (c < head.times) { frame.loops.set(at, c + 1); return { next: at + 1 }; }
+    frame.loops.delete(at);
+    return { next: pc + 1 };
+  }
+
+  // `repeat N` runs the last line that did something again until it has run N
+  // times in all (see REPEAT_COUNTS_TOTAL), whatever each round gets back; a
+  // bare `repeat` or `repeat 0` keeps going while it goes through. Under an if
+  // (guards), each round after the first reads the if again and ends when it no
+  // longer holds: `x = GetDetailInfo(id) / if !x repeat` waits for the detail.
+  async repeat(node, frame, pc, meta, guards = null) {
+    const last = this.last;
+    if (!last) throw new Error('repeat: nothing has run yet to repeat');
+    const n = last.line;
+    const again = async (round, of) => {
+      await this.step(last.node, last.frame, pc, { line: last.line, raw: last.raw, silent: last.silent, round, of });
+    };
+    const holds = async () => {
+      for (const c of guards || []) if (!E.truthy(await E.evaluate(c, frame.scope))) return false;
+      return true;
+    };
+    if (node.times === null) {
+      if (this.dryRun) {
+        this.log(`line ${meta.line}: repeat — [dry run] would run line ${n} again until it fails${guards ? ', its if no longer holds,' : ''} or you press Stop`);
+        return { next: pc + 1 };
+      }
+      for (let round = 1; ; round++) {
+        if (!this.last.ok) { this.log(`line ${meta.line}: repeat ends — line ${n} did not go through`); return { next: pc + 1 }; }
+        if (this.stopped()) this.stopNow();
+        // A line that never waits on the server (echo) would otherwise spin here
+        // without yielding, and Stop could never get through.
+        await tick();
+        await this.pause(this.opts.repeatGapMs ?? 200);
+        if (this.stopped()) this.stopNow();
+        if (round > 1 && !(await holds())) return { next: pc + 1 };
+        this.follow();
+        await again(round, null);
+      }
+    }
+    // rounds are numbered as runs of the line: 2 of 3, 3 of 3 (the line itself was 1)
+    const first = REPEAT_COUNTS_TOTAL ? 2 : 1;
+    for (let i = first; i <= node.times; i++) {
+      if (this.stopped()) this.stopNow();
+      await tick();
+      if (i > first && !(await holds())) break;
+      this.follow();
+      await again(i, node.times);
+    }
+    return { next: pc + 1 };
+  }
+
+  async pauseAt(frame, pc, meta) {
+    const nextLine = (frame.program.stmts[pc + 1] || {}).line;
+    if (typeof this.opts.onPause !== 'function') {
+      this.log(`line ${meta.line}: stop — this run cannot be paused and resumed, so the script ends here`);
+      throw new Halt('end');
+    }
+    this.log(`line ${meta.line}: stop — paused; resume to carry on${nextLine ? ' from line ' + nextLine : ''}`);
+    let settled = false, answer;
+    const p = Promise.resolve(this.opts.onPause({ line: meta.line, next: nextLine })).then((v) => { settled = true; answer = v; },
+      (e) => { settled = true; answer = false; this.log('  resume failed: ' + e.message); });
+    while (!settled) {
+      if (this.stopped()) this.stopNow();
+      await Promise.race([p, new Promise((r) => setTimeout(r, 250))]);
+    }
+    if (answer === false) { this.log('  not resumed — the script ends here'); throw new Halt('end'); }
+    this.log('  resumed');
+    return { next: pc + 1 };
+  }
+
+  makeEnv(mod, meta, captured, flags, scope) {
+    const R = this;
+    const sc = scope || R.scopeFor(R.program);
+    if (!this.moduleState.has(mod)) this.moduleState.set(mod, {});
+    return {
+      get game() { R.follow(); return R.game; },
+      get castle() { R.follow(); return R.game.castle(R.opts.castle); },
+      get cid() { R.follow(); return R.game.castleId(R.game.castle(R.opts.castle)); },
+      session: R.opts.session,
+      opts: R.opts,
+      dryRun: R.dryRun,
+      ctx: R.ctx,
+      line: meta.line,
+      log: (m) => { captured.push(String(m).replace(/^ {2}/, '')); R.log(m); },
+      say: (r) => { const v = verdict(r); if (!r || r.ok !== 1) { flags.refused = true; flags.bad = v; } return v; },
+      verdict,
+      refused: () => flags.refused,
+      stopped: () => R.stopped(),
+      pause: (ms) => R.pause(ms),
+      follow: () => R.follow(),
+      state: R.moduleState.get(mod),
+      sentHeroes: R.sentHeroes,
+      registry: () => R.registryInfo(),
+      // in the scope of the line's own frame: a function's arguments, a called script's names
+      evaluate: async (src) => E.evaluate(E.parseExpression(String(src)), sc),
+      echoText: async (src) => {
+        let items = null;
+        try { items = E.parseList(String(src)); } catch { /* printed as written */ }
+        return R.listText(items, String(src), sc);
+      },
+    };
+  }
+
+  // The commands this run knows, as plain data: what starts each line.
+  registryInfo() {
+    if (this.regInfo) return this.regInfo;
+    const reg = this.program.reg;
+    const wordsOf = (table, name) => [...table].filter(([, e]) => e.name === name).map(([w]) => w);
+    const commands = [...reg.cmds.values()].map(({ name, spec }) => Object.freeze({
+      name, usage: spec.usage || '', words: Object.freeze(wordsOf(reg.words, name)), aliases: Object.freeze([...(spec.aliases || [])]),
+    }));
+    const seen = new Set();
+    const inline = [];
+    for (const [, e] of reg.inline) {
+      if (seen.has(e.name)) continue;
+      seen.add(e.name);
+      inline.push(Object.freeze({ name: e.name, usage: e.spec.usage || '', words: Object.freeze(wordsOf(reg.inline, e.name)) }));
+    }
+    this.regInfo = Object.freeze({ commands: Object.freeze(commands), inline: Object.freeze(inline), keywords: Object.freeze([...KEYWORDS]) });
+    return this.regInfo;
+  }
+
+  // A line the server refuses, run again and again by a goto, loop or repeat,
+  // would send as fast as the server answers (a review measured 57,933 refused
+  // writes a second). So a line that failed last time waits opts.repeatGapMs
+  // (200 ms) before it runs again, and its MAX_REFUSALS-th refusal in a row
+  // ends the run. Refused: the line failed after the server said no (say()
+  // saw a refusal), after it sent something (done), or when the command says
+  // so itself (refused: true — buyitem past the run's limit). A failure that
+  // sent nothing is only paced. A line that goes through starts over. The same
+  // line: same script, line number and text.
+  refusalKey(frame, meta) {
+    let id = this.progIds.get(frame.program);
+    if (id === undefined) { id = ++this.progSeq; this.progIds.set(frame.program, id); }
+    return `${id}:${meta.line}:${meta.raw}`;
+  }
+  async paceRefused(key) {
+    if (!this.refusals.has(key)) return;
+    const gap = Number(this.opts.repeatGapMs ?? 200);
+    if (gap > 0) await this.pause(gap);
+    if (this.stopped()) this.stopNow();
+  }
+  countRefusal(key, meta, refused, ok) {
+    if (ok) { this.refusals.delete(key); return; }
+    if (this.refusals.size > 500) this.refusals.clear();
+    const n = (this.refusals.get(key) || 0) + (refused ? 1 : 0);
+    this.refusals.set(key, n);
+    if (n >= MAX_REFUSALS) {
+      this.out(`line ${meta.line} was refused ${MAX_REFUSALS} times in a row — stopped`);
+      throw new Halt('refused');
+    }
+  }
+
+  // A module's command, or an in-line one: $result and $error after it.
+  async runModule(runner, action, node, frame, meta, how) {
+    const captured = [], flags = { refused: false, bad: null };
+    const env = this.makeEnv(runner.mod, meta, captured, flags, frame.scope);
+    const key = this.refusalKey(frame, meta);
+    await this.paceRefused(key);
+    let res;
+    try {
+      res = (await how(env)) || {};
+    } catch (e) {
+      this.log('  FAILED: ' + e.message);
+      this.specials.set('$error', e.message);
+      this.remember(node, frame, meta, false);
+      this.countRefusal(key, meta, flags.refused, false);
+      if (this.opts.stopOnError) throw new Halt('error');
+      return;
+    }
+    this.done += Number(res.done) || 0;
+    const ok = res.ok !== undefined ? !!res.ok : !flags.refused;
+    this.specials.set('$error', ok ? null : String(res.error || flags.bad || 'failed'));
+    this.specials.set('$result', res.result !== undefined ? res.result : captured.join('\n'));
+    this.remember(node, frame, meta, ok);
+    this.countRefusal(key, meta, !ok && (flags.refused || Number(res.done) > 0 || res.refused === true), ok);
+    if (res.end) throw new Halt('end');
+  }
+
+  async command(node, frame, pc, meta) {
+    let { action, runner } = node;
+    if (node.deferred) {
+      // {expr} in the arguments, or a command that reads them late
+      const text = await E.fillText(node.text, frame.scope);
+      meta.raw = text;
+      const word = (/^[A-Za-z_$][\w$]*/.exec(text) || [''])[0].toLowerCase();
+      const ent = frame.program.reg.words.get(word);
+      if (!ent) throw unknownCommand(word, frame.program.reg);
+      ({ action, runner } = parseCommand(ent, word, text, text.slice(word.length).trim(), frame.program.reg));
+    }
+    this.header(meta);
+    const a = { ...action, line: meta.line, raw: meta.raw };
+    await this.runModule(runner, a, node, frame, meta, (env) => runner.spec.run(a, env));
+    return { next: pc + 1 };
+  }
+
+  async inlineCommand(node, frame, pc, meta) {
+    const text = E.toStr(await E.evaluate(node.expr, frame.scope)).trim().replace(/^\\/, '');
+    meta.raw = `command "${text}"`;
+    this.header(meta);
+    const word = (text.split(/\s+/)[0] || '').toLowerCase();
+    const ent = frame.program.reg.inline.get(word);
+    if (!ent) {
+      const known = [...frame.program.reg.inline.keys()];
+      const msg = `there is no in-line command "${word}"${known.length ? ' — there are: ' + known.join(', ') : ' yet'}`;
+      this.log('  ' + msg);
+      this.specials.set('$error', msg);
+      this.specials.set('$result', '');
+      this.remember(node, frame, meta, false);
+      return { next: pc + 1 };
+    }
+    await this.runModule(ent, null, node, frame, meta, (env) => ent.spec.run(text.slice(word.length).trim(), env));
+    return { next: pc + 1 };
+  }
+
+  async goal(node, frame, pc, meta) {
+    this.header(meta);
+    if (typeof this.opts.applyGoalLine !== 'function') throw new Error('goal lines cannot be set from this run');
+    const captured = [], flags = { refused: false, bad: null };
+    const env = this.makeEnv('goals', meta, captured, flags, frame.scope);
+    const r = await this.opts.applyGoalLine(node.text, node.goal, env);
+    const ok = !(r && r.ok === false);
+    if (typeof r === 'string') this.log('  ' + r);
+    this.specials.set('$error', ok ? null : String((r && r.error) || 'failed'));
+    this.remember(node, frame, meta, ok);
+    return { next: pc + 1 };
+  }
+
+  async execute(node, frame, pc, meta) {
+    const text = E.toStr(await E.evaluate(node.expr, frame.scope));
+    for (const raw of executeLines(text)) {
+      const p = preprocess(raw);
+      if (!p.text) continue;
+      const inner = this.compileRuntime(frame.program, p.text, { line: node.line, silent: node.silent || p.silent, inFn: node.inFn });
+      const r = await this.step(inner, frame, pc, { line: meta.line, raw: p.text, silent: meta.silent || p.silent });
+      if (r.ret || r.next !== pc + 1) return r;
+    }
+    return { next: pc + 1 };
+  }
+
+  async callScript(node, frame, pc, meta) {
+    let name;
+    if (node.bare && !frame.scope.lookup(node.bare).found) name = node.bare;
+    else name = E.toStr(await E.evaluate(node.expr, frame.scope));
+    meta.raw = `call ${name}`;
+    this.header(meta);
+    if (typeof this.opts.loadScript !== 'function') {
+      throw new Error('this run cannot load other scripts — call runs a loadout from the console');
+    }
+    if (this.depth >= 20) throw new Error('scripts calling scripts more than 20 deep');
+    const text = await this.opts.loadScript(name);
+    if (text === null || text === undefined) throw new Error(`there is no script "${name}" to call`);
+    const view = parse(String(text), { ...this.program.opts, knownVars: [...this.vars.keys()] });
+    const errs = view.filter((a) => a.cmd === 'error');
+    if (errs.length) throw new Error(`${name} line ${errs[0].line}: ${errs[0].error}${errs.length > 1 ? ` (and ${errs.length - 1} more)` : ''}`);
+    const prog = view.program;
+    const saved = this.setVars;
+    this.setVars = new Map();      // %vars% are not passed; true variables are
+    this.depth++;
+    let r;
+    try {
+      r = await this.execRange({ program: prog, scope: this.scopeFor(prog), gosub: [], loops: new Map(), fn: null }, 0, prog.stmts.length);
+    } finally { this.setVars = saved; this.depth--; }
+    this.specials.set('$result', r && r.ret ? r.value : undefined);
+    this.specials.set('$error', null);
+    this.remember(node, frame, meta, true);
+    return { next: pc + 1 };
+  }
+
+  async callFunction(program, def, args) {
+    if (this.fnDepth >= 200) throw new Error(`${def.name}: functions calling functions more than 200 deep`);
+    const scope = this.scopeFor(program).child(new Map(def.params.map((p, i) => [p, args[i]])));
+    this.fnDepth++;
+    try {
+      const r = await this.execRange({ program, scope, gosub: [], loops: new Map(), fn: def }, def.bodyStart, def.bodyEnd);
+      return r.ret ? r.value : undefined;
+    } finally { this.fnDepth--; }
+  }
+
+  startPc() {
+    const P = this.program;
+    const s = this.opts.startLine;
+    if (s === undefined || s === null || s === '' || s === 0 || s === '0') return 0;
+    if (typeof s === 'number' || /^\d+$/.test(String(s))) {
+      const n = Number(s);
+      const pc = P.stmts.findIndex((st) => st.line >= n);
+      if (pc === -1) { this.out(`line ${n} is past the end of the script — starting at line 1`); return 0; }
+      return pc;
+    }
+    const pc = P.labels.get(String(s).toLowerCase());
+    if (pc === undefined) { this.out(`there is no label ${s} — starting at line 1`); return 0; }
+    return pc;
+  }
+
+  async go() {
+    const P = this.program;
+    const frame = { program: P, scope: this.scopeFor(P), gosub: [], loops: new Map(), fn: null };
+    try {
+      await this.execRange(frame, this.startPc(), P.stmts.length);
+    } catch (e) {
+      if (!(e instanceof Halt)) throw e;
+    }
+    return this.done;
+  }
 }
 
-module.exports = { parse, parseLine, run, parseTroops, parseResources, parseLandTime, parseDuration, nextOccurrence };
+// opts.shouldStop() is polled between lines and during waits; once it says yes
+// the run ends where it is. It is the only way an endless `repeat` or `loop`
+// ends while its line keeps going through.
+async function run(game, actions, log, opts = {}) {
+  const program = (actions && actions.program) || programFromActions(actions || []);
+  return new Run(game, program, log, opts).go();
+}
+
+module.exports = {
+  parse, parseLine, lineStatus, run, verdict,
+  parseTroops: W.parseTroops, parseResources: W.parseResources, parseLandTime: W.parseLandTime,
+  parseDuration: W.parseDuration, nextOccurrence: W.nextOccurrence,
+};

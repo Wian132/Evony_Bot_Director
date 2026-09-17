@@ -127,6 +127,205 @@ const rawBody = (req) => new Promise((resolve) => {
   let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b));
 });
 
+// ---- script runs: what every run the console starts shares -----------------
+// The Run button and NEAT's autorun both start a city's script through
+// runCityScript: one run per city at a time, kept in SCRIPT_RUNS where Stop,
+// Resume and the live output find it. script-console.js has the details.
+const SC = require('./script-console');
+const NOTES = new SC.Notifier();          // say / play, for the open console tabs
+
+const cityNameOf = (id) => {
+  const g = SESSION.game;
+  const c = g && (g.castles || []).find((x) => String(g.castleId(x)) === String(id));
+  return (c && c.name) || null;
+};
+
+// A Run from the page is one long request. When the console restarts under it,
+// the browser sends it again to the new process, which then started the script
+// over from the top (2026-09-13: 167 extra market orders). The page gives each
+// Run an id, kept here across restarts: an id already started is refused.
+function claimRunId(id) {
+  const st = SESSION.org ? SESSION.org.settings : D.settings;
+  const now = Date.now();
+  const seen = (st.get('scriptRunIds', []) || []).filter((x) => x && now - x.at < 7 * 86400000);
+  if (seen.some((x) => x.id === id)) return false;
+  seen.push({ id, at: now });
+  st.set('scriptRunIds', seen.slice(-200));
+  return true;
+}
+
+// NEAT's Run box: a line number or a label to start at; blank or 0 is line 1.
+// -> { startLine } | { error }
+function startLineOf(v, actions) {
+  const s = String(v ?? '').trim();
+  if (!s || s === '0') return { startLine: null };
+  const stmts = actions.program ? actions.program.stmts : actions;
+  if (/^\d+$/.test(s)) {
+    const n = Number(s), last = Math.max(0, ...stmts.map((a) => Number(a.line) || 0));
+    if (n > last) return { error: `nothing runs from line ${n} — the last line that does anything is line ${last}` };
+    return { startLine: n };
+  }
+  const name = s.replace(/^label\s+/i, '');
+  if (!actions.some((a) => a.cmd === 'label' && String(a.name).toLowerCase() === name.toLowerCase())) {
+    return { error: `there is no label ${name} in this script to start at` };
+  }
+  return { startLine: name };
+}
+
+// `say` / `play` from a run of city `key` (script-cmd-social.js): queued for the
+// console tabs. -> how many tabs are open to hear it.
+function scriptNotify(n, key, log) {
+  if (!n || (n.kind !== 'say' && n.kind !== 'play')) return 0;
+  const note = { kind: n.kind, city: key, cityName: cityNameOf(key), line: n.line ?? null };
+  if (n.kind === 'say') {
+    note.text = String(n.text == null ? '' : n.text).slice(0, 500);
+    note.lang = /^[a-z]{2,3}(-[a-z]{2})?$/i.test(String(n.lang || '')) ? String(n.lang).toLowerCase() : null;
+  } else if (n.url && /^https?:\/\//i.test(String(n.url))) {
+    note.url = String(n.url);
+  } else {
+    try {
+      const m = SC.mediaFile(n.file || n.url);
+      if (fs.existsSync(m.file)) note.url = '/api/script/media?f=' + encodeURIComponent(m.rel);
+      else { note.beep = true; log(`  (there is no ${m.rel} in ${SC.MEDIA_DIR} — a console tab beeps instead)`); }
+    } catch (e) { note.beep = true; log(`  (${e.message} — a console tab beeps instead)`); }
+  }
+  return NOTES.push(note);
+}
+
+// run()'s options for a run of city `key`: Stop, NEAT's `stop` (a pause that
+// Resume ends), `call`, `say`/`play`, logout's wait, NEAT's start-up
+// parameters (Config.<key>, e.g. -teleport), callScript, and whose run it is.
+function scriptOpts(key, running, castle, log, { dryRun = false } = {}) {
+  const accountId = (SESSION.account && SESSION.account.id) || null;
+  return {
+    castle, session: SESSION, accountId, cityId: key,
+    // CmdParms.txt's -name value pairs; the Config bean drops pass/secret/token keys
+    config: SC.readCmdParms(),
+    // cities[x].cityManager.script.callScript("lines") (script-objects.js): the
+    // lines start as that city's own run, keyed by its castle id like every
+    // run, never beside one already there; a dry run starts a dry run
+    runInCity: (castleId, text) => {
+      const g = SESSION.game;
+      const city = g && (g.castles || []).find((c) => String(g.castleId(c)) === String(castleId));
+      if (!city) return { error: `there is no city ${castleId} to start it in` };
+      const other = String(g.castleId(city));
+      if (SCRIPT_RUNS.has(other)) return { busy: true };
+      const actions = require('./script').parse(String(text));
+      const errors = scriptErrors(actions);
+      if (errors.length) return { error: `line ${errors[0].line}: ${errors[0].error}` };
+      runCityScript(other, actions, { castle: other, dryRun, source: `callScript from ${cityNameOf(key) || key}`,
+        log: (m) => console.log(`[callScript ${city.name || other}] ${m}`) }).catch(() => {});
+      return { ok: true };
+    },
+    shouldStop: () => running.stop,
+    // `logout` waits for the other cities' scripts, except any already waiting at a logout.
+    otherScripts: () => [...SCRIPT_RUNS].filter(([, r]) => r !== running && !r.atLogout).map(([city]) => city),
+    atLogout: (on) => { running.atLogout = !!on; },
+    // waits until /api/script/resume; Stop ends it (the run polls shouldStop meanwhile)
+    onPause: ({ line, next }) => new Promise((resolve) => {
+      running.paused = { line, next: next || null, since: Date.now(), resolve };
+    }),
+    // `call`: this city's loadouts by slot or first-line name, else a file in the scripts folder
+    loadScript: (name) => {
+      const org = SESSION.org;
+      const slots = org && accountId && /^\d+$/.test(String(key)) ? org.goals.loadouts(accountId, key) : [];
+      return SC.resolveCall(name, slots).src;
+    },
+    notify: (n) => scriptNotify(n, key, log),
+  };
+}
+
+// Run a parsed script in city `key` and wait for its end. o: { castle, lines,
+// log, dryRun, autoReq, startLine, source }. -> { ok, n, stopped, running,
+// error } | { ok: false, busy: true } when the city already has a run.
+async function runCityScript(key, actions, o = {}) {
+  if (SCRIPT_RUNS.has(key)) return { ok: false, busy: true };
+  const lines = o.lines || [];
+  const running = { stop: false, startedAt: Date.now(), lines, dropped: 0, paused: null, source: o.source || null };
+  SCRIPT_RUNS.set(key, running);
+  const log = (m) => {
+    lines.push(m);
+    if (o.log) o.log(m);
+    // an endless `repeat` would otherwise grow this without bound
+    if (lines.length > SCRIPT_KEEP) { lines.shift(); running.dropped++; }
+  };
+  // Use the SHARED session. Logging in a second time for the same account makes
+  // the server kick the first connection, which is what was knocking the
+  // console offline every time a script ran.
+  try {
+    const game = await SESSION.connect();
+    const n = await require('./script').run(game, actions, log, {
+      ...scriptOpts(key, running, o.castle ?? key, log, { dryRun: o.dryRun === true }),
+      dryRun: o.dryRun === true, autoReq: !!o.autoReq, startLine: o.startLine ?? null,
+    });
+    return { ok: true, n, stopped: running.stop, running };
+  } catch (e) {
+    return { ok: false, error: e.message, stopped: running.stop, running };
+  } finally {
+    running.paused = null;
+    SCRIPT_RUNS.delete(key);
+  }
+}
+
+// NEAT's autorun (AutorunScripts, AutoRunScript.txt, CmdParms -autoscripts and
+// -runscript): once per console start, after the first login and never again on
+// a reconnect, every city runs its startup file and then each saved loadout
+// holding `label autorun`, from that label, one after another. A city that
+// already has a run is left alone, so nothing is ever started twice. It is OFF
+// unless switched on (AUTOSCRIPTS=1, or -autoscripts 1 in CmdParms.txt), and
+// its last start per account is kept in the database: a console that starts
+// again within 10 minutes (a crash loop, another session restarting it) skips it.
+const AUTORUN = { done: false, timer: null };
+async function startAutoruns() {
+  const set = SC.autorunSettings();
+  if (!set.on) {
+    SESSION.note('autorun: off — no script starts by itself (start the console with AUTOSCRIPTS=1, or put -autoscripts 1 in CmdParms.txt)');
+    return;
+  }
+  const g = SESSION.game, org = SESSION.org, acct = SESSION.account && SESSION.account.id;
+  const gate = SC.autorunGate(org ? org.settings : D.settings, acct || 'console');
+  if (!gate.ok) { SESSION.note('autorun: ' + gate.why); return; }
+  const startup = SC.startupScript(set);
+  if (startup && startup.error) SESSION.note(`autorun: ${startup.name} not run — ${startup.error}`);
+  for (const c of (g && g.castles) || []) {
+    const key = String(g.castleId(c));
+    let slots = [];
+    try { slots = org && acct ? org.goals.loadouts(acct, key) : []; } catch (e) { SESSION.note(`autorun: ${c.name}'s loadouts did not load — ${e.message}`, { city: c.name, kind: 'sys' }); }
+    const plan = SC.autorunPlan(slots, startup && startup.src ? startup : null);
+    if (plan.length) autorunCity(key, c.name, plan);          // the cities run side by side
+  }
+}
+async function autorunCity(key, name, plan) {
+  const say = (m) => SESSION.note('autorun: ' + m, { city: name, kind: 'sys' });
+  for (let i = 0; i < plan.length; i++) {
+    const p = plan[i];
+    const rest = plan.length - i > 1 ? ` (and ${plan.length - i - 1} more autorun script(s) after it)` : '';
+    const actions = require('./script').parse(p.src);
+    const errors = scriptErrors(actions);
+    if (errors.length) {
+      say(`${p.what} not started in ${name} — line ${errors[0].line}: ${errors[0].error}${errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''}`);
+      continue;
+    }
+    if (SCRIPT_RUNS.has(key)) { say(`${name} already has a script running — ${p.what}${rest} not started`); return; }
+    say(`${p.what} started in ${name}${p.startLine ? ' from label autorun' : ''}`);
+    const r = await runCityScript(key, actions, {
+      castle: key, log: (m) => console.log(`[autorun ${name}] ${m}`), startLine: p.startLine, source: `autorun ${p.what}`,
+    });
+    if (r.busy) { say(`${name} already has a script running — ${p.what}${rest} not started`); return; }
+    // nobody may have watched it run, so the Log says what went wrong in it
+    const bad = r.running.lines.filter((l) => /^\s+FAILED: /.test(l));
+    say(`${p.what} in ${name} ${!r.ok ? 'failed: ' + r.error : r.stopped ? 'stopped' : `ended — ${r.n} action(s)`}`
+      + (bad.length ? `; ${bad.length} line(s) failed, the first: ${bad[0].trim().replace(/^FAILED: /, '')}` : ''));
+    if (r.stopped) { if (rest) say(`stopped, so the rest of ${name}'s autorun was not started`); return; }
+  }
+}
+AUTORUN.timer = setInterval(() => {
+  if (AUTORUN.done || !SESSION.connected || !SESSION.game) return;
+  AUTORUN.done = true;
+  clearInterval(AUTORUN.timer);
+  startAutoruns().catch((e) => SESSION.note('autorun: ' + e.message));
+}, 2000);
+
 const server = http.createServer(async (req, res) => {
   // Login gate first: everything below controls live accounts.
   if (await AUTH.guard(req, res, { readBody: rawBody })) return;
@@ -656,6 +855,12 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/script' && req.method === 'POST') {
     const b = await body(req);
+    // The editor's colours: each line's standing, asked on every pause in typing.
+    // It logs nothing and runs nothing. The page sends parseOnly with it, so a
+    // console older than the page only parses too.
+    if (b.parseOnly && b.lines) {
+      return send(200, 'application/json', JSON.stringify({ ok: true, ...require('./script').lineStatus(b.src || '') }));
+    }
     const env = loadEnv();
     const lines = [];
     const log = (m) => { lines.push(m); console.log('[script] ' + m); };
@@ -679,39 +884,58 @@ const server = http.createServer(async (req, res) => {
       return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
     }
 
+    // NEAT's Run box: a line number or a label to start at (blank: line 1).
+    const from = startLineOf(b.startLine, actions);
+    if (from.error) {
+      log(from.error);
+      log('nothing was run');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
+
+    // A live run needs the page's runId: it is what keeps a Run the browser
+    // sends again after a console restart from starting twice (claimRunId).
+    // The console's Script tab sends one; the old /script page does not, so
+    // it only dry-runs.
+    if (b.dryRun !== true && !b.runId) {
+      log('not started: a live run needs a runId, which the console\'s Script tab sends with every Run — the old /script page does not,'
+        + ' so it can only do a dry run there; run it live from the Script tab');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
     // One run per city at a time, so Stop and the live output know which run
-    // is meant.
-    const key = String(b.castle ?? b.city ?? '');
+    // is meant — keyed by the city's castle id however the city was named (the
+    // Script tab sends the id, the old page a name or an index, autorun the id).
+    let key;
+    try {
+      const g = await SESSION.connect();
+      key = String(g.castleId(g.castle(b.castle ?? b.city)));
+    } catch (e) {
+      log('ERROR: ' + e.message);
+      log('nothing was run');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
     if (SCRIPT_RUNS.has(key)) {
       log('a script is already running in this city — stop it first');
       return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
     }
-    const running = { stop: false, startedAt: Date.now(), lines, dropped: 0 };
-    SCRIPT_RUNS.set(key, running);
-    // Use the SHARED session. Logging in a second time for the same account makes
-    // the server kick the first connection, which is what was knocking the
-    // console offline every time a script ran.
-    try {
-      const game = await SESSION.connect();
-      // The console sends the open city tab as `city`. Reading only `castle`
-      // ran every console script in the FIRST city, whichever tab was open.
-      // Live unless a caller asks otherwise — only the old /script page still does.
-      const n = await run(game, actions, (m) => {
-        log(m);
-        // an endless `repeat` would otherwise grow this without bound
-        if (lines.length > SCRIPT_KEEP) { lines.shift(); running.dropped++; }
-      }, {
-        dryRun: b.dryRun === true, castle: b.castle ?? b.city, autoReq: !!b.autoReq, session: SESSION, shouldStop: () => running.stop,
-        // `logout` waits for the other cities' scripts, except any already waiting at a logout.
-        otherScripts: () => [...SCRIPT_RUNS].filter(([, r]) => r !== running && !r.atLogout).map(([city]) => city),
-        atLogout: (on) => { running.atLogout = !!on; },
-      });
-      log(`done — ${n} action(s) executed`);
-    } catch (e) {
-      log('ERROR: ' + e.message);
-    } finally {
-      SCRIPT_RUNS.delete(key);
+    if (b.runId && !claimRunId(String(b.runId).slice(0, 64))) {
+      log('not started again: this Run was already started once, and the console restarted under it, so the browser sent it again — press Run to start it anew');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
     }
+    if (from.startLine) log(`starting at ${/^\d+$/.test(String(from.startLine)) ? 'line ' : 'label '}${from.startLine}`);
+    // The console sends the open city tab as `city`. Reading only `castle`
+    // ran every console script in the FIRST city, whichever tab was open.
+    // Live unless a caller asks otherwise — only the old /script page still does.
+    const r = await runCityScript(key, actions, {
+      castle: b.castle ?? b.city, lines, log: (m) => console.log('[script] ' + m),
+      dryRun: b.dryRun === true, autoReq: !!b.autoReq, startLine: from.startLine, source: 'console',
+    });
+    if (r.busy) {
+      log('a script is already running in this city — stop it first');
+      return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
+    }
+    if (r.ok) log(`done — ${r.n} action(s) executed`);
+    else log('ERROR: ' + r.error);
+    const running = r.running;
     const kept = running.dropped ? [`(${running.dropped} earlier line(s) not kept)`, ...lines] : lines;
     return send(200, 'application/json', JSON.stringify({ ok: true, log: kept, errors, stopped: running.stop }));
   }
@@ -722,20 +946,80 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     const running = SCRIPT_RUNS.get(String(b.city ?? ''));
     if (!running) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no script is running in that city' }));
-    running.stop = true;
+    running.stop = true;           // a run paused at `stop` sees it too, and ends
     return send(200, 'application/json', JSON.stringify({ ok: true }));
+  }
+
+  // A script paused at NEAT's `stop` carries on from the line after it.
+  if (url.pathname === '/api/script/resume' && req.method === 'POST') {
+    const b = await body(req);
+    const running = SCRIPT_RUNS.get(String(b.city ?? ''));
+    const no = !running ? 'no script is running in that city' : !running.paused ? 'the script in that city is not paused' : null;
+    if (no) return send(200, 'application/json', JSON.stringify({ ok: false, error: no }));
+    const p = running.paused;
+    running.paused = null;
+    p.resolve(true);
+    return send(200, 'application/json', JSON.stringify({ ok: true, line: p.line, next: p.next }));
   }
 
   // Which cities have a script running, and ?city='s output so far — how the
   // page shows a long run as it goes, and finds runs again after a reload.
+  // paused: {line, next, since} while a run waits at `stop`; source: console |
+  // autorun Load N | ...
   if (url.pathname === '/api/script/runs') {
     const running = q.get('city') === null ? null : SCRIPT_RUNS.get(q.get('city'));
     const tail = running ? running.lines.slice(-400) : null;
     return send(200, 'application/json', JSON.stringify({
-      runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, startedAt: r.startedAt, stopping: r.stop })),
+      runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, startedAt: r.startedAt, stopping: r.stop,
+        paused: r.paused ? { line: r.paused.line, next: r.paused.next, since: r.paused.since } : null, source: r.source || null })),
       lines: tail,
       dropped: running ? running.dropped + running.lines.length - tail.length : 0,
     }));
+  }
+
+  // What scripts said and played (say / play), for the open console tabs. Each
+  // tab polls with its own id; ?after=<seq>&boot=<id> gets what came since.
+  if (url.pathname === '/api/script/notify') {
+    return send(200, 'application/json', JSON.stringify(NOTES.poll({ after: q.get('after'), boot: q.get('boot'), tab: q.get('tab') })));
+  }
+  // A sound `play` names, from the console's media folder only.
+  if (url.pathname === '/api/script/media') {
+    try {
+      const m = SC.mediaFile(q.get('f'));
+      const st = fs.statSync(m.file);
+      if (!st.isFile() || st.size > 20 * 1024 * 1024) throw new Error('not a sound');
+      res.writeHead(200, { 'Content-Type': SC.MEDIA_TYPES[path.extname(m.file).toLowerCase()] || 'application/octet-stream',
+        'Content-Length': st.size, 'Cache-Control': 'no-store' });
+      return fs.createReadStream(m.file).on('error', () => res.destroy()).pipe(res);
+    } catch { return send(404, 'text/plain', 'no such sound'); }
+  }
+
+  // NEAT's command line: `\who Bob` typed in the chat box runs that in-line
+  // command (the modules' `inline` tables, as `command "who Bob"` does) in the
+  // open city, and answers with its output instead of sending it as chat.
+  if (url.pathname === '/api/script/inline' && req.method === 'POST') {
+    const b = await body(req);
+    const text = String(b.text || '').trim().replace(/^\\/, '').trim();
+    if (!text) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'type \\ and an in-line command, e.g. \\who Bob' }));
+    const S = require('./script');
+    const lines = [];
+    let result, error = null;
+    try {
+      const game = await SESSION.connect();
+      // the text rides in as a value, so no quote in it can change the line
+      const globals = { ottoInlineText: text, ottoInlineDone: (r, e) => { result = r; error = e || null; } };
+      const view = S.parse('command ottoInlineText\nottoInlineDone($result, $error)', { globals });
+      const bad = view.find((a) => a.cmd === 'error');
+      if (bad) throw new Error(bad.error);
+      await S.run(game, view, (m) => lines.push(m), {
+        castle: b.city, session: SESSION, accountId: (SESSION.account && SESSION.account.id) || null,
+        cityId: String(b.city ?? ''), globals, shouldStop: () => false,
+      });
+    } catch (e) { error = e.message; }
+    const out = lines.filter((l) => !/^line 1: /.test(l)).map((l) => l.replace(/^ {2}/, ''));
+    try { JSON.stringify(result); } catch { result = String(result); }
+    return send(200, 'application/json', JSON.stringify({ ok: !error, error, lines: out,
+      result: result === undefined ? null : result }));
   }
 
   // Script loadouts: numbered slots per CITY, so a city's Load 1 is its own and

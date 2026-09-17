@@ -482,8 +482,12 @@ function openDlg(acc) {
   editing = acc;
   $('#dlgTitle').textContent = acc ? 'Edit ' + acc.label : 'Add account';
   for (const k of ['label', 'server', 'email', 'password', 'notes']) $('#frm')[k].value = acc ? (acc[k] || '') : (k === 'server' ? 'ss71' : '');
+  // nothing to delete when there is no account yet
+  $('#frm').querySelector('button[value="delete"]').hidden = !acc;
   $('#dlg').showModal();
 }
+// The same dialog with no account: db.js gives a new one its id (accounts.nextId).
+$('#add').onclick = () => openDlg(null);
 $('#frm').addEventListener('submit', async (e) => {
   const action = e.submitter && e.submitter.value;
   if (action === 'cancel') return;

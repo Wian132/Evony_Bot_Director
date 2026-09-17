@@ -1667,6 +1667,9 @@ class Session {
         mailSystem: Number(pb.newMaileCount_system || 0),
       } : null,
       paused: this.userPaused,
+      // { hours, minutes, text } while the account is on holiday: the login goes
+      // through and everything works, so this is a badge, not an error.
+      holiday: (this.game && this.game.holiday) || null,
       alliance: p ? p.alliance || null : null,
       connected: this.connected,
       state: this.connected ? 'connected' : (this.connecting ? 'connecting' : (this.state || 'offline')),

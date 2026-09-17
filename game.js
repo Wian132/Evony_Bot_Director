@@ -9,8 +9,32 @@ class Game {
     this.c = null;
     this.player = null;
     this.castles = [];
+    this.holiday = null;       // { hours, minutes, text } while the account is on holiday
     this.marchSkillParam = 100;
     this.serverOffset = 0;     // serverNow - localNow, in ms
+  }
+
+  // What a login reply means. ok=1 is the plain yes; ok=-100 is a yes as well,
+  // for an account on HOLIDAY: the server sends the whole player with it and
+  // only asks the game's own client to show its holiday panel, from which a
+  // person may end the holiday (EvonyClient.as:5104-5111, HolidayTips.as:205).
+  // NEAT logs in regardless and so does OTTObot — the holiday is never ended
+  // here, and `msg` carries "<hours>,<minutes>,<minutes left>".
+  // Anything else is a refusal, and its text must stay SHORT: the reply carries
+  // the entire player bean (100 KB+), which has no place in a log line.
+  static loginOutcome(data) {
+    if (!data) return { error: 'login failed: no reply' };
+    if (data.ok === 1) return { ok: true };
+    if (data.ok === -100) {
+      const parts = String(data.msg || data.errorMsg || '').split(',').map((x) => Number(x) || 0);
+      const hours = parts[0] || 0, minutes = parts[1] || 0;
+      return { ok: true, holiday: { hours, minutes, text: `${hours}h${String(minutes).padStart(2, '0')}m` } };
+    }
+    const why = data.ok === -5 ? 'the game wants a captcha (ok=-5)'
+      : data.ok === 2 ? 'the game has no lord on this account yet (ok=2)'
+        : `ok=${data.ok}`;
+    const said = String(data.errorMsg || data.msg || '').slice(0, 200);
+    return { error: `login failed: ${why}${said ? ' — ' + said : ''}` };
   }
 
   now() { return Date.now() + this.serverOffset; }
@@ -38,10 +62,18 @@ class Game {
     const tLogin = Date.now();
     const lr = await this.c.login(email, password);
     const rtt = Date.now() - tLogin;
-    if (!lr || !lr.data || lr.data.ok !== 1) throw new Error('login failed: ' + JSON.stringify(lr && lr.data));
+    // ok=1, or ok=-100 for an account on holiday — a login either way, see
+    // Game.loginOutcome. Anything else throws, and never with the payload in it.
+    const outcome = Game.loginOutcome(lr && lr.data);
+    if (outcome.error) throw new Error(outcome.error);
     this.player = lr.data.player;
     this.castles = this.player.castles || [];
+    this.holiday = outcome.holiday || null;
     this.log(`logged in as ${this.player.playerInfo.userName} - ${this.castles.length} castle(s)`);
+    if (this.holiday) {
+      this.log(`holiday mode: about ${this.holiday.text} of protection left — logged in as usual,`
+        + ' and the holiday is left running');
+    }
 
     // The server also sends its wall clock as text ("2026.09.12 12.57.29"), which
     // together with the epoch tells us its timezone — measured, not assumed.

@@ -37,6 +37,22 @@ Add an account:
 EVONY_ACCOUNT_EMAIL=... EVONY_ACCOUNT_PASSWORD=... node add-account.js "Label"
 ```
 
+Or add it in the Director with **Add account**, which then starts its console for you:
+a free port, the process, and its uptime probe (without which the Director cannot see
+it). An account with no console shows `no bot` and a **start** button on its row. By
+hand, the same thing:
+
+```bash
+node botctl.js start a3       # start, or adopt the console already running a3
+node botctl.js stop a3
+node botctl.js list           # which accounts have a console, and where
+```
+
+A console started this way comes up **paused** when the account has no goals of its own
+— nothing acts in the game before you have looked at it. `BOT_AUTOSTART=1 node
+director.js` brings up every account's console on startup, for a machine that has just
+rebooted; without it the Director only says which accounts have no bot.
+
 Requires Node 24+ for the built-in `node:sqlite`. No npm install, no dependencies.
 
 ## One process per account
@@ -732,12 +748,12 @@ for t in test-enginestate test-goals test-war test-npc test-heroes test-buildnpc
   test-script-regex test-script-net test-script-post test-script-deploy \
   test-script-city test-script-hero test-script-account test-script-market \
   test-script-info test-script-social test-script-goals test-script-console \
-  test-script-compat test-script-safety; do
+  test-script-compat test-script-safety test-botctl test-holiday-login; do
   EVONY_DB=/tmp/otto-$t.db node $t.js; rm -f /tmp/otto-$t.db*
 done
 ```
 
-2,813 tests in 59 suites, no network required. `test-holiday-snipe` has 10 known
+2,837 tests in 61 suites, no network required. `test-holiday-snipe` has 10 known
 failures, which it had before the goals and scripts build-outs.
 
 **Never run `test-*.js` as a glob.** `test-scope`, `test-login`, `test-raw`, `test-block`,

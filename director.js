@@ -18,6 +18,7 @@ const { buildSnapshot } = require('./snapshot');
 
 const D = require('./db');
 const AUTH = require('./auth');
+const BOTS = require('./botctl');
 AUTH.configure();
 
 const PORT = Number(process.env.DIRECTOR_PORT || 8712);
@@ -240,6 +241,9 @@ async function sampleUptime() {
         state: paused ? 'maintenance' : (h.state || null),
         reason: paused ? (h.maintenance.why || 'server maintenance') : (h.reason || null),
         engineMode: h.engineMode || null,
+        // An account on holiday is logged in and fully usable — the holiday is a
+        // badge on the row, not a fault (see Game.loginOutcome).
+        holiday: h.holiday || null,
         maintenance: h.maintenance || null,
         retryInSec: h.retryInSec ?? null,
         proc: h.proc || null,
@@ -326,16 +330,55 @@ http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/account' && req.method === 'POST') {
     const b = await body(req);
-    if (b.delete) ORG.accounts.remove(b.id);
-    else ORG.accounts.upsert(b);
-    return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
+    if (b.delete) {
+      // Take its console down first: a pinned console whose account has been
+      // deleted cannot even start again, and it would sit there logged in as an
+      // account the Director no longer knows.
+      // An id this organization does not own must not reach remove(), which
+      // throws for it — and an uncaught throw in here takes the process with it.
+      const acc = ORG.accounts.get(b.id);
+      if (!acc) return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
+      await BOTS.stop(ORG, acc, { note }).catch(() => {});
+      ORG.accounts.remove(b.id);
+      return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
+    }
+    // A brand new account has no console behind it, and an account without a
+    // console cannot be logged into at all — which is exactly how a new account
+    // used to end up sitting in the fleet list doing nothing. Start its bot.
+    const fresh = !b.id;
+    if (!fresh && !ORG.accounts.get(b.id)) {
+      return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
+    }
+    const acc = ORG.accounts.upsert(b);
+    let bot = null;
+    if (fresh) {
+      note(`${acc.label} added — bringing up its console`);
+      // Bounded on purpose: this is a browser waiting on a form. Once the
+      // process is up the Uptime tab owns it, logged in or still trying.
+      bot = await BOTS.start(ORG, acc, { note, readyMs: 25000 });
+      if (!bot.ok) note(`${acc.label}: no console — ${bot.error}`);
+    }
+    return send(200, 'application/json', JSON.stringify({
+      ok: true, bot, accounts: ORG.accounts.withSnapshots() }));
+  }
+
+  // Start or stop the console for one account, for the accounts that predate
+  // auto-start (and for a bot that has been stopped by hand).
+  if (url.pathname === '/api/bot' && req.method === 'POST') {
+    const b = await body(req);
+    const acc = ORG.accounts.get(b.id);
+    if (!acc) return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
+    const r = b.action === 'stop'
+      ? await BOTS.stop(ORG, acc, { note })
+      : await BOTS.start(ORG, acc, { note, paused: b.paused });
+    return send(200, 'application/json', JSON.stringify(r));
   }
 
   if (url.pathname === '/api/poll' && req.method === 'POST') {
     const b = await body(req);
     if (b.id) {
       const acc = ORG.accounts.get(b.id);
-      if (acc) { note(`polling ${acc.label} on demand`); ORG.snapshots.add(acc.id, await pollAccount(acc)); }
+      if (acc) { note(`polling ${acc.label} on demand`); ORG.snapshots.add(acc.id, await pollAccount(ORG, acc)); }
       return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
     }
     pollCycle();
@@ -438,6 +481,23 @@ http.createServer(async (req, res) => {
   note(`OTTObot Director on http://localhost:${PORT}  `
     + `(${D.orgs.all().length} org(s), ${st.accounts} account(s), ${GAP_MS / 1000}s between polls)`);
   note(`storage: ${path.basename(D.FILE)} — ${(st.sizeBytes / 1024).toFixed(0)} KB, ${st.snapshots} snapshot(s), ${st.uptime} uptime sample(s)`);
+  // Which accounts have no bot behind them. Starting them is opt-in: a console
+  // logs into the game, and that is not something to do to every account on the
+  // list just because a Director restarted. BOT_AUTOSTART=1 says do it anyway,
+  // which is what you want on a machine that has just rebooted.
+  setTimeout(async () => {
+    for (const o of D.orgs.all()) {
+      if (o.disabled) continue;
+      const org = D.org(o.id);
+      for (const acc of org.accounts.all()) {
+        if (acc.enabled === false || !acc.email || !acc.password) continue;
+        if (await BOTS.running(org, acc)) continue;
+        if (process.env.BOT_AUTOSTART === '1') await BOTS.start(org, acc, { note });
+        else note(`${acc.label}: no console is running — click the row to start one`);
+      }
+    }
+  }, 5000);
+
   // Give any console that is starting alongside the Director time to come up
   // and claim its account before the first poll goes looking for logins.
   setTimeout(pollCycle, 30000);

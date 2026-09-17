@@ -333,6 +333,9 @@ const shownCols = () => COLS.filter((c) => c.fixed || VISIBLE.has(c.key));
 const s = (a) => a.snapshot || {};
 const t = (a) => (a.snapshot && a.snapshot.totals) || {};
 const ago = (ts) => { const m = Math.round((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm' : Math.round(m / 60) + 'h'; };
+// A wait, said the way a person would. Holiday mode parks a bot for hours, and
+// "(34419s)" is not a number anyone reads.
+const wait = (sec) => { sec = Number(sec) || 0; return sec < 90 ? sec + 's' : sec < 5400 ? Math.round(sec / 60) + 'm' : Math.round(sec / 3600) + 'h'; };
 
 // The console process this account runs in. One process may carry several
 // accounts, so the figure is labelled per-process, not per-account.
@@ -369,15 +372,29 @@ function statusPill(a) {
   if (L && Date.now() - L.at < 5 * 60000) {
     const why = esc(L.reason || '');
     if (L.state === 'maintenance') return `<span class="pill maint" title="${why}">maintenance</span>`;
-    if (L.state === 'process down') return `<span class="pill err" title="${why}">bot down</span>`;
+    if (L.state === 'process down') {
+      return `<span class="pill err" title="${why}">bot down</span>`
+        + ` <button class="startBot" data-id="${esc(a.id)}" title="Start its console again">start</button>`;
+    }
     if (L.connected) {
       const mode = L.engineMode && L.engineMode !== 'off' ? ` · ${esc(L.engineMode)}` : '';
-      return `<span class="pill ok" title="live from ${esc(L.probe)}">online${mode}</span>`;
+      // Holiday mode: logged in and playable, under attack protection for a
+      // while yet. Worth seeing on the row, so it is not a surprise later.
+      const hol = L.holiday
+        ? ` <span class="pill maint" title="attack protection, ${esc(L.holiday.text)} left — the bot plays as usual">holiday ${esc(L.holiday.text)}</span>`
+        : '';
+      return `<span class="pill ok" title="live from ${esc(L.probe)}">online${mode}</span>${hol}`;
     }
-    const retry = L.retryInSec != null ? ` (${L.retryInSec}s)` : '';
+    const retry = L.retryInSec != null ? ` (${wait(L.retryInSec)})` : '';
     return `<span class="pill warn" title="${why}">${esc(L.state || 'offline')}${retry}</span>`;
   }
 
+  // No console process is running this account, so nothing is playing it. That
+  // matters more than how long ago the Director last polled it.
+  if (!a.consoleUrl) {
+    return '<span class="pill stale" title="no console process is running this account">no bot</span>'
+      + ` <button class="startBot" data-id="${esc(a.id)}" title="Start a console for this account">start</button>`;
+  }
   if (!a.lastPolled) return '<span class="pill stale">never polled</span>';
   if (!sn.ok) return `<span class="pill err" title="${esc(sn.error)}">error</span>`;
   const mins = (Date.now() - a.lastPolled) / 60000;
@@ -439,7 +456,11 @@ function render() {
   }).length;
   $('#cWar').textContent = DATA.accounts.filter((a) => s(a).incoming > 0).length;
   $('#cProc').textContent = (DATA.processes || []).length;
-  $('#status').textContent = `${rows.length} shown · polling ${DATA.polling ? 'in progress' : 'idle'} · ${Math.round((DATA.gapMs || 0) / 1000)}s between accounts · click a row to focus that bot, ✎ to edit, header to sort`;
+  // The five-second refresh used to wipe whatever the footer was saying, which
+  // took any button in it with it before it could be clicked.
+  if (Date.now() > sticky) {
+    $('#status').textContent = `${rows.length} shown · polling ${DATA.polling ? 'in progress' : 'idle'} · ${Math.round((DATA.gapMs || 0) / 1000)}s between accounts · click a row to focus that bot, ✎ to edit, header to sort`;
+  }
   $('#log').textContent = (DATA.log || []).slice(-12).map((l) => new Date(l.t).toLocaleTimeString() + '  ' + l.m).join('\n');
 }
 async function refresh() {
@@ -452,6 +473,8 @@ $('#tbl').addEventListener('click', (e) => {
   const tr = e.target.closest('tr[data-id]');
   if (!tr) return;
   const acc = DATA.accounts.find((a) => a.id === tr.dataset.id);
+  const start = e.target.closest('.startBot');
+  if (start) return startBot(acc, start);
   if (e.target.closest('.edit')) return openDlg(acc);
   // The account name is a real link — let the browser handle it, or we would
   // both navigate and open a tab.
@@ -462,20 +485,66 @@ $('#tbl').addEventListener('click', (e) => {
 // Clicking anywhere on the row that is not the name link. Navigating a named
 // tab from here needs window.open, which the browser may block — so if it does,
 // say so rather than appearing to do nothing.
+// A POST that reports what actually came back. A Director running older code
+// answers a route it does not have with plain "not found", and parsing that as
+// JSON turned a plain answer into "Unexpected token 'o'".
+async function post(path, payload) {
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
+    if (json) return json;
+    return { ok: false, error: res.ok ? `unexpected answer: ${text.slice(0, 120)}`
+      : `${res.status} ${res.statusText} — ${text.slice(0, 120)} (is the Director running the current code?)` };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// A footer message that survives the next refresh, so a button in it can
+// actually be reached. sticky is a timestamp: until then, render() leaves it be.
+let sticky = 0;
+function say(html, ms = 20000) { $('#status').innerHTML = html; sticky = Date.now() + ms; }
+
 function focusBot(acc) {
   if (!acc) return;
+  // No bot behind this account, so there is nothing to focus — offer to start
+  // one instead of printing a command line for you to run yourself.
   if (!acc.consoleUrl) {
-    $('#status').innerHTML = `No console is running for <b>${esc(acc.label)}</b>. `
-      + `Start one with <code>CONSOLE_PORT=&lt;port&gt; ACCOUNT_ID=${esc(acc.id)} node server.js</code>, `
-      + `then add it under Probes.`;
-    return;
+    return say(`No console is running for <b>${esc(acc.label)}</b>. `
+      + `<button class="startBot" data-id="${esc(acc.id)}">Start its bot</button> `
+      + `<span style="color:var(--dim)">— it logs into the game as this account; `
+      + `until goals are set its engine starts paused.</span>`, 60000);
   }
   const w = window.open(acc.consoleUrl + '/', 'otto_bot_' + acc.id);
-  if (w) { w.focus(); $('#status').textContent = `${acc.label} -> ${acc.consoleUrl}`; }
+  if (w) { w.focus(); say(`${esc(acc.label)} -> ${esc(acc.consoleUrl)}`, 6000); }
   else {
-    $('#status').innerHTML = `Your browser blocked the pop-up. Click the account name `
-      + `<b>${esc(acc.label)}</b> instead — that is a normal link and always opens.`;
+    say(`Your browser blocked the pop-up. Click the account name `
+      + `<b>${esc(acc.label)}</b> instead — that is a normal link and always opens.`);
   }
+}
+
+// Starting a bot takes a while: the process comes up, reads the server's config
+// and logs in. Say so rather than looking dead, and report what happened.
+async function startBot(acc, btn) {
+  if (!acc) return;
+  if (btn) btn.disabled = true;
+  say(`Starting a console for <b>${esc(acc.label)}</b> — logging in, this takes a few seconds…`, 120000);
+  const r = await post('/api/bot', { id: acc.id, action: 'start' });
+  reportBot(acc.label, r);
+  refresh();
+}
+$('#status').addEventListener('click', (e) => {
+  const b = e.target.closest('.startBot');
+  if (b) startBot(DATA.accounts.find((a) => a.id === b.dataset.id), b);
+});
+
+function reportBot(label, r) {
+  if (!r) return;
+  if (!r.ok) return say(`<b>${esc(label)}</b>: no console — ${esc(r.error)}`, 60000);
+  say(`<b>${esc(label)}</b>: console on <a href="${esc(r.url)}/" target="otto_bot_${esc(r.port)}">${esc(r.url)}</a>`
+    + (r.adopted ? ' (it was already running)' : '')
+    + (r.ready ? '' : ' — up, still logging in; watch it on the Uptime tab')
+    + (r.paused ? ' · engine PAUSED until you press Resume there' : ''), 60000);
 }
 
 function openDlg(acc) {
@@ -495,8 +564,11 @@ $('#frm').addEventListener('submit', async (e) => {
   const payload = action === 'delete'
     ? { id: editing && editing.id, delete: true }
     : { id: editing && editing.id, label: f.label.value, server: f.server.value, email: f.email.value, password: f.password.value, notes: f.notes.value };
-  await fetch('/api/account', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  refresh();
+  const creating = !payload.delete && !payload.id;
+  if (creating) say(`Adding <b>${esc(f.label.value)}</b> and starting its bot — this takes a few seconds…`, 120000);
+  const r = await post('/api/account', payload);
+  await refresh();
+  if (creating && r && r.bot) reportBot(f.label.value, r.bot);
 });
 
 // ---------- column chooser ----------

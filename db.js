@@ -195,6 +195,15 @@ for (const [table, col, decl] of [
   ['city_registry', 'moves', 'INTEGER NOT NULL DEFAULT 0'],
   ['uptime', 'rssMb', 'REAL'],
   ['uptime', 'heapMb', 'REAL'],
+  // Keep this account's console running: the Director starts it again whenever
+  // it finds it down. Off by default — starting a console logs into the game,
+  // which is never something to do to an account on its own initiative.
+  ['accounts', 'keepOn', 'INTEGER NOT NULL DEFAULT 0'],
+  // The account's SECURITY CODE — the game's second password, which guards
+  // abandoning a city, disbanding troops, dismissing a hero, the tax rate and
+  // restarting the lord (security.js). Stored beside the password because the
+  // console needs it at the moment the game answers -200, with nobody watching.
+  ['accounts', 'securityCode', 'TEXT'],
 ]) {
   const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
@@ -223,18 +232,18 @@ const one = (sql, ...args) => db.prepare(sql).get(...args.map(bind));
 const accounts = {
   all() {
     return all('SELECT * FROM accounts ORDER BY pos, rowid').map((a) => ({
-      ...a, enabled: !!a.enabled,
+      ...a, enabled: !!a.enabled, keepOn: !!a.keepOn,
     }));
   },
 
   get(id) {
     const a = one('SELECT * FROM accounts WHERE id = ?', id);
-    return a ? { ...a, enabled: !!a.enabled } : null;
+    return a ? { ...a, enabled: !!a.enabled, keepOn: !!a.keepOn } : null;
   },
 
   byEmail(email) {
     const a = one('SELECT * FROM accounts WHERE lower(email) = lower(?)', String(email || ''));
-    return a ? { ...a, enabled: !!a.enabled } : null;
+    return a ? { ...a, enabled: !!a.enabled, keepOn: !!a.keepOn } : null;
   },
 
   // Accounts joined to their most recent snapshot, in the shape the Director UI
@@ -253,12 +262,13 @@ const accounts = {
     const prev = accounts.get(id) || {};
     const pos = acc.pos !== undefined ? acc.pos
       : (prev.pos !== undefined ? prev.pos : (n(one('SELECT max(pos) m FROM accounts').m) || 0) + 1);
-    run(`INSERT INTO accounts (id,label,server,email,password,enabled,notes,proxy,pos,createdAt,lastPolled)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    run(`INSERT INTO accounts (id,label,server,email,password,enabled,notes,proxy,pos,keepOn,securityCode,createdAt,lastPolled)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET
            label=excluded.label, server=excluded.server, email=excluded.email,
            password=excluded.password, enabled=excluded.enabled, notes=excluded.notes,
-           proxy=excluded.proxy, pos=excluded.pos`,
+           proxy=excluded.proxy, pos=excluded.pos, keepOn=excluded.keepOn,
+           securityCode=excluded.securityCode`,
       id,
       acc.label !== undefined ? acc.label : (prev.label || id),
       acc.server !== undefined ? acc.server : (prev.server || 'ss71'),
@@ -268,6 +278,10 @@ const accounts = {
       acc.notes !== undefined ? acc.notes : prev.notes,
       acc.proxy !== undefined ? acc.proxy : prev.proxy,
       pos,
+      b(acc.keepOn !== undefined ? acc.keepOn : (prev.keepOn !== undefined ? prev.keepOn : false)),
+      // '' clears the code, undefined leaves whatever is stored alone — an
+      // upsert that never heard of security codes must not wipe one.
+      acc.securityCode !== undefined ? (acc.securityCode || null) : (prev.securityCode || null),
       prev.createdAt || acc.createdAt || now(),
       prev.lastPolled || null);
     return accounts.get(id);
@@ -706,6 +720,44 @@ const registry = {
          WHERE accountId=? AND fieldId=?`,
       Number(castleId), name || null, now(), accountId, Number(fieldId));
     return registry.get(accountId, fieldId);
+  },
+
+  // ADOPT a city the bot did not build, so it may be given up by hand.
+  //
+  // This is the second and only other path to abandonable=1, and it exists for
+  // one case: a city built on a flat by something else (NEAT's npcbuild, the
+  // game's own client) that the bot must now be able to let go. It is reachable
+  // ONLY from a person typing `allowabandon` at a console — no goal, no engine
+  // action and nothing automatic calls it. Cities adopted this way stay
+  // origin='adopted', which goal-buildnpc's canAbandon rejects outright
+  // (it demands origin==='buildnpc'), so the engine can still never abandon one.
+  //
+  // It refuses a row that is already a buildnpc claim: that machinery has its
+  // own state and must not be reinterpreted from outside.
+  adopt(accountId, fieldId, castleId, name, note) {
+    const r = registry.get(accountId, Number(fieldId));
+    if (r && r.origin === 'buildnpc') return { ok: false, why: 'buildnpc owns this tile already — it decides for itself' };
+    if (!Number(castleId)) return { ok: false, why: 'a live castle id is needed to adopt a city' };
+    if (r && r.castleId !== null && r.castleId !== undefined && Number(r.castleId) !== Number(castleId)) {
+      return { ok: false, why: `the registry has castle ${r.castleId} on that tile, not ${castleId}` };
+    }
+    run(`INSERT INTO city_registry (accountId,fieldId,castleId,name,origin,state,abandonable,firstSeen,notes)
+         VALUES (?,?,?,?,'adopted','built',1,?,?)
+         ON CONFLICT(accountId,fieldId) DO UPDATE SET
+           origin='adopted', state='built', abandonable=1,
+           castleId=excluded.castleId, name=excluded.name, notes=excluded.notes`,
+      accountId, Number(fieldId), Number(castleId), name || null, now(), note || null);
+    return { ok: true, row: registry.get(accountId, Number(fieldId)) };
+  },
+
+  // Undo an adopt: back to protected, the state every city that is not
+  // buildnpc's throwaway should be in.
+  unadopt(accountId, fieldId) {
+    const r = registry.get(accountId, Number(fieldId));
+    if (!r || r.origin !== 'adopted') return { ok: false, why: 'that city was not adopted' };
+    run(`UPDATE city_registry SET origin='pre-existing', state='protected', abandonable=0, notes=NULL
+         WHERE accountId=? AND fieldId=?`, accountId, Number(fieldId));
+    return { ok: true, row: registry.get(accountId, Number(fieldId)) };
   },
 
   markAbandoned(accountId, fieldId) {

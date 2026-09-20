@@ -48,8 +48,33 @@ node botctl.js stop a3
 node botctl.js list           # which accounts have a console, and where
 ```
 
-A console started this way comes up **paused** when the account has no goals of its own
-— nothing acts in the game before you have looked at it. `BOT_AUTOSTART=1 node
+The checkbox in the first column **switches an account off**: it stays in the fleet with
+its history, goals and credentials, but nothing on this machine plays it any more, so a
+bot on another machine can have the login to itself. The Director stops polling it and
+takes its console down; a console that is still running for it anyway (one started by
+hand) logs out within seconds and refuses every login — Connect, a script, the engine,
+its own reconnects — until the account is switched back on. No console is started for a
+switched-off account, whoever asks. Switching it back on starts the console again. The
+row reads `off`, greyed, and the **Switched off** view lists them. Nothing is deleted;
+**Delete** in the row's ✎ dialog is still the only thing that removes an account.
+
+**Keep bot on** (a column, and a box in ✎) keeps an account's console running: the
+Director checks every minute and starts it again if it is down, and switching the
+account off only restarts it. Clear it to let a stopped bot stay stopped and a
+switched-off account stay off. Off outranks keep on — an account that is off is never
+started, even with the box ticked.
+
+**Sort order** (in ✎, and the Order column) is your own order for the fleet; the table
+starts sorted by it, lowest first. It is also the order accounts are spread across the
+proxy list, so moving one can move it onto another proxy.
+
+Under the table, every column that can be added up carries its **total** — coins,
+cities, prestige, troops, resources, items — for the rows on screen, so a filter or a
+view narrows the figures with the rows.
+
+A console started this way comes up with its engine **live** — if the bot is on, its
+goals are on, the account's prepend and append goals included. Only `-autorun 0` in its
+start-up parameters starts it paused. `BOT_AUTOSTART=1 node
 director.js` brings up every account's console on startup, for a machine that has just
 rebooted; without it the Director only says which accounts have no bot.
 
@@ -63,6 +88,66 @@ trip the server's rate limiter. Three guards enforce this, all learned the hard 
 - a console started with `ACCOUNT_ID` is **pinned** — `/?account=<other>` cannot switch it
 - a second console for an account already running **refuses to start**
 - the Director asks every console who it holds and skips those accounts
+
+### Proxies
+
+**Proxies** holds the list, one per line (`host:port`, `host:port:user:pass`,
+`socks5://user:pass@host:port`, `http://host:port`). **Test all** tunnels to the game
+server through every line and asks for the policy file — never a login — and says which
+work, how fast, and why the rest do not (most often: it wants a username and password, or
+this PC's IP allowed at the provider). Each account's ✎ dialog has a **Proxy** dropdown:
+this PC's own IP, or one line of the list with its last test result beside it. The
+console of that account logs in through it from its next login on; picking one that
+failed its test is allowed, and warned about, since its console will not get in.
+
+### After maintenance: everyone follows the clock
+
+Every console hears the announcement on the system channel, stands down five minutes
+before the announced start, and comes back at the announced end. From then on it checks
+the game port every 30 seconds — a TCP handshake through the account's proxy, which costs
+no login — and spends a login only once the port answers, after a stagger of up to 15
+seconds so the fleet does not arrive as one burst. No login of any kind is made while the
+stand-down is open, whoever asks for it: the supervisor, a page poll, a script, the engine
+or the Director all get the same refusal, because a login into a maintenance can hold an
+account back for half an hour. The page's **maintenance override** is the way through.
+
+#### The maintenance race (dormant)
+
+There is also a *maintenance race*, in which one account probes for the end of the window
+and the others log in behind it. It is **off** since 2026-09-20: it bought no real speed,
+and the monitor's repeated logins into a closed server ran its proxy into the ground. It
+runs only on a console started with `OTTO_MAINT_RACE=1`. What it does then: each account's
+✎ dialog has **After maintenance** (and a column of the same name):
+
+- **Maintenance monitor** — one per server. From two minutes into the window it probes
+  the game port every 15 s (through its proxy, if it has one) and tries a login every
+  30 s once it answers; the moment it is in, it writes `maintOver:<server>` to the
+  database. Making another account the monitor turns the old one into a follower.
+- **Follower** — spends no login at all through the window (not the supervisor, not a
+  page, not a script), and logs in the instant that signal is newer than the window's
+  start.
+- **Normal** — comes back on its own schedule, as before.
+
+The role is kept per account and read on every tick, so it survives any restart and a
+change applies at once; `OTTO_MAINT_MONITOR=1` / `OTTO_MAINT_FOLLOW=1` on a console's
+start override it. The window (`maintWindow:<server>`: the announced start, for 90
+minutes) is written by any console that hears the maintenance announcement, so it arms
+itself whenever maintenance comes. A follower started with `AUTOSCRIPTS=1
+RUNSCRIPT=<file>` then runs that script in every city the moment it is back.
+
+### Market glitch ready
+
+A **Market glitch ready** column says whether a holidayed account can be traded out of
+yet. A holidayed account's resources are put back at every maintenance to what they were
+at the one before, so an account that has only just gone on holiday has nothing to be put
+back to — it has to have been on holiday **across** a maintenance. Holiday mode reports
+only how much protection is LEFT, never when it began, so the console watches instead: it
+records when it first saw the holiday and counts the maintenances that end while the
+account is still on it (`holidayRun`, session.js). The count is kept in the account's own
+settings, so a console restart does not lose it, and it is dropped the moment the holiday
+ends. The column reads `—` off holiday, `not yet · 0 maintenances` before the first one,
+and `ready · N maintenances` after. While a console is offline the count is left alone:
+it cannot see, which is not the same as the holiday being over.
 
 ## The console
 
@@ -88,7 +173,9 @@ engine runs there and nowhere else, and its scripts live in that city's own ten
 **loadouts** — the first line names one, each city remembers which one it has open, and
 **Run** runs it in that city, alongside any other city's run. Unsaved edits and the
 **Output** tab stay with their city too. A script with any error is refused whole; a goal
-line with an error is skipped and the rest run.
+line with an error is skipped and the rest run. Tick **all towns** beside Run to start
+what is in the editor in every city of the account at once — one run each, each with its
+own Output and its own Stop, and no other city's loadouts touched.
 
 **The goal editor colours every line as you type.** Blue lines are ones the engine acts
 on, red lines have an error or would do nothing, and grey lines are comments. Hover a red
@@ -108,6 +195,16 @@ The pause button stops the engine acting until it is resumed. The log is split
 by kind: **Log** is what the bot did, **Engine** its per-city thinking, **Debug**
 everything including the protocol trace.
 
+**Statistics**, beside Items, is the game's own Statistics window: every player, alliance,
+hero and city on the server, ranked. **Refresh** reads all four lists into the database
+through this console's connection (`statistics.js`; never a login): one page at a time
+with a pause between, and waiting while the account's market orders are busy. The search
+box then searches every list at once, locally: a lord's name finds the lord, their
+heroes and their cities; an alliance's name finds its members and cities. Click any name
+to search for it. **All** shows the first few of each list; a list on its own sorts by any
+heading. Every console on the same server shares what was read, and the bar says when
+each list was last read in full.
+
 The header's **Reports** and **Mail** boxes open the game's own mailbox. A report is
 drawn the way the game's report screens drew it (`mailbox.js` decodes, `public/reportview.js`
 draws). The game's "battle log on the web" is a Flash page, so **`/report`** stands in
@@ -126,8 +223,10 @@ is the reference: the language, every command with its usage and how it differs 
 NEAT, the objects and functions, and the safety switches.
 
 The box beside **Run** starts at a line number or a label (NEAT's Run box), and a `stop`
-line pauses the run until **Resume**. Autorun is off until `AUTOSCRIPTS=1` (or NEAT's
-`-autoscripts 1`) switches it on; then a saved loadout holding `label autorun` starts by
+line pauses the run until **Resume**. Autorun is off until switched on — in the Director,
+per account (✎ → **Autorun scripts**) or for every account (**Start-up**, NEAT's Custom
+Parameters), or with `AUTOSCRIPTS=1` / `-autoscripts 1` in `CmdParms.txt` — and it applies
+from a console's next start; then a saved loadout holding `label autorun` starts by
 itself once each time the console starts, after the startup file, unless the console last
 started it under 10 minutes ago. Nothing a script does spends cents except `buyitem`, and
 that stops at 100 items a run without `confirm`. A line typed in the chat
@@ -144,9 +243,10 @@ them ends. The timed marches behind the extra-cities trick (`deploy bu … @:14:
 | `RUNSCRIPT` | the startup file every city runs first (NEAT's `-runscript`); default `AutoRunScript.txt` |
 | `EVONY_SCRIPTS_DIR` | where `call`, `get` and the startup file are read, default `scripts\` |
 | `EVONY_MEDIA_DIR` | where `play` finds sounds, default `media\` |
-| `EVONY_CMDPARMS` | NEAT's parameter file, default `CmdParms.txt`; the variables above win over it, and its `-name value` pairs reach scripts as `Config.<name>` |
+| `EVONY_CMDPARMS` | NEAT's parameter file, default `CmdParms.txt`; the console's command line (where the Director puts its start-up parameters) wins over it, the variables above over both, and every `-name value` reaches scripts as `Config.<name>` |
 | `OTTO_ALLOW_RESET_PLAYER` | `1` lets `resetplayer` delete the lord; off otherwise, whatever a script says |
-| `OTTO_ALLOW_ABANDON_TOWN` | `1` lets `abandontown` give up a city, and then only one `buildnpc` built; off otherwise |
+| `OTTO_ALLOW_ABANDON_TOWN` | `1` lets `abandontown` give up a city, and then only one `buildnpc` built or a person adopted with `allowabandon`; off otherwise |
+| `OTTO_TROOP_TRACE` | `1` prints the troop goal's decisions to the console's own output (`console-<id>.log`, `[troops …]` lines): each city's troop note with what its batches were sized from, every batch, mayor change and production change sent, and the traininghero's moves |
 
 ## Goals
 
@@ -278,6 +378,11 @@ cost in the bank, and a day of the troops' food. `config troop:0` stops training
 **Troop lines take NEAT's switches**, and each switch overrides its config key for that
 line. `/queuetime` (hours; `config troopqueuetime`) sets the batch length, 30 minutes by
 default; `/slot` and `config troopslot` do the same in minutes, and 0 removes the cap.
+So a level-10 barracks takes ten 30-minute batches. A troop the mayor trains **instantly**
+(under a second each: the insta hero) has no batch length: the whole shortfall goes in one
+batch, as population and resources allow, and it leaves its queue slot free for the next.
+Whether a type can be trained is the game's Enlist rule (every building, research and item
+in its conditionBean met); the server's `permition` flag is ignored, as the client does.
 `/increment` at 0 trains the line left to right, each type filling the barracks before the
 next. A share like `0.01` or a number like `500` takes turns, and `1` keeps every type at
 the same share of its target. `/usereserved` lets training spend part of the day of food
@@ -323,14 +428,33 @@ and `requesttroops <from> <troop> <localAmount> <remoteAmount> [minBatch] [maxBa
 only while the city holds less than localAmount, counting what is on its way, and never
 fill it past that. They never take a sender below remoteAmount, or below the level at which
 the sender's own line would ask for more, so two cities can't pass resources back and
-forth. One batch number is the maximum per send. A minimum batch waits until it fits,
+forth. One batch number is the maximum per send; `*` as maxBatch (or a maxBatch bigger than
+one march takes) sends as much as **one march carries**: the Rally Spot's troop limit ×
+each carrier's hold at the account's Logistics, less the march's own food — about 1b on
+100,000 transports at Logistics 10. A minimum batch waits until it fits,
 unless the city is down to half of localAmount. `*` means "doesn't matter", `troopType`
 carries the resources (transports by default), and `<from>` is `any`, a city name or `x,y`,
 several joined with `|` (`!Name` in NEAT's wiki is only markup, and reads as `Name`).
 `/below:<amount>` is ours: start asking only under that amount, then fill to localAmount.
+`/steps:<a>,<b>` is ours too, for evening an account out, the poorest city first:
+`requestresources any gold 20000b 20000b 100m * t /steps:1000b,10000b` works at 1t, then
+10t, then 20t (localAmount). At each level a city under it takes from cities over it, never
+taking them below it; a level waits while any city with the same line is still under a
+lower level that another city could fill (by a minimum batch). The richest free city sends
+(one still out on a mission here is not waited for). At the last level remoteAmount is the
+senders' floor, so cities already at the top neither receive nor pass gold round among
+themselves. A `/steps` line doesn't count as the sender's own floor for other lines.
+Across resources the stepped lines go lowest step first, then the emptiest (what the city
+holds over its step), so gold in trillions doesn't take every free sender from iron. Each
+sender makes one trip to a city at a time unless the line says `/slots:N`.
+**Food never goes past 950b in a city** (it resets to 0 at 1t): no request, keep or send
+line fills one of our cities past it, counting what is on its way.
 A line with an error doesn't run. Rules for each line:
 - What is already on its way counts: our transports and reinforcements heading in, and
   market purchases in transit.
+- **Lowest first:** a sender leaves a resource for another of our cities that holds less of it,
+  is asking for it, and that it could send to right now (no mission to it still out, near
+  enough, something over that line's floor). The neediest city takes every sender first.
 - The **nearest** city that can send the whole batch sends it. It needs enough over its
   remoteAmount, spare transports (a quarter stay home for farming) and a free rally slot.
   If no city can send it all, the one that can send the most does.
@@ -339,6 +463,18 @@ A line with an error doesn't run. Rules for each line:
   this city, the line waits for it instead of calling on a farther one.
 - Lines one sender serves ride in **one march**: food, wood and stone from one city is a
   single transport.
+- **A march takes at most 10,000 troops per Rally Spot level** of the sending city, every
+  kind together (100,000 at L10). A bigger batch goes over several marches, and the plan
+  says when a sender's march is full.
+- **Carriers are counted the way the game counts them**: each holds its load raised by the
+  account's Logistics (+100% at Logistics 10: a transport 10,000, a cavalry 200, a scout 10;
+  read from `army.getTroopParam` for the sending city when the console has asked it, else
+  from the login; unread, the base load, the plan says so and the transport asks for it),
+  less the food the march carries for its own trip at its slowest troop's speed. A minimum
+  batch is judged on that. Scouts eat 10 an hour, so a city too far for a carrier to feed
+  itself gets nothing on it, and the plan says so. The same cap holds for every
+  march the bot sends: a hide march takes the most valuable troops up to it and says how
+  many stay home, and anything else over it is refused before it is sent.
 
 **Surplus goes where it is wanted.** These lines go in the sending city.
 `keepresources <to> f:1b,w:20m [minBatch] [troopType]` keeps that much in the city and
@@ -448,7 +584,18 @@ keeping a day of hero salaries in the city.
 round every city whose goals list it. It stays at least minStay seconds (600 by default),
 then leaves after maxStay seconds or npcHits NPC runs from that city, whichever comes
 first. It moves only from home (idle or mayor), and every city on its round keeps a hall
-slot free for it while it is elsewhere.
+slot free for it while it is elsewhere. A city is on the round once, with its own line's
+stay when it has one (a city line and the prepend's both naming the hero used to leave it
+"nowhere else to go").
+
+**Keeping Excalibur on a hero.** `keepherobuff <hero> <excalibur|wealth|artofwar> [/below:<n>]`
+(OTTObot's own; NEAT has no such goal) keeps a 7-day attribute item running on a hero: the
+city holding it uses one when none is running, and a new one when it runs out. With
+`/below`, only while the hero's own attribute (before the item's +25%) is under n —
+`keepherobuff OTTO excalibur /below:1526` keeps the training hero at insta catapult. It
+never uses a second one on a running buff, never on a prisoner, uses one a pass, waits
+10 minutes for a used one to show and holds a refused one for an hour. The engine's plan
+says how long the running one has left.
 
 **Spam heroes.** `spamheroes <hero-string>` names the heroes a script's spamattack or
 loyaltyattack may send (default: base 69 or less, under level 50). `spamheroes /reset`
@@ -486,10 +633,18 @@ landed, as soon as the server reports the battle. The console's Gate Control out
 when a city's loyalty falls to that value while it is under attack. `/usewarhorn`,
 `/useivoryhorn`, `/usecorselet`, `/useultracorselet` and `/usepenicillin` (0 or 1) apply
 those buffs while under attack. A truce covers the whole account for 12 hours, so only one
-city ever sends it. The game refuses one while any army is marching at you (and, by the
-item's text, while your own troops are out), so the bot uses it in the gap after a wave
-lands. Items are used only if you hold them, never on top of a buff that is already
-running, and never while you are in truce; the plan line says why each one is waiting.
+city ever sends it. The game refuses one while any army is marching at you, or while your
+own attacks are out (transports and reinforcements don't matter), so the bot uses it in
+the gap after a wave lands. Speech Text goes first, then the truce, then comfort. The
+defence items are sent at the top of each city's turn, outside its action budget. They
+are also sent between ticks: a wave landing, the last wave leaving, or loyalty falling
+to a line wakes the engine within about 1.5 s. Items are used only if you hold them,
+never on top of a buff that is already running, and never while you are in truce; the
+plan line says why each one is waiting. The log has a line for each wave (landed or
+turned back, its time, the loyalty) and for each loyalty change while a city is at war.
+Each use says how many seconds after the last wave it went. The Director's header counts
+the accounts under attack right now (armies inbound, or a wave in the last 30 min). Each
+such row has an "under attack" badge, and hovering over it names the cities.
 
 **War Town.** `config wartown:1` or `2` (or War Town Mode on the console) locks a city down
 for war. It sends no NPC farming or valley runs, buildnpc stands down, and no resource or
@@ -537,9 +692,16 @@ Rescue (q) is accepted and does nothing: the wiki itself isn't sure what it is.
 account's *New-city template*, but only if the city has no goals yet. It logs the line
 count and records the city in the registry at once. A console (not `goalsd.js`) also runs
 the account's *New-city script* once there, if you have written one. Around every city's
-own goals run two account-wide texts: *Prepend goals*, read first, and *Append goals*,
-read last. As in NEAT's GlobalGoals, a setting written again later wins, and troop, build
-and fortification lines stack in that order. Errors say which text they are in ("append
+own goals run two account-wide texts, *Prepend goals* and *Append goals*. The city's own
+goals come first, then the prepend goals, then the append goals, and that is also the order
+of priority: a config key or a one-per-city goal (`comfortpolicy`, `defensepolicy` …) that
+an earlier text already set is kept, so the city's own line beats the prepend's and the
+prepend's beats the append's. Troop, build and fortification lines stack in the same order.
+(NEAT reads PrependGoals first and lets a later text win; this order is the user's.) A
+script's goal lines still win over all three. The Director can keep either text in step
+with a file: ✎ on the account, then a path under *Prepend goals file* or *Append goals
+file*, typed or picked with Browse. It checks the files every 15 seconds and copies a
+changed one in, so edit the file, not the console's editor. Errors say which text they are in ("append
 line 3: …"), and every city's plan says so while a global line is broken. The texts are
 read every turn, so an edit counts from the next one. An account without a template is
 offered NEAT's default !NewCityGoals.txt, word for word. Cities that buildnpc builds to hand
@@ -574,7 +736,7 @@ the exceptions are under the table.
 |---|---|
 | `goal-upkeep.js` | comfort, comfortpolicy, taxpolicy, levies, production, warehousepolicy, healing |
 | `goal-war.js` | incoming attacks, hiding, gate and gatepolicy, war town, keepatthome, attackgap, defensecooldown, embassy, warrules |
-| `goal-heroes.js` | hero strings, keepheroes, heropoints, levelling, firing, hiring, rewards, spamheroes |
+| `goal-heroes.js` | hero strings, keepheroes, heropoints, levelling, firing, hiring, rewards, spamheroes, keepherobuff |
 | `goal-npc.js` | NPC farming — camps, cycles, research gate, troop sizing, the background map scan |
 | `goal-buildnpc.js` | turning flats into NPC camps (**off by default**, see below) |
 | `goal-valley.js` | valleys, valley farming, safe valley farming, hunting, flats, abandon |
@@ -666,6 +828,21 @@ unrecorded — a capture, a purchase, a hand-built city — is permanently prote
 empty it looks. `test-buildnpc.js` was verified by sabotage: deleting any single guard
 clause makes tests fail.
 
+**`allowabandon` is the one way past that, and it is for a person.** A flat-city founded
+by something else — NEAT's `npcbuild`, the game's own client — is protected for good by
+the rule above, which is right for every city but that one. `allowabandon <city> confirm`
+records the row as `origin='adopted'`, which `abandontown` accepts and **the goal engine
+never does**: `buildnpc`'s own guard demands `origin === 'buildnpc'`, so the engine can
+still only give up what it built itself. `allowabandon <city> confirm off` undoes it, and
+a city that teleports loses it automatically.
+
+**The account's security code** — the game's second password — guards five irreversible
+actions: abandoning a city, disbanding troops, dismissing a hero, the tax rate and
+restarting the lord. `security.js` answers the game's `-200` refusal by authenticating
+once a session, unlocking that one action and sending the command again; see EVONY-RULES.md
+§5c. The code is stored per account, read at the moment it is wanted, never logged, and
+OTTObot never sets, changes or removes one in the game.
+
 **Maintenance.** The server announces maintenance ~15 minutes ahead on
 `server.SystemInfoMsg`. The bot stands down 5 minutes before, sits out the window, then
 recovers on a 5-minute ladder — probing with a bare **TCP handshake**, never a login.
@@ -748,12 +925,13 @@ for t in test-enginestate test-goals test-war test-npc test-heroes test-buildnpc
   test-script-regex test-script-net test-script-post test-script-deploy \
   test-script-city test-script-hero test-script-account test-script-market \
   test-script-info test-script-social test-script-goals test-script-console \
-  test-script-compat test-script-safety test-botctl test-holiday-login; do
+  test-script-compat test-script-safety test-botctl test-director-fleet \
+  test-holiday-login test-statistics test-armies-tab; do
   EVONY_DB=/tmp/otto-$t.db node $t.js; rm -f /tmp/otto-$t.db*
 done
 ```
 
-2,837 tests in 61 suites, no network required. `test-holiday-snipe` has 10 known
+2,864 tests in 62 suites, no network required. `test-holiday-snipe` has 10 known
 failures, which it had before the goals and scripts build-outs.
 
 **Never run `test-*.js` as a glob.** `test-scope`, `test-login`, `test-raw`, `test-block`,

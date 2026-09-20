@@ -18,6 +18,33 @@ const SESSION = new Session();
 // Set only when the account was chosen explicitly, not inferred from .env.
 const PINNED = process.env.ACCOUNT_ID || null;
 
+// NEAT's start-up parameters: this console's command line (where the Director
+// puts its fleet-wide and per-account ones, as NEAT's Director does) over
+// CmdParms.txt — script-console.js. -autorun 0 starts the engine paused, as
+// ENGINE_PAUSED=1 does; -autoscripts and -runscript are read at autorun.
+{
+  const SCP = require('./script-console');
+  SCP.setStartupArgs(process.argv.slice(2));
+  const goals = SCP.readCmdParms().autorun;
+  if (goals !== undefined && !SCP.switchOn(goals)) SESSION.userPaused = true;
+}
+
+// A console holds the game socket, the goal engine and every running script for
+// one account. Node ends the process on an unhandled rejection, so one route
+// that forgot a catch — the Director's uptime routes did exactly this — took all
+// of that down with it, mid-march and mid-script, and the page behind it just
+// stopped answering. A bug in one request is not worth a bot going dark: it is
+// logged loudly, put in the Log tab where it will be seen, and the console lives
+// on. Anything truly unrecoverable still fails at its own next step.
+for (const kind of ['unhandledRejection', 'uncaughtException']) {
+  process.on(kind, (err) => {
+    const e = err instanceof Error ? err : new Error(String(err));
+    const what = kind === 'unhandledRejection' ? 'unhandled rejection' : 'uncaught exception';
+    console.error(`\n  ${what.toUpperCase()}: ${e.message}\n${e.stack || ''}\n  (the console kept running)\n`);
+    try { SESSION.note(`${what}: ${e.message} — the console kept running; its terminal has the stack`, { kind: 'sys' }); } catch { /* not up yet */ }
+  });
+}
+
 // ONE CONSOLE PER ACCOUNT. Two logins for the same account make the server kick
 // one of them, and the two supervisors then fight and trip the rate limiter.
 // Ask every other configured console who it holds before starting; if one of
@@ -51,7 +78,15 @@ const PINNED = process.env.ACCOUNT_ID || null;
 })();
 
 console.log(`  account: ${SESSION.account ? SESSION.account.id + ' ' + SESSION.account.label : '(from .env)'}`
-  + `   port: ${PORT}   engine: ${SESSION.userPaused ? 'PAUSED (ENGINE_PAUSED=1) — press Resume' : 'live'}`);
+  + `   port: ${PORT}   engine: ${SESSION.userPaused ? 'PAUSED (ENGINE_PAUSED=1 or -autorun 0) — press Resume' : 'live'}`);
+
+// A console for an account switched off in the Director comes up and stays
+// parked: the page, the log and the scripts are all there, but nothing logs in.
+// Say so at startup, or a console that never connects looks broken.
+if (typeof SESSION.switchedOff === 'function' && SESSION.switchedOff()) {
+  console.log('  this account is SWITCHED OFF in the Director — this console will not log in '
+    + 'until it is switched back on there');
+}
 
 SESSION.startSupervisor();     // heartbeat + auto-reconnect for the console session
 SESSION.startEngine();         // ticks the goal engine, live, unless paused from the console
@@ -71,6 +106,11 @@ const LOADOUTS = 10;     // script loadout slots per city
 // `stop`, which the run polls between lines — the only way an endless `repeat`
 // ends while its line keeps going through.
 const SCRIPT_RUNS = new Map();
+// The last run of each city, kept after it ends so the Script tab can still show
+// how it went: a live Run is answered the moment it starts (see /api/script), so
+// its ending reaches the page through /api/script/runs, not through the reply.
+const SCRIPT_DONE = new Map();
+const SCRIPT_DONE_KEEP = 20;       // cities remembered; the oldest is forgotten
 const SCRIPT_KEEP = 2000;          // lines a run keeps; older ones are dropped
 
 // A script's parse errors, once each: loop/repeat expansion copies a bad line.
@@ -257,20 +297,73 @@ function scriptOpts(key, running, castle, log, { dryRun = false } = {}) {
   };
 }
 
+// Every line a run puts out carries the time it happened, by this machine's
+// clock, and stands on its own: one event, one line. The VM says a line's
+// "line N: <source>" header first and what the command did after it, so the
+// header is folded into the first thing the command says, and anything more it
+// says gets its own stamped line naming the same source line. A command that
+// says nothing at all is still its own line. Nothing here changes what the
+// script language itself writes — only how a console keeps it.
+const two = (n) => String(n).padStart(2, '0');
+function clockTime(d = new Date()) {
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
+const STAMP_RE = /^\d\d:\d\d:\d\d\.\d\d\d /;         // how a stamped line starts (the page strips it too)
+function stamped(emit) {
+  let head = null;                 // { num, text, out }: the header of the line running now
+  const put = (s) => emit(`${clockTime()} ${s}`);
+  // A header waits only for the tick it was said in. What a command says in the
+  // same breath — an order's reply, a refusal — folds into it; what takes a while
+  // to answer must not hold it back, or a `sleep 300`, or a run paused at `stop`,
+  // would say nothing at all until it was over.
+  const now = () => { if (head && !head.out) { put(head.text); head.out = true; } };
+  // one line of a command's output, folded into the header if it is the first
+  const detail = (s) => {
+    if (!head) return put(s.trim());
+    if (head.out) return put(`line ${head.num}: ${s.trim()}`);
+    put(`${head.text} · ${s.trim()}`);
+    head.out = true;
+  };
+  const fn = (m) => {
+    // a command that says several things in one breath still gets a line each,
+    // so nothing a console keeps ever runs over more than one line
+    const parts = String(m).split(/\r?\n/).filter((x) => x.trim());
+    if (!parts.length) return;
+    const h = /^line (\d+): /.exec(parts[0]);
+    if (h) {
+      now();
+      head = { num: h[1], text: parts[0].replace(/\s+$/, ''), out: false };
+      setImmediate(now);
+      for (const x of parts.slice(1)) detail(x);
+      return;
+    }
+    // what a command says is '  '-indented under its header (the VM's contract);
+    // anything else is the run speaking for itself, not for one line
+    if (parts[0].startsWith('  ') && head) { for (const x of parts) detail(x); return; }
+    now(); head = null;
+    for (const x of parts) put(x.trim());
+  };
+  fn.flush = () => { now(); head = null; };
+  return fn;
+}
+
 // Run a parsed script in city `key` and wait for its end. o: { castle, lines,
 // log, dryRun, autoReq, startLine, source }. -> { ok, n, stopped, running,
 // error } | { ok: false, busy: true } when the city already has a run.
+// Whoever waits for this, /api/script no longer does for a live run: it starts
+// the run and answers, and what happened is read from SCRIPT_DONE afterwards.
 async function runCityScript(key, actions, o = {}) {
   if (SCRIPT_RUNS.has(key)) return { ok: false, busy: true };
   const lines = o.lines || [];
   const running = { stop: false, startedAt: Date.now(), lines, dropped: 0, paused: null, source: o.source || null };
   SCRIPT_RUNS.set(key, running);
-  const log = (m) => {
+  let done = { ok: false, error: 'the run did not finish' };
+  const log = stamped((m) => {
     lines.push(m);
     if (o.log) o.log(m);
     // an endless `repeat` would otherwise grow this without bound
     if (lines.length > SCRIPT_KEEP) { lines.shift(); running.dropped++; }
-  };
+  });
   // Use the SHARED session. Logging in a second time for the same account makes
   // the server kick the first connection, which is what was knocking the
   // console offline every time a script ran.
@@ -280,12 +373,19 @@ async function runCityScript(key, actions, o = {}) {
       ...scriptOpts(key, running, o.castle ?? key, log, { dryRun: o.dryRun === true }),
       dryRun: o.dryRun === true, autoReq: !!o.autoReq, startLine: o.startLine ?? null,
     });
-    return { ok: true, n, stopped: running.stop, running };
+    done = { ok: true, n, stopped: running.stop, running };
+    return done;
   } catch (e) {
-    return { ok: false, error: e.message, stopped: running.stop, running };
+    done = { ok: false, error: e.message, stopped: running.stop, running };
+    return done;
   } finally {
+    log.flush();
     running.paused = null;
     SCRIPT_RUNS.delete(key);
+    SCRIPT_DONE.delete(key);         // re-inserted last: the Map keeps insertion order
+    SCRIPT_DONE.set(key, { at: Date.now(), startedAt: running.startedAt, lines: running.lines, dropped: running.dropped,
+      stopped: running.stop, source: running.source || null, n: done.n || 0, error: done.error || null });
+    while (SCRIPT_DONE.size > SCRIPT_DONE_KEEP) SCRIPT_DONE.delete(SCRIPT_DONE.keys().next().value);
   }
 }
 
@@ -301,9 +401,13 @@ const AUTORUN = { done: false, timer: null };
 async function startAutoruns() {
   const set = SC.autorunSettings();
   if (!set.on) {
-    SESSION.note('autorun: off — no script starts by itself (start the console with AUTOSCRIPTS=1, or put -autoscripts 1 in CmdParms.txt)');
+    SESSION.note(set.from
+      ? `autorun: off (${set.from} says so) — no script starts by itself`
+      : 'autorun: off — no script starts by itself (switch it on in the Director: ✎ the account → Autorun scripts, or'
+        + ' Start-up for every account; it applies from the console\'s next start)');
     return;
   }
+  SESSION.note(`autorun: on (${set.from})`);
   const g = SESSION.game, org = SESSION.org, acct = SESSION.account && SESSION.account.id;
   const gate = SC.autorunGate(org ? org.settings : D.settings, acct || 'console');
   if (!gate.ok) { SESSION.note('autorun: ' + gate.why); return; }
@@ -335,9 +439,9 @@ async function autorunCity(key, name, plan) {
     });
     if (r.busy) { say(`${name} already has a script running — ${p.what}${rest} not started`); return; }
     // nobody may have watched it run, so the Log says what went wrong in it
-    const bad = r.running.lines.filter((l) => /^\s+FAILED: /.test(l));
+    const bad = r.running.lines.filter((l) => /(^|·) *FAILED: /.test(l));
     say(`${p.what} in ${name} ${!r.ok ? 'failed: ' + r.error : r.stopped ? 'stopped' : `ended — ${r.n} action(s)`}`
-      + (bad.length ? `; ${bad.length} line(s) failed, the first: ${bad[0].trim().replace(/^FAILED: /, '')}` : ''));
+      + (bad.length ? `; ${bad.length} line(s) failed, the first: ${bad[0].replace(STAMP_RE, '').trim()}` : ''));
     if (r.stopped) { if (rest) say(`stopped, so the rest of ${name}'s autorun was not started`); return; }
   }
 }
@@ -347,6 +451,36 @@ AUTORUN.timer = setInterval(() => {
   clearInterval(AUTORUN.timer);
   startAutoruns().catch((e) => SESSION.note('autorun: ' + e.message));
 }, 2000);
+
+// OTTO_PROBE_AT_START=reads | orders | orders:10: measure this account's market speed once,
+// a few seconds after the console's own first login (market-probe.js), and
+// write what it found to <temp>/otto-market-probe-<account>.json. No page, no
+// signed-in user: it runs inside the console on the session it already holds,
+// so it needs no second login either. `orders` places real bids of a few stone
+// at 0.001 and cancels every one of them again; `reads` places nothing.
+if (process.env.OTTO_PROBE_AT_START) {
+  const mode = String(process.env.OTTO_PROBE_AT_START);
+  const probeTimer = setInterval(async () => {
+    if (!SESSION.connected || !SESSION.game) return;
+    clearInterval(probeTimer);
+    await new Promise((r) => setTimeout(r, 5000));        // let the login's own traffic settle
+    const acct = (SESSION.account && SESSION.account.id) || 'console';
+    const file = path.join(require('os').tmpdir(), `otto-market-probe-${acct}.json`);
+    const log = (m) => { console.log('[probe] ' + m); SESSION.note('market probe: ' + m, { kind: 'sys' }); };
+    log(`starting (${mode}) — results go to ${file}`);
+    try {
+      // `orders` is five a phase; `orders:10` any number up to the city's ten slots
+      const m = /^orders(?::(\d+))?$/.exec(mode);
+      const orders = m ? Math.max(1, Math.min(10, Number(m[1] || 5))) : 0;
+      const out = await require('./market-probe').run(SESSION.game, { reads: true, orders, log });
+      fs.writeFileSync(file, JSON.stringify({ ok: true, host: require('os').hostname(), ...out }, null, 2));
+      log('done');
+    } catch (e) {
+      fs.writeFileSync(file, JSON.stringify({ ok: false, error: e.message }, null, 2));
+      log('FAILED: ' + e.message);
+    }
+  }, 2000);
+}
 
 const server = http.createServer(async (req, res) => {
   // Login gate first: everything below controls live accounts.
@@ -387,7 +521,8 @@ const server = http.createServer(async (req, res) => {
 
   // ---- shared session endpoints ----
   if (url.pathname === '/api/session') {
-    return send(200, 'application/json', JSON.stringify({ ...SESSION.header(), cities: SESSION.cities() }));
+    // startupArgs: what this console was started with, so the Director can mark one still on old parameters
+    return send(200, 'application/json', JSON.stringify({ ...SESSION.header(), cities: SESSION.cities(), startupArgs: SC.parmsToArgs(SC.startupArgs()) }));
   }
   // Focus an account by id from the Director's shared accounts.json
   if (url.pathname === '/api/switch' && req.method === 'POST') {
@@ -411,14 +546,92 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
 
+  // ---- this account's own settings (the page's cog) ----
+  //
+  // So far one: the game's SECURITY CODE. It is stored on the account because
+  // the console needs it at the moment the game answers -200, with nobody
+  // watching. It is WRITE-ONLY over this API — the page is told whether one is
+  // stored, never what it is, so a stored code cannot be read back out of a
+  // signed-in tab or a proxy log.
+  if (url.pathname === '/api/settings' && req.method === 'GET') {
+    const SEC = require('./security');
+    const acc = SESSION.account ? ORG.accounts.get(SESSION.account.id) : null;
+    let protection = { option: null, error: 'not connected', options: SEC.OPTIONS };
+    if (SESSION.game) {
+      const p = await SEC.readProtection(SESSION.game);
+      protection = { option: p.option, error: p.error, isSet: p.isSet, options: SEC.OPTIONS };
+    }
+    return send(200, 'application/json', JSON.stringify({
+      ok: true,
+      label: acc ? acc.label : (SESSION.account && SESSION.account.label) || null,
+      hasSecurityCode: !!(acc && acc.securityCode),
+      protection,
+    }));
+  }
+  if (url.pathname === '/api/settings' && req.method === 'POST') {
+    const b = await body(req);
+    if (!SESSION.account || !SESSION.account.id) {
+      return send(200, 'application/json', JSON.stringify({ ok: false, error: 'this console is not bound to an account, so there is nothing to save it on' }));
+    }
+    if (b.securityCode === undefined) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'nothing to save' }));
+    ORG.accounts.upsert({ id: SESSION.account.id, securityCode: String(b.securityCode) });
+    // Anything unlocked with the old code stays unlocked for this session; the
+    // next login starts locked again either way.
+    if (SESSION.game) SESSION.game._secAuthed = false;
+    // Deliberately not the code, not even its length: this line is kept.
+    SESSION.note(String(b.securityCode) ? 'security code stored for this account' : 'the stored security code was cleared', { kind: 'sys' });
+    return send(200, 'application/json', JSON.stringify({ ok: true, hasSecurityCode: !!String(b.securityCode) }));
+  }
+  // Is the stored code the right one? common.authSecurityCode only
+  // authenticates — it unlocks nothing — so this changes nothing in the game.
+  if (url.pathname === '/api/settings/check' && req.method === 'POST') {
+    const g = SESSION.game;
+    if (!g) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected to the game' }));
+    if (!g.hasSecurityCode()) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no security code is stored for this account' }));
+    let r = null;
+    try { r = await g.req('common.authSecurityCode', { code: g.securityCode() }); }
+    catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+    if (r && r.ok === 1) { g._secAuthed = true; return send(200, 'application/json', JSON.stringify({ ok: true })); }
+    return send(200, 'application/json', JSON.stringify({ ok: false, error: `the game refused it (${(r && (r.errorMsg || r.ok)) || 'no answer'})` }));
+  }
+
   if (url.pathname === '/api/connect' && req.method === 'POST') {
     // Connect is also how a script's logout is ended early (logout.js).
     if (SESSION.maint.plan && SESSION.maint.plan.source === 'logout') SESSION.clearMaintenancePlan();
+    // ...and how the hold after another login kicked us is ended early.
+    SESSION.clearKickHold();
     try { await SESSION.connect(); } catch (e) { /* reported via header */ }
+    return send(200, 'application/json', JSON.stringify(SESSION.header()));
+  }
+  // The page's Refresh button: a fresh login now, as F5 is in the game client.
+  if (url.pathname === '/api/reconnect' && req.method === 'POST') {
+    try { await SESSION.reconnect(); } catch (e) { /* reported via header */ }
     return send(200, 'application/json', JSON.stringify(SESSION.header()));
   }
   // What our own armies are doing right now — the direct answer to "is it
   // actually farming", which the logs only imply.
+  // How fast can this account's market go? (market-probe.js) OFF unless the
+  // console was started for it (OTTO_PROBE=1), and only for a signed-in user —
+  // the machine token deliberately cannot drive a bot (auth.js guard). The same
+  // probe can run by itself once after the console's own login instead
+  // (OTTO_PROBE_AT_START), with no page and no session needed.
+  if (url.pathname === '/api/debug/market-timing' && req.method === 'POST') {
+    if (process.env.OTTO_PROBE !== '1') {
+      return send(403, 'application/json', JSON.stringify({ ok: false, error: 'start the console with OTTO_PROBE=1 to measure' }));
+    }
+    const b = await body(req);
+    try {
+      const g = await SESSION.connect();
+      const out = await require('./market-probe').run(g, {
+        city: b.city || null, resource: String(b.resource || 'stone'), reads: b.reads !== false,
+        orders: b.orders === true ? 5 : Math.max(0, Math.min(10, Number(b.orders) || 0)), log: (m) => console.log('[probe] ' + m),
+      });
+      return send(200, 'application/json', JSON.stringify({ ok: true, ...out }));
+    } catch (e) {
+      return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   // Diagnostic: the raw shapes the server actually sends, so UI work is built
   // against reality rather than against the bean definitions, which list only a
   // subset of what arrives at runtime. Internal token only.
@@ -526,11 +739,69 @@ const server = http.createServer(async (req, res) => {
     const b = require('./buffs').active(g);
     const open = q.get('city');
     const city = open && b.cities[String(open)] ? b.cities[String(open)] : [];
+    const inv = require('./items').inventory(g);
+    const { applyRefusal } = require('./script-cmd-account');
+    for (const it of inv.items) it.noApply = applyRefusal(it);
     return send(200, 'application/json', JSON.stringify({
-      ok: true, ...require('./items').inventory(g),
+      ok: true, ...inv,
       buffs: [...b.player.map((x) => ({ ...x, scope: 'account' })), ...city.map((x) => ({ ...x, scope: 'city' }))],
       protection: b.protection,
     }));
+  }
+  // The Items tab's Apply: spends an item in the open city exactly as the
+  // useitem script line does (the same held-count check, shop.useGoods or
+  // shop.useCastleGoods), and sends its lines back for the page to show.
+  if (url.pathname === '/api/items/use' && req.method === 'POST') {
+    const b = await body(req);
+    const lines = [];
+    try {
+      const A = require('./script-cmd-account');
+      const g = await SESSION.connect();
+      const castle = b.city ? g.castles.find((c) => g.castleId(c) === Number(b.city)) || g.castle() : g.castle();
+      const id = String(b.itemId || '');
+      const held = ((g.player && g.player.items) || []).find((i) => i && String(i.id) === id);
+      const inv = require('./items').inventory(g).items.find((i) => i.id === id);
+      if (!held || !inv) throw new Error(`you hold no ${id}`);
+      const no = A.applyRefusal(inv);
+      if (no) throw new Error(no);
+      const count = Math.max(1, Math.floor(Number(b.count) || 1));
+      const a = A.commands.useitem.parse(`/count=${count} ${id}`);
+      const env = {
+        game: g, castle, dryRun: false,
+        log: (m) => lines.push(String(m).trim()),
+        say: (x) => (x && x.ok === 1 ? 'ok' : `FAILED (ok=${x && x.ok})${x && x.errorMsg ? ' - ' + x.errorMsg : ''}`),
+      };
+      const res = await A.commands[a.cmd].run(a, env) || {};
+      const ok = !res.error && lines.some((l) => /^-> ok\b/.test(l));
+      SESSION.note(`manual: useitem ${count} x ${inv.name} -> ${ok ? 'ok' : res.error || lines[lines.length - 1] || 'failed'}`,
+        { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ok, lines, error: res.error || null }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, lines, error: e.message })); }
+  }
+  // The Statistics tab: the game's rankings (players, alliances, heroes, cities),
+  // read into the database by statistics.js and searched there. A search never asks
+  // the server; Refresh reads the lists through this console's live connection
+  // (never a login), and every console on the same server shares what it read.
+  if (url.pathname === '/api/stats' || url.pathname.startsWith('/api/stats/')) {
+    const ST = require('./statistics');
+    const server = (SESSION.account && SESSION.account.server) || process.env.EVONY_SERVER || 'ss71';
+    if (url.pathname === '/api/stats' && req.method === 'GET') {
+      const res = ST.search(server, { kind: q.get('kind') || 'all', q: q.get('q') || '', sort: q.get('sort') || 'rank',
+        dir: q.get('dir') || 'asc', limit: q.get('limit'), offset: q.get('offset') });
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, status: ST.status(server), ...res }));
+    }
+    if (url.pathname === '/api/stats/refresh' && req.method === 'POST') {
+      const b = await body(req);
+      const g = SESSION.game;
+      if (!g || !SESSION.connected) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected — the lists are read through this account\'s live connection' }));
+      const account = (SESSION.account && SESSION.account.label) || (g.player && g.player.userName) || null;
+      const r = ST.start({ game: g, server, account, kinds: Array.isArray(b.kinds) && b.kinds.length ? b.kinds : undefined,
+        alive: () => SESSION.game === g && SESSION.connected, log: (m) => SESSION.note(m, { kind: 'sys' }) });
+      return send(200, 'application/json', JSON.stringify({ ...r, status: ST.status(server) }));
+    }
+    if (url.pathname === '/api/stats/stop' && req.method === 'POST') {
+      return send(200, 'application/json', JSON.stringify({ ...ST.stop(), status: ST.status(server) }));
+    }
   }
   if (url.pathname === '/api/city') {
     return send(200, 'application/json', JSON.stringify(SESSION.city(q.get('id')) || {}));
@@ -783,6 +1054,23 @@ const server = http.createServer(async (req, res) => {
         return send(200, 'application/json', JSON.stringify({ ok: !!r2.used && !r2.error, used: r2.used || 0, lines, error: r2.error }));
       }
 
+      // Persuade a prisoner we hold to join, as the persuadehero script line does
+      // (the same gold and medal checks), its lines sent back for the page. The
+      // preview is that line's dry run: it says the cost and sends nothing.
+      if (b.action === 'persuade' || b.action === 'persuadepreview') {
+        if (!hero) throw new Error('hero not found in this city');
+        const lines = [];
+        const env = {
+          game: g, castle, dryRun: b.action === 'persuadepreview',
+          log: (m) => lines.push(String(m).trim()),
+          say: (x) => (x && x.ok === 1 ? 'ok' : `FAILED (ok=${x && x.ok})${x && x.errorMsg ? ' - ' + x.errorMsg : ''}`),
+        };
+        const res = await require('./script-cmd-hero').commands.persuadehero.run({ cmd: 'persuadehero', name: String(hero.id) }, env) || {};
+        const ok = env.dryRun ? !res.error : !!res.result;
+        if (!env.dryRun) SESSION.note(`manual: persuadehero ${hero.name} -> ${ok ? 'ok' : lines[lines.length - 1] || 'failed'}`, { city: castle.name, kind: 'act' });
+        return send(200, 'application/json', JSON.stringify({ ok, lines, error: res.error }));
+      }
+
       // What the next inn refresh would spend; the page asks before paying coins.
       if (b.action === 'refreshinnpreview') {
         const cost = g.innRefreshCost();
@@ -893,6 +1181,11 @@ const server = http.createServer(async (req, res) => {
           bestBid: buyers.length ? Math.max(...buyers) : null,
           sellVolume: (d.sellers || []).reduce((n2, s) => n2 + Number(s.amount || 0), 0),
           buyVolume: (d.buyers || []).reduce((n2, s) => n2 + Number(s.amount || 0), 0),
+          // The top of the book, best first, for the resource hover card.
+          asks: (d.sellers || []).map((s) => ({ price: Number(s.price), amount: Number(s.amount || 0) }))
+            .filter((s) => s.price > 0).sort((a, b) => a.price - b.price).slice(0, 5),
+          bids: (d.buyers || []).map((s) => ({ price: Number(s.price), amount: Number(s.amount || 0) }))
+            .filter((s) => s.price > 0).sort((a, b) => b.price - a.price).slice(0, 5),
         };
       }
       const cid = Number(q.get('city')) || g.castleId(g.castle());
@@ -956,11 +1249,19 @@ const server = http.createServer(async (req, res) => {
     const acct = SESSION.account && SESSION.account.id;
     try {
       if (!ORG || !acct) throw new Error('this console has no account to keep account-wide goals under');
-      if (req.method !== 'POST') return send(200, 'application/json', JSON.stringify(G.readText(ORG.goals, acct, q.get('which'))));
+      // a prepend/append text the Director keeps in step with a file (goalfiles.js)
+      const fileOf = (which) => ORG.settings.get(`goalFile:${which}:${acct}`, null) || null;
+      if (req.method !== 'POST') {
+        const r = G.readText(ORG.goals, acct, q.get('which'));
+        r.file = fileOf(r.which);
+        return send(200, 'application/json', JSON.stringify(r));
+      }
       const b = await body(req);
       const r = G.saveText(ORG.goals, acct, b);
+      r.file = fileOf(r.which);
       if (r.saved) {
         if (SESSION.userPaused && (r.which === 'prepend' || r.which === 'append')) r.note = 'Saved. The engine is PAUSED — these take effect when you resume it.';
+        if (r.file) r.note = `${r.note || 'Saved.'} The Director puts ${r.file} back over this within 15 seconds — edit the file instead.`;
         SESSION.note(`${r.label} saved from the console (${G.goalLines(b.src)} line(s))`);
       }
       return send(200, 'application/json', JSON.stringify(r));
@@ -1003,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
     }
     const env = loadEnv();
     const lines = [];
-    const log = (m) => { lines.push(m); console.log('[script] ' + m); };
+    const log = stamped((m) => { lines.push(m); console.log('[script] ' + m); });
     const { parse, run } = require('./script');
     const { Game } = require('./game');
 
@@ -1065,10 +1366,26 @@ const server = http.createServer(async (req, res) => {
     // The console sends the open city tab as `city`. Reading only `castle`
     // ran every console script in the FIRST city, whichever tab was open.
     // Live unless a caller asks otherwise — only the old /script page still does.
-    const r = await runCityScript(key, actions, {
+    const started = runCityScript(key, actions, {
       castle: b.castle ?? b.city, lines, log: (m) => console.log('[script] ' + m),
       dryRun: b.dryRun === true, autoReq: !!b.autoReq, startLine: from.startLine, source: 'console',
     });
+    // A live run is ANSWERED NOW, not when it ends. Waiting held one browser
+    // connection open per running city, and a browser allows six to one origin:
+    // with five endless `loop`s going, the sixth city's Run — and every other
+    // request the page made, loadouts included — queued behind them, so the
+    // console looked frozen and kept showing the city before. The run's output
+    // and its ending are read from /api/script/runs from here on. A dry run is
+    // short and has no such tab behind it (the old /script page), so it waits.
+    // `wait: true` asks for the old behaviour — the reply comes when the run is
+    // over. Only the tests and a caller with no tab behind it use it; the Script
+    // tab must never send it, for the reason above.
+    if (b.dryRun !== true && b.wait !== true) {
+      started.catch((e) => console.log('[script] ' + key + ': ' + e.message));
+      log('started — the Output tab follows it from here; Stop ends it');
+      return send(200, 'application/json', JSON.stringify({ ok: true, started: true, city: key, log: lines.slice(), errors }));
+    }
+    const r = await started;
     if (r.busy) {
       log('a script is already running in this city — stop it first');
       return send(200, 'application/json', JSON.stringify({ ok: false, log: lines, errors }));
@@ -1107,13 +1424,20 @@ const server = http.createServer(async (req, res) => {
   // paused: {line, next, since} while a run waits at `stop`; source: console |
   // autorun Load N | ...
   if (url.pathname === '/api/script/runs') {
-    const running = q.get('city') === null ? null : SCRIPT_RUNS.get(q.get('city'));
-    const tail = running ? running.lines.slice(-400) : null;
+    const asked = q.get('city');
+    // the run going on in that city, or — since a live Run is answered as it
+    // starts — the last one that finished there, so the page can show its end
+    const running = asked === null ? null : SCRIPT_RUNS.get(asked);
+    const over = running || asked === null ? null : SCRIPT_DONE.get(asked) || null;
+    const lines = (running || over) ? (running || over).lines : null;
+    const tail = lines ? lines.slice(-400) : null;
+    const held = running || over;
     return send(200, 'application/json', JSON.stringify({
       runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, startedAt: r.startedAt, stopping: r.stop,
         paused: r.paused ? { line: r.paused.line, next: r.paused.next, since: r.paused.since } : null, source: r.source || null })),
       lines: tail,
-      dropped: running ? running.dropped + running.lines.length - tail.length : 0,
+      dropped: held ? held.dropped + lines.length - tail.length : 0,
+      ended: over ? { at: over.at, startedAt: over.startedAt, n: over.n, stopped: over.stopped, error: over.error, source: over.source } : null,
     }));
   }
 

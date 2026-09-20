@@ -395,7 +395,7 @@ t('resetplayer deletes with the hash, ends the run and stands the console down',
 
   const sec = world({ goals: true, handlers: { 'common.deleteUserAndRestart': { ok: -200, errorMsg: 'security code' } } });
   const r2 = await runIn(sec, RESET_NULL + '\necho after');
-  assert.match(r2.text, /security code first — nothing was deleted/);
+  assert.match(r2.text, /needs its security code and it could not be used[\s\S]*nothing was deleted/);
   assert.match(r2.text, /after/);
 
   const dry = world({ goals: true });
@@ -639,8 +639,38 @@ t('cleannpcreports: Barbarian attacks and their returns, and transports; nothing
   const r = await runIn(w, 'cleannpcreports\nkeep("r", $result)');
   assert.deepStrictEqual(w.left(), [1, 12, 14, 15, 20, 21]);
   assert.strictEqual(r.kept.r, 123);
-  assert.deepStrictEqual(w.of('report.receiveReportList').map((d) => [d.reportType, d.pageNo]), [[1, 1], [1, 2], [1, 3]], 'every page read first');
-  assert.deepStrictEqual(w.of('report.deleteReport').map((d) => d.idStr.split(',').length), [50, 50, 23]);
+  // page 1 read, its picks deleted, read again as the rest move up — until it keeps only 12, 14, 15
+  assert.deepStrictEqual(w.of('report.receiveReportList').map((d) => [d.reportType, d.pageNo]), [[1, 1], [1, 1], [1, 1]], 'deletes as it reads');
+  assert.deepStrictEqual(w.of('report.deleteReport').map((d) => d.idStr.split(',').length), [47, 47, 29]);
+  assert.match(r.text, /removed 123 of 126 army report\(s\)/);
+});
+t('cleanreports on a big account deletes page 1 over and over, and a filter walks past pages it keeps', async () => {
+  const w = reportWorld({ transports: 5000 });
+  const r = await runIn(w, 'cleanreports army\nkeep("r", $result)');
+  assert.strictEqual(r.kept.r, 5006);
+  assert.ok(w.of('report.receiveReportList').every((d) => d.pageNo === 1), 'never past page 1');
+  assert.strictEqual(w.of('report.deleteReport').length, 101);
+  const k = reportWorld({ transports: 200 });
+  for (let i = 0; i < 120; i++) k.R[1].unshift({ id: 5000 + i, armyType: 5, title: 'Attack Lord22', targetPos: 'Lord22(300,300)' });
+  await runIn(k, 'cleannpcreports');
+  assert.strictEqual(k.R[1].filter((x) => x.armyType === 1).length, 0, 'transports behind two pages of kept reports go too');
+  assert.deepStrictEqual(k.of('report.receiveReportList').map((d) => d.pageNo).slice(0, 3), [1, 2, 3]);
+});
+t('cleanreports asks again when a page goes unanswered, and keeps what it deleted when it gives up', async () => {
+  const w = reportWorld({ transports: 120 });
+  let calls = 0;
+  const orig = w.g.reportList.bind(w.g);
+  w.g.reportList = (...a) => (++calls === 2 ? Promise.reject(new Error('no reply to report.receiveReportList')) : orig(...a));
+  const r = await runIn(w, 'cleannpcreports\nkeep("r", $result)', { reportWaitMs: 0 });
+  assert.strictEqual(r.kept.r, 123);
+  assert.match(r.text, /no reply to report\.receiveReportList — asking again/);
+  const dead = reportWorld({ transports: 120 });
+  let n = 0;
+  const o2 = dead.g.reportList.bind(dead.g);
+  dead.g.reportList = (...a) => (++n >= 2 ? Promise.reject(new Error('no reply to report.receiveReportList')) : o2(...a));
+  const r2 = await runIn(dead, 'cleannpcreports', { reportWaitMs: 0 });
+  assert.match(r2.text, /47 report\(s\) removed before it/);
+  assert.strictEqual(dead.R[1].length, 126 - 47, 'the first page\'s deletes stay done');
 });
 t('a dry run deletes nothing', async () => {
   const w = reportWorld();

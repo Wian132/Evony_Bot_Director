@@ -281,6 +281,36 @@ function useitemAction(item, count) {
   };
 }
 
+// The Items tab's Apply button: why an item has none, or null when useitem
+// spends it as it stands. The game's own Use button is off for the event keys
+// and tokens (UseGoodWin.as:1150-1160), a speed-up goes on a build or a
+// research, and whatever useitem sends elsewhere says where.
+const NO_USE_BUTTON = /^player\.(key\.|bone\.key$|item\.(candy|turkeyhunt|snowball|pieceofrainbow|wolfpaw|gildedhorn|harvesttoken|huntersstones|relicofthekrampus|stygandrsbannerofthehorde))/;
+// Spent somewhere other than My Items' Use, or not worked out yet: Apply sends
+// none of these rather than guess.
+const APPLY_ELSEWHERE = [
+  [/^hero\.(?!compensation\.)/, (n) => `${n} is used on a hero — the + in the Buff column of its row in Heroes`],
+  [/^(enhanced\.|equipment\.tech\.|consume\.gemstonetogetherup\.)/, (n) => `${n} is a blacksmith item — Apply does not send those`],
+  [/^player\.trick\./, (n) => `${n} is a stratagem — Apply does not send those`],
+  [/^player\.move\.castle\./, (n) => `${n} is a teleporter — use  teleport <x,y>`],
+  [/^consume\.1\./, (n) => `${n} is spent by a world-chat message, not used`],
+  [/^consume\.refreshtavern\./, (n) => `${n} is spent by the inn's refresh`],
+  [/^player\.destroy\./, (n) => `${n} knocks down a building — Apply does not send it`],
+];
+function applyRefusal(it) {
+  const name = it.name || it.id;
+  if (it.medal) return `${name} is used on a hero — the + in the Buff column of its row in Heroes`;
+  if (NO_USE_BUTTON.test(it.id) || it.category === 'Quest') return `${name} has no Use button in the game`;
+  if (it.category === 'Speed Up') return `${name} goes on a build or a research —  upgrade <type> /speedup=…  or  create … /speedup=…`;
+  if (it.category === 'Material') return `${name} is a forging material — the game has no Use button for it`;
+  const other = APPLY_ELSEWHERE.find(([re]) => re.test(it.id));
+  if (other) return other[1](name);
+  try { useitemAction({ id: it.id, name }, 1); return null; } catch (e) {
+    return e.message.replace(/^useitem: /, '')
+      .replace(/ — {2}useheroitem .*$/, ' — the + in the Buff column of its row in Heroes');
+  }
+}
+
 const named = (name, id) => (name && name !== id ? `${name} (${id})` : String(id));
 
 async function runUseitem(a, env) {
@@ -601,34 +631,58 @@ async function runQuests(a, env) {
 
 const REPORT_KINDS = ['trade', 'army', 'other'];   // constants.js REPORT_TYPE 0 1 2 (ObjConstants.REPORT_TYPE_*)
 const PAGE = 50;
-const MAX_PAGES = 200;
+const REPORT_TRIES = 3;          // a list or delete the game doesn't answer is asked again this often
+const REPORT_WAIT = 10000;       // ms before asking again
+const REPORT_PROGRESS = 30000;   // ms between progress lines
 
-// Every report of those kinds `pick` takes. All of it is read before anything
-// goes (a delete moves the rest up a page), then deleted 50 at a time.
+// Every report of those kinds `pick` takes, a page at a time: read a page,
+// delete what it picks, read the same page again (the rest have moved up into
+// it), and go to the next page only when one has nothing left to delete. An
+// account can hold hundreds of thousands of reports: reading them all first
+// took 12 minutes on 450k, then one page went unanswered and the line failed
+// having deleted nothing (2026-09-18). This way whatever is deleted stays
+// deleted, a Stop ends it between pages, and running it again carries on.
 async function cleanWhere(env, kinds, pick) {
   const game = env.game;
-  const ids = [];
-  let seen = 0;
+  let seen = 0, removed = 0, said = Date.now();
+  const wait = (env.opts && env.opts.reportWaitMs) ?? REPORT_WAIT;
+  const ask = async (what, fn) => {
+    for (let n = 1; ; n++) {
+      try { return await fn(); } catch (e) {
+        if (n >= REPORT_TRIES || env.stopped()) throw new Error(`${e.message} (${removed} report(s) removed before it)`);
+        env.log(`  ${what}: ${e.message} — asking again in ${wait / 1000} s`);
+        await env.pause(wait);
+      }
+    }
+  };
   for (const kind of kinds) {
-    for (let page = 1, total = 1; page <= total && page <= MAX_PAGES; page++) {
+    let page = 1, carried = 0, tried = new Set();
+    while (!env.stopped()) {
       // report.receiveReportList {pageNo, pageSize, reportType}: ReportCommands.as:39-48 (Game.reportList)
-      const d = await game.reportList(kind, page, PAGE);
+      const d = await ask(`${kind} reports page ${page}`, () => game.reportList(kind, page, PAGE));
       if (!d || (d.ok !== undefined && d.ok !== 1)) { env.log(`  ${kind} reports -> ${env.say(d)}`); break; }
       const rows = Array.isArray(d.reports) ? d.reports : [];
-      seen += rows.length;
-      for (const r of rows) if (pick(r)) ids.push(r.id);
-      total = Number(d.totalPage) || 1;
       if (!rows.length) break;
+      seen += Math.max(0, rows.length - carried);   // the rows kept from this page last time were counted then
+      const ids = rows.filter(pick).map((r) => r.id);
+      if (!ids.length) {
+        if (page >= (Number(d.totalPage) || 1)) break;
+        page++; carried = 0; tried = new Set();
+        continue;
+      }
+      // a delete the game said ok to but didn't do would read the same page for ever
+      if (ids.some((id) => tried.has(id))) { env.log(`  ${kind} reports: the game kept reports it said it deleted — stopped`); return { seen, removed }; }
+      // report.deleteReport {idStr}: ReportCommands.as:70-77, "delete selected" (Game.deleteReports)
+      const r = await ask('delete', () => game.deleteReports(ids));
+      if (r && r.ok !== undefined && r.ok !== 1) { env.log('  delete -> ' + env.say(r)); return { seen, removed }; }
+      removed += ids.length;
+      tried = new Set(ids);
+      carried = rows.length - ids.length;
+      if (Date.now() - said >= REPORT_PROGRESS) { said = Date.now(); env.log(`  … ${removed.toLocaleString('en-US')} removed so far (${kind})`); }
+      if (rows.length < PAGE) break;   // the last page: nothing can move up into it
     }
   }
-  let removed = 0;
-  for (let i = 0; i < ids.length; i += PAGE) {
-    const chunk = ids.slice(i, i + PAGE);
-    // report.deleteReport {idStr}: ReportCommands.as:70-77, "delete selected" (Game.deleteReports)
-    const r = await game.deleteReports(chunk);
-    if (r && r.ok !== undefined && r.ok !== 1) { env.log('  delete -> ' + env.say(r)); break; }
-    removed += chunk.length;
-  }
+  if (env.stopped()) env.log(`  stopped — ${removed.toLocaleString('en-US')} removed; run it again to carry on`);
   return { seen, removed };
 }
 
@@ -878,10 +932,13 @@ const commands = {
       const pwd = game.c.passwordHash();
       if (!pwd) return fail(env, 'this session never logged in with a password, so it cannot confirm a reset');
       // common.deleteUserAndRestart {pwd}: CommonCommands.as:338-345, RestartGameWin.as:435
-      const r = await game.req('common.deleteUserAndRestart', { pwd });
+      const r = await game.deleteUserAndRestart(pwd);
       env.log('  -> ' + env.say(r));
       // -200: the account's security code comes first (RestartGameWin.as:356-366)
-      if (r && r.ok === -200) env.log('  the game wants the account\'s security code first — nothing was deleted');
+      // Still -200 after reqProtected tried to unlock: no code is stored for this
+      // account, or the game refused the one that is.
+      if (r && r.ok === -200) env.log('  the account needs its security code and it could not be used'
+        + (r.securityCode ? ' (' + r.securityCode + ')' : '') + ' — nothing was deleted');
       if (!r || r.ok !== 1) return { done: 1 };
       // The client restarts into the create-player screen here. A login would
       // find no lord, so the console stands down until Connect is pressed.
@@ -897,6 +954,84 @@ const commands = {
     usage: 'completequests [routine|daily|title|rank|office] [types] [names] [/mode=] [/type=] [/name=] [/query=available|finished|all]',
     parse: (args) => parseQuests(args),
     run: runQuests,
+  },
+
+  // The account's SECURITY CODE — the game's second password. security.js has
+  // the protocol; this is how a person sees and sets it from a console.
+  //
+  // The code itself is never logged, never echoed back and never put in a
+  // result: a script's log is kept and read, and this is a password.
+  securitycode: {
+    usage: 'securitycode [set <code> | clear | check | unlock [all]]   — the second password the game guards abandon, disband, dismiss, tax and restart with',
+    parse(args) {
+      const ws = String(args == null ? '' : args).trim().split(/\s+/).filter(Boolean);
+      const lc = (x) => String(x == null ? '' : x).toLowerCase();
+      const what = ws.length ? lc(ws[0]) : 'show';
+      if (what === 'show' && !ws.length) return { cmd: 'securitycode', what: 'show' };
+      if (what === 'set') {
+        // Everything after `set` is the code, verbatim — it may hold spaces, and
+        // it is NOT lower-cased or trimmed of anything but the outer spaces.
+        const code = String(args).replace(/^\s*set\s+/i, '');
+        if (!code.trim()) throw new Error('securitycode: usage  securitycode set <code>');
+        return { cmd: 'securitycode', what: 'set', code };
+      }
+      if (['clear', 'check', 'show'].includes(what) && ws.length === 1) return { cmd: 'securitycode', what };
+      if (what === 'unlock' && ws.length <= 2) {
+        if (ws.length === 2 && lc(ws[1]) !== 'all') throw new Error('securitycode: usage  securitycode unlock [all]');
+        return { cmd: 'securitycode', what: 'unlock', all: ws.length === 2 };
+      }
+      throw new Error('securitycode: usage  securitycode | securitycode set <code> | securitycode clear | securitycode check | securitycode unlock [all]');
+    },
+    async run(a, env) {
+      const game = env.game;
+      const SEC = require('./security');
+      const s = env.session;
+      const acct = s && s.account && s.account.id;
+      const accounts = s && s.org && s.org.accounts;
+
+      if (a.what === 'set' || a.what === 'clear') {
+        if (!acct || !accounts) return fail(env, 'securitycode needs a console bound to an account — the code is stored on the account');
+        if (env.dryRun) { env.log(`  [dry run] the stored security code would be ${a.what === 'set' ? 'replaced' : 'cleared'}`); return {}; }
+        accounts.upsert({ id: acct, securityCode: a.what === 'set' ? a.code : '' });
+        // Anything unlocked with the OLD code stays unlocked for this session;
+        // the next login starts locked again either way.
+        game._secAuthed = false;
+        env.log(a.what === 'set'
+          ? '  security code stored for this account (it is not written to the log)'
+          : '  the stored security code is cleared — protected actions will be refused with -200');
+        return { done: 1 };
+      }
+
+      const stored = game.hasSecurityCode();
+      if (a.what === 'unlock') {
+        if (!stored) return fail(env, 'no security code is stored for this account — securitycode set <code> first');
+        if (env.dryRun) { env.log(`  [dry run] would unlock ${a.all ? 'every protected action' : 'nothing yet — unlock happens per action'}`); return {}; }
+        const r = await SEC.unlock(game, SEC.ALL, { code: game.securityCode(), log: env.log, all: true });
+        if (!r.ok) return fail(env, r.why);
+        return { done: 1 };
+      }
+
+      // show / check: what the GAME says, not what we assume.
+      const p = await SEC.readProtection(game);
+      env.log(`  this account ${p.isSet ? 'HAS' : 'has no'} security code set in the game`);
+      if (p.option === null) env.log(`  what it protects could not be read (${p.error})`);
+      else env.log(`  it protects: ${SEC.describeMask(p.option)}`);
+      for (const o of SEC.OPTIONS) {
+        const on = p.option !== null && (p.option & o.bit) === o.bit;
+        env.log(`    ${on ? '[x]' : '[ ]'} ${o.label} (bit ${o.bit}) — ${o.what}`);
+      }
+      env.log(`  this console ${stored ? 'has' : 'has NO'} code stored for the account`);
+      if (p.isSet && !stored) env.log('  -> protected actions will come back -200 and do nothing; securitycode set <code> fixes that');
+      if (a.what === 'check' && stored) {
+        if (env.dryRun) { env.log('  [dry run] the code was not sent'); return {}; }
+        // common.authSecurityCode on its own only authenticates; it unlocks
+        // nothing, so this is a safe way to find out whether the code is right.
+        const r = await game.req('common.authSecurityCode', { code: game.securityCode() });
+        env.log(r && r.ok === 1 ? '  the stored code is CORRECT' : `  the game refused the stored code (${(r && (r.errorMsg || r.ok)) || 'no answer'})`);
+        if (r && r.ok === 1) game._secAuthed = true;
+      }
+      return { done: 1, result: p.option };
+    },
   },
 
   packages: {
@@ -984,4 +1119,4 @@ const commands = {
   },
 };
 
-module.exports = { commands, findItem, splitArgs, TITLES, RANKS, ALLOW };
+module.exports = { commands, findItem, splitArgs, applyRefusal, TITLES, RANKS, ALLOW };

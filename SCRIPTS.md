@@ -35,6 +35,16 @@ it goes, and **Stop** ends it once the line it is on finishes (a wait is cut sho
 A run outlives the page: close the tab and it carries on; reopen it and the output is
 still there.
 
+Tick **all towns** beside Run and one press starts that same text — what is in the
+editor, this city's loadout — as its own run in **every city of the account** at once:
+Run reads *Run all*, and each city gets its own run, its own Output and its own place in
+the run list. A city that already has a script going is left alone and named in the
+confirm. Nothing is saved anywhere: the other cities' own loadouts are not read, written
+or changed, and Save still writes the open city's slot only. Ticked, **Stop** ends every
+city that is running, not just the open one. The tick is remembered per browser.
+Mind the load — many cities of one account working at once is what the game server
+falls behind on (see [EVONY-RULES.md](EVONY-RULES.md)).
+
 **Apply** checks a script without running it. **A script with any error is refused
 whole**, before anything is sent: an unknown command, a bad troop string, a `goto` to
 a label that isn't there. A line whose text is only known when it runs (a `%var%`
@@ -183,7 +193,10 @@ die "message"                      end with an error: $error is the message
 - **Flood guard.** A line the server refused, reached again (by `goto`, `loop` or
   `repeat`), waits 200 ms before it is sent again, and the same line refused 10 times in
   a row ends the run. A line that goes through starts the count over. Without this, a
-  loop around a refused order would send as fast as the server answers.
+  loop around a refused order would send as fast as the server answers. **Market orders
+  are the exception**: `buy`, `sell` and `canceltrade` are still paced by the 200 ms, but
+  a refusal of theirs never counts toward the 10 — a full marketplace or a city short of
+  gold is an everyday answer to a script placing thousands of orders, not a runaway run.
 - `sleep rnd:300` waits a random 0-300 s; `rnd:300:600` 300-600 s. `sleep @:14:15` waits
   until 14:15 on this machine's clock (tomorrow if it has passed).
 - `exit` is `end`: it never closes the console. `stop` pauses the run and shows
@@ -497,8 +510,8 @@ canceltroopqueues [n] | cancelfortifications [n]   (also: canceltroops, cancelwa
 ### Resources and the market
 
 ```
-buy <food|wood|stone|iron|0-3> <amount> <price>   (or @price)
-sell <food|wood|stone|iron|0-3> <amount> <price>   (or @price)
+buy <food|wood|stone|iron|0-3> <amount> <price> [x<orders>]   (or @price)
+sell <food|wood|stone|iron|0-3> <amount> <price> [x<orders>]   (or @price)
 canceltrade [tradeId ... | buy | sell | food | wood | stone | iron]
 marketupdate <0-3 | food | wood | stone | iron>   (none or all: all four)
 dumpresource <x,y | city> <when> <send>   e.g. dumpresource 111,222 f:11000,g:44000 f:3000,g:9000
@@ -512,16 +525,50 @@ holidaysnipe [dry] | holidaysnipe stop | holidaysnipe status
   box takes it (at most 5 characters, at most 150): a buy is rounded down and a sell up,
   so an order never pays more, or takes less, than the line gives. One order is at most
   99,999,999. A price over 150, a bigger amount, or extra words are refused.
+- **`sell stone 99999999 140 x10`** places ten such orders **at once** (`*10` too; x1 to
+  x20). They go out together and land together: measured from South Africa, ten orders
+  took 483 ms in one line against 5,363 ms one after another. `$result` is how many were
+  placed, and the line counts as done when at least one was — most of a batch being
+  refused is the everyday case when the market is full or the city runs dry, and it says
+  so in one line: `10 × sell ... — 7 of 10 placed (3 refused: …)`. Each order is still at
+  most 99,999,999 and still takes one of the city's ten offer slots until it fills.
 - **`canceltrade`** cancels every open order of this city; `canceltrade 123456` that one
   (`execute "canceltrade " + city.tradesArray[0].id`); `canceltrade buy | sell | food`
   (OTTObot's) the bids, offers or one resource's. A bare number is always a trade id.
+  They are all sent at once, not one after another (ten: 493 ms instead of 5,479 ms).
 - **`marketupdate wood`** reads that book now (none or `all`: all four).
 - **`dumpresource 111,222 f:11000,g:44000 f:3000,g:9000`** transports the second list to
   x,y once the city holds the first, with as many transporters as the load needs; not
   yet, and `$error` says what is short. (The wiki's DumpResource is this conditional
   transport.)
-- Market writes are paced: a run waits 1.2 s between them, and each unanswered one in a
-  row doubles that, up to a minute.
+- **Market writes are pipelined.** An order goes out the moment a line asks for it, whatever
+  else is in flight, and each reply goes to the oldest order still waiting for one — the
+  server answers strictly in the order it was asked (measured: pipelined orders are
+  created with rising trade ids in send order), and its reply carries nothing else to
+  match on. So an account's cities no longer queue behind each other's round trips: nine
+  cities looping `sell` lines each wait only for their own order. Before, every order of
+  the account took its turn in one queue (103–145 orders a minute for the whole account).
+  If a reply is ever lost, the orders already in flight may be told each other's answers
+  (which line says placed); nothing new is sent until they are all answered or timed out,
+  so it starts clean after. Nothing is added between writes (`tradeGapMs` puts a gap back,
+  and then `x10` and `canceltrade` go one at a time too). Each UNANSWERED write in a row
+  doubles a gap of its own, from 1.2 s up to a minute, so a server that has stopped
+  answering is not hammered.
+- **Where the time goes.** The game server is in Toronto. From South Africa a round trip
+  is ~240 ms, a lone order ~530 ms, an order among others ~330 ms, ten together ~480 ms.
+  From a machine near Toronto the round trip is a few milliseconds and all of it shrinks
+  with it. `OTTO_PROBE_AT_START=orders:10` on a console start measures it again from
+  wherever the console runs (market-probe.js; its bids are 0.001, and it cancels them).
+- **A refused order never ends the run**, however often it is refused: it is paced like
+  any refused line (200 ms), but trading is refused all day long and the script carries
+  on ([safety](#safety-switches-and-refusals)).
+- **What trading says is short.** A live order speaks when it is placed —
+  `sell 99,999,999 stone @ 150 from 4 · a 74,999,999 gold fee (0.5%) — placed` — and
+  says how many were refused since the last one that went through. A refusal is logged
+  the first time its reason comes up and then at most once a minute while it keeps coming
+  up (`marketQuietMs`), so a grinding loop shows the sales, not every try; the line's own
+  `line N: sell ...` header only appears when the order has something to say. `$error` and
+  `$result` are set on every order either way, and a dry run still explains every line.
 
 Prices, for expressions (also `m_context.buyPrice/sellPrice` and `city.buyPrice/sellPrice`):
 
@@ -654,6 +701,7 @@ Valleys, towns and moving:
 ```
 abandon <x,y>   (a valley or flat of yours)
 abandontown <x,y | city> confirm [anyway]   — gives the city up for good (off unless the console starts with OTTO_ALLOW_ABANDON_TOWN=1)
+allowabandon <x,y | city> confirm [off]   — lets abandontown give up a city the bot did not build
 evacuatetown <x,y> confirm   — every troop, and all they can carry, reinforce x,y
 endevacuate [x,y]   — recalls the evacuation march(es) from this city
 buildcity <x,y> [hero] [troops]   (also: newcity)
@@ -669,7 +717,16 @@ autoteleport [<state> | random] [all confirm] [/tries=5] [/every=5:00] [/norecal
   city the city registry records as abandonable (one `buildnpc` built), never the last
   city. `confirm` is required, and `anyway` too while heroes, troops or marches would be
   lost there. The game asks for the password's SHA1, which only the goals update's login
-  keeps, so it fails and says so until that is merged.
+  keeps, so it fails and says so until that is merged. When the account has a **security
+  code** that protects "Abandon cities", the game answers `-200` and does nothing; the
+  console unlocks with the stored code and sends it again by itself (`securitycode`).
+- **`allowabandon <x,y | city> confirm`** marks a city the bot did NOT build as one
+  `abandontown` may give up — the case being a flat-city founded by NEAT's `npcbuild` or
+  by hand, which the registry otherwise protects for good. `allowabandon … confirm off`
+  puts it back. It only moves the registry row: `abandontown` still wants
+  `OTTO_ALLOW_ABANDON_TOWN=1`, `confirm`, an evacuated city and the password. **The goal
+  engine can still never abandon an adopted city** — `buildnpc` abandons only what
+  `buildnpc` built.
 - **`evacuatetown x,y confirm`**: every troop, and all they can carry, reinforce x,y in
   one march. **`endevacuate`** recalls it.
 - **`buildcity x,y [hero] [troops]`** (also `newcity`) captures the flat first when it isn't
@@ -853,6 +910,7 @@ The lord, quests, reports and logging out:
 changeflag <flag>   (spends a National Flag; 4 letters at most)
 changeplayername <new name> confirm   (spends a New ID; the lord's name changes for good)
 resetplayer { unlockcode:"IReallyWantToDeleteThisAccount", player:null }   (deletes the lord; there is no undo)
+securitycode | securitycode set <code> | securitycode clear | securitycode check | securitycode unlock [all]
 completequests [routine|daily|title|rank|office] [types] [names] [/mode=] [/type=] [/name=] [/query=available|finished|all]
 cleanreports [text[,text...]] | cleanreports trade|army|other
 cleannpcreports
@@ -868,6 +926,24 @@ logout now <back> | logout <when> <back>   (@:hh:mm[:ss] clock times, or waits: 
   needs the goals update's password hash. NEAT can go on to make a new lord
   (`player:"name"`, city, flag...); here only `player:null` is taken, because a new lord
   needs the game's create-player step (with a captcha), which OTTObot's login doesn't do.
+- **`securitycode`** is the account's **second password** — the one the game asks for
+  before abandoning a city, disbanding troops, dismissing a hero, changing the tax rate or
+  restarting the lord. On its own it reports what the game says this account protects
+  (the five options, each ticked or not) and whether this console has the code stored.
+
+  | line | what it does |
+  |---|---|
+  | `securitycode` | what the game protects, and whether a code is stored here |
+  | `securitycode set <code>` | stores it on the account (never written to the log) |
+  | `securitycode clear` | forgets it; protected actions then come back `-200` |
+  | `securitycode check` | asks the game whether the stored code is right, unlocking nothing |
+  | `securitycode unlock [all]` | unlocks now rather than waiting for the first refusal |
+
+  Nothing needs `unlock` in normal use: a protected command is sent plainly, and when the
+  game answers `-200` (a refusal — **nothing happened**) the console authenticates, unlocks
+  that one action and sends it again. The unlock lasts the session, as it does in the game.
+  The code can also be typed into the Director's account editor. OTTObot never *sets*,
+  changes or removes a security code in the game — that is the user's, like holiday.
 - **`completequests`** claims every finished quest (both tabs when nothing else is given,
   the Routine tab otherwise); `$result` is the list claimed. `title` claims the title
   promotions (Knight to Prinzessin), `rank` or `office` the military ones (Lieutenant to
@@ -878,6 +954,11 @@ logout now <back> | logout <when> <back>   (@:hh:mm[:ss] clock times, or waits: 
   went. OTTObot's `cleanreports trade|army|other` deletes every report of that kind.
   **`cleannpcreports`** deletes the attack and return reports for Barbarian cities, and
   every transport report, from every city.
+  Both delete as they read, 50 at a time: read a page, delete what it picks, read it
+  again. A page the game doesn't answer is asked again (3 tries, 10 s apart); a progress
+  line comes every 30 s; Stop ends it between pages, and what went stays gone, so
+  running it again carries on. At two round trips per 50, 450k reports take about two
+  hours.
 - **`logout`** (`logout.js`) takes the console off the game. NEAT's forms log out at the
   first time, back at the second, and the **script carries on** from the next line once
   the console is back: `logout 1:00 29:00` (off in a minute, back 29 minutes later),
@@ -925,7 +1006,7 @@ armyreport [page]
 createalliance <name>   (8 characters at most; an Embassy of level 2 and 10,000 gold)
 declare <alliance> red|blue|grey|none   (red takes confirm)
 expel <name> confirm   (also: eject)
-holiday <days> confirm | holiday /exit   (/autoextend is refused: it renews until the coins run out)
+holiday <days> [/autoextend] confirm | holiday /exit   (/autoextend renews it until the coins run out)
 invite <name>
 invites
 join <alliance name>
@@ -970,7 +1051,8 @@ who <name>
 - Leaving the alliance, resigning, handing over the host, making a vice host (who can
   expel members), expelling, declaring war and going on holiday are never one typo away:
   each needs the word `confirm` at the end, and the name must be exact (no `any`, `*` or
-  lists). `holiday` also needs the goals update's password hash, and its `/autoextend` is
+  lists). `holiday` also needs the goals update's password hash; its `/autoextend` (the user,
+  2026-09-20) sends the game's own isAutoFurlough flag and is
   refused: it renews the holiday until the coins run out.
 - A dry run sends nothing that changes anything. Lookups still read, so `$result` is real;
   opening mail or a report marks it read, so a dry run only lists them.
@@ -1174,10 +1256,32 @@ and nothing runs.
 paused at a `stop` line shows **Resume**, which carries on from the line after it; Stop
 ends it instead. The Output tab says which line it is paused at.
 
-A Run is one long request from the page. When the console restarts under it, the browser
-sends it again; each Run carries an id, and one already started is refused ("press Run to
-start it anew"), so a restart never runs a script twice. A live run without an id is not
-started at all (so the old `/script` page only dry-runs). Runs are kept by the city's
+**What the Output tab keeps.** Every line of a run's output starts with the time it
+happened by this machine's clock, and one event is one line:
+
+```
+23:41:07.812 line 8: sell stone 99999999 140 · sell 99,999,999 stone @ 140 from 2 · a 74,999,999 gold fee (0.5%) — placed
+23:41:08.104 line 9: sell stone 99999999 140 · sell 99,999,999 stone @ 140 from 2 -> FAILED (ok=-38) - 10 offers are allowed at level 10 Marketplace. — marketplace full (10 offers max); the script carries on
+```
+
+The `line N: <source>` header and what the command said are folded together, so two
+timestamps are two events and the time between them is the time that line took. A command
+that says several things gets a line each, every one of them naming its source line and
+carrying its own time; a command that says nothing is its own line; and a line that takes
+a while to answer (a `sleep`, a run paused at `stop`) is never held back waiting to be
+folded. The script language itself is unchanged — this is how a console keeps the output,
+and the same lines go to `console-<account>.log`.
+
+A Run is answered by the console as the run STARTS, not when it ends: waiting held one
+browser connection per running city, and a browser allows six to one origin, so five or
+six endless `loop`s left the page unable to send anything at all — Run did nothing and the
+editor kept showing the city before. The Output tab follows the run from `/api/script/runs`
+instead, and a finished run is kept there (the last 20 cities) so its ending still shows.
+Each Run carries an id, and one already started is refused ("press Run to start it anew"),
+so a console restart under a browser's re-send never runs a script twice. A live run
+without an id is not started at all (so the old `/script` page only dry-runs). `wait: true`
+on the API asks for the reply to come when the run is over, for callers with no page behind
+them; the Script tab never sends it. Runs are kept by the city's
 castle id, however the city was named, so one city never has two.
 
 ### `call`
@@ -1192,8 +1296,9 @@ from the same folder.
 
 ### Autorun and start-up parameters
 
-NEAT's autorun, **off until you switch it on** with `AUTOSCRIPTS=1`, or NEAT's own
-`-autoscripts 1` in `CmdParms.txt`. Then, once the console has logged in after a start
+NEAT's autorun, **off until you switch it on**: in the Director, per account (✎ →
+**Autorun scripts**) or for every account (**Start-up**), or with `AUTOSCRIPTS=1`, or
+NEAT's own `-autoscripts 1` in `CmdParms.txt`. Then, once the console has logged in after a start
 (never again on a reconnect), every city runs its **startup file**, then each **saved
 loadout holding `label autorun`**, from that label, one after another. The cities run side
 by side. A city that already has a run is left alone. The Log tab says what started, and
@@ -1208,7 +1313,22 @@ it) skips it.
   `-name value` there also reaches scripts as `Config.<name>`: `-teleport tuscany` is
   `Config.teleport`, which `autoteleport` with no state uses. Keys that look like
   passwords, secrets or tokens are left out.
-- Auto-login and running the goals are always on; NEAT's minimize switches don't apply.
+- **Start-up parameters in the Director**, as NEAT's Director has them: **Start-up** holds
+  the ones every account gets (NEAT's Custom Parameters), and each account's ✎ dialog its
+  own, which win; the **Autorun scripts** dropdown in both writes the `-autoscripts` line.
+  The Director hands them to a console on its command line when it starts it
+  (`node server.js -autoscripts 1 -runscript Items.txt`, which also works by hand), so they
+  apply from a console's next start; the Fleet table's **Autorun scripts** column marks
+  with ↻ a console still running on older ones. Order, strongest first: `AUTOSCRIPTS` /
+  `RUNSCRIPT`, the account's parameters, every account's, `CmdParms.txt`.
+- What a console does with NEAT's parameters: `-autoscripts` and `-runscript` (above);
+  `-autorun 0` starts the engine paused until Resume; `-maxtrade N` refuses a script's `buy`/`sell` over N in one order; any
+  other `-name value` is `Config.<name>`. The Director refuses the login ones
+  (`-username`/`-u`, `-password`, `-server`/`-s`, `-proxy`, `-serverhost`, `-serverport`,
+  `-ssk`, `-token` — they are the account's own fields) and `-prependgoals`/`-appendgoals`
+  (the ✎ goal file boxes), and says which it keeps without acting on them: NEAT's window
+  switches (`-minimize`, `-attackwarning` …), account creation (`-player`, `-zone` …),
+  `-autologin` (a console always logs in), `-delay`, `-title`, `-maintenance`.
 - The loadout list marks a loadout that holds `label autorun`, and Save says it starts by
   itself (when autorun is switched on).
 
@@ -1218,7 +1338,7 @@ it) skips it.
 | `RUNSCRIPT` | the startup file every city runs first |
 | `EVONY_SCRIPTS_DIR` | where `call`, `get` and the startup file are read (default `<repo>\scripts`) |
 | `EVONY_MEDIA_DIR` | where `play` finds sounds (default `<repo>\media`) |
-| `EVONY_CMDPARMS` | NEAT's parameter file (default `<repo>\CmdParms.txt`): its `-autoscripts` and `-runscript`, and `Config.<name>` for scripts |
+| `EVONY_CMDPARMS` | NEAT's parameter file (default `<repo>\CmdParms.txt`), for every console: its `-autoscripts` and `-runscript`, and `Config.<name>` for scripts; a console's command line wins over it |
 | `OTTO_ALLOW_RESET_PLAYER` | `1` lets `resetplayer` run at all |
 | `OTTO_ALLOW_ABANDON_TOWN` | `1` lets `abandontown` run at all (buildnpc's throwaway cities only) |
 
@@ -1252,14 +1372,15 @@ counts as none: `useitem`, `waterhero`'s Holy Water, the teleporters, `/big`'s W
 missing. Speeding up with coins is off: `ALLOW_COINS_SPEEDUP = false` in
 `script-cmd-city.js` refuses `/speedup=coins`, `buildingspeedup coins` and
 `researchspeedup coins` when the script loads. `innrefresh` never pays coins (there is no
-`force`: `buyitem` a Hero Hunting), and `holiday /autoextend` is refused. `worldchat` costs
+`force`: `buyitem` a Hero Hunting). `worldchat` costs
 a Speaker a line, and a long line is refused rather than split.
 
 **Nothing irreversible is one typo away.**
 
 | line | needs |
 |---|---|
-| `abandontown <city>` | `OTTO_ALLOW_ABANDON_TOWN=1` at console start, a city the goal engine's registry marks abandonable (buildnpc's; no registry row = refused), not the last city, `confirm`, `anyway` while heroes, troops or marches would be lost, the goals update's password hash (its SHA1, as the client sends) |
+| `abandontown <city>` | `OTTO_ALLOW_ABANDON_TOWN=1` at console start, a city the goal engine's registry marks abandonable (buildnpc's, or one a person adopted with `allowabandon`; no registry row = refused), not the last city, `confirm`, `anyway` while heroes, troops or marches would be lost, the goals update's password hash (its SHA1, as the client sends), and the account's security code when it protects "Abandon cities" |
+| `allowabandon <city>` | `confirm`, a console bound to an account, and a city that is not a tile `buildnpc` is already working on. It changes the registry only — nothing is sent to the game |
 | `demo`, `demosite`, `walldefense` on the Town Hall or the Walls | never, with or without `/dynamite` |
 | `autoteleport … all` | `confirm` |
 | `evacuatetown x,y` | `confirm` |
@@ -1272,7 +1393,7 @@ a Speaker a line, and a long line is refused rather than split.
 | `innrefresh` with no Hero Hunting | not sent: `buyitem` one first |
 
 **Runaway runs.** A line the server refused waits 200 ms before it is sent again, and its
-10th refusal in a row ends the run. Background attacks: one of each kind per target and
+10th refusal in a row ends the run (market orders are paced the same way but never end it). Background attacks: one of each kind per target and
 city, 10 per console, and `capture` / `loyaltyattack` stop after 100 waves, 12 hours or 3
 unreadable reports in a row unless the line says `/waves=N` or `/hours=N`. Autorun is off
 until switched on, and skipped when the console restarts within 10 minutes. A dry run of
@@ -1325,12 +1446,13 @@ What a NEAT operator will notice:
   `repeat N` meant N more times: old loadouts do one fewer.
 - **`useitem` never buys.** NEAT buys a missing item; here the line fails and says to
   `buyitem` it. Nothing spends cents except `buyitem` (capped at 100 items a run without
-  `confirm`): no `innrefresh force`, no `holiday /autoextend`, no coins speed-ups, and an
+  `confirm`): no `innrefresh force`, no coins speed-ups, and an
   item counts as held only once the inventory has loaded.
 - **Autorun is off until switched on** (`AUTOSCRIPTS=1`, or `-autoscripts 1` in
   `CmdParms.txt`), and a console that restarts within 10 minutes skips it.
 - **A line the server keeps refusing ends the run** on its 10th refusal in a row (each
-  retry waits 200 ms); NEAT would go on.
+  retry waits 200 ms); NEAT would go on. Market orders are the exception: they are paced
+  the same way, but a refused `buy`, `sell` or `canceltrade` never ends the run.
 - **The Town Hall and the Walls are never demolished**, by `demo`, `demosite` or
   `walldefense`, as the game's own client offers no Destruct for them.
 - **`exit` never closes the console**; it is `end`. `stop` pauses until Resume.

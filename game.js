@@ -2,6 +2,7 @@
 // High-level game operations on top of the raw client.
 const { EvonyClient, getServerConfig } = require('./evony');
 const C = require('./constants');
+const SEC = require('./security');
 
 class Game {
   constructor(log = () => {}) {
@@ -12,6 +13,31 @@ class Game {
     this.holiday = null;       // { hours, minutes, text } while the account is on holiday
     this.marchSkillParam = 100;
     this.serverOffset = 0;     // serverNow - localNow, in ms
+    // The account's security code, and what this SESSION has unlocked with it.
+    // Both die with the Game, which is what the game does too: an unlock "will
+    // only be effective during this session and will end at logout"
+    // (UnlockSecurityCode.as). The code itself is deliberately non-enumerable,
+    // so it cannot reach a log line, a snapshot or a JSON dump by accident.
+    Object.defineProperty(this, '_secCode', { value: null, writable: true, enumerable: false });
+    Object.defineProperty(this, '_secAuthed', { value: false, writable: true, enumerable: false });
+    Object.defineProperty(this, '_secUnlocked', { value: 0, writable: true, enumerable: false });
+  }
+
+  // Set by the session from the account record. A FUNCTION is read at the
+  // moment the code is wanted, so changing it in the Director takes effect on
+  // the next protected command rather than the next login.
+  setSecurityCode(code) { this._secCode = code || null; return this; }
+  securityCode() {
+    const c = this._secCode;
+    const v = typeof c === 'function' ? c() : c;
+    return v ? String(v) : null;
+  }
+  hasSecurityCode() { return !!this.securityCode(); }
+
+  // Send a command the game may guard with the security code, answering a -200
+  // by unlocking and sending it once more. See security.js for the protocol.
+  reqProtected(cmd, data, ms) {
+    return SEC.sendProtected(this, cmd, data, { code: this.securityCode(), log: this.log, timeout: ms });
   }
 
   // What a login reply means. ok=1 is the plain yes; ok=-100 is a yes as well,
@@ -51,7 +77,19 @@ class Game {
     };
   }
 
+  // A login that fails — no reply, a refusal, anything after the socket opened —
+  // closes its socket. Left open, it stayed logged-in-pending: Lord06's console held
+  // three sockets on 2026-09-18 after unanswered logins, and a login the server
+  // finished late on one of them took the account off the live socket.
   async connect(server, email, password, proxy = null) {
+    try {
+      return await this._connect(server, email, password, proxy);
+    } catch (e) {
+      try { if (this.c) this.c.close(); } catch {}
+      throw e;
+    }
+  }
+  async _connect(server, email, password, proxy = null) {
     const cfg = await getServerConfig(server);
     this.log(`${server} -> ${cfg.host}:${cfg.port} (${cfg.state})${proxy ? ' via ' + proxy.label : ''}`);
     this.proxy = proxy;
@@ -247,7 +285,21 @@ class Game {
     };
   }
 
+  // A march over the city's limit (10,000 troops per Rally Spot level, at most
+  // 100,000; rally.js marchTroopLimit) is refused here, in the server's reply
+  // shape, rather than sent to be refused: every caller already handles that.
+  // A city whose list shows no Rally Spot is left to the server to judge. A War
+  // Ensign (useFlag, /big) and the Horde banner (useItem, /horde) raise the limit.
   async newArmy(castleId, bean) {
+    const castle = this.castles.find((c) => String(this.castleId(c)) === String(castleId));
+    const big = !!(bean && bean.useFlag), horde = !!(bean && bean.useItem);
+    const limit = castle ? require('./rally').marchTroopLimit(castle, { big, horde }) : null;
+    const troops = Object.values((bean && bean.troops) || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+    if (limit && troops > limit) {
+      const why = horde ? `with the Horde banner${big ? ' and a War Ensign' : ''}` : `10,000 per Rally Spot level${big ? ', +25% with a War Ensign' : ''}`;
+      return { ok: 0, errorMsg: `a march from ${castle.name || 'this city'} takes at most ${limit.toLocaleString('en-US')} troops `
+        + `(${why}), not ${troops.toLocaleString('en-US')}` };
+    }
     this.c.send('army.newArmy', { castleId, newArmyBean: bean });
     const r = await this.c.await(['army.newArmy'], 12000);
     return r.data;
@@ -298,8 +350,24 @@ class Game {
   // troop.disbandTroop {castleId, troopType, num} (TroopCommands.as:72) and
   // fortifications.destructWallProtect {castleId, typeId, num}
   // (FortificationsCommands.as:70): both destroy what they name, for good.
-  disbandTroop(castleId, troopType, num) { return this.req('troop.disbandTroop', { castleId, troopType, num }); }
+  // Disbanding is "Dismiss armies", bit 4 (SWDisband.as:364). Destroying wall
+  // fortifications is NOT protected — the client has no -200 branch on it.
+  disbandTroop(castleId, troopType, num) { return this.reqProtected('troop.disbandTroop', { castleId, troopType, num }); }
   destructWall(castleId, typeId, num) { return this.req('fortifications.destructWallProtect', { castleId, typeId, num }); }
+
+  // city.giveupCastle {password, castleId}: gives a city up for good, and takes
+  // the account password as SHA1 of the text (GiveupCastle.as:417) AS WELL AS
+  // the security code when "Abandon cities" is protected (bit 2). Callers check
+  // the city registry first — see goal-buildnpc.js.
+  giveUpCastle(castleId, passwordHash) {
+    return this.reqProtected('city.giveupCastle', { password: passwordHash, castleId });
+  }
+
+  // common.deleteUserAndRestart {pwd}: deletes the lord. Bit 1, "Restart game",
+  // the one option the game will not let a player switch off.
+  deleteUserAndRestart(passwordHash) {
+    return this.reqProtected('common.deleteUserAndRestart', { pwd: passwordHash });
+  }
 
   // The item catalogue, straight from the server. Item NAMES are not in the
   // decompiled client — it fetches this XML at runtime — so this is the only
@@ -500,7 +568,10 @@ class Game {
   // roster by a server.HeroUpdate add. awardGold is the Reward window's gold
   // choice (AwardHero.as:647).
   hireHero(castleId, heroName) { return this.req('hero.hireHero', { castleId, heroName }); }
-  fireHero(castleId, heroId) { return this.req('hero.fireHero', { castleId, heroId }); }
+  // Dismissing a hero is one of the five the security code can guard
+  // (HeroProperties.as:2007, bit 8). releaseHero is NOT — the client has no
+  // -200 branch on it.
+  fireHero(castleId, heroId) { return this.reqProtected('hero.fireHero', { castleId, heroId }); }
   releaseHero(castleId, heroId) { return this.req('hero.releaseHero', { castleId, heroId }); }
   promoteToChief(castleId, heroId) { return this.req('hero.promoteToChief', { castleId, heroId }); }
   dischargeChief(castleId) { return this.req('hero.dischargeChief', { castleId }); }
@@ -624,7 +695,8 @@ class Game {
   setProduction(castleId, { food = 0, wood = 0, stone = 0, iron = 0 }) {
     return this.req('interior.modifyCommenceRate', { castleId, foodrate: food, woodrate: wood, stonerate: stone, ironrate: iron });
   }
-  setTax(castleId, tax) { return this.req('interior.modifyTaxRate', { castleId, tax }); }
+  // "Adjust tax rate" is bit 16 of the security code (AdjustmentCess.as:470).
+  setTax(castleId, tax) { return this.reqProtected('interior.modifyTaxRate', { castleId, tax }); }
 
   // ---- town hall: comforting and levies (goal-upkeep.js) ----
   // interior.pacifyPeople {castleId, typeId}: 1 disaster relief, 2 praying,
@@ -975,14 +1047,135 @@ class Game {
   // and a search does not even say which resource it answers. Two callers with
   // the same command in flight would each take the first reply — the console's
   // Market panel reading food while the sniper reads wood gets wood's prices.
-  // So each market command queues in its own lane, whoever is asking. A caller
-  // that pipelines a batch (holiday-snipe.js) holds the lane until every reply
-  // of the batch is in.
+  // So each market READ queues in its own lane, whoever is asking; a caller
+  // that pipelines a batch of reads holds the lane until every reply is in.
+  // The writes are pipelined through `pipe` below, never through a lane — and
+  // nothing may send trade.newTrade / trade.cancelTrade around it, or its replies
+  // would be taken from the pipe's requests.
   lane(cmd, fn) {
     this._lanes = this._lanes || new Map();
     const run = (this._lanes.get(cmd) || Promise.resolve()).then(() => fn());
     this._lanes.set(cmd, run.catch(() => {}));
     return run;
+  }
+
+  // Market WRITES are pipelined instead of queued: each goes out the moment it
+  // is asked for, and each reply goes to the oldest request still waiting for
+  // one. That is sound because the server works through them strictly in the
+  // order it got them — measured 2026-09-18 (market-probe.js): orders sent
+  // together were created with rising trade ids in exactly the order sent — and
+  // a write's reply carries nothing else to match on anyway ({packageId, ok}).
+  // It matters because a lone order costs TWO round trips (~527 ms from South
+  // Africa), while five sent together all landed within 727 ms: queued in one
+  // lane, an account's cities waited on each other's round trips; pipelined,
+  // they don't.
+  //
+  // A reply that never comes would shift every later reply onto the wrong
+  // request. So once a request times out, nothing new is sent until everything
+  // already in flight has been answered or has timed out as well — the pipe
+  // drains and starts clean — and the requests asked for meanwhile go out then.
+  // Timeouts are taken strictly oldest-first, the order the replies are owed.
+  //
+  // At most PIPE_LIMIT writes are in flight per account, across all its cities
+  // and both commands; the rest wait here, in order, and go out as replies come
+  // in. The server works through an account's commands roughly one at a time
+  // (~4-5 orders a second), so 90 orders sent at once from nine cities sat in
+  // its queue for 20-30 s: replies came after our timeout, and the heartbeat,
+  // queued behind them, failed and cycled the socket — Lord06 was down 28% of
+  // 2026-09-18 that way. Twenty in flight kept the same throughput (Lord07,
+  // two cities) without the queue. A write's timeout starts when it is SENT.
+  static PIPE_LIMIT = Math.max(1, Number(process.env.OTTO_PIPE_LIMIT) || 20);
+  pipeInFlight() {
+    let n = 0;
+    for (const p of (this._pipes || new Map()).values()) n += p.waiting.length;
+    return n;
+  }
+  pipeQueued() { return (this._pipeQ || []).length; }
+  pipe(cmd, data, ms = 12000) {
+    // Only on a connection that says every reply reaches it as a 'cmd' event, in
+    // order (evony.js sets `pipelines`), and only when req is the Game's own: a
+    // test that stubs req, or answers through await alone, gets exactly what it
+    // had before — one at a time through req.
+    if (!this.c || this.c.pipelines !== true || typeof this.c.send !== 'function'
+      || Object.prototype.hasOwnProperty.call(this, 'req')) {
+      return this.lane(cmd, () => this.req(cmd, data, ms));
+    }
+    this._pipes = this._pipes || new Map();
+    let p = this._pipes.get(cmd);
+    if (!p) {
+      p = { waiting: [], held: [], draining: false, timer: null };
+      this._pipes.set(cmd, p);
+      this.c.on('cmd', (name, d) => {
+        if (name !== cmd || !p.waiting.length) return;
+        const head = p.waiting.shift();
+        if (this.c.noteReply) this.c.noteReply();
+        head.resolve(d);
+        this._pipeArm(p, cmd);
+        this._pipePump();
+      });
+    }
+    this._pipeQ = this._pipeQ || [];
+    if (!this._pipeCloseHooked) {
+      // a write still waiting its turn when the socket goes would wait forever
+      this._pipeCloseHooked = true;
+      this.c.on('log', (m) => {
+        if (!/^socket closed/.test(m)) return;
+        for (const q of this._pipeQ.splice(0)) q.entry.reject(new Error(`no reply to ${q.cmd} (the connection closed before it was sent)`));
+      });
+    }
+    return new Promise((resolve, reject) => {
+      const entry = { data, ms, resolve, reject, deadline: 0 };
+      if (p.draining) { p.held.push(entry); return; }
+      if (this._pipeQ.length || this.pipeInFlight() >= Game.PIPE_LIMIT) { this._pipeQ.push({ p, cmd, entry }); this._pipePump(); return; }
+      this._pipeSend(p, cmd, entry);
+    });
+  }
+  // Send what waits, oldest first, while there is room; a pipe that is draining
+  // takes its next write only once it is clean again.
+  _pipePump() {
+    const q = this._pipeQ || [];
+    for (let i = 0; i < q.length && this.pipeInFlight() < Game.PIPE_LIMIT;) {
+      if (q[i].p.draining) { i++; continue; }
+      const { p, cmd, entry } = q.splice(i, 1)[0];
+      this._pipeSend(p, cmd, entry);
+    }
+  }
+  // Every request `pipe` was asked for, in order; a request that got no reply
+  // comes back as { ok: 'noreply', errorMsg } rather than failing the batch.
+  pipeMany(cmd, list, ms = 12000) {
+    return Promise.all(list.map((d) => this.pipe(cmd, d, ms).catch((e) => ({ ok: 'noreply', errorMsg: e.message }))));
+  }
+  _pipeSend(p, cmd, entry) {
+    try { this.c.send(cmd, entry.data); } catch (e) { entry.reject(e); return; }
+    entry.deadline = Date.now() + entry.ms;
+    p.waiting.push(entry);
+    if (!p.timer) this._pipeArm(p, cmd);
+  }
+  // One timer, always for the OLDEST request: that is the reply owed first.
+  _pipeArm(p, cmd) {
+    clearTimeout(p.timer);
+    p.timer = null;
+    if (!p.waiting.length) {
+      if (p.draining) {
+        p.draining = false;
+        // what was held while draining goes first, then the limit applies again
+        const held = p.held.splice(0).map((entry) => ({ p, cmd, entry }));
+        this._pipeQ = [...held, ...(this._pipeQ || [])];
+      }
+      this._pipePump();
+      return;
+    }
+    const head = p.waiting[0];
+    p.timer = setTimeout(() => {
+      p.timer = null;
+      if (p.waiting[0] !== head) return this._pipeArm(p, cmd);
+      p.waiting.shift();
+      p.draining = true;
+      if (this.c.noteTimeout) this.c.noteTimeout(cmd);
+      head.reject(new Error('no reply to ' + cmd + (this.c.missedReplies >= 3 ? ' (server is ignoring this account — rate limited)' : '')));
+      this._pipeArm(p, cmd);
+      this._pipePump();
+    }, Math.max(0, head.deadline - Date.now()));
   }
 
   // NOTE: price is a STRING on the wire (TradeCommands.as newTrade param5:String)
@@ -991,7 +1184,11 @@ class Game {
     const tradeType = C.TRADE_TYPE[type];
     if (resType === undefined) throw new Error('trade resource must be food/wood/stone/iron, got ' + resource);
     if (tradeType === undefined) throw new Error('trade type must be buy/sell');
-    return this.lane('trade.newTrade', () => this.req('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) }));
+    // 30 s, not 12: with ~100 orders in flight on one account the server works
+    // through fills at its own pace, and replies came back LATE, not lost — a
+    // 12 s timeout drained the pipe on replies that were on their way, stalling
+    // the whole account 12-30 s at a time (seen live 2026-09-18, Lord06/Lord07).
+    return this.pipe('trade.newTrade', { castleId, resType, tradeType, amount, price: String(price) }, 30000);
   }
 
   // The top of one resource's book (the client shows five a side: Market.as
@@ -1015,8 +1212,9 @@ class Game {
     return this.lane('trade.getMyTradeList', () => this.req('trade.getMyTradeList', { castleId }));
   }
 
+  // pipelined like newTrade: a cancel costs the same two round trips alone
   cancelTrade(castleId, tradeId) {
-    return this.lane('trade.cancelTrade', () => this.req('trade.cancelTrade', { castleId, tradeId }));
+    return this.pipe('trade.cancelTrade', { castleId, tradeId }, 30000);
   }
 
   // ---- reports ----

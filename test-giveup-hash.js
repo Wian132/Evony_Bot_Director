@@ -43,6 +43,13 @@ function setup() {
     player: { selfArmys: [] },
     req: async (cmd, data) => { sent.push({ cmd, data }); return { ok: 1 }; },
   };
+  // The real giveUpCastle, not a copy of it: it goes through reqProtected, so
+  // this test also proves the security-code wrapper does not mangle the hash.
+  const { Game } = require('./game');
+  game.giveUpCastle = Game.prototype.giveUpCastle.bind(game);
+  game.reqProtected = Game.prototype.reqProtected.bind(game);
+  game.securityCode = () => null;
+  game.log = () => {};
   D.registry.reconcile(ACC, [
     { fieldId: HOME_FIELD, castleId: home.id, name: home.name },
     { fieldId: HOME_FIELD + 1, castleId: extra.id, name: extra.name },

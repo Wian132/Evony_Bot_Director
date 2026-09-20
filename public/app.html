@@ -76,6 +76,7 @@
   button:disabled { opacity:.5; cursor:default; }
   button.danger { color:var(--bad); }
   button.sm { padding:1px 7px; font-size:10.5px; }
+  button.sm[aria-disabled="true"] { opacity:.45; }
   button.qx { padding:0 4px; margin-left:4px; font-size:9px; line-height:13px; vertical-align:middle; }
   input[type=text], input[type=number], input:not([type]) {
     font:11px Tahoma, Verdana, sans-serif; color:var(--ink); background:var(--panel);
@@ -93,6 +94,14 @@
   .orb.pause.paused { background:radial-gradient(circle at 35% 30%, #ffc27a, #c0580a 70%); }
   .orb.refresh { background:radial-gradient(circle at 35% 30%, #9cc4ff, #1d56b8 70%); }
   .orb.conn { background:radial-gradient(circle at 35% 30%, #d9e4f2, #6c7f99 70%); }
+  .orb.cog { background:radial-gradient(circle at 35% 30%, #e6d9f2, #6d5b8c 70%); }
+  .setgrid { display:grid; grid-template-columns:max-content 1fr; gap:8px 10px; align-items:center; margin-top:4px; }
+  .setgrid input { width:100%; }
+  .setnote { grid-column:1 / -1; color:var(--dim); font-size:12px; line-height:1.45; }
+  .protlist { grid-column:1 / -1; margin:2px 0 0; padding:0; list-style:none; font-size:12px; }
+  .protlist li { padding:1px 0; }
+  .protlist .on { color:var(--ok); }
+  .protlist .off { color:var(--dim); }
   .connbox { display:flex; align-items:center; gap:5px; margin-left:6px; max-width:420px; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
   .dot.on { background:var(--ok); }
@@ -150,6 +159,9 @@
   #loadSel { max-width:200px; }
   #acctSel { max-width:190px; }
   #clearScript { white-space:nowrap; flex:0 0 auto; }
+  .bar label.cbx { display:flex; align-items:center; gap:4px; white-space:nowrap; cursor:pointer;
+    color:var(--dim); font-size:11px; flex:0 0 auto; }
+  .bar label.cbx input { margin:0; }
 
   /* the row above the editor: editor icons, Gate Control, War Town Mode */
   .ctlrow { display:flex; align-items:flex-end; gap:14px; padding:2px 0 4px; flex:0 0 auto; }
@@ -289,6 +301,16 @@
     table.nt.items th:last-child, table.nt.items td.desc { display:none; }
     table.nt.items td:first-child { white-space:normal; }
   }
+  /* the Statistics tab: one table per list; a name searches for itself */
+  .logbody.stats { font:12px/1.35 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
+  .st-h { display:flex; align-items:baseline; gap:8px; padding:6px 6px 3px; border-bottom:1px solid var(--grid); }
+  .st-h b { font-size:12px; }
+  .st-h .note { color:var(--dim); font-size:11px; }
+  .st-h button { margin-left:auto; }
+  .st-foot { padding:5px 6px 8px; color:var(--dim); font-size:11px; }
+  .st-foot button { margin-left:6px; }
+  table.nt.stats a.sq { color:inherit; cursor:pointer; text-decoration:underline dotted var(--faint); }
+  table.nt.stats a.sq:hover { text-decoration-color:currentColor; }
   .logbody { font:11.5px/1.55 "Courier New", Consolas, monospace; padding:2px 5px; }
   .ll { white-space:pre-wrap; word-break:break-word; }
   .ll .lt { color:var(--ink); }
@@ -310,6 +332,10 @@
     border:1px solid var(--line); padding:6px 8px; font-size:11.5px; line-height:1.5; max-width:320px;
     box-shadow:2px 2px 4px rgba(0,0,0,.2); color:var(--ink); }
   #tipcard .k { color:var(--dim); display:inline-block; min-width:70px; }
+  #tipcard .sec { margin-top:4px; border-top:1px solid var(--line); padding-top:3px; }
+  #tipcard table.ob { border-collapse:collapse; }
+  #tipcard table.ob td { padding:0 10px 0 0; text-align:right; }
+  #tipcard table.ob th { padding:0 10px 0 0; text-align:right; color:var(--dim); font-weight:normal; }
   dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); padding:14px; min-width:280px; }
 
   /* ask() / tell(): the console's own confirm and alert boxes */
@@ -391,8 +417,9 @@
 
 <div class="hdr">
   <div class="left">
+    <button class="orb cog" id="settingsBtn" title="Settings for this account" aria-label="Settings">&#9881;</button>
     <button class="orb pause" id="pauseBtn" title="Pause the bot" aria-label="Pause the bot">&#10074;&#10074;</button>
-    <button class="orb refresh" id="refreshBtn" title="Refresh everything now" aria-label="Refresh">&#10227;</button>
+    <button class="orb refresh" id="refreshBtn" title="Refresh: log this account in afresh and reload everything (like F5 in the game)" aria-label="Refresh">&#10227;</button>
     <button class="orb conn" id="connect" title="Connect / reconnect" aria-label="Connect">&#127760;</button>
     <div class="connbox"><span class="dot" id="dot"></span><span id="conn">offline</span></div>
     <span class="eng">Engine <span class="badge live" id="engBadge">LIVE</span></span>
@@ -465,6 +492,7 @@
         <button id="save">Save</button>
         <button id="runScript" title="Run this script in the open city">Run</button>
         <input id="runFrom" placeholder="line" spellcheck="false" aria-label="Start at line or label" title="Start at this line number or label (NEAT's Run box) — empty starts at line 1">
+        <label class="cbx" id="allTownsWrap" title="Run this script in every city of this account at once — each city runs it on its own, with its own Output and its own Stop. Nothing is saved into the other cities."><input type="checkbox" id="allTowns"> all towns</label>
         <button id="stopScript" class="danger" title="Stop this city's script once the line it is on finishes" hidden>Stop</button>
         <button id="resumeScript" title="The script is paused at a stop line — carry on from the line after it" hidden>Resume</button>
         <button id="engRefresh">Refresh</button>
@@ -494,7 +522,17 @@
         <button class="t" data-k="reports">Reports</button>
         <button class="t" data-k="debug" title="Everything, the protocol trace included">Debug</button>
         <button class="t" data-k="items" title="Everything this account holds">Items</button>
+        <button class="t" data-k="stats" title="The game's Statistics: every player, alliance, hero and city on the server, ranked">Statistics</button>
         <span class="grow"></span>
+        <span class="seg" id="statKind" hidden>
+          <button class="sm on" data-k="all" aria-pressed="true">All</button>
+          <button class="sm" data-k="players" aria-pressed="false">Players</button>
+          <button class="sm" data-k="alliances" aria-pressed="false">Alliances</button>
+          <button class="sm" data-k="heroes" aria-pressed="false">Heroes</button>
+          <button class="sm" data-k="cities" aria-pressed="false">Cities</button>
+        </span>
+        <button id="statGo" hidden title="Read every list again from the game, through this account's connection">Refresh</button>
+        <button id="statStop" class="danger" hidden title="Stop reading the lists">Stop</button>
         <span class="seg" id="itemKind" hidden>
           <button class="sm on" data-k="items" aria-pressed="true">Items</button>
           <button class="sm" data-k="medals" aria-pressed="false">Medals</button>
@@ -592,6 +630,24 @@
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="use" id="hiGo">Apply</button>
       <button value="cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Items tab: the Apply button on an item's row -->
+<dialog id="iuDlg" aria-labelledby="iuCap">
+  <form method="dialog" id="iuForm" novalidate>
+    <b id="iuCap">Apply <span id="iuName"></span></b>
+    <div id="iuInfo" style="color:var(--dim);font-size:11px;margin:5px 0 4px"></div>
+    <div id="iuDesc" style="font-size:11px;margin:0 0 8px;max-width:330px"></div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <label for="iuCount" style="font-size:11px;color:var(--dim)">Use</label>
+      <input id="iuCount" type="number" min="1" value="1" style="width:64px">
+      <span class="muted" style="font-size:11px" id="iuNote"></span>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button value="use" id="iuGo">Apply</button>
+      <button value="cancel" autofocus>Cancel</button>
     </div>
   </form>
 </dialog>
@@ -794,11 +850,101 @@ function modal({ title, text, detail, ok = 'OK', cancel, danger }) {
 const ask = (text, o = {}) => modal({ title: 'Please confirm', cancel: 'Cancel', ...o, text });
 const tell = (text, o = {}) => modal({ title: 'OTTObot', ...o, text }).then(() => {});
 
+// ---------- settings ----------
+// This account's own settings, kept on the account row rather than in the
+// browser: the console needs them with nobody watching. So far there is one,
+// the game's SECURITY CODE — the second password it asks for before abandoning
+// a city, disbanding troops, dismissing a hero, changing the tax rate or
+// restarting the lord. It is never shown back: the box says whether one is
+// stored, and typing replaces it.
+async function openSettings() {
+  const cur = await getJSON('/api/settings') || {};
+  const dlg = document.createElement('dialog');
+  dlg.className = 'ask';
+  const rows = (p) => {
+    if (!p || !p.options) return '';
+    const known = p.option !== null && p.option !== undefined;
+    return `<div class="setnote">${known
+      ? 'What the game says this account protects:'
+      : `What it protects could not be read${p.error ? ' (' + esc(p.error) + ')' : ''} — connect and open this again.`}</div>`
+      + (known ? '<ul class="protlist">' + p.options.map((o) => {
+        const on = (p.option & o.bit) === o.bit;
+        return `<li class="${on ? 'on' : 'off'}">${on ? '&#10003;' : '&#9744;'} ${esc(o.label)} — ${esc(o.what)}</li>`;
+      }).join('') + '</ul>' : '');
+  };
+  dlg.innerHTML = '<div class="ask-cap">Settings</div>'
+    + '<div class="ask-body">'
+    + `<div class="ask-q">${esc(cur.label || 'This account')}</div>`
+    + '<div class="setgrid">'
+    + '<label for="setSec">Security code</label>'
+    + `<input id="setSec" type="password" autocomplete="off" placeholder="${cur.hasSecurityCode ? 'stored — type to replace it' : 'not set'}">`
+    + '<div class="setnote">The game&rsquo;s second password. The bot sends a protected command plainly; '
+    + 'when the game refuses it (<b>-200</b> &mdash; nothing happens), the console unlocks with this code and sends it again. '
+    + 'It is stored on the account, never written to a log, and never shown back here.</div>'
+    + rows(cur.protection)
+    + (cur.hasSecurityCode ? '<div class="setnote"><button class="sm" id="setSecClear">Forget the stored code</button> '
+        + '<button class="sm" id="setSecCheck">Check it against the game</button></div>' : '')
+    + '</div></div>'
+    + '<form method="dialog" class="ask-btns"><button value="ok" autofocus>Save</button><button value="no">Cancel</button></form>';
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', async () => {
+    const code = dlg.querySelector('#setSec').value;
+    dlg.remove();
+    if (dlg.returnValue !== 'ok' || !code) return;      // blank leaves whatever is stored alone
+    const r = await post('/api/settings', { securityCode: code });
+    if (!r.ok) return tell(r.error || 'could not be saved', { title: 'Settings' });
+    tell('The security code is stored for this account.', { title: 'Settings' });
+  });
+  const clear = dlg.querySelector('#setSecClear');
+  if (clear) clear.onclick = async (e) => {
+    e.preventDefault();
+    dlg.close('no');
+    if (!await ask('Forget the stored security code?', { title: 'Settings', ok: 'Forget it', danger: true,
+      detail: 'Abandoning a city, disbanding troops, dismissing a hero, the tax rate and restarting the lord will then be refused with -200 until a code is stored again. The code set IN THE GAME is not touched.' })) return;
+    const r = await post('/api/settings', { securityCode: '' });
+    tell(r.ok ? 'The stored code is forgotten.' : (r.error || 'could not be cleared'), { title: 'Settings' });
+  };
+  const check = dlg.querySelector('#setSecCheck');
+  if (check) check.onclick = async (e) => {
+    e.preventDefault();
+    dlg.close('no');
+    const r = await post('/api/settings/check', {});
+    tell(r.ok ? 'The game accepts the stored code.' : (r.error || 'the game refused the stored code'),
+      { title: 'Security code' });
+  };
+  dlg.showModal();
+}
+$('settingsBtn').onclick = openSettings;
+
 // ---------- connection line ----------
 // ticks down locally between polls
 const CONN = { state: 'offline', reason: null, retryInSec: null, attempt: 0, syncedAt: 0 };
+// The CONSOLE being reachable is not the same thing as the GAME link being up,
+// and this line used to show only the second. A console that is restarting (or
+// a sign-in that has run out) answers nothing, and the page then sat there
+// green and frozen; now it says so and says when it came back.
+const GONE = { since: 0, misses: 0, why: null };
+function consoleGone(why) {
+  GONE.misses++;
+  if (!GONE.since) GONE.since = Date.now();
+  GONE.why = why || null;
+  if (GONE.misses >= 2) paintConn();          // one missed poll is a blip, not an outage
+}
+function consoleBack() {
+  if (GONE.since && GONE.misses >= 2) paintEditHint('the console is back');
+  GONE.since = 0; GONE.misses = 0; GONE.why = null;
+}
 function paintConn() {
   const dot = $('dot'), txt = $('conn');
+  if (GONE.misses >= 2) {
+    const secs = Math.round((Date.now() - GONE.since) / 1000);
+    dot.className = 'dot'; dot.style.background = 'var(--bad)';
+    txt.style.color = 'var(--bad)';
+    txt.textContent = GONE.why ? `console: ${GONE.why}` : `console not answering for ${secs > 90 ? Math.round(secs / 60) + 'm' : secs + 's'} — retrying`;
+    txt.title = GONE.why ? 'Sign in again in a new tab, then come back to this one.'
+      : 'The bot process behind this page is down or restarting. Nothing on this page is current until it answers again.';
+    return;
+  }
   if (CONN.state === 'connected') {
     dot.className = 'dot on'; dot.style.background = '';
     txt.textContent = 'connected'; txt.style.color = ''; txt.title = '';
@@ -874,7 +1020,15 @@ $('pauseBtn').onclick = async () => {
   await post('/api/pause', { paused });
   refresh();
 };
-$('refreshBtn').onclick = () => { X.clear(); MARKET.at = 0; INN = null; refresh(true); };
+// F5 for this tab: a fresh login for the account, then everything read again.
+$('refreshBtn').onclick = async () => {
+  const btn = $('refreshBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  $('conn').textContent = 'logging in afresh…';
+  try { await post('/api/reconnect'); } finally { btn.disabled = false; }
+  X.clear(); MARKET.at = 0; INN = null; refresh(true);
+};
 $('connect').onclick = async () => {
   $('conn').textContent = 'connecting…';
   await post('/api/connect');
@@ -931,6 +1085,8 @@ $('cities').addEventListener('click', (e) => {
   S.cityData = null; MARKET.data = null; MARKET.at = 0; INN = null;
   MAP.x = null; MAP.data = null; MAP.hits = null;
   paintCities(); loadEditor(); refresh(true);
+  // its script ended while another city was open: show how it went, now
+  if (RUNS.has(String(S.city)) || ENDED_WANT.has(String(S.city))) syncRuns();
 });
 
 // ---------- gate control / war town mode ----------
@@ -986,12 +1142,22 @@ $('editTabs').addEventListener('click', (e) => {
 // slot it has open. Unsaved edits wait in `drafts` per city (and per slot for
 // scripts) until saved, so switching city, tab or loadout loses nothing.
 // LOAD.acct is the account all of this belongs to (see refresh).
-const LOAD = { acct: undefined, count: 10, cities: {} };     // city id -> { saved, drafts, slot }
+const LOAD = { acct: undefined, count: 10, cities: {}, fail: {} };     // city id -> { saved, drafts, slot }; fail: why a read failed
 const GOALED = { saved: {}, drafts: {} };                      // city id -> goal text
 const LOAD_SLOTS = store.get('evony_loadslots', {}) || {};    // city id -> the slot it has open
 const LOAD_FIRST = Number(store.get('evony_load', 1)) || 1;   // the old, shared choice
 const loadOf = (city = S.city) => LOAD.cities[String(city)];
 let editLoads = 0;          // a reply for an editor the user has since left is dropped
+
+// A run's lines carry the time they happened: "14:07:02.913 line 8: sell ...".
+// The time is for reading, not for matching on, so anything that looks at what a
+// line SAYS takes it off first.
+const unstamp = (l) => String(l).replace(/^\d\d:\d\d:\d\d\.\d\d\d /, '');
+
+// A city's name from its id. NOT S.cityData, which is the city the page has
+// LOADED: while a newly opened city is still loading, that is the one before it,
+// and a Run said "running in <the last city>" about the city now open.
+const cityNameById = (id) => ((S.cities || []).find((c) => String(c.id) === String(id)) || {}).name || 'another city';
 
 // Scripts running now, city id -> city name. A run holds Run for its own city
 // only (a `repeat 1000` of buys takes about 20 minutes), so another city can
@@ -999,12 +1165,50 @@ let editLoads = 0;          // a reply for an editor the user has since left is 
 const RUNS = new Map();
 // Runs waiting at a `stop` line, city id -> { line, next }; RUN_FROM: what started them.
 const PAUSED = new Map(), RUN_FROM = new Map();
+// A live Run is answered by the console the moment the run STARTS, not when it
+// ends: waiting held one browser connection per running city, and a browser
+// gives an origin six — so with five or six endless `loop`s going, every later
+// request queued behind them and the page stopped loading cities, loadouts and
+// Runs at all. The poll below owns a run from its start: ENDED_WANT is the
+// cities whose ending has not been shown yet, RUN_LOAD what to call the run.
+const ENDED_WANT = new Set(), RUN_LOAD = new Map();
+// "All towns": one Run starts the SAME script — the text in the editor, which is
+// the open city's loadout — in every city of this account, each as its own run
+// with its own Output and its own place in the console's run list (server.js
+// keys runs by city). Only Run and Stop look at the tick: the other cities' own
+// loadouts are never read, written or touched, and Save still writes the open
+// city's slot alone. Stop follows the tick too — ten endless `loop`s are not
+// worth ten clicks to stop.
+const allTowns = () => S.edit === 'script' && !acctWhich() && $('allTowns').checked;
+const cityIds = () => (S.cities || []).map((c) => String(c.id));
+const freeCities = () => cityIds().filter((c) => !RUNS.has(c));
+$('allTowns').checked = !!store.get('evony_alltowns', false);
+$('allTowns').onchange = () => {
+  store.set('evony_alltowns', $('allTowns').checked);
+  paintRunBtn();
+  if (S.edit === 'script') paintEditHint($('allTowns').checked
+    ? `Run starts this script in all ${freeCities().length} cities at once; Stop ends them all`
+    : 'Run and Stop are back to the open city only');
+};
+
 function paintRunBtn() {
-  const busy = RUNS.has(String(S.city));
+  const all = allTowns(), open = String(S.city);
+  const free = all ? freeCities().length : 0;
+  const busy = all ? free === 0 : RUNS.has(open);
   $('runScript').disabled = busy;
-  $('runScript').title = busy ? 'A script is already running in this city' : 'Run this script in the open city';
-  $('stopScript').hidden = !(busy && S.edit === 'script');
-  const p = busy ? PAUSED.get(String(S.city)) : null;
+  $('runScript').textContent = all ? 'Run all' : 'Run';
+  $('runScript').title = all
+    ? (busy ? 'A script is already running in every city'
+      : `Run this script in all ${free} cit${free === 1 ? 'y' : 'ies'} at once — one run each, side by side`)
+    : (busy ? 'A script is already running in this city' : 'Run this script in the open city');
+  // Ticked, Stop shows while ANY city is running, and ends them all.
+  const stopping = all ? RUNS.size > 0 : RUNS.has(open);
+  $('stopScript').hidden = !(stopping && S.edit === 'script');
+  $('stopScript').textContent = all && RUNS.size > 1 ? `Stop all (${RUNS.size})` : 'Stop';
+  $('stopScript').title = all && RUNS.size > 1
+    ? `Stop the script in all ${RUNS.size} cities — each ends once the line it is on finishes`
+    : 'Stop this city\'s script once the line it is on finishes';
+  const p = RUNS.has(open) ? PAUSED.get(open) : null;
   $('resumeScript').hidden = !(p && S.edit === 'script');
   if (p) $('resumeScript').title = `Paused at line ${p.line} (a stop line) — carry on${p.next ? ` from line ${p.next}` : ''}; Stop ends it`;
 }
@@ -1017,13 +1221,19 @@ const RUN_POSTS = new Set();
 let runGen = 0, runSyncs = 0;
 async function syncRuns() {
   const gen = runGen, open = String(S.city);
-  const r = await getJSON('/api/script/runs' + (RUNS.has(open) ? '?city=' + encodeURIComponent(open) : ''));
+  const want = RUNS.has(open) || ENDED_WANT.has(open);
+  const r = await getJSON('/api/script/runs' + (want ? '?city=' + encodeURIComponent(open) : ''));
   if (!r || !r.runs || gen !== runGen) return;
   const live = new Set(r.runs.map((x) => String(x.city)));
-  const nameOf = (id) => ((S.cities || []).find((c) => String(c.id) === id) || {}).name || 'another city';
+  const nameOf = cityNameById;
   let changed = false;
   for (const c of live) if (!RUNS.has(c)) { RUNS.set(c, nameOf(c)); changed = true; }
-  for (const c of [...RUNS.keys()]) if (!live.has(c) && !RUN_POSTS.has(c)) { RUNS.delete(c); changed = true; }
+  const overElsewhere = [];
+  for (const c of [...RUNS.keys()]) {
+    if (live.has(c) || RUN_POSTS.has(c)) continue;
+    RUNS.delete(c); ENDED_WANT.add(c); changed = true;
+    if (c !== open) overElsewhere.push(`${RUN_LOAD.get(c) || 'a script'} finished in ${nameOf(c)} — its output is in that city's Output tab`);
+  }
   // paused at a `stop` line (a console older than this page sends no `paused`)
   const pz = r.runs.filter((x) => x.paused).map((x) => [String(x.city), x.paused]);
   if (JSON.stringify(pz) !== JSON.stringify([...PAUSED])) { PAUSED.clear(); for (const [c, p] of pz) PAUSED.set(c, p); changed = true; }
@@ -1031,11 +1241,17 @@ async function syncRuns() {
   for (const x of r.runs) if (x.source && x.source !== 'console') RUN_FROM.set(String(x.city), x.source);
   if (changed) { paintRunBtn(); if (S.edit === 'script' && Date.now() > (S.hintUntil || 0)) paintEditHint(); }
   if (r.lines && open === String(S.city)) {
-    const p = PAUSED.get(open), from = RUN_FROM.get(open), where = RUNS.get(open) || 'this city';
-    liveOutput([p ? `paused at line ${p.line} in ${where} — Resume carries on${p.next ? ` from line ${p.next}` : ''}, Stop ends it`
-      : `running in ${where}${from ? ` (${from})` : ''} — Stop ends it after the line it is on`, '',
+    const p = PAUSED.get(open), from = RUN_FROM.get(open), where = RUNS.get(open) || nameOf(open);
+    const e = r.ended;
+    // what the run changed (a queue it cancelled, resources it spent) shows now
+    if (e) { ENDED_WANT.delete(open); refresh(true); }
+    liveOutput([e ? `${RUN_LOAD.get(open) || 'the script'} in ${where}${e.stopped ? ' · stopped' : ''}`
+      + (e.error ? ` · ERROR: ${e.error}` : ` · done — ${e.n} action(s)`)
+      : p ? `paused at line ${p.line} in ${where} — Resume carries on${p.next ? ` from line ${p.next}` : ''}, Stop ends it`
+        : `running in ${where}${from ? ` (${from})` : ''} — Stop ends it after the line it is on`, '',
       ...(r.dropped ? [`(${r.dropped} earlier line(s) not shown)`] : []), ...r.lines].join('\n'), open);
   }
+  for (const m of overElsewhere) if (S.edit !== 'engine') paintEditHint(m);
 }
 // every 2s while anything runs, otherwise every 16s to notice runs started elsewhere
 setInterval(() => { if (RUNS.size || ++runSyncs % 8 === 0) syncRuns(); }, 2000);
@@ -1065,19 +1281,69 @@ function paintLoadSel() {
 }
 
 // One city's loadouts, fetched the first time that city's script is opened.
+// A console restarted under an open tab answers nothing for a moment, so this
+// read fails often enough to plan for: WHY it failed is kept, one fetch is
+// shared between everyone asking at once, and the poll asks again by itself
+// (loadoutsBack) so the Script tab comes back on its own.
+const LOAD_BUSY = new Map();          // city -> the fetch in flight
 async function loadLoadouts(city) {
+  city = String(city);
   if (LOAD.cities[city]) return LOAD.cities[city];
-  const r = await getJSON('/api/loadouts?city=' + encodeURIComponent(city));
-  if (!r || r.ok === false) {
-    if (String(S.city) === city) paintEditHint('loadouts: ' + ((r && r.error) || 'could not load them'), true);
-    return null;
-  }
-  if (LOAD.cities[city]) return LOAD.cities[city];     // asked for twice at once: keep the first
-  LOAD.count = r.count || LOAD.count;
-  const L = { saved: {}, drafts: {}, slot: Number(LOAD_SLOTS[city]) || LOAD_FIRST };
-  for (const s of r.slots || []) L.saved[s.slot] = s.src;
-  if (L.slot > LOAD.count) L.slot = 1;
-  return (LOAD.cities[city] = L);
+  if (LOAD_BUSY.has(city)) return LOAD_BUSY.get(city);
+  const go = (async () => {
+    const r = await getJSON('/api/loadouts?city=' + encodeURIComponent(city));
+    if (!r || r.ok === false) {
+      LOAD.fail[city] = { at: Date.now(), why: (r && r.error) || 'the console did not answer — it may be restarting' };
+      if (String(S.city) === city) paintEditHint('loadouts: ' + LOAD.fail[city].why, true);
+      return null;
+    }
+    delete LOAD.fail[city];
+    if (LOAD.cities[city]) return LOAD.cities[city];   // asked for twice at once: keep the first
+    LOAD.count = r.count || LOAD.count;
+    const L = { saved: {}, drafts: {}, slot: Number(LOAD_SLOTS[city]) || LOAD_FIRST };
+    for (const s of r.slots || []) L.saved[s.slot] = s.src;
+    if (L.slot > LOAD.count) L.slot = 1;
+    return (LOAD.cities[city] = L);
+  })();
+  LOAD_BUSY.set(city, go);
+  try { return await go; } finally { LOAD_BUSY.delete(city); }
+}
+const whyNoLoadouts = (city) => (LOAD.fail[String(city)] || {}).why || 'they have not loaded yet';
+
+// What Save and Run do when this city's loadouts are missing: fetch them, and
+// say whether the caller may act on what is on screen. It may NOT when the
+// editor never held this city's text — a failed read leaves it empty and
+// read-only, and saving that blank over a slot would throw the loadout away.
+// -> { L, ready } | { error }
+async function loadoutsToActOn(city) {
+  const have = loadOf(city);
+  if (have) return { L: have, ready: true };
+  const L = await loadLoadouts(city);
+  if (!L) return { error: whyNoLoadouts(city) };
+  if (String(S.city) !== city) return { L, ready: false, moved: true };
+  const ed = $('editor');
+  const ready = ed.value === slotSrc(L, L.slot);       // the text on screen IS this slot: nothing was lost
+  if (!ready) { ed.value = slotSrc(L, L.slot); edcShow(); }
+  ed.readOnly = false;
+  paintLoadSel();
+  return { L, ready };
+}
+
+// The poll's own repair: the open city's loadouts come back without a click,
+// so a console restart costs the Script tab a few seconds, not a page reload.
+async function loadoutsBack() {
+  if (S.edit !== 'script' || !S.city || acctWhich()) return;
+  const city = String(S.city);
+  if (loadOf(city) || LOAD_BUSY.has(city)) return;
+  const f = LOAD.fail[city];
+  if (f && Date.now() - f.at < 3000) return;           // not on every 4s poll while it is still down
+  const L = await loadLoadouts(city);
+  if (!L || String(S.city) !== city || S.edit !== 'script' || acctWhich()) return;
+  const ed = $('editor');
+  if (ed.readOnly || !ed.value.trim()) { ed.value = slotSrc(L, L.slot); edcShow(); }
+  ed.readOnly = false;
+  paintLoadSel();
+  paintEditHint(`this city's loadouts are back — Load ${L.slot} is ready`);
 }
 
 async function loadEditor() {
@@ -1088,6 +1354,7 @@ async function loadEditor() {
   show('loadSel', k === 'script');
   show('apply', k !== 'engine'); show('save', k !== 'engine');
   show('runScript', k === 'script');
+  show('allTownsWrap', k === 'script');
   paintRunBtn();
   show('engRefresh', k === 'engine');
   $('apply').title = 'Check for errors — nothing is saved';
@@ -1142,8 +1409,10 @@ function paintEditHint(extra, bad) {
     : S.edit === 'goals' ? `${city}'s standing intentions, re-evaluated every tick`
       + (String(S.city) in GOALED.drafts ? ' · <b>not saved</b>' : '') + (h && h.paused ? ' · engine <b>PAUSED</b>' : '')
       + (SL ? scriptHint(SL) : '')
-    : S.edit === 'script' ? `runs top to bottom, once, in ${city}${L && L.slot in L.drafts ? ' · <b>not saved</b>' : ''}`
+    : S.edit === 'script' ? `runs top to bottom, once, in ${allTowns() ? `<b>all ${cityIds().length} cities</b>` : city}`
+      + (L && L.slot in L.drafts ? ' · <b>not saved</b>' : '')
       + (RUNS.has(String(S.city)) ? ' · <b>running here</b>' : '')
+      + (allTowns() && RUNS.size ? ` · running in ${RUNS.size} cit${RUNS.size === 1 ? 'y' : 'ies'}` : '')
     : '';
 }
 
@@ -1216,10 +1485,14 @@ async function saveLoadout() {
   const city = String(S.city), hint = hintIn(city, 'script');
   // A console restarted under an open tab answers nothing for a moment, and the
   // first read of this city's loadouts fails. Ask again here rather than refuse
-  // every save until the page is reloaded.
-  const L = loadOf(city) || await loadLoadouts(city);
-  if (!L) return hint('this city\'s loadouts have not loaded — try again', true);
-  if (String(S.city) !== city) return;                 // moved on while it loaded
+  // every save until the page is reloaded — but a read that failed also left the
+  // editor blank, and saving THAT would clear the slot. So the loadout comes
+  // back into the editor first and the save waits for a second press.
+  const got = await loadoutsToActOn(city);
+  if (got.error) return hint(`this city's loadouts have not loaded — ${got.error}`, true);
+  if (got.moved || String(S.city) !== city) return;    // moved on while it loaded
+  const L = got.L;
+  if (!got.ready) return hint(`this city's loadouts are back — Load ${L.slot} as it is saved is in the editor now; press Save again to write it`, true);
   const slot = L.slot, src = $('editor').value, key = edcKey();
   const r = await post('/api/loadouts', { city, slot, src });
   if (r.ok === false) return hint('not saved — ' + (r.error || 'failed'), true);
@@ -1266,8 +1539,8 @@ const ACCT_OPTS = {
 };
 const ACCT_ABOUT = {
   template: 'copied into a city the first time it appears (founded or captured) if it has no goals of its own',
-  prepend: 'every city runs these before its own goals; a city\'s own lines override them',
-  append: 'every city runs these after its own goals; they override the city\'s own lines',
+  prepend: 'every city runs these after its own goals; a city\'s own lines win over them',
+  append: 'every city runs these after its own goals and the prepend goals; both win over them',
   script: 'runs once in each city founded or captured while this console is connected',
   ...Object.fromEntries(GOAL_SETS.map((s) => [s, `a script's loadgoals ${s.slice(3)} runs these in place of a city's goals `
     + '(prepend and append too) until loadgoals, Clear script goals, saving that city\'s goals or a restart'])),
@@ -1289,7 +1562,7 @@ function paintAcctSel() {
   $('acctSel').innerHTML = opts.filter(([v]) => !GOAL_SETS.includes(v)).map(opt).join('')
     + (sets.length ? `<optgroup label="Goal sets a script loads (loadgoals N)">${sets.map(opt).join('')}</optgroup>` : '');
   $('acctSel').value = ACCT[S.edit] || '';
-  if (acctWhich()) { $('loadSel').style.display = 'none'; $('runScript').style.display = 'none'; }
+  if (acctWhich()) { for (const id of ['loadSel', 'runScript', 'allTownsWrap']) $(id).style.display = 'none'; }
 }
 $('acctSel').onchange = () => {
   if (!ACCT_OPTS[S.edit]) return;
@@ -1335,6 +1608,7 @@ function acctHint() {
   const draft = which in ACCT.drafts;
   return `<b>${esc(acctLabel(which))}</b>: ${esc(ACCT_ABOUT[which] || '')}`
     + (info.inherited && !draft ? ' · shown from the install-wide default' : '')
+    + (info.file ? ` · the Director copies <b>${esc(info.file)}</b> in here whenever it changes — edit that file, a save here is overwritten` : '')
     + (draft ? (info.suggested && ACCT.drafts[which] === info.suggested ? ' · <b>NEAT\'s default, not saved</b>' : ' · <b>not saved</b>') : '')
     + ((which === 'prepend' || which === 'append') && h && h.paused ? ' · engine <b>PAUSED</b>' : '');
 }
@@ -1411,51 +1685,122 @@ $('clearScript').onclick = async () => {
   refresh();
 };
 
-// Always live. A script with errors is refused whole by the server. Runs in
-// different cities go side by side, and each city's Output shows its own run.
-$('runScript').onclick = async () => {
-  if (acctWhich()) return;             // the new-city script runs by itself, in new cities
-  const src = $('editor').value;
-  if (!S.city) return paintEditHint('no city is open yet', true);
-  // as in saveLoadout: a restarted console leaves the first read failed
-  const L = loadOf() || await loadLoadouts(String(S.city));
-  if (!L) return paintEditHint('this city\'s loadouts have not loaded — try again', true);
-  if (!src.trim()) return paintEditHint(`Load ${L.slot} is empty — nothing to run`, true);
-  const slot = L.slot, name = loadName(src), city = String(S.city);
-  const cityName = S.cityData ? S.cityData.name : 'the open city';
-  if (RUNS.has(city)) return paintEditHint(`a script is already running in ${cityName}`, true);
-  // NEAT's Run box: a line number or a label to start at (the server checks it)
-  const from = $('runFrom').value.trim();
-  const at = !from || from === '0' ? '' : /^\d+$/.test(from) ? ` from line ${from}` : ` from label ${from}`;
-  if (!await ask(`Run Load ${slot}${name ? ` (${name})` : ''} in ${cityName}${at} now?`,
-    { title: 'Run script', ok: 'Run' })) return;
+// One city's Run: the post and the bookkeeping around it. Both the plain Run and
+// "all towns" go through here, so every run looks the same to the poll (RUNS,
+// RUN_LOAD, ENDED_WANT) and each city keeps its own Output.
+async function startRun(city, { src, from, at, label }) {
+  const cityName = cityNameById(city);
   RUNS.set(city, cityName); RUN_POSTS.add(city); runGen++;
-  paintRunBtn(); paintEditHint();
+  paintRunBtn();
   showOutput(`running in ${cityName}${at}…`, city);
   // the id stops a browser's re-send after a console restart from running it twice
   const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   const r = await post('/api/script', { src, city, runId, ...(at ? { startLine: from } : {}) });
-  RUNS.delete(city); RUN_POSTS.delete(city); runGen++;
+  RUN_POSTS.delete(city); runGen++;
+  // Started: the console answered as the run began, and this request is done with.
+  // The poll shows its lines and its ending from here, in this city's Output.
+  if (r.started) {
+    RUN_LOAD.set(city, label);
+    ENDED_WANT.delete(city);
+    paintRunBtn();
+    showOutput([`${label} in ${cityName}${at}`, '', ...(r.log || [])].join('\n'), city);
+    return r;
+  }
+  RUNS.delete(city); runGen++;
   paintRunBtn();
+  showOutput([
+    `${label} in ${cityName}${r.stopped ? ' · stopped' : ''}${RUNS.size ? ` · still running in ${[...RUNS.values()].join(', ')}` : ''}`, '',
+    ...(r.log || [r.error || 'no output']),
+  ].join('\n'), city);
+  return r;
+}
+// Why a run did not start, as the console said it (its lines carry the time).
+const whyNotRun = (r) => ((r.log || []).map(unstamp).filter((l) => !/^parsed |^nothing was run/.test(l))[0] || r.error || 'not run');
+
+// Always live. A script with errors is refused whole by the server. Runs in
+// different cities go side by side, and each city's Output shows its own run.
+$('runScript').onclick = async () => {
+  if (acctWhich()) return;             // the new-city script runs by itself, in new cities
+  if (!S.city) return paintEditHint('no city is open yet', true);
+  // as in saveLoadout: a restarted console leaves the first read failed, which
+  // also left the editor blank — so the loadout is fetched and put back, and the
+  // run waits for a second press rather than running an empty or stale editor.
+  const got = await loadoutsToActOn(String(S.city));
+  if (got.error) return paintEditHint(`this city's loadouts have not loaded — ${got.error}`, true);
+  if (got.moved) return;
+  const L = got.L;
+  if (!got.ready) return paintEditHint(`this city's loadouts are back — Load ${L.slot} is in the editor now; press Run to start it`, true);
+  const src = $('editor').value;
+  if (!src.trim()) return paintEditHint(`Load ${L.slot} is empty — nothing to run`, true);
+  const slot = L.slot, name = loadName(src), city = String(S.city);
+  const cityName = cityNameById(city);
+  // NEAT's Run box: a line number or a label to start at (the server checks it)
+  const from = $('runFrom').value.trim();
+  const at = !from || from === '0' ? '' : /^\d+$/.test(from) ? ` from line ${from}` : ` from label ${from}`;
+  const what = `Load ${slot}${name ? ` (${name})` : ''}`;
+  const all = allTowns();
+
+  // All towns: the same text in every city that has no run of its own going.
+  // Each is an ordinary run of that city's — its own Output, its own Stop — and
+  // no city's saved loadouts are touched, here or there.
+  if (all) {
+    const cities = cityIds();
+    if (!cities.length) return paintEditHint('no cities are loaded yet', true);
+    const targets = cities.filter((c) => !RUNS.has(c));
+    const busy = cities.filter((c) => RUNS.has(c));
+    if (!targets.length) return paintEditHint('a script is already running in every city', true);
+    const detail = `In: ${targets.map(cityNameById).join(', ')}.`
+      + (busy.length ? ` Skipped, a script is already running there: ${busy.map(cityNameById).join(', ')}.` : '')
+      + ` This city's ${what} is what every one of them runs — their own loadouts are not read or changed.`
+      + ' They run side by side, so watch the load: many cities of one account working at once is what the game server falls behind on.';
+    if (!await ask(`Run ${what} in all ${targets.length} cities${at} now?`,
+      { title: 'Run script — all towns', detail, ok: `Run in ${targets.length} cities` })) return;
+    const label = `${what} · all towns`;
+    const rs = await Promise.all(targets.map((c) => startRun(c, { src, from, at, label })));
+    const ok = targets.filter((c, i) => rs[i] && rs[i].started);
+    const bad = targets.filter((c, i) => !(rs[i] && rs[i].started));
+    for (const c of ok) RUN_LOAD.set(c, label);
+    paintRunBtn();
+    if (!ok.length) {
+      const n = (rs[0].errors || []).length;
+      paintEditHint(n ? `${n} error(s) — nothing was run, in any city. See Output.`
+        : `nothing started — ${whyNotRun(rs[0])}`, true);
+    } else paintEditHint(bad.length
+      ? `${what} started in ${ok.length} of ${targets.length} cities — not in ${bad.map(cityNameById).join(', ')} (their Output says why)`
+      : `${what} started in all ${ok.length} cities — each city's Output follows its own run, and Stop ends them all`,
+    bad.length > 0);
+    syncRuns();
+    return;
+  }
+
+  if (RUNS.has(city)) return paintEditHint(`a script is already running in ${cityName}`, true);
+  if (!await ask(`Run ${what} in ${cityName}${at} now?`, { title: 'Run script', ok: 'Run' })) return;
+  const r = await startRun(city, { src, from, at, label: what });
   if (S.edit === 'script' && Date.now() > (S.hintUntil || 0)) paintEditHint();
+  if (r.started) { syncRuns(); return; }
   const n = (r.errors || []).length;
   if (n && S.city === city) paintEditHint(`${n} error(s) — nothing was run. See Output.`, true);
   // refused without errors: a start line or label it does not have, a run already going
-  else if (r.ok === false && S.city === city) paintEditHint(((r.log || []).filter((l) => !/^parsed |^nothing was run/.test(l))[0] || r.error || 'not run') + ' — nothing was run', true);
-  showOutput([
-    `Load ${slot} in ${cityName}${r.stopped ? ' · stopped' : ''}${RUNS.size ? ` · still running in ${[...RUNS.values()].join(', ')}` : ''}`, '',
-    ...(r.log || [r.error || 'no output']),
-  ].join('\n'), city);
-  if (S.city !== city && S.edit !== 'engine') paintEditHint(`Load ${slot} finished in ${cityName} — its output is in that city's Output tab`);
+  else if (r.ok === false && S.city === city) paintEditHint(`${whyNotRun(r)} — nothing was run`, true);
+  if (S.city !== city && S.edit !== 'engine') paintEditHint(`${what} finished in ${cityName} — its output is in that city's Output tab`);
   // What the script changed (a queue it cancelled, say) shows now, not on the next poll.
   if (!n && S.city === city) refresh(true);
 };
+// Ticked "all towns", Stop ends every city that is running, not just the open one.
 $('stopScript').onclick = async () => {
-  const city = String(S.city);
+  const cities = allTowns() ? [...RUNS.keys()] : [String(S.city)];
+  if (!cities.length) return paintEditHint('nothing is running');
   $('stopScript').disabled = true;
-  const r = await post('/api/script/stop', { city });
+  const rs = await Promise.all(cities.map((city) => post('/api/script/stop', { city })));
   $('stopScript').disabled = false;
-  paintEditHint(r.ok ? 'stopping — the line it is on finishes first' : (r.error || 'could not stop it'), !r.ok);
+  if (cities.length === 1) {
+    const r = rs[0];
+    return paintEditHint(r.ok ? 'stopping — the line it is on finishes first' : (r.error || 'could not stop it'), !r.ok);
+  }
+  const ok = rs.filter((r) => r.ok).length;
+  paintEditHint(ok === cities.length
+    ? `stopping all ${ok} — each ends once the line it is on finishes`
+    : `stopping ${ok} of ${cities.length} — ${(rs.find((r) => !r.ok) || {}).error || 'the rest could not be stopped'}`, ok < cities.length);
 };
 // NEAT's `stop` paused the script; Resume carries on from the line after it.
 $('resumeScript').onclick = async () => {
@@ -1803,7 +2148,8 @@ function setBody(html) {
   lastMon = html;
 }
 
-// Rows are [cells] or { cells, cls, title, style }; cols are { h, a: 'n'|'c'|'', w, sort }.
+// Rows are [cells] or { cells, cls, title, tip, style }; cols are { h, a: 'n'|'c'|'', w, sort }.
+// tip names a hover card (tipFor) built when the pointer is over the row.
 function grid(cols, rows, opt = {}) {
   const head = cols.map((c, i) => {
     const arrow = opt.sort && opt.sort.i === i ? (opt.sort.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
@@ -1811,7 +2157,7 @@ function grid(cols, rows, opt = {}) {
   }).join('');
   const body = rows.map((r) => {
     const o = Array.isArray(r) ? { cells: r } : r;
-    return `<tr${o.cls ? ` class="${o.cls}"` : ''}${o.title ? ` title="${esc(o.title)}"` : ''}${o.style ? ` style="${o.style}"` : ''}>`
+    return `<tr${o.cls ? ` class="${o.cls}"` : ''}${o.title ? ` title="${esc(o.title)}"` : ''}${o.tip ? ` data-tip="${esc(o.tip)}"` : ''}${o.style ? ` style="${o.style}"` : ''}>`
       + o.cells.map((v, i) => `<td class="${(cols[i] && cols[i].a) || ''}">${v === undefined || v === null ? '' : v}</td>`).join('')
       + '</tr>';
   }).join('');
@@ -1834,6 +2180,7 @@ function renderMon(force) {
 
 const RES_ICON = { gold: '&#129689;', food: '&#127806;', wood: '&#129717;', stone: '&#129704;', iron: '&#9935;', pop: '&#128101;' };
 let TROOP_NAME = {};
+let TROOP_TOTAL = {};          // key -> every unit the open city owns, set by renderTroops
 
 // ---- General -------------------------------------------------------------
 function renderGeneral(d) {
@@ -1885,7 +2232,7 @@ function renderResources(d) {
       cls: tl !== null && tl !== undefined && tl < 24 ? 'bad' : '',
       cells: [`<span class="ico">${RES_ICON[k]}</span>${label}`, sn(x.amount), incCell(k), need[k] ? sn(need[k]) : '0',
         rate(x.rate), production, timeLeft(tl)],
-      title: k === 'food' ? `produces ${fmt(x.gross)}/hr, troops eat ${fmt(d.general.troopUpkeep)}/hr` : k === 'gold' ? `tax ${fmt(d.general.taxIncome)}/hr, hero salary ${fmt(d.general.heroSalary)}/hr` : '',
+      tip: 'res:' + k,
     };
   };
   const pct = (k) => (prod && prod.rates[k] ? `${prod.rates[k].rate}%` : '<span class="muted">…</span>');
@@ -1897,7 +2244,7 @@ function renderResources(d) {
     row('stone', 'Stone', pct('stone')),
     row('iron', 'Iron', pct('iron')),
     { cells: [`<span class="ico">${RES_ICON.pop}</span>Population`, `idle: ${fmt(r.idle)}/${fmt(r.population)}`, '', '', '', '', ''],
-      title: `max ${fmt(r.maxPopulation)} · on fields ${fmt(r.employed)} · on construction ${fmt(r.building)}` },
+      tip: 'res:pop' },
   ];
   const html = grid([
     { h: 'Resource', w: '16%' }, { h: 'Amount', a: 'n' }, { h: 'Incoming', a: 'n' },
@@ -1970,7 +2317,7 @@ const HSORT = { i: 0, dir: 1 };
 function attr(h, key) {
   const raw = Number(h[key] || 0), pct = Number(h[key + 'Buff'] || 0), eff = Number(h[key + 'Eff'] || raw);
   if (!pct) return String(raw);
-  return `<span title="${fmt(raw)} before the ${pct}% buff"><b class="buffed">${fmt(eff)}</b> <span class="muted">+${pct}%</span></span>`;
+  return `<span><b class="buffed">${fmt(eff)}</b> <span class="muted">+${pct}%</span></span>`;
 }
 function renderHeroes(d) {
   const list = (d.heroes || []).map((h, i) => ({ ...h, n: i + 1 }));
@@ -1983,13 +2330,14 @@ function renderHeroes(d) {
     const mayor = Number(h.status) === 1;
     const buffTip = (h.buffs || []).map((b) => `${b.text || b.type} — ${b.msLeft ? (b.msLeft / 86400000).toFixed(1) + ' days left' : 'expired'}`).join('\n');
     const boosted = ['attack', 'politics', 'intel'].some((k) => Number(h[k + 'Buff']));
-    const name = boosted ? `<span class="buffed" title="${esc(buffTip)}">${esc(h.name)}</span>` : esc(h.name);
+    const name = boosted ? `<span class="buffed">${esc(h.name)}</span>` : esc(h.name);
     // Out marching (3) or defending a valley (2): the Feasting Hall offers only
     // a recall, and so does this. A prisoner we hold (4) is not ours to promote,
-    // build or fire — the client offers it only Release/Persuade — so it gets no
-    // buttons here. Only an idle hero (0) can be promoted (the client's mayor window).
+    // build or fire — the client offers it only Persuade and Release, and so does
+    // this. Only an idle hero (0) can be promoted (the client's mayor window).
     const st = Number(h.status), away = st === 2 || st === 3, prisoner = st === 4;
-    const act = prisoner ? '<span class="muted" title="A prisoner you hold. The bot never releases one; release &lt;name&gt; in a script does.">prisoner</span>'
+    const act = prisoner ? `<button class="sm" data-act="persuade" data-hero="${esc(h.name)}" title="Ask the prisoner to join you: level x 1,000 gold, and medals if it asks for them">Persuade</button>`
+      + ` <button class="sm danger" data-act="release" data-hero="${esc(h.name)}" title="Let the prisoner go, for good">Release</button>`
       : away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
       : (mayor ? `<button class="sm" data-act="unmayor" data-hero="${esc(h.name)}">Demote</button>`
         : st === 0 ? `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>` : '')
@@ -1999,7 +2347,7 @@ function renderHeroes(d) {
       + (mayor ? '' : ` <button class="sm danger" data-act="fire" data-hero="${esc(h.name)}">Fire</button>`);
     return {
       // marching red, returning green, defending blue
-      cls: mayor ? 'mayor' : st === 3 ? 'bad' : st === 5 ? 'good' : st === 2 ? 'defend' : '',
+      cls: mayor ? 'mayor' : st === 3 ? 'bad' : st === 5 ? 'good' : st === 2 ? 'defend' : '', tip: 'hero:' + h.name,
       cells: [h.n, name, esc(h.statusName || ''), h.type || '',
         // The Buff column is the way in: + opens the hero-item window, and shows
         // what is already on the hero on hover. A prisoner takes no item, so it
@@ -2083,6 +2431,19 @@ const troopTip = (units, loot) => {
   return [t.length ? 'Troops\n  ' + t.join('\n  ') : 'no troops reported', l.length ? 'Carrying\n  ' + l.join('\n  ') : ''].filter(Boolean).join('\n\n');
 };
 
+// The Action cell of one march. A march is ours to call back until it turns
+// round: ArmyConstants.as direction 1 (going) and 3 (camped) can be recalled,
+// 2 (already heading home) cannot — the server refuses it and there is nothing
+// to gain. army.callBackArmy wants the armyId, and selfArmys is the only place
+// one comes from (army.newArmy answers without it), so a march the server has
+// not numbered yet says so rather than offering a button that can only fail.
+const recallCell = (a) => {
+  if (a.direction === 'back') return '<span class="muted" title="it has turned round already — it is on its way home">coming home</span>';
+  if (a.armyId === undefined || a.armyId === null || a.armyId === '')
+    return '<span class="muted" title="the server has not numbered this march yet — it can be recalled once it has an army id, a moment later">no army id yet</span>';
+  return `<button class="sm" data-act="recall" data-id="${esc(a.armyId)}" data-to="${esc(a.to || '')}" data-dir="${esc(a.direction || 'out')}">Recall</button>`;
+};
+
 function renderArmies(d) {
   const m = S.marches;
   if (!m) return '<div class="empty">reading the rally spot…</div>';
@@ -2110,7 +2471,7 @@ function renderArmies(d) {
         `${esc(a.to || '')} ${a.target ? `(${a.target.x},${a.target.y})` : ''}`
           + (S.armiesAll ? ` <span class="muted">from ${esc(a.from || '')}</span>` : ''),
         dist, until(a.reachTime, now),
-        a.direction === 'back' ? '' : `<button class="sm" data-act="recall" data-id="${esc(a.armyId)}" data-to="${esc(a.to || '')}">Recall</button>`],
+        recallCell(a)],
     };
   });
   return tb + grid([{ h: 'Army' }, { h: 'Hero' }, { h: 'Target' }, { h: 'Distance', a: 'n' }, { h: 'Time left', a: 'c' }, { h: 'Action', a: 'c' }], rows);
@@ -2143,21 +2504,23 @@ function renderTroops(d) {
   const reinf = {};
   for (const a of (rf && rf.armies) || []) for (const [k, v] of Object.entries(a.units)) reinf[k] = (reinf[k] || 0) + v;
   const tot = { total: 0, city: 0, queue: 0, out: 0, inw: 0, rf: 0 };
+  TROOP_TOTAL = {};
   const rows = (d.troops || []).map((t) => {
     // Every unit this city owns wherever it is: at home, training, on its way
     // in, or out on a march. Remain is measured against that.
     const qn = queued[t.typeId] || 0, inw = t.inward || 0, out = t.outward || 0;
     const total = (t.count || 0) + qn + inw + out;
     const goal = t.goal || 0, remain = goal ? Math.max(0, goal - total) : 0;
+    TROOP_TOTAL[t.key] = total;
     tot.total += total; tot.city += t.count || 0; tot.queue += qn; tot.out += out; tot.inw += inw; tot.rf += reinf[t.key] || 0;
     return {
-      cls: goal ? (remain > 0 ? 'bad' : 'good') : '',
+      cls: goal ? (remain > 0 ? 'bad' : 'good') : '', tip: 'troop:' + t.key,
       cells: [`${esc(t.name)} (${t.code})`, fmt(total), fmt(t.count), qn ? fmt(qn) : '', goal ? fmt(goal) : '',
         remain ? fmt(remain) : '', remain ? (remain / goal * 100).toFixed(2) + '%' : '',
         t.inward ? fmt(t.inward) : '', t.outward ? fmt(t.outward) : '', reinf[t.key] ? fmt(reinf[t.key]) : ''],
     };
   });
-  rows.push({ cls: 'total', cells: ['Total', fmt(tot.total), fmt(tot.city), q ? fmt(tot.queue) : '…', '', '', '',
+  rows.push({ cls: 'total', tip: 'troop:*', cells: ['Total', fmt(tot.total), fmt(tot.city), q ? fmt(tot.queue) : '…', '', '', '',
     fmt(tot.inw), fmt(tot.out), rf ? fmt(tot.rf) : '…'] });
   const st = d.troopStage;
   const cap = st && st.stageIndex ? `troop goal: stage <b>${st.stageIndex}</b> of ${st.stageCount} — red rows are still short`
@@ -2242,9 +2605,10 @@ function fetchMarket(force) {
   const city = S.city;
   getJSON('/api/market?city=' + (city || '')).then((m) => {
     MARKET.busy = false;
-    if (!m || m.error) { MARKET.error = (m && m.error) || 'request failed'; }
-    else { MARKET.data = m; MARKET.at = Date.now(); MARKET.error = null; MARKET.city = city; }
+    if (!m || m.error) { MARKET.error = (m && m.error) || 'request failed'; MARKET.failedAt = Date.now(); }
+    else { MARKET.data = m; MARKET.at = Date.now(); MARKET.error = null; MARKET.failedAt = 0; MARKET.city = city; }
     if (S.mon === 'market') renderMarket();
+    if (tipAt && tipAt.tip.startsWith('res:')) showTipHtml(tipAt.ev, tipFor(tipAt.tip));
   });
 }
 function renderMarket() {
@@ -2330,7 +2694,12 @@ $('monBody').addEventListener('click', async (e) => {
     return refresh();
   }
   if (act === 'recall') {
-    if (!await ask(`Recall the army heading to ${el.dataset.to || 'its target'}?`, { title: 'Recall army', ok: 'Recall' })) return;
+    const camped = el.dataset.dir === 'camped';
+    if (!await ask(`Recall the army ${camped ? 'camped at' : 'heading to'} ${el.dataset.to || 'its target'}?`, {
+      title: 'Recall army', ok: 'Recall',
+      detail: 'It turns round and marches home; the troops and anything they carry are back when it arrives,'
+        + ' and the rally spot slot is held until then.',
+    })) return;
     el.disabled = true;
     const r = await post('/api/army/recall', { armyId: el.dataset.id });
     if (!r.ok) tell(r.error || 'failed', { title: 'Recall failed' });
@@ -2377,7 +2746,26 @@ $('monBody').addEventListener('click', async (e) => {
     title: 'Fire hero', ok: 'Fire', danger: true,
     detail: 'The hero leaves this city. A Stone of Finding can only bring back a hero that  lostheroes  lists.',
   })) return;
-  if (['mayor', 'unmayor', 'fire', 'hire'].includes(act)) {
+  // A prisoner we hold: Persuade says what it costs (the script's dry run)
+  // before anything goes out; Release warns that one of our own accounts'
+  // heroes comes home by a Stone of Finding on its owner, never by release.
+  if (act === 'persuade') {
+    el.disabled = true;
+    const p = await post('/api/hero', { city, action: 'persuadepreview', heroName: hero });
+    el.disabled = false;
+    const said = (p.lines || []).join('\n') || p.error || 'unknown';
+    if (!p.ok) return tell(said, { title: `Cannot persuade ${hero}` });
+    if (!await ask(`Persuade ${hero} to join you?`, { title: 'Persuade prisoner', ok: 'Persuade', detail: said.replace(/\s*\[dry run\] not sent/, '') })) return;
+    el.disabled = true;
+    const r = await post('/api/hero', { city, action: 'persuade', heroName: hero });
+    tell((r.lines || []).join('\n') || r.error || 'unknown', { title: r.ok ? `Persuaded ${hero}` : 'Persuade failed' });
+    return refresh();
+  }
+  if (act === 'release' && !await ask(`Release ${hero}?`, {
+    title: 'Release prisoner', ok: 'Release', danger: true,
+    detail: 'The prisoner leaves for good. If it is a hero of one of your own accounts, do not release it: bring it home with a Stone of Finding on that account instead (lostheroes, then recover).',
+  })) return;
+  if (['mayor', 'unmayor', 'fire', 'hire', 'release'].includes(act)) {
     el.disabled = true;
     const r = await post('/api/hero', { city, action: act, heroName: hero });
     if (!r.ok) tell(r.error || (r.result && r.result.errorMsg) || 'unknown', { title: 'Hero action failed' });
@@ -2882,7 +3270,106 @@ function showTipHtml(ev, html) {
   el.style.left = Math.min(window.innerWidth - w - 8, ev.clientX + 14) + 'px';
   el.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, ev.clientY + 14)) + 'px';
 }
+// ---- Hover cards for table rows (grid rows with a tip) ----
+const tipRow = (k, v) => `<div><span class="k">${k}</span>${v}</div>`;
+const tipSecs = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+// The intelligence at which a troop reaches the 50% damage-reduction cap, with
+// Iron Working 10 (EVONY-RULES.md §5b): defence × (1.5 + int/100) × corselet ≥ 500.
+const perfectInt = (def, cors) => (def ? Math.max(0, Math.ceil((500 / (def * cors) - 1.5) * 100 - 1e-9)) : null);
+function troopCard(d, key) {
+  const troops = d.troops || [];
+  if (key === '*') {
+    const sum = (f) => troops.reduce((n, t) => n + (TROOP_TOTAL[t.key] || 0) * (t.stats ? f(t.stats) : 0), 0);
+    return '<b>All troops</b>' + tipRow('Units', fmt(troops.reduce((n, t) => n + (TROOP_TOTAL[t.key] || 0), 0)))
+      + tipRow('Attack', short(sum((x) => x.attack))) + tipRow('Life', short(sum((x) => x.life)))
+      + tipRow('Load', short(sum((x) => x.load))) + tipRow('Upkeep', `${short(sum((x) => x.food))} food/hr`)
+      + tipRow('Population', fmt(sum((x) => x.pop)));
+  }
+  const t = troops.find((x) => x.key === key);
+  if (!t) return null;
+  const x = t.stats;
+  if (!x) return `<b>${esc(t.name)} (${esc(t.code)})</b><div class="muted">stats come with the next console restart</div>`;
+  const n = TROOP_TOTAL[key] || 0;
+  const cost = Object.entries(x.cost || {}).filter(([, v]) => v).map(([r, v]) => `${fmt(v)} ${r}`).join(', ');
+  const pi = perfectInt(x.defence, 1), pc = perfectInt(x.defence, 1.2);
+  return `<b>${esc(t.name)} (${esc(t.code)})</b>`
+    + tipRow('Attack', fmt(x.attack)) + tipRow('Defence', fmt(x.defence)) + tipRow('Life', fmt(x.life))
+    + tipRow('Range', fmt(x.range)) + tipRow('Speed', fmt(x.speed)) + tipRow('Load', fmt(x.load))
+    + tipRow('Upkeep', `${fmt(x.food)} food/hr`) + tipRow('Population', fmt(x.pop))
+    + tipRow('Cost', cost) + tipRow('Trains in', `${tipSecs(x.buildTime)} <span class="muted">(base, one unit)</span>`)
+    + tipRow('Perfect int', `${fmt(pi)} <span class="muted">· ${fmt(pc)} with corselet</span>`)
+    + (n ? `<div class="sec">${fmt(n)} owned by this city</div>`
+      + tipRow('Attack', short(n * x.attack)) + tipRow('Life', short(n * x.life)) + tipRow('Load', short(n * x.load))
+      + tipRow('Upkeep', `${short(n * x.food)} food/hr`) + tipRow('Population', fmt(n * x.pop)) : '');
+}
+function heroCard(d, name) {
+  const h = (d.heroes || []).find((x) => x.name === name);
+  if (!h) return null;
+  const lvl = Number(h.level || 0), exp = Number(h.experience || 0), need = Number(h.upgradeExp || 0);
+  const at = (k, label) => {
+    const raw = Number(h[k] || 0), pct = Number(h[k + 'Buff'] || 0);
+    return tipRow(label, pct ? `<b class="buffed">${fmt(h[k + 'Eff'])}</b> <span class="muted">${fmt(raw)} +${pct}%</span>` : fmt(raw));
+  };
+  const buffs = (h.buffs || []).map((b) => `<div>${esc(b.text || b.type)} <span class="muted">— ${b.msLeft ? (b.msLeft / 86400000).toFixed(1) + ' days left' : 'expired'}</span></div>`).join('');
+  return `<b>${esc(h.name)}</b> <span class="muted">level ${lvl}${h.type ? ' · ' + esc(h.type) : ''}</span>`
+    + tipRow('Status', esc(h.statusName || ''))
+    + tipRow('Experience', need ? `${fmt(exp)} / ${fmt(need)} <span class="muted">(${(Math.min(1, exp / need) * 100).toFixed(1)}%)</span>` : fmt(exp))
+    + (need > exp ? tipRow('To level ' + (lvl + 1), fmt(need - exp)) : '')
+    + at('politics', 'Politics') + at('attack', 'Attack') + at('intel', 'Intelligence')
+    + tipRow('Base', h.base ?? '—') + tipRow('Points', h.unspent ? `<b class="warnc">${h.unspent} unspent</b>` : '0')
+    + tipRow('Loyalty', fmt(h.loyalty)) + tipRow('Salary', `${fmt(lvl * 20)} gold/hr`)
+    + (buffs ? `<div class="sec">Buffs</div>${buffs}` : '');
+}
+function resCard(d, k) {
+  const g = d.general || {}, r = d.resources || {};
+  if (k === 'pop') {
+    return '<b>Population</b>' + tipRow('Now', `${fmt(r.population)} / ${fmt(r.maxPopulation)}`)
+      + tipRow('Idle', fmt(r.idle)) + tipRow('On fields', fmt(r.employed)) + tipRow('Building', fmt(r.building));
+  }
+  const x = (d.bank || {})[k] || {};
+  const label = { gold: 'Gold', food: 'Food', wood: 'Lumber', stone: 'Stone', iron: 'Iron' }[k] || k;
+  let html = `<b>${label}</b>` + tipRow('Amount', fmt(x.amount));
+  if (k === 'gold') html += tipRow('Tax', `+${fmt(g.taxIncome)}/hr`) + tipRow('Salary', `-${fmt(g.heroSalary)}/hr`);
+  else html += tipRow('Produces', `${fmt(x.gross)}/hr`) + (k === 'food' ? tipRow('Troops eat', `${fmt(g.troopUpkeep)}/hr`) : '');
+  html += tipRow('Net', `<span class="${x.rate < 0 ? 'neg' : ''}">${fmt(x.rate)}/hr</span>`)
+    + (x.hoursLeft != null ? tipRow('Lasts', timeLeft(x.hoursLeft)) : '');
+  if (k === 'gold') return html;
+  // Market prices are the same for every city; read when a card first wants them,
+  // and after a failed read not again for a minute.
+  if (!MARKET.failedAt || Date.now() - MARKET.failedAt > 60000) fetchMarket(false);
+  const m = MARKET.data && MARKET.data[k];
+  if (!m) return html + `<div class="sec muted">${MARKET.error ? 'market: ' + esc(MARKET.error) : 'reading market prices…'}</div>`;
+  const book = (list) => (list || []).map((o) => `<td>${o.price}</td><td>${short(o.amount)}</td>`);
+  const asks = book(m.asks), bids = book(m.bids);
+  const depth = asks.length || bids.length
+    ? '<table class="ob"><tr><th>ask</th><th>qty</th><th>bid</th><th>qty</th></tr>'
+      + Array.from({ length: Math.max(asks.length, bids.length) }, (_, i) => `<tr>${asks[i] || '<td></td><td></td>'}${bids[i] || '<td></td><td></td>'}</tr>`).join('')
+      + '</table>' : '';
+  return html + `<div class="sec">Market <span class="muted">· read ${Math.round((Date.now() - MARKET.at) / 1000)}s ago</span></div>`
+    + tipRow('Best ask', `${m.bestAsk ?? '—'} <span class="muted">· ${short(m.sellVolume)} for sale</span>`)
+    + tipRow('Best bid', `${m.bestBid ?? '—'} <span class="muted">· ${short(m.buyVolume)} wanted</span>`)
+    + (m.bestBid && x.amount ? tipRow('Stock worth', `${short(x.amount * m.bestBid)} gold <span class="muted">at best bid${x.amount > m.buyVolume ? ` — the bids take only ${short(m.buyVolume)}` : ''}</span>`) : '')
+    + depth + '<div class="muted">gold per unit · the market keeps 0.5% of an order</div>';
+}
+function tipFor(tip) {
+  const d = S.cityData;
+  if (!d || !tip) return null;
+  const i = tip.indexOf(':'), kind = tip.slice(0, i), key = tip.slice(i + 1);
+  return kind === 'troop' ? troopCard(d, key) : kind === 'hero' ? heroCard(d, key) : kind === 'res' ? resCard(d, key) : null;
+}
+let tipAt = null;   // the last row card shown, so a late market read can redraw it
+function rowTip(ev) {
+  const row = ev.target.closest && ev.target.closest('tr[data-tip]');
+  // An element with its own title (a button, an exact figure) keeps its own tooltip.
+  const own = ev.target.closest && ev.target.closest('[title]');
+  if (!row || (own && row.contains(own))) { tipAt = null; return false; }
+  tipAt = { ev, tip: row.dataset.tip };
+  showTipHtml(ev, tipFor(tipAt.tip));
+  return true;
+}
+
 $('monBody').addEventListener('mousemove', (ev) => {
+  if (rowTip(ev)) return;
   const cell = ev.target.closest && ev.target.closest('.mt');
   if (!cell || MAP.drag) return showTipHtml(null, null);
   const xy = cell.dataset.xy || '';
@@ -2905,7 +3392,7 @@ $('monBody').addEventListener('mousemove', (ev) => {
   else if (t.desc) html += row('Bonus', esc(t.desc));
   showTipHtml(ev, html);
 });
-$('monBody').addEventListener('mouseleave', () => showTipHtml(null, null));
+$('monBody').addEventListener('mouseleave', () => { tipAt = null; showTipHtml(null, null); });
 
 // ---------- logs ----------
 // NEAT's line: "11:34:47 (Eldian) - Moving OTTO to ...". The colour says what
@@ -2915,8 +3402,8 @@ $('monBody').addEventListener('mouseleave', () => showTipHtml(null, null));
 function pickLogTab(k) {
   S.logs = k;
   [...$('logTabs').querySelectorAll('.t')].forEach((c) => c.classList.toggle('on', c.dataset.k === k));
-  $('logFind').value = k === 'items' ? ITEMS.find : S.logFind;
-  $('logFind').placeholder = k === 'items' ? 'search items…' : 'search…';
+  $('logFind').value = k === 'items' ? ITEMS.find : k === 'stats' ? STATS.find : S.logFind;
+  $('logFind').placeholder = k === 'items' ? 'search items…' : k === 'stats' ? 'search players, alliances, heroes, cities…' : 'search…';
   $('logBody').dataset.sig = '';
 }
 $('logTabs').addEventListener('click', (e) => {
@@ -2964,11 +3451,15 @@ async function renderLogs(force) {
   const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   const cityName = S.cityData ? S.cityData.name : '';
   const tab = S.logs;
-  $('logCity').hidden = tab === 'city' || tab === 'output' || tab === 'items';
-  $('logClear').hidden = tab === 'items';
+  $('logCity').hidden = tab === 'city' || tab === 'output' || tab === 'items' || tab === 'stats';
+  $('logClear').hidden = tab === 'items' || tab === 'stats';
   $('itemKind').hidden = tab !== 'items';
+  $('statKind').hidden = tab !== 'stats';
+  if (tab !== 'stats') { $('statGo').hidden = true; $('statStop').hidden = true; }
   body.classList.toggle('items', tab === 'items');
+  body.classList.toggle('stats', tab === 'stats');
   if (tab === 'items') return renderItems(force);
+  if (tab === 'stats') return renderStats(force);
 
   if (S.logs === 'output') {
     body.innerHTML = `<div class="ll">${markIn(OUT[String(S.city)] || `Apply, Save or Run to see the result for ${cityName || 'this city'} here.`, S.logFind)}</div>`;
@@ -3009,6 +3500,13 @@ async function renderLogs(force) {
 let logFindTimer = null;
 $('logFind').addEventListener('input', () => {
   if (S.logs === 'items') { ITEMS.find = $('logFind').value.trim(); return paintItems(true); }
+  if (S.logs === 'stats') {
+    STATS.find = $('logFind').value.trim();
+    STATS.limit = STAT_PAGE;
+    clearTimeout(logFindTimer);
+    logFindTimer = setTimeout(() => renderStats(true), 250);
+    return;
+  }
   S.logFind = $('logFind').value.trim();
   clearTimeout(logFindTimer);
   logFindTimer = setTimeout(() => renderLogs(true), 180);
@@ -3023,6 +3521,155 @@ $('logClear').onclick = async () => {
   const r = await post('/api/log/clear', { kind, city: city || null });
   if (r && r.ok && S.logs !== 'city') { S.logCity = ''; $('logCity').value = ''; }
   renderLogs(true);
+};
+
+// ---------- statistics ----------
+// The game's Statistics window: every player, alliance, hero and city on the
+// server, ranked. Refresh reads the lists into the database through this
+// account's connection (statistics.js); searching runs there and never asks the
+// game. All shows the first few of every list; one list shows STAT_PAGE rows at
+// a time, sorted by a clicked heading. A name, lord or alliance searches for itself.
+// data: undefined until the first answer, null if the console gave none.
+const STAT_PAGE = 200;
+const STATS = { kind: 'all', find: '', sort: null, limit: STAT_PAGE, data: undefined, seq: 0 };
+
+async function renderStats(force) {
+  if (STATS.data === undefined) paintStats(true);
+  const qs = new URLSearchParams({ kind: STATS.kind, q: STATS.find });
+  if (STATS.kind === 'all') qs.set('limit', STATS.find ? 25 : 10);
+  else {
+    qs.set('limit', STATS.limit);
+    if (STATS.sort) { qs.set('sort', STATS.sort.k); qs.set('dir', STATS.sort.dir > 0 ? 'asc' : 'desc'); }
+  }
+  const seq = ++STATS.seq;
+  const r = await getJSON('/api/stats?' + qs);
+  if (S.logs !== 'stats' || seq !== STATS.seq) return;   // another tab, or a newer search
+  if (r || STATS.data === undefined) STATS.data = r;     // a failed poll keeps the last answer
+  paintStats(force);
+}
+
+function statAge(t) {
+  const m = Math.floor((Date.now() - t) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+}
+// One list's line in the bar: what is held, and a read that is going or went wrong.
+function statState(L) {
+  const n = `<b>${esc(L.label)}</b> ${fmt(L.rows)}`;
+  if (L.state === 'running') {
+    const of = L.totalPage ? ` of ${fmt(L.totalPage)}` : '';
+    return `${n} <span class="note">— reading page ${fmt(L.pageNo)}${of}${L.account ? ' through ' + esc(L.account) : ''}</span>`;
+  }
+  if (L.state === 'queued') return `${n} <span class="note">— next</span>`;
+  if (L.state === 'failed' || L.state === 'stopped') {
+    return `${n} <span class="note" title="${esc(L.error || '')}">— ${L.state}${L.error && L.error !== 'stopped' ? ': ' + esc(L.error) : ''}</span>`;
+  }
+  return `${n} <span class="note">${L.at ? '— read ' + statAge(L.at) : L.rows ? '' : '— not read yet'}</span>`;
+}
+
+function statCell(c, v) {
+  if (c.n) return fmt(v);
+  const s = String(v || '');
+  if (!s) return '';
+  return c.q ? `<a class="sq" data-q="${esc(s)}" title="Search for ${esc(s)}">${markIn(s, STATS.find)}</a>` : esc(s);
+}
+function statTable(list, sortable) {
+  const s = sortable && STATS.sort ? { i: list.cols.findIndex((c) => c.k === STATS.sort.k), dir: STATS.sort.dir } : null;
+  const cols = list.cols.map((c) => ({ h: esc(c.h), a: c.n ? 'n' : '', sort: sortable }));
+  return grid(cols, list.rows.map((row) => list.cols.map((c) => statCell(c, row[c.k]))), { cls: 'stats', sort: s && s.i >= 0 ? s : null });
+}
+
+function paintStats(force) {
+  const body = $('logBody');
+  const r = STATS.data;
+  const st = r && r.ok ? r.status : null;
+  const on = S.logs === 'stats';
+  $('statGo').hidden = !on || !!(st && st.running);
+  $('statStop').hidden = !on || !(st && st.running);
+  for (const b of $('statKind').children) {
+    const L = st && st.lists[b.dataset.k];
+    const name = b.dataset.k === 'all' ? 'All' : b.dataset.k[0].toUpperCase() + b.dataset.k.slice(1);
+    b.textContent = L && L.rows ? `${name} (${fmt(L.rows)})` : name;
+  }
+
+  let html;
+  if (r === undefined) html = '<div class="empty">loading…</div>';
+  else if (!r || !r.ok) html = '<div class="empty">The console did not answer. If it was started before the Statistics tab existed, restart it.</div>';
+  else {
+    const L = Object.values(st.lists);
+    html = `<div class="tb">${L.map(statState).join(' <span class="muted">·</span> ')}</div>`;
+    if (!L.some((x) => x.rows)) {
+      html += `<div class="empty">Nothing read yet. <b>Refresh</b> reads every player, alliance, hero and city on ${esc(r.server)} `
+        + 'from the game\'s Statistics, one page at a time through this account\'s connection. It takes a few minutes, '
+        + 'and the lists fill in as it goes. Every console on the server shares what is read.</div>';
+    } else if (STATS.kind === 'all') {
+      html += r.lists.map((list) => {
+        const more = list.total > list.rows.length
+          ? `<button class="sm" data-act="stat-open" data-k="${list.kind}">All ${fmt(list.total)}</button>` : '';
+        const what = STATS.find ? `${fmt(list.total)} match${list.total === 1 ? '' : 'es'}` : `the top ${list.rows.length}`;
+        return `<div class="st-h"><b>${esc(list.label)}</b><span class="note">${list.total ? what : STATS.find ? 'nothing matches' : 'not read yet'}</span>${more}</div>`
+          + (list.rows.length ? statTable(list, false) : '');
+      }).join('');
+    } else {
+      const list = r.lists[0];
+      html += list.rows.length ? statTable(list, true)
+        : `<div class="empty">${STATS.find ? 'nothing matches' : `No ${esc(list.label.toLowerCase())} read yet — Refresh reads them.`}</div>`;
+      if (list.total > list.rows.length) {
+        html += `<div class="st-foot">${fmt(list.rows.length)} of ${fmt(list.total)} shown`
+          + `<button class="sm" data-act="stat-more">Show ${fmt(Math.min(STAT_PAGE, list.total - list.rows.length))} more</button></div>`;
+      }
+    }
+  }
+  if (force || body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; }
+  if (force) body.parentElement.scrollTop = 0;
+  const shown = r && r.ok ? r.lists.reduce((a, l) => a + l.total, 0) : 0;
+  $('logCount').textContent = !r || !r.ok || !STATS.find ? '' : `${fmt(shown)} match${shown === 1 ? '' : 'es'}`;
+}
+
+$('statKind').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  pickStatKind(b.dataset.k);
+});
+function pickStatKind(k) {
+  STATS.kind = k;
+  STATS.sort = null;                      // each list has its own columns
+  STATS.limit = STAT_PAGE;
+  for (const c of $('statKind').children) { c.classList.toggle('on', c.dataset.k === k); c.setAttribute('aria-pressed', String(c.dataset.k === k)); }
+  renderStats(true);
+}
+$('logBody').addEventListener('click', (e) => {
+  if (S.logs !== 'stats') return;
+  const a = e.target.closest('a.sq');
+  if (a) {                                // a name: everything about it, from every list
+    STATS.find = a.dataset.q;
+    $('logFind').value = STATS.find;
+    return pickStatKind('all');
+  }
+  const open = e.target.closest('button[data-act="stat-open"]');
+  if (open) return pickStatKind(open.dataset.k);
+  if (e.target.closest('button[data-act="stat-more"]')) { STATS.limit += STAT_PAGE; return renderStats(false); }
+  const th = e.target.closest('th[data-act="sort"]');
+  const list = STATS.data && STATS.data.lists && STATS.data.lists[0];
+  if (!th || STATS.kind === 'all' || !list) return;
+  const c = list.cols[Number(th.dataset.i)];
+  if (!c) return;
+  // numbers start biggest-first, rank and names from the top
+  STATS.sort = STATS.sort && STATS.sort.k === c.k ? { k: c.k, dir: -STATS.sort.dir } : { k: c.k, dir: c.n && c.k !== 'rank' ? -1 : 1 };
+  STATS.limit = STAT_PAGE;
+  renderStats(true);
+});
+$('statGo').onclick = async () => {
+  const who = (S.head && S.head.lord) || 'this account';
+  if (!await ask(`Read the game's Statistics again — every player, alliance, hero and city — through ${who}'s connection?`, { title: 'Refresh statistics', ok: 'Read them',
+    detail: 'It asks one page at a time with a pause between, and waits while this account\'s market orders are busy. '
+      + 'It takes a few minutes (heroes the longest). Searching keeps working meanwhile.' })) return;
+  const r = await post('/api/stats/refresh', {});
+  if (!r || !r.ok) return tell((r && r.error) || 'the console did not answer', { title: 'Statistics' });
+  renderStats(false);
+};
+$('statStop').onclick = async () => {
+  const r = await post('/api/stats/stop', {});
+  if (!r || !r.ok) tell((r && r.error) || 'the console did not answer', { title: 'Statistics' });
+  renderStats(false);
 };
 
 // ---------- items ----------
@@ -3094,16 +3741,20 @@ function paintItems(force) {
 
   const rank = (it) => { const i = ITEM_ORDER.indexOf(it.category); return i < 0 ? ITEM_ORDER.length : i; };
   const tier = (it) => Number(it.id.split('.').pop()) || 0;          // hero.loyalty.1 .. 9
-  const byName = (a, b) => a.name.localeCompare(b.name);
+  // Amulet 2 before Amulet 10, and case never splits a name from its twin
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id);
   const cols = [
     { h: medals ? 'Medal' : 'Item', sort: true, by: byName },
     { h: 'Qty', a: 'n', sort: true, by: (a, b) => a.count - b.count },
-    ...(medals ? [] : [{ h: 'Type', sort: true, by: (a, b) => rank(a) - rank(b) || byName(a, b) }]),
+    ...(medals ? [] : [{ h: 'Type', sort: true, by: (a, b) => rank(a) - rank(b) || byName(a, b) }, { h: '' }]),
     { h: 'Description', a: 'desc' },
   ];
   const s = ITEMS.sort && cols[ITEMS.sort.i] && cols[ITEMS.sort.i].by ? ITEMS.sort : null;
-  shown.sort(s ? (a, b) => s.dir * cols[s.i].by(a, b)
-    : medals ? (a, b) => tier(a) - tier(b) : (a, b) => rank(a) - rank(b) || byName(a, b));
+  shown.sort(s ? (a, b) => s.dir * cols[s.i].by(a, b) : medals ? (a, b) => tier(a) - tier(b) : byName);
+  // Apply is greyed, not disabled, so a click can still say why not
+  const applyBtn = (it) => (it.noApply
+    ? `<button class="sm" data-act="apply" data-id="${esc(it.id)}" aria-disabled="true" title="${esc(it.noApply)}">Apply</button>`
+    : `<button class="sm" data-act="apply" data-id="${esc(it.id)}" title="Use ${esc(it.name)}">Apply</button>`);
 
   let html;
   if (r === undefined) html = '<div class="empty">loading…</div>';
@@ -3114,7 +3765,7 @@ function paintItems(force) {
     html = grid(cols, shown.map((it) => ({
       title: `${it.id}${it.desc ? '\n' + it.desc : ''}`,
       cells: [it.name === it.id ? `<span class="muted">${markIn(it.name, needle)}</span>` : markIn(it.name, needle),
-        fmt(it.count), ...(medals ? [] : [esc(it.category)]), markIn(it.desc, needle)],
+        fmt(it.count), ...(medals ? [] : [esc(it.category), applyBtn(it)]), markIn(it.desc, needle)],
     })), { cls: 'items', sort: s });
   }
   if (r && r.ok && !r.named) {
@@ -3141,6 +3792,42 @@ $('logBody').addEventListener('click', (e) => {
   const i = Number(th.dataset.i);
   ITEMS.sort = ITEMS.sort && ITEMS.sort.i === i ? { i, dir: -ITEMS.sort.dir } : { i, dir: i === 1 ? -1 : 1 };
   paintItems(false);
+});
+
+// Apply: an item spent in the open city, as the useitem script line spends it.
+// One the game gives no Use button (or that goes on a hero, a queue, a city)
+// says so and where it goes instead.
+$('logBody').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act="apply"]');
+  if (!btn || S.logs !== 'items') return;
+  const it = ((ITEMS.data && ITEMS.data.items) || []).find((x) => x.id === btn.dataset.id);
+  if (!it) return;
+  if (it.noApply) return tell(it.noApply, { title: it.name });
+  const city = S.cityData ? `${S.cityData.name} (${S.cityData.x},${S.cityData.y})` : 'the open city';
+  $('iuName').textContent = it.name;
+  $('iuInfo').textContent = `${it.id} · ${fmt(it.count)} held · used in ${city}`;
+  $('iuDesc').textContent = it.desc || '';
+  $('iuCount').value = 1;
+  $('iuCount').max = it.count;
+  $('iuNote').textContent = `of ${fmt(it.count)}`;
+  $('iuDlg').dataset.id = it.id;
+  $('iuDlg').showModal();
+});
+// the count held is the ceiling, as in the hero-item window
+$('iuCount').addEventListener('input', () => {
+  const max = Number($('iuCount').max) || 1;
+  if (Number($('iuCount').value) > max) $('iuCount').value = max;
+});
+$('iuForm').addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  const it = ((ITEMS.data && ITEMS.data.items) || []).find((x) => x.id === $('iuDlg').dataset.id);
+  if (!it) return;
+  const count = Math.max(1, Math.min(Math.floor(Number($('iuCount').value)) || 1, it.count));
+  const r = await post('/api/items/use', { city: S.city, itemId: it.id, count });
+  tell(r.lines && r.lines.length ? r.lines.join('\n') : r.error || 'unknown',
+    { title: r.ok ? `${it.name} — used` : `${it.name} — not used` });
+  renderItems(false);
+  refresh();
 });
 
 // ---------- chat ----------
@@ -3583,7 +4270,11 @@ async function refresh(force) {
   refreshing = true;
   try {
     const h = await getJSON('/api/session');
-    if (!h) return;
+    // A console that is down, restarting or signed out answers nothing this page
+    // can use. It used to return here in silence, leaving the last good screen
+    // up and the dot still green — everything on it stale, every click failing.
+    if (!h || h.ok === false) { consoleGone(h && h.error); return; }
+    consoleBack();
     S.head = h;
     // Every editor here belongs to a city of one account. Another account's must
     // never show (or be saved over) here, so a switch forgets them all and opens
@@ -3604,6 +4295,7 @@ async function refresh(force) {
       S.city = String(S.cities[0].id); S.cityData = null; loadEditor();
     }
     paintCities();
+    loadoutsBack();          // a city whose loadouts a failed read left missing gets them back here
     if (S.city) {
       // keep the last good snapshot on screen if the link is down
       const fresh = await getJSON('/api/city?id=' + S.city);

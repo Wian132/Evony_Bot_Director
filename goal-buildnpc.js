@@ -687,7 +687,7 @@ const executors = {
     const acc = D.accounts.get(accountId);
     if (!acc || !acc.password) return { ok: 0, errorMsg: 'no stored password for this account' };
 
-    const res = await game.req('city.giveupCastle', { password: passwordHash(acc.password), castleId: verdict.castleId });
+    const res = await game.giveUpCastle(verdict.castleId, passwordHash(acc.password));
     if (res && res.ok === 1) {
       D.registry.markAbandoned(accountId, verdict.fieldId);
       st.abandons = st.abandons || [];

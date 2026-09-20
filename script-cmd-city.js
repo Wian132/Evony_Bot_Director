@@ -1315,7 +1315,7 @@ async function runDisband(a, env) {
   if (env.dryRun) { env.log(`  [dry run] not sent — ${plan.map((p) => `${fmt(p.drop)} ${p.t.name}`).join(', ')} would be dismissed for good`); return {}; }
   let total = 0, done = 0;
   for (const p of plan) {
-    const r = await game.req('troop.disbandTroop', { castleId: env.cid, troopType: p.t.typeId, num: p.drop });   // TroopCommands.as:72-84
+    const r = await game.disbandTroop(env.cid, p.t.typeId, p.drop);   // TroopCommands.as:72-84; "Dismiss armies" may want the security code
     done++;
     env.log(`  disband ${fmt(p.drop)} ${p.t.name} -> ${env.say(r)}`);
     if (r && r.ok === 1) total += p.drop;
@@ -2267,7 +2267,10 @@ const commands = {
       if (!password) return fail(env, 'this session never logged in with a password, so it cannot confirm giving a city up — nothing sent');
       const cid = game.castleId(city);
       const ownCity = n(cid) === n(env.cid);           // asked first: once it is gone, the run's city is too
-      const r = await game.req('city.giveupCastle', { password, castleId: cid });   // CityCommands.as:42-50, GiveupCastle.as:417
+      // reqProtected: the game answers -200 when this account's security code
+      // protects "Abandon cities" (bit 2). Nothing is given up on a -200 —
+      // it unlocks with the stored code and sends it once more.
+      const r = await game.giveUpCastle(cid, password);   // CityCommands.as:42-50, GiveupCastle.as:417
       env.log('  -> ' + env.say(r));
       // as goal-buildnpc does after its own abandon: the registry's row is handed back
       const s = env.session;
@@ -2276,6 +2279,64 @@ const commands = {
       }
       if (r && r.ok === 1 && ownCity) env.log('  that was the city this script runs in — the run ends here');
       return { done: 1, result: r && r.ok === 1 ? city.name : null, end: !!(r && r.ok === 1 && ownCity) };
+    },
+  },
+
+  // Let a city the bot did NOT build be given up by hand.
+  //
+  // abandontown is default-deny: the city registry only ever marks a city
+  // abandonable when buildnpc itself claimed the flat and built on it, so a city
+  // founded by anything else (NEAT's npcbuild, the game's own client) can never
+  // be let go — which is the right default, and wrong for exactly one case: a
+  // throwaway flat-city that arrived from somewhere else.
+  //
+  // This is that case, and it is deliberately a SEPARATE command a person types,
+  // naming the city. It only moves the registry row; abandontown still wants
+  // OTTO_ALLOW_ABANDON_TOWN=1, `confirm`, an evacuated city and the account
+  // password. The goal engine is unaffected: goal-buildnpc's canAbandon demands
+  // origin==='buildnpc', and an adopted city is origin='adopted'.
+  allowabandon: {
+    usage: 'allowabandon <x,y | city> confirm [off]   — lets abandontown give up a city the bot did not build',
+    parse(args) {
+      const ws = words(args);
+      let confirm = false, off = false;
+      while (ws.length && ['confirm', 'off'].includes(lc(ws[ws.length - 1]))) {
+        if (lc(ws.pop()) === 'confirm') confirm = true; else off = true;
+      }
+      const p = parseTownRef('allowabandon', ws);
+      if (!p || p.used !== ws.length) throw new Error('allowabandon: usage  allowabandon <x,y | city> confirm   — a city name with spaces goes in quotes');
+      if (!confirm) {
+        throw new Error(`allowabandon: this marks ${refText(p.ref)} as a city abandontown may give up for good. `
+          + `To do it, end the line with the word confirm: allowabandon ${refText(p.ref)} confirm`);
+      }
+      return { cmd: 'allowabandon', ref: p.ref, off };
+    },
+    async run(a, env) {
+      const game = env.game;
+      const city = cityByRef(game, a.ref);
+      if (!city) return fail(env, `no city of yours is ${a.ref.xy ? 'at ' + at(a.ref.xy) : `called "${a.ref.name}"`} — yours are ${(game.castles || []).map((c) => c.name).join(', ')}`);
+      const s = env.session;
+      const reg = s && s.org && s.org.registry;
+      const acct = s && s.account && s.account.id;
+      if (!reg || !acct) return fail(env, 'allowabandon needs a console bound to an account — the city registry is per account');
+      const fieldId = n(city.fieldId);
+      const cid = n(game.castleId(city));
+      const xy = game.castleXY(city);
+      const where = `${city.name}${xy ? ` (${at(xy)})` : ''}`;
+      if (a.off) {
+        if (env.dryRun) { env.log(`  [dry run] ${where} would go back to protected`); return {}; }
+        const r = reg.unadopt(acct, fieldId);
+        if (!r.ok) return fail(env, `${where}: ${r.why}`);
+        env.log(`  ${where} is protected again — abandontown will refuse it`);
+        return { done: 1, result: city.name };
+      }
+      env.log(`  mark ${where} as a city abandontown may give up for good (castle ${cid})`);
+      if (env.dryRun) { env.log('  [dry run] the registry was not changed'); return {}; }
+      const r = reg.adopt(acct, fieldId, cid, city.name, `adopted by allowabandon at ${new Date().toISOString()}`);
+      if (!r.ok) return fail(env, `${where}: ${r.why}`);
+      env.log(`  done — now:  abandontown ${xy ? at(xy) : city.name} confirm`
+        + (settings.allowAbandonTown ? '' : '   (this console has no OTTO_ALLOW_ABANDON_TOWN=1, so abandontown is still off in it)'));
+      return { done: 1, result: city.name };
     },
   },
 

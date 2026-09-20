@@ -139,7 +139,7 @@ class Session {
     this.maint = {
       active: false, since: null, state: null, checkedAt: 0, error: null,
       portDown: false, netFails: 0, reason: null,
-      plan: null, nextLoginAt: 0, loginTries: 0,
+      plan: null, nextLoginAt: 0, loginTries: 0, nextProbeAt: 0, notedClosedAt: 0,
       override: process.env.MAINT_OVERRIDE === '1',   // keep running regardless
     };
     this.lastError = null;
@@ -296,6 +296,12 @@ class Session {
     }
     const line = { t: Date.now(), m: text, city: tag, kind: o.kind || 'sys' };
     push(this.log, line, LOG_RING);
+    // The connection's own story also goes to the console's output (console-<id>.log),
+    // stamped, so a drop can be traced after the fact — the Log above is memory only.
+    if (line.kind === 'sys' && Session.CONN_NOTE.test(text)) {
+      const d = new Date(line.t);
+      console.log(`[conn] ${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')} ${text}`);
+    }
     if (line.kind === 'act' || line.kind === 'sys') push(this.acts, line, ACT_RING);
   }
 
@@ -348,12 +354,75 @@ class Session {
 
   get connected() { return !!(this.game && this.game.c && this.game.c.sock && !this.game.c.sock.destroyed); }
 
+  // Switched off in the Director. Re-read from the database rather than trusting
+  // the copy taken at startup: the switch is flipped in another process, and the
+  // whole point of it is that this console stops logging in — an account may be
+  // being played from another machine, and a console that keeps reconnecting
+  // takes the login back off it every few seconds. Cached for a couple of
+  // seconds so the supervisor's 5s tick is not a database read a tick.
+  switchedOff() {
+    const id = this.account && this.account.id;
+    if (!id) return false;
+    if (!this._offReadAt || Date.now() - this._offReadAt > 2000) {
+      this._offReadAt = Date.now();
+      // A read that fails keeps the last answer: a locked database must not be
+      // read as "switched on" and start a login.
+      try { const a = D.accounts.get(id); this._off = !!(a && a.enabled === false); } catch { /* keep it */ }
+    }
+    return !!this._off;
+  }
+
+  // Somebody else logged in to this account and the server kicked us. That is a
+  // person wanting to play it, so the account is theirs for KICK_HOLD_MS: no
+  // login of any kind until then — the supervisor, a page, a script and the
+  // engine all wait it out — and only after that does the console take it back.
+  // Kept in the account's settings, like a script's logout, so a console
+  // restart does not end it early and the Director's poller can see it too.
+  // Connect (/api/connect) ends it early.
+  static KICK_HOLD_MS = Number(process.env.KICK_HOLD_MIN || 30) * 60000;
+
+  kickHold() {
+    const id = this.account && this.account.id;
+    if (!id) return null;
+    if (!this._kickReadAt || Date.now() - this._kickReadAt > 2000) {
+      this._kickReadAt = Date.now();
+      try { this._kick = this.settings().get('kickHold:' + id, null); } catch { /* keep the last answer */ }
+    }
+    const h = this._kick;
+    return h && Number(h.until) > Date.now() ? h : null;
+  }
+
+  holdForKick(ip) {
+    const at = Date.now();
+    const hold = { at, until: at + Session.KICK_HOLD_MS, ip: ip || null };
+    this._kick = hold; this._kickReadAt = at;
+    try { this.settings().set('kickHold:' + (this.account && this.account.id), hold); } catch {}
+    this.nextTryAt = hold.until;
+    this.disconnectReason = `kicked — another login took this account${ip ? ' from ' + ip : ''}; `
+      + `leaving it to them until ${new Date(hold.until).toLocaleTimeString()} — Connect takes it back now`;
+    this.note(this.disconnectReason);
+    return hold;
+  }
+
+  clearKickHold() {
+    const had = this.kickHold();
+    this._kick = null; this._kickReadAt = Date.now();
+    try { this.settings().set('kickHold:' + (this.account && this.account.id), null); } catch {}
+    if (had) this.note('kick hold ended early — Connect');
+  }
+
   // ---- stability ----
   // The server drops idle sockets, and bursting reconnects gets the IP throttled,
   // so: heartbeat to stay warm, and back off hard when reconnecting.
   // Staged retry ladder: quick first, then progressively patient. Anything that
   // looks like server-side rate limiting starts further down the ladder.
   static BACKOFF = [30000, 60000, 120000, 300000, 600000];
+  // Which notes are about the connection (they are also printed, see note()).
+  // `port` and `maintenance` are here because a stand-down is otherwise SILENT: on
+  // 2026-09-20 thirteen consoles sat waiting with nothing in their log since 08:54,
+  // and there was no way to tell a console that was patiently waiting from one that
+  // had died. What a console is doing through a maintenance has to be on the record.
+  static CONN_NOTE = /socket|heartbeat|reconnect|connect failed|session ready|ignoring|kick|standing down|server went down|back online|logging out|switched off|no traffic|refresh|logged in as|port|maintenance/i;
 
   // Kept as a hook so tests can make the stagger deterministic.
   static rand() { return Math.random(); }
@@ -361,7 +430,7 @@ class Session {
   // How long after a city appears its new-city script starts (cityAdded).
   static NEW_CITY_SCRIPT_DELAY_MS = 5000;
 
-  startSupervisor({ heartbeatMs = 60000, idleLimitMs = 150000, checkMs = 5000 } = {}) {
+  startSupervisor({ heartbeatMs = 60000, idleLimitMs = 150000, checkMs = 5000, pingMs = 30000 } = {}) {
     if (this._supervisor) return;
     this.attempt = 0;
     this.backoffMs = Session.BACKOFF[0];
@@ -369,7 +438,49 @@ class Session {
     this._supervisor = setInterval(async () => {
       try {
         if (this.connecting) return;
+
+        // Switched off outranks everything below, including maintenance and a
+        // script's logout: no socket, no login, no engine (it needs the socket),
+        // for as long as the switch is off. This is what frees the account for
+        // another machine to play.
+        if (this.switchedOff()) {
+          if (this.connected) {
+            this.note('switched off in the Director — logging out and staying out');
+            try { this.game.close(); } catch {}
+          }
+          this.state = 'off';
+          this.disconnectReason = 'switched off in the Director';
+          this.nextTryAt = 0;
+          this.attempt = 0;
+          this.backoffMs = Session.BACKOFF[0];
+          return;
+        }
+
+        // Kicked by another login: wait the hold out before anything else,
+        // maintenance recovery logins included — a person is playing it.
+        const kick = this.kickHold();
+        if (kick && !this.connected) {
+          this.state = 'kicked';
+          this.disconnectReason = this.disconnectReason && /^kicked/.test(this.disconnectReason)
+            ? this.disconnectReason
+            : `kicked by another login at ${new Date(kick.at).toLocaleTimeString()} — leaving it to them until ${new Date(kick.until).toLocaleTimeString()}`;
+          this.nextTryAt = Number(kick.until);
+          this.attempt = 0;
+          this.backoffMs = Session.BACKOFF[0];
+          this._kickWaiting = true;
+          return;
+        }
+        if (this._kickWaiting && !kick) {
+          this._kickWaiting = false;
+          this.disconnectReason = null;
+          this.nextTryAt = 0;
+          this.note(`${Math.round(Session.KICK_HOLD_MS / 60000)} minutes since the kick — logging back in`);
+        }
+
         this.checkMaintenance();          // fire and forget; result is cached
+
+        // A maintenance race (monitor or follower) outranks the stand-down below.
+        if (await this.maintRace()) return;
 
         // During maintenance the server refuses logins. Retrying through it
         // burns the backoff ladder and can leave us throttled exactly when it
@@ -394,15 +505,30 @@ class Session {
         if (phase === 'recovering' && !this.connected && (!this.maint.override || loggedOut)) {
           this.state = loggedOut ? 'loggedout' : 'maintenance';
           this.disconnectReason = loggedOut ? 'logging back in after the script\'s logout' : 'waiting for the server to come back';
-          if (Date.now() < (this.maint.nextLoginAt || 0)) return;
-          this.maint.nextLoginAt = Date.now() + Session.RETRY_EVERY_MIN * 60000;
-          // Free check first — never spend a login on a closed port.
+          const nowR = Date.now();
+          // A login that failed holds every check back: a login is the scarce thing.
+          if (nowR < (this.maint.nextLoginAt || 0)) return;
+          // The port check is free (a TCP handshake through the account's proxy), so
+          // it runs often: the announced end is only an estimate and the server is
+          // usually a few minutes late. Only a port that answers earns a login.
+          if (nowR < (this.maint.nextProbeAt || 0)) return;
+          this.maint.nextProbeAt = nowR + Session.PROBE_EVERY_MS;
           if (!(await this.portOpen())) {
-            this.note(`port still closed — next check in ${Session.RETRY_EVERY_MIN}m`);
+            // one line every few minutes, not one per probe
+            if (nowR - (this.maint.notedClosedAt || 0) > Session.PROBE_NOTE_EVERY_MS) {
+              this.maint.notedClosedAt = nowR;
+              this.note(`port still closed — checking every ${Math.round(Session.PROBE_EVERY_MS / 1000)}s until it answers`);
+            }
             return;
           }
+          this.maint.nextLoginAt = Date.now() + Session.RETRY_EVERY_MIN * 60000;
           this.maint.loginTries++;
-          this.note(`port is open — login attempt ${this.maint.loginTries} after maintenance`);
+          // Every console of the fleet sees the port open within the same few
+          // seconds. Spread the logins so they do not arrive as one burst.
+          const stagger = Math.floor(Session.rand() * Session.RETURN_STAGGER_MS);
+          this.note(`port is open — login attempt ${this.maint.loginTries} after maintenance`
+            + (stagger > 999 ? ` in ${Math.round(stagger / 1000)}s` : ''));
+          if (stagger) await new Promise((r) => setTimeout(r, stagger));
           try {
             await this.connect();
             this.noteConnectOk();
@@ -415,6 +541,7 @@ class Session {
             this.note(was && was.source === 'logout'
               ? `back online after the script's logout — ${this.game.castles.length} city(ies), ${was.citiesBefore ?? '?'} before it`
               : 'back online after maintenance');
+            if (!was || was.source !== 'logout') this.noteMaintenanceEnded();
           } catch (e) {
             this.note(`still not accepting us — next attempt in ${Session.RETRY_EVERY_MIN}m`);
           }
@@ -452,6 +579,7 @@ class Session {
             this.state = 'connected'; this.disconnectReason = null;
             this.maintEndedAt = Date.now();          // see the maintenance recovery above
             this.note('back online');
+            this.noteMaintenanceEnded();
           } catch (e) { this.noteConnectError(e); }
           return;
         }
@@ -481,16 +609,33 @@ class Session {
 
         // connected: has it gone quiet for too long?
         if (this.game.idleMs > idleLimitMs) {
+          this.disconnectReason = `no traffic for ${Math.round(this.game.idleMs / 1000)}s — we closed the socket`;
           this.note(`no traffic for ${Math.round(this.game.idleMs / 1000)}s — cycling the socket`);
           try { this.game.close(); } catch {}
           return;
         }
 
+        // The heartbeat proves the server still answers us. A reply to any of our
+        // own commands proves the same, so while those keep coming it isn't sent:
+        // it would only queue behind them (the server takes an account's commands
+        // about one at a time) and, timing out there, cycle a working socket —
+        // what dropped Lord06 again and again on 2026-09-18.
         if (Date.now() - (this.lastPingAt || 0) > heartbeatMs) {
           this.lastPingAt = Date.now();
-          try { await this.game.ping(); }
+          const c = this.game.c || {};
+          if (c.lastReplyAt && Date.now() - c.lastReplyAt < heartbeatMs) return;
+          const sentAt = Date.now();
+          try { await this.game.ping(pingMs); }
           catch (e) {
-            this.note('heartbeat failed — cycling the socket');
+            // busy, not dead: something else of ours was answered while it waited
+            if (c.lastReplyAt && c.lastReplyAt > sentAt) {
+              this.note(`heartbeat slow (over ${Math.round(pingMs / 1000)}s) but the server is still answering — keeping the socket`
+                + ` (${this.game.pipeInFlight ? this.game.pipeInFlight() : 0} market writes in flight)`);
+              return;
+            }
+            const inflight = this.game.pipeInFlight ? this.game.pipeInFlight() : 0;
+            this.disconnectReason = `no reply to the heartbeat in ${Math.round(pingMs / 1000)}s — we closed the socket`;
+            this.note(`heartbeat failed (no reply in ${Math.round(pingMs / 1000)}s, ${inflight} market writes in flight) — cycling the socket`);
             try { this.game.close(); } catch {}
           }
         }
@@ -536,12 +681,74 @@ class Session {
       this.maint.since = Date.now();
       this.note(`server looks down — ${this.maint.reason}`
         + (this.maint.override ? ' — override is ON, still trying' : ' — pausing, will retry once a minute'));
+      this.armRaceFromServer();
     } else if (!this.maint.active && was) {
       const mins = Math.round((Date.now() - (this.maint.since || Date.now())) / 60000);
       this.maint.since = null;
       this.note(`server is back after about ${mins} minute(s) — resuming`);
+      this.noteMaintenanceEnded();
     }
     return this.maint;
+  }
+
+  // A maintenance has ended. Every way back calls this — the server-is-back
+  // transition, the monitor and the followers of a maintenance race, the recovery
+  // ladder, the paused probe — because which one a console takes depends on how
+  // it came through the window. It is only WRITTEN down here: at the moment the
+  // server returns a console may not know yet that its account is on holiday, so
+  // holidayRun applies it once the holiday is confirmed. One maintenance a day.
+  noteMaintenanceEnded() {
+    const id = this.account && this.account.id;
+    if (!id) return;
+    try { this.settings().set('maintEnded:' + id, { day: new Date().toISOString().slice(0, 10), at: Date.now() }); } catch { /* not counted */ }
+    this.holidayRun();
+  }
+
+  // How long this account has been on holiday, in MAINTENANCES rather than in
+  // hours. A holidayed account's resources are put back at every maintenance to
+  // what they were at the one before, so what matters is whether it has been on
+  // holiday across a maintenance boundary at all: until it has, there is no
+  // earlier amount to be put back to. Holiday mode gives no start time — only
+  // how much protection is left — so this is counted by watching: `since` is
+  // when a console first saw the holiday, and `maints` counts the maintenances
+  // that ended while it was still on. Both are kept in the account's own
+  // settings, so a console restart does not lose the count, and both are dropped
+  // the moment the holiday ends.
+  holidayRun() {
+    const id = this.account && this.account.id;
+    if (!id) return null;
+    const key = 'holidayRun:' + id;
+    let rec = null, ended = null;
+    try { rec = this.settings().get(key, null); ended = this.settings().get('maintEnded:' + id, null); } catch { return null; }
+    const on = !!(this.game && this.game.holiday)
+      || (((require('./buffs').protectionOf(this.game) || {}).kind) === 'holiday');
+    if (!on) {
+      // Only what a console can SEE counts as the holiday being over: while it
+      // is offline it knows nothing, and must not throw the count away.
+      if (rec && this.connected) { try { this.settings().set(key, null); } catch { /* kept next time */ } }
+      return this.connected ? null : rec;
+    }
+    const next = rec && rec.since ? { ...rec } : { since: Date.now(), maints: 0 };
+    // The last maintenance that ended, counted once. A holiday first seen up to two
+    // hours after it ended counts it too: a console restarted after a maintenance
+    // sees an old holiday for the first time then, and a holiday cannot be begun
+    // while the server is down.
+    if (ended && ended.day && next.lastMaint !== ended.day && Number(next.since) <= Number(ended.at) + 2 * 3600000) {
+      next.maints = Number(next.maints || 0) + 1;
+      next.lastMaint = ended.day;
+      this.note(`on holiday through ${next.maints} maintenance(s) now — its resources are put back at each one`);
+    }
+    next.seenAt = Date.now();
+    const changed = !rec || rec.since !== next.since || Number(rec.maints || 0) !== Number(next.maints || 0) || rec.lastMaint !== next.lastMaint;
+    if (changed) { try { this.settings().set(key, next); } catch { /* shown anyway */ } }
+    return next;
+  }
+  // What the Director's "Market glitch ready" column reads.
+  holidayRunView() {
+    const rec = this.holidayRun();
+    if (!rec || !rec.since) return null;
+    const maints = Number(rec.maints || 0);
+    return { since: rec.since, maints, ready: maints >= 1, seenAt: rec.seenAt || null };
   }
 
   // ---- scheduled maintenance ------------------------------------------
@@ -558,10 +765,33 @@ class Session {
   static PRE_PAUSE_MIN = 5;        // stand down this long before it starts
   static WINDOW_MIN = 15;          // assumed length of the window
   static RETRY_EVERY_MIN = 5;      // spacing of login attempts afterwards
+  static PROBE_EVERY_MS = 30000;   // how often the free TCP port check runs afterwards
+  static PROBE_NOTE_EVERY_MS = 300000;  // how often "still closed" reaches the log
+  static RETURN_STAGGER_MS = 15000;     // spread the fleet's logins when the port opens
+  static FOLLOWER_WAIT_MIN = 25;   // how long a follower waits on the monitor before going it alone
 
   static MAINT_WORDS = /\b(maintenance|maintainance|mainten|server\s+(will|is going to)\s+(be\s+)?(down|closed|restart)|scheduled\s+downtime)\b/i;
 
   // Returns the plan when a message looks like a maintenance warning.
+  // The server itself says it's down (ServerState, or the game port stopped answering)
+  // and no announcement armed the maintenance race: arm it now, so the monitor starts
+  // probing at once and the followers log in the moment it is in — without anyone
+  // having to seed the window by hand (the user, 2026-09-19). The window starts two
+  // minutes back, the point from which the monitor probes (maintRace).
+  armRaceFromServer(now = Date.now()) {
+    try {
+      const server = (this.account && this.account.server) || 'ss71';
+      const win = this.settings().get('maintWindow:' + server, null);
+      if (win && now >= Number(win.startAt) - 30 * 60000 && now <= Number(win.until)) return null;   // one is armed
+      const w = { startAt: now - 2 * 60000, until: now + 90 * 60000, text: `detected: ${this.maint.reason || 'server down'}`.slice(0, 120) };
+      this.settings().set('maintWindow:' + server, w);
+      this.note(Session.raceOn()
+        ? `maintenance race armed from the server's own status — the monitor probes now, followers log in behind it`
+        : `maintenance window recorded from the server's own status (${new Date(w.startAt).toLocaleTimeString()}) — no logins until the port answers`);
+      return w;
+    } catch { return null; }   // the race just does not run; the once-a-minute check still does
+  }
+
   noteAnnouncement(text) {
     if (!text || !Session.MAINT_WORDS.test(text)) return null;
     // Ignore a repeat of one we already acted on.
@@ -576,6 +806,13 @@ class Session {
 
     this.maint.plan = { text, announcedAt: Date.now(), startsAt, pauseAt, resumeAt, source: 'announcement' };
     try { this.settings().set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
+    // Arm the maintenance race (maintRace) for every console of this server: the
+    // window runs from the announced start for an hour and a half — a monitor that
+    // is still out after that stops being special and the normal recovery takes over.
+    try {
+      const server = (this.account && this.account.server) || 'ss71';
+      this.settings().set('maintWindow:' + server, { startAt: startsAt, until: startsAt + 90 * 60000, text: text.slice(0, 120) });
+    } catch { /* the race just does not run */ }
     this.note(`maintenance announced ("${text.slice(0, 80)}") — standing down in `
       + `${Math.max(0, Math.round((pauseAt - Date.now()) / 60000))}m, back about `
       + `${new Date(resumeAt).toLocaleTimeString()}`);
@@ -627,8 +864,135 @@ class Session {
   clearMaintenancePlan() {
     this.maint.plan = null;
     this.maint.nextLoginAt = 0;
+    this.maint.nextProbeAt = 0;
+    this.maint.notedClosedAt = 0;
+    this.maint.loginTries = 0;
     try { this.settings().set('maintPlan:' + (this.account && this.account.id), null); } catch {}
     this.note('maintenance plan cleared');
+  }
+
+  // ---- the maintenance race (OFF by default) --------------------------
+  //
+  // OFF since 2026-09-20 (the user): every console now simply stands down before
+  // the announced start and comes back at the announced end, checking the free
+  // TCP port until it answers (the 'recovering' phase above). The race below
+  // bought no real speed and cost a great deal: the monitor logged in again and
+  // again into a closed server, and on 2026-09-19 that churn ran its proxy into
+  // the ground ("host unreachable") so the account was slower back, not faster.
+  // It only runs when OTTO_MAINT_RACE=1 is set on a console's start.
+  //
+  // The market glitch wants its accounts back the moment maintenance ends:
+  // other players' bots take 15-30 minutes to load, and until they do the market
+  // is ours. But logging in INTO a maintenance is what gets an account held back
+  // for half an hour, so one account takes that risk for all of them:
+  //   MAINTENANCE MONITOR  probes the port every 15 s from two minutes into the
+  //            window, tries a login every 30 s once it answers, and the moment it
+  //            is in writes maintOver:<server> to the org's settings.
+  //   FOLLOWER spends no login at all through the window, and logs in the instant
+  //            that signal is newer than the window's start.
+  // The role is the account's own setting, maintRole:<id> = 'monitor' | 'follow'
+  // (the Director's ✎ "After maintenance"), read on every tick, so it survives any
+  // restart and a change applies at once; OTTO_MAINT_MONITOR=1 / OTTO_MAINT_FOLLOW=1
+  // on a console's start override it. The window is maintWindow:<server> =
+  // { startAt, until } in the org's settings.
+  // -> { role, server, startAt, until, over } while a race is on, else null
+  maintRole() {
+    if (process.env.OTTO_MAINT_MONITOR === '1') return 'monitor';
+    if (process.env.OTTO_MAINT_FOLLOW === '1') return 'follow';
+    const id = this.account && this.account.id;
+    if (!id) return null;
+    let r = null;
+    try { r = this.settings().get('maintRole:' + id, null); } catch { return null; }
+    return r === 'monitor' || r === 'follow' ? r : null;
+  }
+  // The race is opt-in: with it off every console follows the clock instead, which
+  // is what maintRaceState returning null means everywhere it is read.
+  static raceOn() { return process.env.OTTO_MAINT_RACE === '1'; }
+  maintRaceState(now = Date.now()) {
+    if (!Session.raceOn()) return null;
+    const role = this.maintRole();
+    if (!role) return null;
+    const server = (this.account && this.account.server) || 'ss71';
+    let win = null, over = 0;
+    try {
+      win = this.settings().get('maintWindow:' + server, null);
+      over = Number(this.settings().get('maintOver:' + server, 0)) || 0;
+    } catch { return null; }
+    if (!win || !win.startAt || now < Number(win.startAt) || now > Number(win.until || 0)) return null;
+    return { role, server, startAt: Number(win.startAt), until: Number(win.until), over: over > Number(win.startAt) ? over : 0 };
+  }
+  // One supervisor tick of the race; true when it handled the tick.
+  async maintRace() {
+    if (this.connected) return false;
+    const r = this.maintRaceState();
+    if (!r) return false;
+    const now = Date.now();
+    this.state = 'maintenance';
+    if (r.role === 'follow') {
+      if (!r.over) {
+        // A follower must never wait for ever on a signal that may never come. On
+        // 2026-09-20 the monitor came back on the ordinary reconnect ladder instead of
+        // through the race, so it never wrote maintOver, and thirteen accounts sat
+        // waiting on YESTERDAY's signal — correctly refused as stale — for 70 minutes
+        // past the end of maintenance. After FOLLOWER_WAIT_MIN the follower gives up on
+        // the monitor and falls through to the ordinary recovery, which probes the port
+        // itself and costs no login until it answers.
+        if (now > r.startAt + Session.FOLLOWER_WAIT_MIN * 60000) {
+          if (!this._raceGaveUp) {
+            this._raceGaveUp = true;
+            this.note(`no word from the maintenance monitor ${Session.FOLLOWER_WAIT_MIN} minutes into the window `
+              + `— giving up on it and checking the port here instead`);
+          }
+          return false;
+        }
+        this.disconnectReason = 'waiting for the maintenance monitor to find the end of maintenance, then logging in at once';
+        // and say so on the record now and then, so a waiting console cannot be
+        // mistaken for a dead one
+        if (now > (this._raceNotedAt || 0) + 5 * 60000) {
+          this._raceNotedAt = now;
+          this.note(`maintenance: waiting for the monitor to get in (window began ${new Date(r.startAt).toLocaleTimeString()})`);
+        }
+        return true;
+      }
+      this._raceGaveUp = false;
+      if (now < (this._raceNextAt || 0)) return true;
+      this._raceNextAt = now + 10000;
+      this._raceGo = true;
+      this.note(`the maintenance monitor is in (${new Date(r.over).toLocaleTimeString()}) — logging in now`);
+      try {
+        if (this.maint.plan) this.clearMaintenancePlan();
+        await this.connect();
+        this.noteConnectOk();
+        this.state = 'connected'; this.disconnectReason = null;
+        this.maintEndedAt = Date.now();
+        this.note('back online after maintenance, right behind the maintenance monitor');
+        this.noteMaintenanceEnded();
+      } catch (e) { this.note(`login after the maintenance monitor failed (${e.message}) — again in 10s`); }
+      return true;
+    }
+    // the maintenance monitor
+    if (now < r.startAt + 2 * 60000) { this.disconnectReason = 'maintenance monitor: probing starts two minutes into the window'; return true; }
+    if (now < (this._raceNextAt || 0)) return true;
+    this._raceNextAt = now + 15000;
+    if (!(await this.portOpen())) { this.disconnectReason = 'maintenance monitor: the game port is still closed (checked every 15s)'; return true; }
+    if (now < (this._raceLoginAt || 0)) return true;
+    this._raceLoginAt = now + 30000;
+    this._raceGo = true;
+    this.note('maintenance monitor: the port answers — trying a login');
+    try {
+      if (this.maint.plan) this.clearMaintenancePlan();
+      await this.connect();
+      this.noteConnectOk();
+      this.state = 'connected'; this.disconnectReason = null;
+      this.maintEndedAt = Date.now();
+      this.settings().set('maintOver:' + r.server, Date.now());
+      this.note('maintenance monitor: IN — maintenance is over; the followers log in now');
+      this.noteMaintenanceEnded();
+    } catch (e) {
+      this.disconnectReason = `maintenance monitor: the port answers but the login did not (${e.message}); again in 30s`;
+      this.note(`maintenance monitor: not in yet (${e.message}) — again in 30s`);
+    }
+    return true;
   }
 
   // Where the plan says we are right now.
@@ -650,6 +1014,16 @@ class Session {
         const cfg = await getServerConfig((this.account && this.account.server) || env.EVONY_SERVER || 'ss71');
         host = cfg.host; port = cfg.port || 443;
       } catch { return resolve(false); }
+      // The same way the login goes: through the account's proxy when it has one.
+      // Probing direct from an IP the server has stopped answering (seen
+      // 2026-09-18: every proxy reached ss71 while this PC's own IP hung in
+      // SYN_SENT) says "closed" for ever, and the monitor never tries its login.
+      const acc = this.account;
+      let proxy = null;
+      if (acc && acc.proxy) { try { proxy = require('./proxy').parseProxy(acc.proxy); } catch {} }
+      if (proxy) {
+        try { const s = await require('./proxy').connectVia(proxy, host, port, timeoutMs); try { s.destroy(); } catch {} return resolve(true); } catch { return resolve(false); }
+      }
       const sock = require('net').connect(port, host);
       const done = (v) => { try { sock.destroy(); } catch {} resolve(v); };
       sock.setTimeout(timeoutMs);
@@ -788,14 +1162,70 @@ class Session {
     return this.header();
   }
 
+  // The page's Refresh: what F5 is in the game's own client — drop the socket
+  // and log in afresh, now, whatever the backoff ladder says. Like Connect it
+  // ends a kick hold or a script's logout; a Director switch-off still wins.
+  async reconnect() {
+    if (this.connecting) { try { await this.connecting; } catch {} }
+    if (this.maint.plan && this.maint.plan.source === 'logout') this.clearMaintenancePlan();
+    this.clearKickHold();
+    this.note('refresh — logging in afresh');
+    const old = this.game;
+    this.game = null;
+    try { if (old) old.close(); } catch {}
+    this.attempt = 0; this.backoffMs = Session.BACKOFF[0]; this.nextTryAt = 0;
+    this.state = 'connecting';
+    try {
+      await this.connect();
+      this.noteConnectOk();
+      this.state = 'connected'; this.disconnectReason = null;
+    } catch (e) {
+      this.noteConnectError(e);
+      this.state = 'reconnecting';
+      this.disconnectReason = e.message;
+      this.nextTryAt = Date.now() + this.backoffMs;
+      throw e;
+    }
+    return this.game;
+  }
+
   async connect() {
     if (this.connected) return this.game;
     if (this.connecting) return this.connecting;
     // Every login waits out a script's logout, wherever it is asked for: a
     // page poll, a script, the engine. Connect clears the logout first.
+    // Every login, wherever it is asked for — the page's Connect, a script, the
+    // engine, the supervisor — is refused while the account is switched off.
+    if (this.switchedOff()) {
+      throw new Error('this account is switched off in the Director — switch it back on there to log in');
+    }
+    const kick = this.kickHold();
+    if (kick) {
+      throw new Error(`another login took this account at ${new Date(kick.at).toLocaleTimeString()} — `
+        + `staying out until ${new Date(kick.until).toLocaleTimeString()}; press Connect to take it back now`);
+    }
+    // NO LOGIN OF ANY KIND while a stand-down is open — an announced maintenance
+    // or a script's logout. The supervisor already respects it, but a login can be
+    // asked for from a dozen other places (the page's polls, a script, the engine,
+    // the Director), and on 2026-09-20 that is exactly what happened: the console
+    // stood down, something else logged it straight back in, the supervisor closed
+    // it two seconds later, and the pair went round like that for six minutes until
+    // the proxy stopped answering. The stand-down has to be refused HERE, once, for
+    // everyone. The maintenance override (the page's toggle) is the way through.
     const lo = this.maint.plan;
-    if (lo && lo.source === 'logout' && this.planPhase() === 'standdown') {
-      throw new Error(`logged out by a script until ${new Date(lo.resumeAt).toLocaleTimeString()} — press Connect to end that early`);
+    if (lo && this.planPhase() === 'standdown'
+        && (lo.source === 'logout' || !this.maint.override) && !this._raceGo) {
+      throw new Error(lo.source === 'logout'
+        ? `logged out by a script until ${new Date(lo.resumeAt).toLocaleTimeString()} — press Connect to end that early`
+        : `standing down for maintenance until ${new Date(lo.resumeAt).toLocaleTimeString()} — `
+          + `no logins until then, because logging in during maintenance holds the account back for ~30 minutes; `
+          + `switch the maintenance override on to force it`);
+    }
+    // A follower in a maintenance race logs in only once the monitor is in: a page
+    // poll or a script must not spend its login into the maintenance either.
+    const race = this.maintRaceState();
+    if (race && race.role === 'follow' && !race.over && !this._raceGo) {
+      throw new Error(`waiting for the maintenance monitor to find the end of maintenance (${race.server}) — then this logs in at once`);
     }
     this.connecting = (async () => {
       const env = loadEnv();
@@ -811,6 +1241,15 @@ class Session {
         (acc && acc.password) || env.EVONY_PASSWORD,
         proxy,
       );
+      // The security code is read from the account record at the moment the
+      // game asks for it (a -200), not cached here: changing it in the Director
+      // then applies without a reconnect. security.js has the protocol.
+      g.setSecurityCode(() => {
+        try {
+          const cur = (this.account && this.account.id && this.org && this.org.accounts.get(this.account.id)) || this.account;
+          return (cur && cur.securityCode) || null;
+        } catch { return (this.account && this.account.securityCode) || null; }
+      });
       this.wire(g);
       this.game = g;
       this.lastError = null;
@@ -833,21 +1272,33 @@ class Session {
       this.state = 'connected';
       this.disconnectReason = null;
       g.c.on('log', (m) => {
-        if (/closed/.test(m)) {
-          this.state = 'reconnecting';
-          this.disconnectReason = this.disconnectReason || 'the server closed the connection';
-          this.nextTryAt = Date.now() + 2000;      // first retry is quick
-          this.note('socket closed — supervisor will reconnect');
+        // A socket replaced on purpose (Refresh, a switch) closes late: it must
+        // not mark the new one as reconnecting.
+        if (/closed/.test(m) && this.game === g) {
+          if (this.kickHold()) {
+            this.state = 'kicked';
+            this.note('socket closed — staying out while the kick hold lasts');
+          } else {
+            this.state = 'reconnecting';
+            this.disconnectReason = this.disconnectReason || 'the server closed the connection';
+            this.nextTryAt = Date.now() + 2000;      // first retry is quick
+            this.note('socket closed — supervisor will reconnect');
+          }
         }
         if (/ignoring this account/.test(m)) {
           this.disconnectReason = 'server is ignoring this account (rate limited) — backing off';
+          this.note(`three commands in a row unanswered — ignoring this account? (${g.pipeInFlight ? g.pipeInFlight() : 0} market writes in flight, ${g.pipeQueued ? g.pipeQueued() : 0} waiting)`);
         }
       });
-      // an explicit kick means something else logged in as this account
-      g.c.on('cmd', (cmd) => {
-        if (cmd === 'server.KickedOut') {
-          this.disconnectReason = 'kicked — another client logged in to this account';
-          this.note(this.disconnectReason);
+      // An explicit kick means something else logged in as this account. The
+      // client knows two names for it (GameClient.as gameClient.kickout,
+      // ResponseDispatcher.as server.KickedOut, carrying the other side's ip).
+      // Only the socket we are on counts: a stale one closing late must not
+      // start a hold.
+      g.c.on('cmd', (cmd, data) => {
+        if ((cmd === 'server.KickedOut' || cmd === 'gameClient.kickout') && this.game === g) {
+          this.holdForKick(data && data.ip);
+          try { g.close(); } catch {}
         }
       });
       this.note('session ready');
@@ -988,7 +1439,13 @@ class Session {
         }
         case 'server.ResourceUpdate': {
           const c = g.castles.find((x) => g.castleId(x) === data.castleId);
-          if (c && data.resource) c.resource = data.resource;
+          if (c && data.resource) {
+            const was = (c.resource || {}).support;
+            c.resource = data.resource;
+            // the loyalty a battle leaves: logged beside the waves, and a fall
+            // to a defensepolicy line wakes a war pass (Engine.noteLoyalty)
+            try { if (this.engine && this.engine.game === g && this.engine.noteLoyalty(c, was)) this.armWake(); } catch {}
+          }
           break;
         }
         case 'server.TroopUpdate': {
@@ -1410,6 +1867,9 @@ class Session {
     for (const t of out.troops) {
       t.code = (C.BY_KEY[t.key] || {}).code || '';
       t.typeId = (C.BY_KEY[t.key] || {}).typeId || null;   // matches ProduceBean.type in the queues
+      // Base stats for the hover card on the Troops panel.
+      const def = C.BY_KEY[t.key];
+      if (def) t.stats = { life: def.life, attack: def.attack, defence: def.defence, range: def.range, speed: def.speed, load: def.load, food: def.food, pop: def.pop, cost: def.cost, buildTime: def.buildTime };
       t.outward = marchingFrom[t.key] || 0;
       t.inward = marchingTo[t.key] || 0;
     }
@@ -1659,6 +2119,37 @@ class Session {
 
   marches() { return this.connected ? marches(this.game) : []; }
 
+  // Under attack, for the Director: { on, cities: [{ name, inbound, firstLandsAt,
+  // lastWaveAt, loyalty }] } — each city with hostile armies marching at it now
+  // (the engine's push-fed list, or the login's before the first tick), or a
+  // wave landed in the last 30 min. Null while not logged in.
+  underAttackView() {
+    const g = this.game, e = this.engine;
+    if (!this.connected || !g || !Array.isArray(g.castles)) return null;
+    let incoming = {};
+    try {
+      incoming = e && e.game === g ? e.incomingFor()
+        : require('./engine').incomingByCity(g, (g.player && g.player.enemyArmys) || []);
+    } catch { return null; }
+    const now = g.now ? g.now() : Date.now();
+    const waves = (e && e.game === g && e.lastWaveAt) || {};
+    const cities = [];
+    for (const c of g.castles) {
+      const id = g.castleId(c);
+      const list = incoming[id] || [];
+      const last = Number(waves[id] || 0);
+      const recent = last && now - last < 30 * 60000;
+      if (!list.length && !recent) continue;
+      const lands = list.map((a) => Number(a.reachTime) || Infinity);
+      cities.push({
+        name: c.name, inbound: list.length,
+        firstLandsAt: list.length && Number.isFinite(Math.min(...lands)) ? Math.min(...lands) : null,
+        lastWaveAt: last || null, loyalty: (c.resource || {}).support ?? null,
+      });
+    }
+    return { on: cities.length > 0, at: now, cities };
+  }
+
   header() {
     const p = this.game && this.game.player && this.game.player.playerInfo;
     const pb = (this.game && this.game.player) || {};
@@ -1677,9 +2168,14 @@ class Session {
         mailSystem: Number(pb.newMaileCount_system || 0),
       } : null,
       paused: this.userPaused,
+      // which cities have hostile armies inbound, or were hit in the last 30 min
+      // (the Director's "under attack")
+      underAttack: this.underAttackView(),
       // { hours, minutes, text } while the account is on holiday: the login goes
       // through and everything works, so this is a badge, not an error.
       holiday: (this.game && this.game.holiday) || null,
+      // how many maintenances it has been on holiday through (holidayRun)
+      holidayRun: this.holidayRunView(),
       alliance: p ? p.alliance || null : null,
       connected: this.connected,
       state: this.connected ? 'connected' : (this.connecting ? 'connecting' : (this.state || 'offline')),

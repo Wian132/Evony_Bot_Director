@@ -381,6 +381,47 @@ class Session {
   // Connect (/api/connect) ends it early.
   static KICK_HOLD_MS = Number(process.env.KICK_HOLD_MIN || 30) * 60000;
 
+  // The account's own "after a kick, stay out N minutes" (the Director's ✎ / Accounts grid,
+  // org setting kickHoldMin:<id>; the user, 2026-09-22). null = not set: an explicit kick
+  // message holds KICK_HOLD_MS as before, and a bare server close reconnects straight away.
+  // 0 = straight back in, always. N = stay out N minutes after either.
+  // The hold GROWS while the account goes on being refused: the account's minutes are
+  // the step, and each drop that follows without a login that HELD adds another step —
+  // 5, 10, 15, 20 … (the user, 2026-09-22, for Lord02). Any login that lasts
+  // SETTLED_MS puts it back to one step. The step is kept in the org's settings, like
+  // the hold itself, so a console restart in the middle of a spell does not lose count.
+  static KICK_HOLD_MAX_MIN = Number(process.env.OTTO_KICK_HOLD_MAX_MIN || 60);
+
+  holdStep() {
+    const id = this.account && this.account.id;
+    if (!id) return 0;
+    try { return Number(this.settings().get('kickHoldStep:' + id, 0)) || 0; } catch { return 0; }
+  }
+
+  setHoldStep(n) {
+    const id = this.account && this.account.id;
+    if (!id) return;
+    try { this.settings().set('kickHoldStep:' + id, n || 0); } catch {}
+  }
+
+  // It got in and stayed in: the next hold starts at one step again.
+  clearHoldStep() {
+    if (!this.holdStep()) return;
+    this.setHoldStep(0);
+    const base = this.kickHoldMin();
+    this.note(`it is in and staying in — the next hold starts at ${base || '?'} min again`);
+  }
+
+  kickHoldMin() {
+    const id = this.account && this.account.id;
+    if (!id) return null;
+    if (!this._khmReadAt || Date.now() - this._khmReadAt > 5000) {
+      this._khmReadAt = Date.now();
+      try { const v = this.settings().get('kickHoldMin:' + id, null); this._khm = v === null || v === '' ? null : Number(v); } catch { /* keep the last answer */ }
+    }
+    return Number.isFinite(this._khm) && this._khm >= 0 ? this._khm : null;
+  }
+
   kickHold() {
     const id = this.account && this.account.id;
     if (!id) return null;
@@ -392,16 +433,51 @@ class Session {
     return h && Number(h.until) > Date.now() ? h : null;
   }
 
-  holdForKick(ip) {
+  holdForKick(ip, { minutes = null, source = 'kick', why = null } = {}) {
     const at = Date.now();
-    const hold = { at, until: at + Session.KICK_HOLD_MS, ip: ip || null };
+    // An account's own minutes are one step of a ladder; the fleet-wide default is flat.
+    let step = 0, mins = null;
+    if (minutes !== null) {
+      const base = Math.max(0, Number(minutes) || 0);
+      // the ladder is capped, but never below the minutes you asked for: a base of
+      // 300 means 300, whatever the cap says
+      const cap = Math.max(base, Session.KICK_HOLD_MAX_MIN);
+      const steps = base > 0 ? Math.max(1, Math.ceil(cap / base)) : 1;
+      step = Math.min(this.holdStep() + 1, steps);
+      mins = Math.min(base * step, cap);
+      this.setHoldStep(step);
+    }
+    const ms = mins !== null ? mins * 60000 : Session.KICK_HOLD_MS;
+    const hold = { at, until: at + ms, ip: ip || null, source, minutes: mins, step };
     this._kick = hold; this._kickReadAt = at;
     try { this.settings().set('kickHold:' + (this.account && this.account.id), hold); } catch {}
     this.nextTryAt = hold.until;
-    this.disconnectReason = `kicked — another login took this account${ip ? ' from ' + ip : ''}; `
-      + `leaving it to them until ${new Date(hold.until).toLocaleTimeString()} — Connect takes it back now`;
+    this.disconnectReason = `kicked — ${why || 'another login took this account'}${ip ? ' from ' + ip : ''}; `
+      + `staying out ${mins !== null ? `${mins} min, until ` : 'until '}${new Date(hold.until).toLocaleTimeString()}`
+      + `${step > 1 ? ` — refused ${step} times in a row now, so the wait grew` : ''} — Connect takes it back now`;
     this.note(this.disconnectReason);
     return hold;
+  }
+
+  // Somebody else logged in. The game's own client shows a window for this; ours has
+  // to say it just as plainly, because it explains everything that follows (the user,
+  // 2026-09-22). Kept in the org's settings so the page still shows it after a restart
+  // and the Director can see it too.
+  noteSomebodyElseLoggedIn(ip, cmd) {
+    const at = Date.now();
+    const rec = { at, ip: ip || null, cmd: cmd || null };
+    this._lastKick = rec;
+    try { this.settings().set('lastKick:' + (this.account && this.account.id), rec); } catch {}
+    this.note(`ANOTHER USER HAS LOGGED INTO THIS ACCOUNT${ip ? ` from ${ip}` : ''}`
+      + ' — that is the game kicking us out, not a network fault'
+      + '. If it happens again within half an hour it is OUR OWN fleet, not NEAT:'
+      + ' NEAT pauses 30 minutes when it is kicked (the user, 2026-09-22)');
+  }
+
+  // The last time somebody else took this account, hold or no hold.
+  lastKick() {
+    if (this._lastKick) return this._lastKick;
+    try { return this.settings().get('lastKick:' + (this.account && this.account.id), null); } catch { return null; }
   }
 
   clearKickHold() {
@@ -417,6 +493,24 @@ class Session {
   // Staged retry ladder: quick first, then progressively patient. Anything that
   // looks like server-side rate limiting starts further down the ladder.
   static BACKOFF = [30000, 60000, 120000, 300000, 600000];
+
+  // ---- a console that keeps trying but never comes in ----
+  // Lord02 spent five hours on 2026-09-22 logging in every ten seconds and being
+  // dropped two seconds later (`server.ConnectionLost`), ~2,300 logins, playing
+  // nothing. A login that does not HOLD is the same as no login, so both count as
+  // trying: after ROTATE_AFTER_MS of it the console closes the socket, moves the
+  // account to another proxy line (proxy-pick.js rotate) and starts again.
+  // A connection that lasts SETTLED_MS is "in", and ends the spell.
+  static SETTLED_MS = Number(process.env.OTTO_SETTLED_SEC || 120) * 1000;
+  static ROTATE_AFTER_MS = Number(process.env.OTTO_PROXY_ROTATE_MIN || 10) * 60000;
+  // Each move in the same spell waits longer than the last: when the proxy is not
+  // what is wrong, this must not walk the account through the whole list in an hour.
+  static ROTATE_MAX_MS = 60 * 60000;
+  // And it rests before trying the new line. Rate limiting is per ACCOUNT, not per IP
+  // (EVONY-RULES §1), and "a fresh login right after a drop can be ignored for a minute
+  // or more — retrying fast keeps it blocked": a new IP is no reason to hurry, and a
+  // move must never end up spending MORE logins than the ladder it restarts.
+  static ROTATE_PAUSE_MS = Number(process.env.OTTO_PROXY_ROTATE_PAUSE_SEC || 60) * 1000;
   // Which notes are about the connection (they are also printed, see note()).
   // `port` and `maintenance` are here because a stand-down is otherwise SILENT: on
   // 2026-09-20 thirteen consoles sat waiting with nothing in their log since 08:54,
@@ -430,11 +524,66 @@ class Session {
   // How long after a city appears its new-city script starts (cityAdded).
   static NEW_CITY_SCRIPT_DELAY_MS = 5000;
 
+  // It is in, or it is legitimately out (switched off, a kick hold, maintenance,
+  // a script's logout): either way it is not stuck, so the clock starts afresh.
+  clearTrouble() {
+    this.troubleSince = 0;
+    this.troubleRotations = 0;
+    this.troubleWaitMs = Session.ROTATE_AFTER_MS;
+  }
+
+  // One supervisor tick of "still not really in". Starts the clock the first time,
+  // and once it has run long enough closes the socket, changes proxy and lets the
+  // next tick log in. True when it did that, so the tick stops there.
+  async rotateProxyIfStuck() {
+    const now = Date.now();
+    if (!this.troubleSince) { this.troubleSince = now; return false; }
+    const wait = this.troubleWaitMs || Session.ROTATE_AFTER_MS;
+    if (now - this.troubleSince < wait) return false;
+
+    const mins = Math.round((now - this.troubleSince) / 60000);
+    const why = `${mins} min without a login that held`;
+    this.troubleSince = now;
+    this.troubleRotations = (this.troubleRotations || 0) + 1;
+    this.troubleWaitMs = Math.min(wait * 2, Session.ROTATE_MAX_MS);
+
+    this.disconnectReason = `${why} — changing proxy and trying again`;
+    if (this.connected) {
+      this.note(`${mins} min logging in and being dropped again — closing the socket and changing proxy`);
+      try { this.game.close(); } catch {}
+    } else {
+      this.note(`${mins} min trying to log in without getting in — changing proxy`);
+    }
+
+    let p = null;
+    try {
+      p = require('./proxy-pick').rotate(this.org, this.account, {
+        note: (m) => this.note(m, { kind: 'sys' }), why,
+      });
+    } catch (e) { this.note('proxy: ' + e.message, { kind: 'sys' }); }
+    this.note(p
+      ? `now logging in through ${p.label} (change ${this.troubleRotations}) — resting ${Math.round(Session.ROTATE_PAUSE_MS / 1000)}s first,`
+        + ` then another change in ${Math.round(this.troubleWaitMs / 60000)} min if this one does not hold either`
+      : `staying on the same proxy and going on trying — resting ${Math.round(Session.ROTATE_PAUSE_MS / 1000)}s first`);
+
+    // a fresh ladder, after a rest: the socket has to finish closing, and the account
+    // may be the thing being refused rather than the IP
+    this.attempt = 0;
+    this.backoffMs = Session.BACKOFF[0];
+    this.nextTryAt = now + Session.ROTATE_PAUSE_MS;
+    this.state = 'reconnecting';
+    this.disconnectReason = p
+      ? `${why} — moved to ${p.label}`
+      : `${why} — no other proxy line is free`;
+    return true;
+  }
+
   startSupervisor({ heartbeatMs = 60000, idleLimitMs = 150000, checkMs = 5000, pingMs = 30000 } = {}) {
     if (this._supervisor) return;
     this.attempt = 0;
     this.backoffMs = Session.BACKOFF[0];
     this.reconnects = 0;
+    this.clearTrouble();
     this._supervisor = setInterval(async () => {
       try {
         if (this.connecting) return;
@@ -453,13 +602,21 @@ class Session {
           this.nextTryAt = 0;
           this.attempt = 0;
           this.backoffMs = Session.BACKOFF[0];
+          this.clearTrouble();
           return;
         }
 
         // Kicked by another login: wait the hold out before anything else,
         // maintenance recovery logins included — a person is playing it.
         const kick = this.kickHold();
-        if (kick && !this.connected) {
+        // a hold started by a bare server close is only a GUESS that another login did it;
+        // if the server turns out to be in maintenance instead, it was not a kick — drop the
+        // hold so the maintenance return is not delayed
+        if (kick && kick.source === 'close' && !this.connected) {
+          await this.checkMaintenance();
+          if (this.maint.active) { this.clearKickHold(); this.note('that close was maintenance, not a kick — the kick hold is dropped'); }
+        }
+        if (this.kickHold() && !this.connected) {
           this.state = 'kicked';
           this.disconnectReason = this.disconnectReason && /^kicked/.test(this.disconnectReason)
             ? this.disconnectReason
@@ -468,13 +625,14 @@ class Session {
           this.attempt = 0;
           this.backoffMs = Session.BACKOFF[0];
           this._kickWaiting = true;
+          this.clearTrouble();          // somebody else is playing it, not a stuck console
           return;
         }
         if (this._kickWaiting && !kick) {
           this._kickWaiting = false;
           this.disconnectReason = null;
           this.nextTryAt = 0;
-          this.note(`${Math.round(Session.KICK_HOLD_MS / 60000)} minutes since the kick — logging back in`);
+          this.note('the kick hold is over — logging back in');
         }
 
         this.checkMaintenance();          // fire and forget; result is cached
@@ -500,9 +658,11 @@ class Session {
           this.maint.loginTries = 0;
           this.maint.nextLoginAt = this.maint.plan.resumeAt;
           if (loggedOut) this.nextTryAt = this.maint.plan.resumeAt;
+          this.clearTrouble();          // it is not trying to get in — it is told not to
           return;
         }
         if (phase === 'recovering' && !this.connected && (!this.maint.override || loggedOut)) {
+          this.clearTrouble();          // waiting for the server, not stuck on a proxy
           this.state = loggedOut ? 'loggedout' : 'maintenance';
           this.disconnectReason = loggedOut ? 'logging back in after the script\'s logout' : 'waiting for the server to come back';
           const nowR = Date.now();
@@ -550,6 +710,7 @@ class Session {
 
         if (this.paused) {
           if (this.connected) { this.note('server went down — closing the socket'); try { this.game.close(); } catch {} }
+          this.clearTrouble();          // the server is down for everyone — no proxy fixes that
           this.state = 'maintenance';
           this.disconnectReason = this.maint.reason || 'server maintenance';
           // A maintenance window is 15-30 minutes, so a steady one-a-minute probe
@@ -585,6 +746,9 @@ class Session {
         }
 
         if (!this.connected) {
+          // Ten minutes of this and the proxy changes — before the ladder's own wait,
+          // so a console parked on a 10-minute backoff still gets its move on time.
+          if (await this.rotateProxyIfStuck()) return;
           if (Date.now() < (this.nextTryAt || 0)) return;
           this.state = 'connecting';
           this.note(`reconnecting (attempt ${this.attempt + 1})`);
@@ -606,6 +770,12 @@ class Session {
           }
           return;
         }
+
+        // connected — but is it IN? A login that holds for SETTLED_MS is; one that is
+        // dropped again seconds later is not, and the spell goes on counting until
+        // rotateProxyIfStuck moves it (the flapping of 2026-09-22).
+        if (Date.now() - (this.connectedSince || 0) >= Session.SETTLED_MS) { this.clearTrouble(); this.clearHoldStep(); }
+        else if (await this.rotateProxyIfStuck()) return;
 
         // connected: has it gone quiet for too long?
         if (this.game.idleMs > idleLimitMs) {
@@ -1020,7 +1190,8 @@ class Session {
       // SYN_SENT) says "closed" for ever, and the monitor never tries its login.
       const acc = this.account;
       let proxy = null;
-      if (acc && acc.proxy) { try { proxy = require('./proxy').parseProxy(acc.proxy); } catch {} }
+      // pinned, random (its kept pick, proxy-pick.js) or direct — as the login goes
+      if (acc && acc.proxy) { try { proxy = require('./proxy-pick').forAccount(this.org, acc); } catch {} }
       if (proxy) {
         try { const s = await require('./proxy').connectVia(proxy, host, port, timeoutMs); try { s.destroy(); } catch {} return resolve(true); } catch { return resolve(false); }
       }
@@ -1231,7 +1402,12 @@ class Session {
       const env = loadEnv();
       const acc = this.account;
       let proxy = null;
-      if (acc && acc.proxy) { try { proxy = require('./proxy').parseProxy(acc.proxy); } catch {} }
+      // pinned, random (its kept pick — made now if it has none) or direct
+      if (acc && acc.proxy) {
+        try {
+          proxy = require('./proxy-pick').forAccount(this.org, acc, { note: (m) => this.note(m, { kind: 'sys' }) });
+        } catch (e) { this.note('proxy: ' + e.message, { kind: 'sys' }); }
+      }
       // The socket's own chatter is protocol trace; the Log tab gets one line
       // saying who we are once the login has actually worked.
       const g = new Game((m) => this.note(m, { kind: 'net' }));
@@ -1250,6 +1426,17 @@ class Session {
           return (cur && cur.securityCode) || null;
         } catch { return (this.account && this.account.securityCode) || null; }
       });
+      // A hold that began WHILE this login was in flight still wins. Twice on
+      // 2026-09-22 (21:28:26 and 21:38:46) Lord02 was kicked, took its hold, and
+      // then the login already on the wire landed five seconds later and started the
+      // fight with NEAT all over again. The login is spent either way; hanging up at
+      // once is what actually leaves the account to whoever took it.
+      if (this.kickHold()) {
+        try { g.close(); } catch {}
+        this.note('the login we had already sent arrived after the hold started — hanging up and leaving the account alone');
+        throw new Error('another user took this account while we were logging in — staying out until '
+          + new Date(this.kickHold().until).toLocaleTimeString());
+      }
       this.wire(g);
       this.game = g;
       this.lastError = null;
@@ -1269,12 +1456,25 @@ class Session {
       this.reconcileRegistry(g);
 
       this.lastPingAt = Date.now();
+      // when THIS socket came up, so the supervisor can tell a login that holds from
+      // one the server drops again seconds later
+      this.connectedSince = Date.now();
       this.state = 'connected';
       this.disconnectReason = null;
       g.c.on('log', (m) => {
         // A socket replaced on purpose (Refresh, a switch) closes late: it must
         // not mark the new one as reconnecting.
         if (/closed/.test(m) && this.game === g) {
+          // what the server sent last, so the next real kick shows whether it says anything first
+          const last = (g.c.recentCmds || []).slice(-4).join(', ') || 'nothing';
+          const byServer = !g.c.closedByUs && !g.c.closedHadError;
+          this.note(`socket closed by ${g.c.closedByUs ? 'us' : g.c.closedHadError ? 'a socket error' : 'the server'} — the last it sent: ${last}`);
+          // the server hung up on a session we did not end and no error explains: another login
+          // (NEAT's, a person's) — the user's per-account hold, unless a stand-down is open
+          const mins = this.kickHoldMin();
+          if (byServer && mins && !this.kickHold() && !['standdown', 'recovering'].includes(this.planPhase()) && !this.maint.active) {
+            this.holdForKick(null, { minutes: mins, source: 'close', why: 'the server closed the connection (another login — NEAT or a person — or it stopped answering this account)' });
+          }
           if (this.kickHold()) {
             this.state = 'kicked';
             this.note('socket closed — staying out while the kick hold lasts');
@@ -1290,16 +1490,29 @@ class Session {
           this.note(`three commands in a row unanswered — ignoring this account? (${g.pipeInFlight ? g.pipeInFlight() : 0} market writes in flight, ${g.pipeQueued ? g.pipeQueued() : 0} waiting)`);
         }
       });
-      // An explicit kick means something else logged in as this account. The
-      // client knows two names for it (GameClient.as gameClient.kickout,
-      // ResponseDispatcher.as server.KickedOut, carrying the other side's ip).
-      // Only the socket we are on counts: a stale one closing late must not
-      // start a hold.
+      // An explicit kick means something else logged in as this account. The client
+      // knows three names for it: GameClient.as gameClient.kickout, ResponseDispatcher.as
+      // server.KickedOut (carrying the other side's ip), and **server.ConnectionLost** —
+      // the one the game's own window shows as "Another user has logged into your
+      // account", and the one ss71 actually sends. Proved on 2026-09-22: every one of
+      // Lord02's ~2,300 drops ended in server.ConnectionLost, and NEAT — the other
+      // bot on that account — logged *"Disconnected - Another user has logged into your
+      // account, pausing jobs for 31m59s"* at the same second our console logged in.
+      // Until that day we ignored it and reconnected straight away, which is what made
+      // the two bots fight over the account for four hours.
+      // Only the socket we are on counts: a stale one closing late must not start a hold.
       g.c.on('cmd', (cmd, data) => {
-        if ((cmd === 'server.KickedOut' || cmd === 'gameClient.kickout') && this.game === g) {
-          this.holdForKick(data && data.ip);
-          try { g.close(); } catch {}
-        }
+        const kickCmd = cmd === 'server.KickedOut' || cmd === 'gameClient.kickout' || cmd === 'server.ConnectionLost';
+        if (!kickCmd || this.game !== g) return;
+        // The server also says ConnectionLost when it is going down for maintenance, and
+        // a stand-down is not somebody stealing the account.
+        if (cmd === 'server.ConnectionLost' && (this.maint.active || ['standdown', 'recovering'].includes(this.planPhase()))) return;
+        this.noteSomebodyElseLoggedIn(data && data.ip, cmd);
+        const mins = this.kickHoldMin();
+        if (mins === 0) { this.note('another user logged into this account — it is set to come straight back'); return; }
+        this.holdForKick(data && data.ip, { minutes: mins,
+          why: 'another user logged into this account (the game says so itself)' });
+        try { g.close(); } catch {}
       });
       this.note('session ready');
       return g;
@@ -1802,6 +2015,12 @@ class Session {
           buffs,
           experience: Number(h.experience || 0),
           upgradeExp: Number(h.upgradeExp || 0),
+          // Experience keeps piling up past the level the hero holds: the server
+          // only moves the level when hero.levelUp is sent, one level a time. So
+          // a hero with everything spent reads 0 unspent while sitting on dozens
+          // of levels — that is what levelsReady counts, and why the Heroes tab
+          // shows it beside the level.
+          levelsReady: Game.heroLevelsReady(h),
           unspent: h.remainPoint || 0, status: h.status,
         };
       }),
@@ -2109,12 +2328,44 @@ class Session {
     if (!this.connected) return null;
     if (this._snap && Date.now() - this._snap.at < maxAgeMs) return this._snap;
     try {
+      // Every traininghero goal line this account runs, city by city — so
+      // snapshot.js's cityList can tell a city the training hero is parked in
+      // apart from one that is genuinely packed full (goalmods.trainingHeroPlan
+      // reads the same lines the same way).
+      const trainingHeroNames = [];
+      for (const c of this.game.castles || []) {
+        const parsed = this.goalsOf(c);
+        if (!parsed) continue;
+        for (const g of parsed.goals) {
+          if (g.name === 'traininghero' && g.hero) trainingHeroNames.push(String(g.hero).toLowerCase());
+        }
+      }
       this._snap = buildSnapshot(this.game, {
         source: 'console',
         accountId: this.account && this.account.id,
+        trainingHeroNames,
       });
+      this.rememberOwnHeroes(this._snap);
     } catch (e) { this.note('snapshot failed: ' + e.message); return this._snap || null; }
     return this._snap;
+  }
+
+  // Write this account's own heroes into the fleet register (db.fleetHeroes),
+  // which is how every console knows a prisoner is one of OUR heroes and must
+  // never be released (EVONY-RULES.md section 5). A hero leaves its owner's
+  // roster the instant it is captured, so the register is the only proof left
+  // -- rows are kept forever and this only ever adds.
+  //
+  // A console that has just logged in reports a SHORT roster (EVONY-RULES.md:
+  // a city with 9 heroes came back with 2), which would leave real heroes
+  // unregistered. Registering only adds, so a short read costs nothing -- but
+  // the release side refuses to act until every account has reported recently
+  // (goal-heroes registerCoverage), which is what closes that gap.
+  rememberOwnHeroes(snap) {
+    const id = this.account && this.account.id;
+    if (!id || !snap || !Array.isArray(snap.heroIds) || !snap.heroIds.length) return;
+    try { require('./db').fleetHeroes.seen(id, snap.heroIds); }
+    catch (e) { this.note('fleet hero register: ' + e.message); }
   }
 
   marches() { return this.connected ? marches(this.game) : []; }
@@ -2198,6 +2449,20 @@ class Session {
       lastTickAt: this.lastTickAt || null,
       logSeq: this.logSeq || 0,
       reconnects: this.reconnects || 0,
+      // the proxy this login went through, and how long it has held
+      proxy: (this.game && this.game.proxy && this.game.proxy.label) || null,
+      connectedSince: this.connected ? (this.connectedSince || null) : null,
+      // set while the console has been trying to get in and failing: when it started,
+      // and how many times it has changed proxy over it
+      stuckSince: this.troubleSince || null,
+      proxyChanges: this.troubleRotations || 0,
+      // somebody else logged into this account — the game's own "Another user has logged
+      // into your account". `kick` is the hold running now, `lastKick` the last time it
+      // happened at all, and `kickStep` how far up the ladder the waits have climbed.
+      kick: (() => { const h = this.kickHold(); return h ? { at: h.at, until: h.until, ip: h.ip || null, minutes: h.minutes ?? null, step: h.step || 0, source: h.source || null } : null; })(),
+      lastKick: this.lastKick(),
+      kickStep: this.holdStep(),
+      kickHoldMin: this.kickHoldMin(),
       snapshot: this.snapshot(),
       // This console's own process. Several accounts may share one process, so
       // `accounts` says how many this number is covering.

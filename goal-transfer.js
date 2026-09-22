@@ -19,17 +19,34 @@
 //                   page says "of the remoteAmount": its text is SendResources',
 //                   where that is the RECEIVING city's amount, i.e. ours here.)
 //   maxBatch        at most this much per send. ONE batch number is maxBatch.
+//                   * (or more than one march can take) is as much as ONE
+//                   march carries: the Rally Spot's troop limit (10,000 a
+//                   level) x each carrier's hold at the account's Logistics,
+//                   less the march's own food — about 1b on 100,000
+//                   transports at Logistics 10 over a short trip.
 //   troopType       what carries the resources (default transports), e.g.
 //                   `requestresources HubCity wood 25m 40m 5m * cavalry`.
 //   * in place of any amount means "doesn't matter". Up to the two amounts the
 //   line needs, then the batches, then the carrier.
 //
-// OTTObot's own switch, for a trigger below the fill level:
+// OTTObot's own switches:
 //   /below:<amount>  only START a request once the city holds less than this;
 //                    it then still fills to localAmount. Lines saved in this
 //                    tool's old order (<min> <max> <batch> <keep>) became
 //                    `<max> <keep> * <batch> /below:<min>` (migrate-goals-transfer.js),
 //                    which does exactly what they did before.
+//   /steps:<a>,<b>   (requestresources) even the account out in steps, the
+//                    poorest first (the user, 2026-09-19). The steps and then
+//                    localAmount are the levels, lowest first. At each level L
+//                    a city under L asks, cities over L send, never below L,
+//                    and no city is filled past L. A level waits while any city
+//                    with the same line is still under a lower level that some
+//                    city could still fill. At the last level remoteAmount is
+//                    the senders' floor as usual, so cities at the top neither
+//                    receive nor hand gold round among themselves. The richest
+//                    free sender sends; one out on a mission is not waited for.
+//   Food never goes past 950b in a city, counting what is on its way: a
+//   city's food resets to 0 at 1t (EVONY-RULES.md §3). No line fills past it.
 //
 // Who sends, line by line:
 //   * what is already on its way here counts: our own transports and
@@ -150,17 +167,123 @@ const RES_KEYS = ['food', 'wood', 'stone', 'iron', 'gold'];
 const troopDef = (tok) => C.troopByWord(tok);
 const TROOP_BY_TYPE = Object.fromEntries(C.TROOPS.map((t) => [t.typeId, t]));
 const troopName = (k) => (C.BY_KEY[k] ? C.BY_KEY[k].name : k);
+// "transports", "scouts", "cavalry": a carrier name as a plural
+const many = (w) => (/s$|cavalry$/i.test(w) ? w.toLowerCase() : `${w.toLowerCase()}s`);
 
-// A carrier holds its base load (constants.js TROOPS). Logistics research
-// raises it, but the flat figure is what has gone through live with
-// transports, and the slack covers march food.
+// A carrier's hold, the way the client counts it (NewArmyWin.as:2853): its
+// load x (1 + loadSkillParam/100). loadSkillParam is the account's Logistics
+// bonus (+100 at Logistics 10, so a transport holds 10,000 and a cavalry 200).
+// The client asks army.getTroopParam WITH the sending city's castleId each
+// time its march window opens (NewArmyWin.as:1616); Game.troopParams asks the
+// same way and keeps the answer per city, and that is read first. Then what
+// the login read (Game.loadSkillParam, asked without a castleId). When neither
+// is known, the base load — half the real hold at Logistics 10, which is how
+// 100,000 transports ended up carrying 500m (2026-09-19); the transport
+// executor then asks for the city's figure, so the next pass has it.
+// The food a march carries for itself comes out of the same hold (sizeMarch).
 const LOAD = C.BY_KEY.carriage.load;
-const loadOf = (key) => (C.BY_KEY[key] || C.BY_KEY.carriage).load;
+const FOOD_CAP = 950e9;      // a city's food resets to 0 at 1t: never fill past this
+const loadSkillOf = (game, castle) => {
+  const cache = game && game._troopParams;
+  if (castle && cache && typeof cache.get === 'function' && typeof game.castleId === 'function') {
+    const hit = cache.get(game.castleId(castle));
+    const v = Number(hit && hit.p && hit.p.loadSkill);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  const v = Number(game && game.loadSkillParam);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+};
+const loadOf = (key, skill = 0) => (C.BY_KEY[key] || C.BY_KEY.carriage).load * (1 + n(skill) / 100);
 // Transports are shared with NPC farming, which rides on the same carriages:
 // a transfer leaves a quarter of them home, never more than 2,000. Another
 // carrier (troopType) is held back the same way. The wiki says nothing on
 // this; holding some back only ever sends less.
 const reserveOf = (carriages) => Math.min(2000, Math.ceil(carriages * 0.25));
+
+// A march takes at most 10,000 troops per Rally Spot level of the SENDING
+// city, every kind together, and never more than 100,000 ("Troops dispatch
+// limit reached 100000"; rally.js marchTroopLimit): at L10, 100,000 transports
+// carry 1b at Logistics 10 (500m at base load). A city with no Rally Spot in its list, or no list, gets the
+// 100,000 and the server judges it (the rally book holds goal marches from a
+// city with no Rally Spot anyway).
+const limitOf = (castle) => R.marchTroopLimit(castle) || C.MARCH_TROOP_MAX;
+// What one carrier of kind `k` really holds on a trip from `fromXY` to `toXY`
+// in a march of `kinds` (plus k): its hold, load x (1 + loadSkill/100), less the
+// food it carries for itself — twice its upkeep for every hour of the one-way
+// march, at the speed of the march's slowest troop (NewArmyWin.as:2852-2853,
+// :3102, :1719). 0 or less when the trip eats it all: scouts hold 10 at
+// Logistics 10 and eat 10 an hour. The march skill is the account's; no Relief
+// Station is counted, the slower reading, so the food is never under-counted.
+// `from` is the sending castle, for its own Logistics reading (loadSkillOf).
+function netHold(k, fromXY, toXY, kinds, game, from = null) {
+  const all = [...new Set([...(kinds || []), k])];
+  const ms = fromXY && toXY ? n(C.marchTimeMs(fromXY, toXY, all, n(game && game.marchSkillParam))) : 0;
+  return loadOf(k, loadSkillOf(game, from)) - (C.BY_KEY[k] ? C.BY_KEY[k].food : 0) * 2 * ms / 3600000;
+}
+
+// Carriers of each kind a transport march takes for what it carries, at
+// `netOf(kind)` a carrier.
+const unitsOf = (carried, netOf) => Object.fromEntries(Object.entries(carried || {})
+  .map(([k, v]) => { const per = netOf(k); return [k, per > 0 ? Math.ceil(n(v) / per) : 0]; }));
+
+// What a march planned this pass from `castle` still has room for: resources
+// on carrier `k` for a transport (m.carried is resources per carrier kind, and
+// `netOf(kind)` what one carrier holds on this trip), troops for a
+// reinforcement (m.load is troops per kind). No march yet has the whole limit.
+function marchRoom(castle, m, k, netOf = (kk) => loadOf(kk)) {
+  const limit = limitOf(castle);
+  if (k) {
+    const on = m ? Object.values(unitsOf(m.carried, netOf)).reduce((t, v) => t + v, 0) : 0;
+    return Math.max(0, limit - on) * Math.max(0, netOf(k));
+  }
+  const on = m ? Object.values(m.load).reduce((t, v) => t + n(v), 0) : 0;
+  return Math.max(0, limit - on);
+}
+
+// One transport march, sized the way the client checks it: the carriers' hold
+// less the food the march carries for itself (netHold) must take the
+// resources. The plan already loads each line at netHold for the march as it
+// stood; this is the final count, with every troop of the march known. It only
+// cuts a load when a slower carrier joined a march already loaded, since that
+// slows the lot and every carrier then eats more on the way.
+//   parts   what the lines loaded, [{res, carrier, amount}]
+//   free    the carriers of each kind this march may take
+//   limit   the troops one march may take (rally.js marchTroopLimit)
+// Returns { troops, resources, trimmed }: what does not fit stays home.
+function sizeMarch({ parts, free, limit, fromXY, toXY, game, from = null }) {
+  const kinds = [...new Set(parts.filter((p) => p.amount > 0).map((p) => p.carrier))];
+  const net = {}, sum = {}, units = {};
+  for (const k of kinds) {
+    net[k] = netHold(k, fromXY, toXY, kinds, game, from);
+    sum[k] = parts.filter((p) => p.carrier === k).reduce((t, p) => t + p.amount, 0);
+    units[k] = net[k] > 0 ? Math.min(Math.ceil(sum[k] / net[k]), Math.max(0, Math.floor(n(free[k])))) : 0;
+  }
+  const total = Object.values(units).reduce((t, v) => t + v, 0);
+  if (total > limit) for (const k of kinds) units[k] = Math.floor(units[k] * limit / total);
+  const troops = {}, resources = {};
+  let trimmed = false;
+  for (const k of kinds) {
+    const hold = net[k] > 0 ? Math.floor(units[k] * net[k]) : 0;
+    const scale = sum[k] > hold ? hold / sum[k] : 1;
+    if (scale < 1) trimmed = true;
+    let used = 0;
+    const mine = parts.filter((x) => x.carrier === k);
+    mine.forEach((p, i) => {
+      // the last takes exactly the room left, so rounding loses nothing
+      const v = i === mine.length - 1 ? Math.min(p.amount, hold - used) : Math.floor(p.amount * scale);
+      if (v > 0) { resources[p.res] = n(resources[p.res]) + v; used += v; }
+    });
+    if (used > 0) troops[k] = Math.min(units[k], Math.ceil(used / net[k]));
+  }
+  return { troops, resources, trimmed };
+}
+
+// "12,000 transports" or "12,000 transports + 500 Scout"
+const carriersText = (troops) => {
+  const carriages = n(troops.carriage);
+  return Object.keys(troops).length === 1 && carriages ? `${fmt(carriages)} transports`
+    : Object.entries(troops).map(([k, v]) => `${fmt(v)} ${k === 'carriage' ? 'transports' : troopName(k)}`).join(' + ');
+};
 
 // ------------------------------------------------------------------- parsers
 
@@ -279,9 +402,26 @@ function parseRequest(args, troops, { push = false } = {}) {
       if (v === '*') out.below = null;
       else if (v === true || NUM(v) === null) errs.push(`/below needs an amount (${AMOUNT_HELP}), e.g. /below:5m`);
       else out.below = NUM(v);
+    } else if (k === 'steps' && !push && !troops) {
+      // OTTObot's: even the account out level by level, the poorest first
+      const parts = v === true ? [] : String(v).split(',').map((s) => s.trim());
+      const vals = parts.map((s) => (s === '*' ? null : NUM(s)));
+      if (!parts.length || parts.some((s) => !s) || vals.some((x) => x === null || !(x > 0))) {
+        errs.push(`/steps needs amounts joined by commas (5m, 200k, 1b — not *), e.g. /steps:1000b,10000b`);
+      } else if (vals.some((x, i) => i > 0 && x <= vals[i - 1])) {
+        errs.push('/steps must go up: each step more than the one before');
+      } else {
+        out.steps = vals;
+      }
     } else {
-      errs.push(`unknown switch /${k} — ${push ? '/slots:N' : '/slots:N or /below:<amount>'}`);
+      errs.push(`unknown switch /${k} — ${push ? '/slots:N' : troops ? '/slots:N or /below:<amount>' : '/slots:N, /below:<amount> or /steps:<amount>,<amount>'}`);
     }
+  }
+  if (out.steps) {
+    // the last level is localAmount, where the line fills to
+    if (out.local == null) errs.push('/steps needs a localAmount: the steps lead up to it, the last level');
+    else if (out.steps[out.steps.length - 1] >= out.local) errs.push(`/steps must all be under localAmount ${short(out.local)}, the last level`);
+    if (out.below !== undefined) errs.push('/steps and /below together: the steps already say when the city asks — use one of them');
   }
   return { ...out, ok: errs.length === 0, errors: errs };
 }
@@ -380,11 +520,17 @@ function describeRequest(g) {
   const what = g.name === 'requesttroops' ? troopName(g.troop) : g.type;
   const bits = [g.local == null ? 'whatever this city holds' : `while under ${amt(g.local)}, never past it`];
   if (g.below != null) bits.push(`starting only under ${amt(g.below)}`);
-  bits.push(`senders keep ${amt(g.remote)}`);
+  if (g.steps) {
+    bits.push(`in steps, the poorest city first: ${[...g.steps, g.local].map(amt).join(', then ')}`
+      + ' — at each level cities under it take from cities over it, never below it,'
+      + ' and a level waits while a city is still under a lower one that another city can fill;'
+      + ' the richest free city sends');
+  }
+  bits.push(`senders keep ${amt(g.remote)}${g.steps ? ' at the last level' : ''}`);
   const lowNote = g.local != null ? ` (less once under half of ${amt(g.local)})` : '';
-  if (g.minBatch == null && g.maxBatch == null) bits.push('any batch size');
+  if (g.minBatch == null && g.maxBatch == null) bits.push('any batch size, up to what one march carries');
   else if (g.minBatch == null) bits.push(`at most ${amt(g.maxBatch)} per send`);
-  else if (g.maxBatch == null) bits.push(`at least ${amt(g.minBatch)} per send${lowNote}`);
+  else if (g.maxBatch == null) bits.push(`at least ${amt(g.minBatch)} per send, up to what one march carries${lowNote}`);
   else bits.push(`${amt(g.minBatch)} to ${amt(g.maxBatch)} per send${lowNote}`);
   if (g.carrier && g.carrier !== 'carriage') bits.push(`carried by ${troopName(g.carrier)}`);
   if (g.slots > 1) bits.push(`${g.slots} missions at a time`);
@@ -495,6 +641,9 @@ function transferPlan(ctx, state, game) {
   const goalsOf = ctx.goalsOf || (() => null);
   const book = ctx.rally || R.rallyBook({ game, armies: ctx.selfArmies, goalsOf });
   const hereXY = game.castleXY(here);
+  // what one carrier of kind k holds from sender s to here, in the march s has
+  // planned so far (netHold: its hold less its own march food)
+  const netFrom = (s, k) => netHold(k, game.castleXY(s.castle), hereXY, Object.keys(s.march.r ? s.march.r.carried : {}), game, s.castle);
   // wiki WarTown: a war town sends no resource or troop transports (NEAT holds
   // KeepResource/SendResource/KeepTroop/SendTroop there). The engine answers
   // for any city, its console War Town Mode included. This city being a war
@@ -516,7 +665,7 @@ function transferPlan(ctx, state, game) {
     const xy = game.castleXY(c);
     const s = {
       castle: c, dist: xy && hereXY ? Math.hypot(xy.x - hereXY.x, xy.y - hereXY.y) : Infinity,
-      stock, troops, goals: goalsOf(c) || [], march: { r: null, t: null },
+      stock, troops, troops0: { ...troops }, goals: goalsOf(c) || [], march: { r: null, t: null },
     };
     senders.set(cid, s);
     return s;
@@ -525,9 +674,66 @@ function transferPlan(ctx, state, game) {
 
   // The level at which a sender's own line for the same thing would start
   // asking for more: its /below, else its localAmount (* = none). Taking it
-  // under that would only have it ask for the lot back.
-  const ownFloor = (s, goal, key, keyOf) => Math.max(0, ...goalsNamed(s.goals, goal)
-    .filter((g) => keyOf(g) === key).map(triggerOf).filter((v) => v != null));
+  // under that would only have it ask for the lot back. A /steps line is left
+  // out: at each level it takes only from cities over that level and never
+  // takes them under it, so nothing it moves can come back (a stepped line
+  // counted here would keep every city under its top level from sending).
+  const floorOf = (goals, goal, key, keyOf) => Math.max(0, ...goalsNamed(goals, goal)
+    .filter((g) => keyOf(g) === key && !g.steps).map(triggerOf).filter((v) => v != null));
+  const ownFloor = (s, goal, key, keyOf) => floorOf(s.goals, goal, key, keyOf);
+
+  // ---- /steps: which level a stepped line works at this pass, the same for
+  // every city that has the line. The lowest level L at which some city with
+  // the line is short (under L by a minimum batch, or at half of L or less) and
+  // some other city holds more than L, over its own floor, by a minimum batch.
+  // Nobody short anywhere: null (every city is at the top). Short cities but no
+  // city over the level to fill them: { level: null } — then no city is over
+  // any higher level either, so nothing can move.
+  const linesAt = (c) => (game.castleId(c) === hereId ? ctx.goals : goalsOf(c)) || [];
+  const comingAt = new Map();
+  const haveAt = (c, k) => {
+    const id = game.castleId(c);
+    if (!comingAt.has(id)) comingAt.set(id, resourcesComing(c, book));
+    return resOf(c, k) + n(comingAt.get(id)[k]);
+  };
+  const stockAt = (c, k) => Math.max(0, resOf(c, k) - n(book.committed(c).resources[k]));
+  const ladderOf = (g) => [...g.steps, g.local];
+  const stepCache = new Map();
+  function stepFor(g, k) {
+    const ladder = ladderOf(g), sig = `${k}:${ladder.join(',')}`;
+    if (stepCache.has(sig)) return stepCache.get(sig);
+    const min = Math.max(1, n(g.minBatch));
+    const all = game.castles || [];
+    const askers = all.filter((c) => goalsNamed(linesAt(c), 'requestresources')
+      .some((x) => x.ok !== false && x.type === k && x.steps && ladderOf(x).join(',') === ladder.join(',')));
+    let out = null;
+    for (const L of ladder) {
+      const low = askers.map((c) => ({ c, have: haveAt(c, k) }))
+        .filter(({ have }) => have < L && (L - have >= min || have <= L / 2))
+        .sort((a, b) => a.have - b.have)[0];
+      if (!low) continue;
+      const donor = all.some((c) => c !== low.c && !warTownOf(c)
+        && stockAt(c, k) - Math.max(L, floorOf(linesAt(c), 'requestresources', k, (x) => x.type)) >= min);
+      out = { level: donor ? L : null, at: L, top: L === g.local, short: low.c.name, shortHave: low.have };
+      break;
+    }
+    stepCache.set(sig, out);
+    return out;
+  }
+  // The levels a line works at this pass: { local, remote, below }. A stepped
+  // line works at its step (null: nothing to do this pass, `why` says why).
+  function levelsFor(g, key, have, spec) {
+    if (!g.steps || spec.kind !== 'r') return { local: g.local, remote: g.remote, below: g.below };
+    const st = stepFor(g, key);
+    if (!st) return { why: null };                                   // everyone at the top
+    if (st.level == null) {
+      return { why: have < g.local ? `nothing to even out — ${st.short} holds ${short(st.shortHave)}, and no city holds over ${short(st.at)} to give` : null };
+    }
+    if (have >= st.level) {
+      return { why: have < g.local ? `waiting — the ${short(st.level)} step first (${st.short} holds ${short(st.shortHave)})` : null };
+    }
+    return { local: st.level, remote: st.top ? g.remote : st.level, below: undefined, step: st.level };
+  }
 
   // One pass over one goal's lines. `spec` says what is being moved.
   function serve(rules, spec) {
@@ -541,22 +747,34 @@ function transferPlan(ctx, state, game) {
       const home = spec.have(key);
       const coming = spec.coming(key) + n(planned[key]);
       const have = home + coming;
+      // the levels this pass: the line's own, or its step (/steps)
+      const lv = levelsFor(g, key, have, spec);
+      const headOf = (to) => `${spec.name(key)} ${short(home)}${coming ? ` + ${short(coming)} coming` : ''}${to != null ? ` < ${short(to)}` : ''}`;
+      if (lv.why !== undefined) { if (lv.why) lines.push(`${headOf(g.local)}: ${lv.why}`); continue; }
       // wiki: "You must have BELOW this amount in order to have a request sent"
-      if (g.local != null && have >= g.local) continue;
-      if (g.below != null && have >= g.below) continue;        // /below: not yet
-      // never past localAmount, and no more than maxBatch at a time
-      const want = Math.floor(Math.min(g.local == null ? Infinity : g.local - have, g.maxBatch == null ? Infinity : g.maxBatch));
+      if (lv.local != null && have >= lv.local) continue;
+      if (lv.below != null && have >= lv.below) continue;        // /below: not yet
+      // never past localAmount, and no more than maxBatch at a time. No maxBatch
+      // (*), or one bigger than a march takes, is one full march: `carry` below.
+      let want = Math.floor(Math.min(lv.local == null ? Infinity : lv.local - have, g.maxBatch == null ? Infinity : g.maxBatch));
+      // Food never past 950b in a city, counting what is on its way: it resets
+      // to 0 at 1t (EVONY-RULES.md §3). Whatever a line says.
+      if (spec.kind === 'r' && key === 'food' && want > FOOD_CAP - have) {
+        want = Math.floor(FOOD_CAP - have);
+        if (!(want > 0)) { lines.push(`${headOf(lv.local)}: held — food never goes past ${short(FOOD_CAP)} in a city (it resets to 0 at 1t)`); continue; }
+      }
       if (!(want > 0)) continue;
       // wiki: 50% or less of what the city should hold is critically low, and
       // then the minimum batch no longer holds a smaller send back
-      const critical = g.local != null && have <= g.local / 2;
+      const critical = lv.local != null && have <= lv.local / 2;
       const minBatch = g.minBatch != null && !critical ? g.minBatch : 0;
-      const trigger = triggerOf(g);
-      const head = `${spec.name(key)} ${short(home)}${coming ? ` + ${short(coming)} coming` : ''}${trigger != null ? ` < ${short(trigger)}` : ''}`
+      const trigger = lv.below !== undefined ? lv.below : lv.local;
+      const head = `${headOf(trigger)}${lv.step != null && lv.step !== g.local ? ` (step ${short(lv.step)} of ${short(g.local)})` : ''}`
         + `${critical && g.minBatch != null ? ' (critically low)' : ''}`;
       // wiki: a minimum batch that would put this city over localAmount waits
       if (minBatch > want) {
-        lines.push(`${head}: waiting — only ${short(want)} fits under ${short(g.local)}, the minimum batch is ${short(minBatch)}`);
+        const fillTo = Math.min(lv.local == null ? Infinity : lv.local, spec.kind === 'r' && key === 'food' ? FOOD_CAP : Infinity);
+        lines.push(`${head}: waiting — only ${short(want)} fits under ${short(fillTo)}, the minimum batch is ${short(minBatch)}`);
         continue;
       }
 
@@ -576,26 +794,54 @@ function transferPlan(ctx, state, game) {
           // the one to send, the line waits for it rather than calling on a
           // city farther away.
           busy = book.between(c, here.fieldId, spec.mission) >= g.slots ? g.slots : 0;
+          // a stepped line doesn't wait: the next richest city sends instead
+          if (busy && lv.step != null) { why.push(`${c.name}'s last mission here is not back yet`); continue; }
           const r = busy ? null : book.room(c, spec.kind, { planned: { total: plannedFrom(s) } });
           if (r && r.room <= 0) { why.push(`${c.name} ${r.why}`); continue; }
         }
         // wiki: "The bot will not put the sending city below the remote amount"
-        const floor = Math.max(g.remote == null ? 0 : g.remote, ownFloor(s, spec.goal, key, spec.keyOf));
+        const floor = Math.max(lv.remote == null ? 0 : lv.remote, ownFloor(s, spec.goal, key, spec.keyOf));
         const spare = Math.floor(spec.stock(s, key) - floor);
         if (spare <= 0) { why.push(`${c.name} holds ${short(spec.stock(s, key))}, keeps ${short(floor)}`); continue; }
         const carry = spec.carry(s, g);
-        if (carry <= 0) { why.push(`${c.name} has no spare ${spec.carrierName(g)}`); continue; }
+        if (carry <= 0) {
+          const k = spec.kind === 'r' ? (g.carrier || 'carriage') : null;
+          const starved = k && netFrom(s, k) <= 0;
+          const full = !starved && s.march[spec.kind] && marchRoom(c, s.march[spec.kind], k, (kk) => netFrom(s, kk)) <= 0;
+          why.push(starved ? `${c.name} is too far for ${many(spec.carrierName(g))} to carry anything: they would eat it all on the way (${s.dist.toFixed(1)} tiles)`
+            : full ? `${c.name}'s march here is full (${fmt(limitOf(c))} troops, its Rally Spot's limit)` : `${c.name} has no spare ${spec.carrierName(g)}`);
+          continue;
+        }
         const deliver = Math.min(want, spare, carry);
         // wiki: a minimum batch that would put the sender under remoteAmount waits
         if (deliver < minBatch) {
           why.push(`${c.name} can send ${short(deliver)}, under the ${short(minBatch)} minimum batch`);
           continue;
         }
-        cands.push({ s, busy, deliver });
+        // Lowest first (the user, 2026-09-18): a sender leaves this for another of
+        // our cities that holds LESS of it, is asking for it, and that it could
+        // send to right now. A sender that can't serve the needier city (a mission
+        // to it still out, too far, nothing over that line's floor) doesn't wait.
+        const nd = spec.needier ? spec.needier(s, key, have) : null;
+        if (nd) { why.push(`${c.name} leaves its ${spec.name(key)} for ${nd.name}, which holds less (${short(nd.have)})`); continue; }
+        cands.push({ s, busy, deliver, stock: spec.stock(s, key), spare });
       }
-      // the nearest that can send it all; failing that, whoever can send most
-      const full = cands.filter((x) => x.deliver >= want).sort((a, b) => a.s.dist - b.s.dist)[0];
-      const best = full || cands.sort((a, b) => b.deliver - a.deliver || a.s.dist - b.s.dist)[0];
+      // the nearest that can send it all; failing that, whoever can send most.
+      // A stepped line takes from the richest (the user, 2026-09-19): evening
+      // out, the city with the most gives first — the richest of those that
+      // can send it all, else of those that can send within 10% of the most
+      // any can (a march's own food differs a little with the distance).
+      let full, best;
+      if (lv.step != null) {
+        const most = Math.max(0, ...cands.map((x) => x.deliver));
+        const able = cands.filter((x) => x.deliver >= want);
+        full = able.length ? able[0] : null;
+        best = (able.length ? able : cands.filter((x) => x.deliver >= most * 0.9))
+          .sort((a, b) => b.stock - a.stock || a.s.dist - b.s.dist)[0];
+      } else {
+        full = cands.filter((x) => x.deliver >= want).sort((a, b) => a.s.dist - b.s.dist)[0];
+        best = full || cands.sort((a, b) => b.deliver - a.deliver || a.s.dist - b.s.dist)[0];
+      }
       if (!best) {
         lines.push(`${head}: ${pool.length ? `no sender — ${why.slice(0, 3).join('; ')}` : `no city matches "${g.target}"`}`);
         continue;
@@ -606,12 +852,17 @@ function transferPlan(ctx, state, game) {
         continue;
       }
       const s = best.s;
-      const m = (s.march[spec.kind] = s.march[spec.kind] || { load: {}, carried: {}, slots: g.slots });
+      const m = (s.march[spec.kind] = s.march[spec.kind] || { load: {}, carried: {}, parts: [], slots: g.slots });
       m.load[key] = n(m.load[key]) + best.deliver;
-      if (spec.carrierOf) { const ck = spec.carrierOf(g); m.carried[ck] = n(m.carried[ck]) + best.deliver; }
+      if (spec.carrierOf) {
+        const ck = spec.carrierOf(g);
+        m.carried[ck] = n(m.carried[ck]) + best.deliver;
+        m.parts.push({ res: key, carrier: ck, amount: best.deliver });
+      }
       spec.take(s, key, best.deliver);
       planned[key] = n(planned[key]) + best.deliver;
-      lines.push(`${head}: ${short(best.deliver)} from ${s.castle.name} (${s.dist.toFixed(1)} tiles${full ? '' : ', all it can spare'})`);
+      const why2 = best.deliver >= want ? '' : best.deliver >= best.spare ? ', all it can spare' : ', what one march carries';
+      lines.push(`${head}: ${short(best.deliver)} from ${s.castle.name} (${s.dist.toFixed(1)} tiles${why2})`);
     }
     return lines;
   }
@@ -620,23 +871,69 @@ function transferPlan(ctx, state, game) {
 
   if (resRules.length) {
     const coming = resourcesComing(here, book);
-    const lines = serve(resRules, {
+    // Stepped lines go poorest first ACROSS resources too (2026-09-19): each
+    // sender makes one trip to this city at a time, so the line served first
+    // takes every sender that comes free, and in line order gold (first, and in
+    // trillions) left iron (last) nothing. So the lowest step goes first, then
+    // the emptiest (what the city holds / its step); lines without /steps keep
+    // their place, ahead of them.
+    const rankOf = (g) => {
+      if (!g.steps || g.ok === false) return null;
+      const st = stepFor(g, g.type);
+      if (!st || st.level == null) return [Infinity, 1];
+      return [ladderOf(g).indexOf(st.level), (resOf(here, g.type) + n(coming[g.type])) / st.level];
+    };
+    const ranked = resRules.map((g, i) => ({ g, i, r: rankOf(g) }));
+    const ordered = [...ranked.filter((x) => !x.r), ...ranked.filter((x) => x.r)
+      .sort((a, b) => a.r[0] - b.r[0] || a.r[1] - b.r[1] || a.i - b.i)].map((x) => x.g);
+    const lines = serve(ordered, {
       goal: 'requestresources', kind: 'r', mission: C.MISSION.transport,
       keyOf: (g) => g.type, name: (k) => k,
       have: (k) => resOf(here, k),
       coming: (k) => n(coming[k]),
       stock: (s, k) => s.stock[k],
       take: (s, k, v) => { s.stock[k] -= v; },
+      // another city of ours needier than this one, for this sender (see serve)
+      needier: (s, k, haveHere) => {
+        if (!ctx.goalsOf) return null;
+        const sXY = game.castleXY(s.castle);
+        // a stepped line asks at its step this pass, and its senders keep that step
+        const levels = (g) => {
+          if (!g.steps) return { trig: triggerOf(g), remote: g.remote };
+          const st = stepFor(g, k);
+          return st && st.level != null ? { trig: st.level, remote: st.top ? g.remote : st.level } : { trig: null };
+        };
+        for (const o of others) {
+          if (o === s.castle) continue;
+          const oHave = haveAt(o, k);
+          if (!(oHave < haveHere)) continue;
+          const lines = goalsNamed(goalsOf(o) || [], 'requestresources').filter((g) => g.type === k && g.ok !== false
+            && levels(g).trig != null && oHave < levels(g).trig && sendersFor(g.target, [s.castle], game).length);
+          if (!lines.length) continue;
+          const ok = lines.some((g) => {
+            if (book.between(s.castle, o.fieldId, C.MISSION.transport) >= (g.slots || 1)) return false;
+            if (netHold(g.carrier || 'carriage', sXY, game.castleXY(o), [], game, s.castle) <= 0) return false;
+            const r = levels(g).remote;
+            const floor = Math.max(r == null ? 0 : r, ownFloor(s, 'requestresources', k, (x) => x.type));
+            return s.stock[k] - floor > 0;
+          });
+          if (ok) return { name: o.name, have: oHave };
+        }
+        return null;
+      },
       // transports unless the line names another troopType
       carrierOf: (g) => g.carrier || 'carriage',
       carrierName: (g) => (!g.carrier || g.carrier === 'carriage' ? 'transports' : troopName(g.carrier)),
-      // what the sender's spare carriers of this line's kind still hold, after
-      // what this pass has loaded on them already
+      // what the sender's spare carriers of this line's kind still hold on the
+      // trip here, their own march food taken off, after what this pass has
+      // loaded on them already
       carry: (s, g) => {
         const k = g.carrier || 'carriage';
+        const net = netFrom(s, k);
+        if (net <= 0) return 0;
         const have = n(s.troops[k]);
         const loaded = s.march.r ? n(s.march.r.carried[k]) : 0;
-        return (have - reserveOf(have)) * loadOf(k) - loaded;
+        return Math.min((have - reserveOf(have)) * net - loaded, marchRoom(s.castle, s.march.r, k, (kk) => netFrom(s, kk)));
       },
     });
     notes.push(`requestresources: ${lines.length ? lines.join('; ') : 'nothing short'}`);
@@ -644,8 +941,8 @@ function transferPlan(ctx, state, game) {
   // carriers that go with this pass's resources are not there to be requested
   for (const s of senders.values()) {
     if (!s.march.r) continue;
-    for (const [k, amount] of Object.entries(s.march.r.carried)) {
-      s.troops[k] = Math.max(0, n(s.troops[k]) - Math.ceil(amount / loadOf(k)));
+    for (const [k, units] of Object.entries(unitsOf(s.march.r.carried, (kk) => netFrom(s, kk)))) {
+      s.troops[k] = Math.max(0, n(s.troops[k]) - units);
     }
   }
 
@@ -660,34 +957,45 @@ function transferPlan(ctx, state, game) {
       stock: (s, k) => n(s.troops[k]),
       take: (s, k, v) => { s.troops[k] = n(s.troops[k]) - v; },
       carrierName: () => 'troops',
-      carry: () => Infinity,
+      carry: (s) => marchRoom(s.castle, s.march.t),
     });
-    notes.push(`requesttroops: ${lines.length ? lines.join('; ') : 'nothing short'}`);
+    notes.push(`requesttroops:${lines.length ? lines.join('; ') : 'nothing short'}`);
   }
 
   const actions = [];
   for (const s of [...senders.values()].sort((a, b) => a.dist - b.dist)) {
     const dist = s.dist.toFixed(1);
     if (s.march.r) {
-      const resources = s.march.r.load;
-      // each carrier kind takes what its lines loaded, a whole unit at a time
-      const troops = {};
-      for (const [k, amount] of Object.entries(s.march.r.carried)) {
-        if (amount > 0) troops[k] = Math.ceil(amount / loadOf(k));
+      // the carriers the plan loaded, and any spare left once the pass is done
+      // (a quarter still stays home), for the march's own food
+      const free = {};
+      for (const [k, units] of Object.entries(unitsOf(s.march.r.carried, (kk) => netFrom(s, kk)))) {
+        free[k] = units + Math.max(0, n(s.troops[k]) - reserveOf(n(s.troops0[k])));
       }
-      const carriages = n(troops.carriage);
-      const carriers = Object.keys(troops).length === 1 && carriages
-        ? `${fmt(carriages)} transports`
-        : Object.entries(troops).map(([k, v]) => `${fmt(v)} ${k === 'carriage' ? 'transports' : troopName(k)}`).join(' + ');
-      actions.push({
-        kind: 'transport', from: s.castle, to: here, resources, carriages, troops, distance: s.dist,
-        rally: {
-          from: s.castle, kind: 'r', missionType: C.MISSION.transport, targetFieldId: here.fieldId,
-          pairLimit: s.march.r.slots, resources, troops,
-        },
-        label: `pull ${Object.entries(resources).map(([k, v]) => `${fmt(v)} ${k}`).join(' + ')} from ${s.castle.name} `
-          + `(${dist} tiles, ${carriers})`,
-      });
+      const sized = sizeMarch({ parts: s.march.r.parts, free, limit: limitOf(s.castle), fromXY: game.castleXY(s.castle), toXY: hereXY, game, from: s.castle });
+      const { troops, resources } = sized;
+      if (!Object.keys(resources).length) {
+        notes.push(`${s.castle.name}: nothing left to carry once the march's own food is on board (${dist} tiles)`);
+      } else {
+        // the hold was counted at base load: say so, it halves what a march takes
+        if (!loadSkillOf(game, s.castle)) {
+          notes.push(`${s.castle.name}: its Logistics bonus isn't read yet — carriers counted at their base load (a transport ${fmt(LOAD)}), so this march takes less than it could; the send asks the server for it`);
+        }
+        if (sized.trimmed) {
+          notes.push(`${s.castle.name}: cut to ${Object.entries(resources).map(([k, v]) => `${short(v)} ${k}`).join(' + ')}, what ${carriersText(troops)} hold with the march's own food on board`);
+        }
+        const carriages = n(troops.carriage);
+        const carriers = carriersText(troops);
+        actions.push({
+          kind: 'transport', from: s.castle, to: here, resources, carriages, troops, distance: s.dist,
+          rally: {
+            from: s.castle, kind: 'r', missionType: C.MISSION.transport, targetFieldId: here.fieldId,
+            pairLimit: s.march.r.slots, resources, troops,
+          },
+          label: `pull ${Object.entries(resources).map(([k, v]) => `${fmt(v)} ${k}`).join(' + ')} from ${s.castle.name} `
+            + `(${dist} tiles, ${carriers})`,
+        });
+      }
     }
     if (s.march.t) {
       const troops = s.march.t.load;
@@ -796,6 +1104,15 @@ function pushPlan(ctx, state, game) {
   for (const k of RES_KEYS) stock[k] = Math.max(0, resOf(here, k) - n(sent.resources[k]));
   const home = {};
   for (const [k, v] of Object.entries(here.troop || {})) home[k] = Math.max(0, n(v) - n(sent.troops[k]));
+  const home0 = { ...home };
+  const hereXY = game.castleXY(here);
+  const xyOf = (recv) => (recv.castle ? game.castleXY(recv.castle) : C.fieldIdToCoords(recv.fieldId));
+  // what one carrier of kind k holds on the trip to recv, in the march planned
+  // there so far (netHold: its hold less its own march food)
+  const netTo = (recv, m, k) => netHold(k, hereXY, xyOf(recv), Object.keys(m ? m.carried : {}), game, here);
+  // carriers of kind k the transports planned so far take, to every receiver
+  const unitsUsed = (k) => [...marches.values()]
+    .reduce((t, x) => t + (x.r ? n(unitsOf(x.r.carried, (kk) => netTo(x.recv, x.r, kk))[k]) : 0), 0);
 
   // Never below the level at which this city's own request line for the same
   // thing would ask for it back (its /below, else its localAmount).
@@ -853,6 +1170,8 @@ function pushPlan(ctx, state, game) {
         }
         let cap = item.remote == null ? Infinity : item.remote;
         if (recv.byAny) cap = Math.min(cap, receiverCeiling(goalsOf(recv.castle), key, spec.kind === 't'));
+        // food never past 950b in a city of ours (it resets to 0 at 1t), whatever the line says
+        if (res && key === 'food' && !recv.foreign) cap = Math.min(cap, FOOD_CAP);
         const have = recv.foreign ? 0 : spec.haveAt(recv, key) + n((plannedTo[spec.kind].get(recv.fieldId) || {})[key]);
         // wiki: "It must have BELOW this amount in order to send some"
         if (have >= cap) continue;
@@ -874,8 +1193,22 @@ function pushPlan(ctx, state, game) {
           const r = book.room(here, spec.kind, { planned: { total: planned.r + planned.t, kind: planned[spec.kind] } });
           if (r.room <= 0) { if (!why.includes(r.why)) why.push(r.why); continue; }
         }
-        const carry = spec.carry(item);
-        if (carry <= 0) { why.push(`no spare ${spec.carrierName(item)}`); break; }
+        const carry = spec.carry(item, m && m[spec.kind], recv);
+        if (carry <= 0) {
+          const k = spec.kind === 'r' ? (item.carrier || 'carriage') : null;
+          // too far for this carrier to feed itself and carry anything: a nearer receiver may still get some
+          if (k && netTo(recv, m && m.r, k) <= 0) {
+            why.push(`${recv.name} is too far for ${many(spec.carrierName(item))} to carry anything: they would eat it all on the way (${recv.dist.toFixed(1)} tiles)`);
+            continue;
+          }
+          // a march this pass has filled: the next receiver gets its own
+          if (m && m[spec.kind] && marchRoom(here, m[spec.kind], k, (kk) => netTo(recv, m[spec.kind], kk)) <= 0) {
+            why.push(`${recv.name}: the march there is full (${fmt(limitOf(here))} troops, this city's Rally Spot limit)`);
+            continue;
+          }
+          why.push(`no spare ${spec.carrierName(item)}`);
+          break;
+        }
         const deliver = Math.floor(Math.min(want, spare, carry));
         // wiki: a minimum batch that would put this city under localAmount, or
         // the receiver over remoteAmount, waits
@@ -886,11 +1219,12 @@ function pushPlan(ctx, state, game) {
           continue;
         }
         if (!m) { m = { recv, r: null, t: null }; marches.set(recv.fieldId, m); }
-        if (!m[spec.kind]) { m[spec.kind] = { load: {}, carried: {}, slots: item.slots }; planned[spec.kind]++; }
+        if (!m[spec.kind]) { m[spec.kind] = { load: {}, carried: {}, parts: [], slots: item.slots }; planned[spec.kind]++; }
         m[spec.kind].load[key] = n(m[spec.kind].load[key]) + deliver;
         if (spec.carrierOf) {
           const ck = spec.carrierOf(item);
           m[spec.kind].carried[ck] = n(m[spec.kind].carried[ck]) + deliver;
+          m[spec.kind].parts.push({ res: key, carrier: ck, amount: deliver });
           loaded[ck] = n(loaded[ck]) + deliver;
         }
         spec.take(key, deliver);
@@ -934,16 +1268,23 @@ function pushPlan(ctx, state, game) {
       },
       carrierOf: (item) => item.carrier || 'carriage',
       carrierName: (item) => (!item.carrier || item.carrier === 'carriage' ? 'transports' : troopName(item.carrier)),
-      carry: (item) => {
+      // what the spare carriers of this line's kind hold on the trip to recv,
+      // their own march food taken off: the carriers no march has taken yet,
+      // and the room left in the part-filled last one of this march
+      carry: (item, m, recv) => {
         const k = item.carrier || 'carriage';
+        const net = netTo(recv, m, k);
+        if (net <= 0) return 0;
         const have = n(home[k]);
-        return (have - reserveOf(have)) * loadOf(k) - n(loaded[k]);
+        const free = Math.max(0, have - reserveOf(have) - unitsUsed(k));
+        const slack = m ? n(unitsOf(m.carried, (kk) => netTo(recv, m, kk))[k]) * net - n(m.carried[k]) : 0;
+        return Math.min(free * net + Math.max(0, slack), marchRoom(here, m, k, (kk) => netTo(recv, m, kk)));
       },
     });
     notes.push(`${nm}: ${said.length ? said.join('; ') : 'nothing over what this city keeps'}`);
   }
   // carriers that go with this pass's resources are not there to be sent
-  for (const [k, amount] of Object.entries(loaded)) home[k] = Math.max(0, n(home[k]) - Math.ceil(amount / loadOf(k)));
+  for (const k of Object.keys(loaded)) home[k] = Math.max(0, n(home[k]) - unitsUsed(k));
 
   for (const [nm, lines] of byName('t')) {
     if (!offer.t.on) { notes.push(`${nm}: held — ${offer.t.why}`); continue; }
@@ -957,30 +1298,43 @@ function pushPlan(ctx, state, game) {
         return n(held.get(recv.fieldId)[k]);
       },
       carrierName: () => 'troops',
-      carry: () => Infinity,
+      carry: (item, m) => marchRoom(here, m),
     });
-    notes.push(`${nm}: ${said.length ? said.join('; ') : 'nothing over what this city keeps'}`);
+    notes.push(`${nm}:${said.length ? said.join('; ') : 'nothing over what this city keeps'}`);
   }
 
   const actions = [];
+  // carriers still free once every line has loaded (a quarter stays home),
+  // shared by the marches for the food each carries for itself
+  const pool = {};
+  for (const k of Object.keys(loaded)) pool[k] = Math.max(0, n(home[k]) - reserveOf(n(home0[k])));
   for (const { recv, r, t } of [...marches.values()].sort((a, b) => a.recv.dist - b.recv.dist)) {
     const to = recv.castle || { fieldId: recv.fieldId, name: recv.name };
     const dist = recv.dist.toFixed(1);
     if (r) {
-      const troops = {};
-      for (const [k, amount] of Object.entries(r.carried)) if (amount > 0) troops[k] = Math.ceil(amount / loadOf(k));
-      const carriages = n(troops.carriage);
-      const carriers = Object.keys(troops).length === 1 && carriages
-        ? `${fmt(carriages)} transports`
-        : Object.entries(troops).map(([k, v]) => `${fmt(v)} ${k === 'carriage' ? 'transports' : troopName(k)}`).join(' + ');
-      actions.push({
-        kind: 'transport', from: here, to, resources: r.load, carriages, troops, distance: recv.dist, foreign: recv.foreign,
-        rally: {
-          from: here, kind: 'r', missionType: C.MISSION.transport, targetFieldId: recv.fieldId,
-          pairLimit: r.slots, resources: r.load, troops,
-        },
-        label: `send ${Object.entries(r.load).map(([k, v]) => `${fmt(v)} ${k}`).join(' + ')} to ${recv.name} (${dist} tiles, ${carriers})`,
-      });
+      const free = {};
+      const plannedUnits = unitsOf(r.carried, (kk) => netTo(recv, r, kk));
+      for (const k of Object.keys(r.carried)) free[k] = n(plannedUnits[k]) + n(pool[k]);
+      const sized = sizeMarch({ parts: r.parts, free, limit: limitOf(here), fromXY: hereXY, toXY: xyOf(recv), game, from: here });
+      const { troops, resources } = sized;
+      for (const [k, v] of Object.entries(troops)) pool[k] = Math.max(0, n(pool[k]) - Math.max(0, v - n(plannedUnits[k])));
+      if (!Object.keys(resources).length) {
+        notes.push(`${recv.name}: nothing left to carry once the march's own food is on board (${dist} tiles)`);
+      } else {
+        if (sized.trimmed) {
+          notes.push(`${recv.name}: cut to ${Object.entries(resources).map(([k, v]) => `${short2(v)} ${k}`).join(' + ')}, what ${carriersText(troops)} hold with the march's own food on board`);
+        }
+        const carriages = n(troops.carriage);
+        const carriers = carriersText(troops);
+        actions.push({
+          kind: 'transport', from: here, to, resources, carriages, troops, distance: recv.dist, foreign: recv.foreign,
+          rally: {
+            from: here, kind: 'r', missionType: C.MISSION.transport, targetFieldId: recv.fieldId,
+            pairLimit: r.slots, resources, troops,
+          },
+          label: `send ${Object.entries(resources).map(([k, v]) => `${fmt(v)} ${k}`).join(' + ')} to ${recv.name} (${dist} tiles, ${carriers})`,
+        });
+      }
     }
     if (t) {
       actions.push({
@@ -1005,6 +1359,13 @@ const executors = {
   // `a.to` is one of our castles, or { fieldId } for another account's city
   // (a push to x,y); either way the target is its field.
   async transport(game, castle, a) {
+    // The plan had no Logistics figure for this city (loadSkillOf) and counted
+    // base loads. Ask for it the way the client does, with the castleId
+    // (Game.troopParams keeps it per city), so the next pass loads full
+    // marches. This march goes as planned: it fits either way.
+    if (a.from && !loadSkillOf(game, a.from) && typeof game.troopParams === 'function') {
+      try { await game.troopParams(game.castleId(a.from)); } catch { /* the next send asks again */ }
+    }
     const xy = game.castleXY(a.to);
     const bean = game.buildArmyBean({
       missionType: C.MISSION.transport, targetPoint: C.coordsToFieldId(xy.x, xy.y),
@@ -1032,5 +1393,5 @@ module.exports = {
   describePush,
   PUSH_GOALS,
   _internals: { parseRequest, parseKeep, troopDef, sendersFor, receiversFor, receiverCeiling, pushItems,
-    resourcesComing, troopsHeld, reserveOf, triggerOf, LOAD, short },
+    resourcesComing, troopsHeld, reserveOf, triggerOf, LOAD, short, sizeMarch, loadOf, loadSkillOf, netHold, FOOD_CAP },
 };

@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS account_latest (
   json      TEXT NOT NULL
 );
 
+-- Every hero the fleet has ever owned, so a prisoner one of our OWN accounts
+-- lost can never be released by the bot that holds it (EVONY-RULES.md section 5:
+-- releasing a captured hero from the captor's side LOSES it; the owner brings it
+-- home with a Stone of Finding instead). Rows are written by every console from
+-- its own roster and are NEVER deleted on capture -- a captured hero vanishes
+-- from its owner's roster, so only the remembered row still proves it was ours.
+CREATE TABLE IF NOT EXISTS fleet_heroes (
+  heroId    TEXT PRIMARY KEY,
+  accountId TEXT NOT NULL,
+  name      TEXT NOT NULL,
+  level     INTEGER,
+  firstSeen INTEGER NOT NULL,
+  lastSeen  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fleet_heroes_acct ON fleet_heroes(accountId);
+CREATE INDEX IF NOT EXISTS fleet_heroes_name ON fleet_heroes(name);
+
 -- Goals and scripts. Keyed per account so one account's "default" can no longer
 -- leak onto another's cities, which is what the flat goalstore.json did.
 CREATE TABLE IF NOT EXISTS goals (
@@ -661,6 +678,62 @@ const uptime = {
   prune(keepDays = 30) { run('DELETE FROM uptime WHERE at < ?', now() - keepDays * 86400000); },
 };
 
+// ------------------------------------------------------------ fleet heroes
+//
+// The fleet's own heroes, remembered forever, so no console ever releases a
+// prisoner that is one of OUR heroes. A hero captured by another player leaves
+// its owner's roster the moment it is taken, so "is it in some account's live
+// roster?" cannot answer the question -- only a remembered row can. Nothing
+// here deletes a hero; `forget` exists for an account that leaves the fleet.
+//
+// Written by every console from its own cities each time it snapshots
+// (snapshot.js heroIds), and read by goal-heroes captivesPlan before a release.
+const fleetHeroes = {
+  // `heroes` is [{id, name, level}] from ONE account's cities, prisoners left out.
+  seen(accountId, heroes) {
+    const t = now();
+    let written = 0;
+    for (const h of heroes || []) {
+      const id = h && h.id !== undefined && h.id !== null ? String(h.id) : null;
+      if (!id) continue;
+      run(`INSERT INTO fleet_heroes (heroId,accountId,name,level,firstSeen,lastSeen)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(heroId) DO UPDATE SET
+             accountId=excluded.accountId, name=excluded.name,
+             level=max(coalesce(fleet_heroes.level,0), coalesce(excluded.level,0)),
+             lastSeen=excluded.lastSeen`,
+        id, accountId, String(h.name || ''), n(h.level), t, t);
+      written++;
+    }
+    return written;
+  },
+
+  // The one row for this hero id, or null. This is the guard captivesPlan uses.
+  get(heroId) {
+    if (heroId === undefined || heroId === null) return null;
+    return one('SELECT * FROM fleet_heroes WHERE heroId = ?', String(heroId));
+  },
+
+  // Heroes of ours that ever carried this name (case-insensitive) -- the second
+  // guard, for the day a hero id is reused or a row was never written.
+  byName(name) {
+    return all('SELECT * FROM fleet_heroes WHERE lower(name) = lower(?)', String(name || ''));
+  },
+
+  // Which accounts have reported a roster, and when. A console refuses to
+  // release anything while an enabled account of the fleet has never reported
+  // (or has not for `staleMs`): with a gap in the register, a prisoner of ours
+  // could look like a stranger.
+  coverage() {
+    return all(`SELECT accountId, count(*) heroes, max(lastSeen) at
+                FROM fleet_heroes GROUP BY accountId`);
+  },
+
+  count() { return n(one('SELECT count(*) c FROM fleet_heroes').c) || 0; },
+
+  forget(accountId) { run('DELETE FROM fleet_heroes WHERE accountId = ?', accountId); },
+};
+
 // ----------------------------------------------------------------- players
 
 // --------------------------------------------------------------- registry
@@ -884,7 +957,7 @@ module.exports = {
   // Multi-tenant surface. Anything that touches customer data goes through
   // org(id) — see tenancy.js for why the unscoped handles below are not it.
   orgs: T.orgs, users: T.users, sessions: T.sessions, org: T.org,
-  accounts, snapshots, goals, engineState, mapCache, settings, uptime, players, registry,
+  accounts, snapshots, goals, engineState, mapCache, settings, uptime, players, registry, fleetHeroes,
   stats() {
     const t = (name) => n(one(`SELECT count(*) c FROM ${name}`).c) || 0;
     return {

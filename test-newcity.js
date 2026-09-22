@@ -8,9 +8,10 @@
 //     keeps them
 //   * the city registry learns of it at once, so buildnpc sees it mid-session
 //   * the account's new-city script runs once in it, through the console
-//   * every city runs the account's prepend goals, then its own, then the
-//     append goals; a later layer wins for config keys and singletons, and a
-//     parse error says which text it is in ("append line 3: …")
+//   * every city runs its own goals, then the account's prepend goals, then the
+//     append goals; an earlier layer wins for config keys and singletons (the
+//     user's order, not NEAT's), and a parse error says which text it is in
+//     ("append line 3: …")
 //   * engine state and reports are keyed by castle id, and state saved under a
 //     city NAME is moved over once
 // Offline: a temp database, a fake game, no socket.
@@ -282,28 +283,39 @@ t('outside the console (no runner) the script is not run, and the log says so', 
 });
 
 // ---------------------------------------------------------------------------
-section('global goals: prepend, the city\'s own, append');
+section('global goals: the city\'s own, prepend, append');
 
 const layered = (p, c, ap) => G.parseLayered({ prepend: p, city: c, append: ap });
 
-t('troop stages stack in load order: prepend first, then the city, then append', () => {
+t('troop stages stack in priority order: the city first, then prepend, then append', () => {
   const m = layered('troop a:1k', 'troop w:2k\ntroop p:3k', 'troop s:5');
   assert.deepStrictEqual(m.goals.filter((x) => x.name === 'troop').map((x) => `${x.source}:${x.raw}`),
-    ['prepend:troop a:1k', 'city:troop w:2k', 'city:troop p:3k', 'append:troop s:5']);
+    ['city:troop w:2k', 'city:troop p:3k', 'prepend:troop a:1k', 'append:troop s:5']);
 });
 
-t('config: a later layer wins per key (append over the city over prepend)', () => {
-  const m = layered('config npc:5,comfort:1,hero:1', 'config npc:10', 'config hero:0');
-  assert.deepStrictEqual(m.config, { npc: 10, comfort: 1, hero: 0 });
+t('config: an earlier layer keeps its key (the city over prepend over append)', () => {
+  const m = layered('config npc:5,comfort:1,hero:1', 'config npc:10', 'config hero:0,trade:1');
+  assert.deepStrictEqual(m.config, { npc: 10, comfort: 1, hero: 1, trade: 1 });
 });
 
-t('a singleton: the city\'s line overrides the prepend one, append overrides both', () => {
+t('a singleton: the city\'s line beats the prepend one, and the prepend\'s beats the append\'s', () => {
   let m = layered('comfortpolicy 10 20 popraise', 'comfortpolicy 15 16 popraise', null);
   assert.deepStrictEqual(m.goals.filter((x) => x.name === 'comfortpolicy').map((x) => x.source), ['city']);
   assert.strictEqual(m.goals.find((x) => x.name === 'comfortpolicy').everyMinMin, 15);
   m = layered('comfortpolicy 10 20 popraise', 'comfortpolicy 15 16 popraise', 'comfortpolicy 30 40 popraise');
-  assert.deepStrictEqual(m.goals.filter((x) => x.name === 'comfortpolicy').map((x) => x.source), ['append']);
+  assert.deepStrictEqual(m.goals.filter((x) => x.name === 'comfortpolicy').map((x) => x.source), ['city']);
+  m = layered('comfortpolicy 10 20 popraise', null, 'comfortpolicy 30 40 popraise');
+  assert.deepStrictEqual(m.goals.filter((x) => x.name === 'comfortpolicy').map((x) => x.source), ['prepend']);
+  assert.strictEqual(m.goals.find((x) => x.name === 'comfortpolicy').everyMinMin, 10);
+  m = layered(null, null, 'comfortpolicy 30 40 popraise');
   assert.strictEqual(m.goals.find((x) => x.name === 'comfortpolicy').everyMinMin, 30);
+});
+
+t('a script\'s goal lines still win over all three layers', () => {
+  const m = G.parseLayered({ prepend: 'config hero:1\ncomfortpolicy 10 20 popraise', city: 'config hero:2', append: null,
+    script: { base: 'saved', src: 'config hero:0\ncomfortpolicy 30 40 popraise' } });
+  assert.strictEqual(m.config.hero, 0);
+  assert.deepStrictEqual(m.goals.filter((x) => x.name === 'comfortpolicy').map((x) => `${x.source}:${x.everyMinMin}`), ['script:30']);
 });
 
 t('an override across layers is not an error; a repeat within one text still is', () => {
@@ -319,8 +331,8 @@ t('errors say which text they are in: "append line 3", "prepend line 1", and pla
   // r is NEAT's rolling logs since Step 9; ro is still no fortification at all
   const m = layered('bogus thing', 'troop zz:1', 'config comfort:1\n\nfortification ro:10');
   assert.deepStrictEqual(m.errors.map((e) => `${e.where}: ${e.error}`), [
-    'prepend line 1: unknown goal "bogus"',
     'line 1: TROOP: unknown troop code "zz"',
+    'prepend line 1: unknown goal "bogus"',
     'append line 3: FORTIFICATION: unknown fortification "ro"',
   ]);
   const note = G.layerNote(m);
@@ -350,7 +362,7 @@ t('the engine runs the layers from the database, and says in every city when a g
   const e = new Engine(g, () => {}, k.id);
   e.dryRun = true;
   const one = e.goalsFor(801, 'One');
-  assert.deepStrictEqual(one.goals.map((x) => x.raw), ['comfortpolicy 15 16 popraise', 'troop w:10', 'troop s:10']);
+  assert.deepStrictEqual(one.goals.map((x) => x.raw), ['troop w:10', 'comfortpolicy 15 16 popraise', 'troop s:10']);
   for (const c of g.castles) {
     const r = await e.focus(c);
     assert.ok(r.globals, `${c.name}: no plan note for the broken append line`);
@@ -535,7 +547,8 @@ t('prepend and append save, read back, and report errors with their text\'s name
   const k = acct('Charlie2');
   let r = G.saveText(a.goals, k.id, { which: 'prepend', src: 'config comfort:1\nnosuchgoal 1', save: true });
   assert.deepStrictEqual(r.errors.map((e) => `${e.where}: ${e.error}`), ['prepend line 2: unknown goal "nosuchgoal"']);
-  has(r.note, 'before its own goals');
+  has(r.note, 'after its own goals');
+  has(r.note, 'a city\'s own line wins over them');
   assert.strictEqual(G.readText(a.goals, k.id, 'prepend').src, 'config comfort:1\nnosuchgoal 1');
   // rock is NEAT's rock fall (Step 9); ro is still no fortification at all
   r = G.saveText(a.goals, k.id, { which: 'append', src: 'troop s:1\n\nfortification ro:1', save: false });

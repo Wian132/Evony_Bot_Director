@@ -1,0 +1,52 @@
+date,weekday,from,to,play,resource,holiday_price,our_price,holiday_orders,our_orders,return_pct,min_after_maint,note
+2026-09-18,Fri,08:30:00,08:35:00,gold through stone,stone,150,150,3863,3367,87,-63,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,08:35:00,08:40:00,gold through stone,stone,100/150,150/100,2503,2021,81,-58,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,08:40:00,08:45:00,gold through stone,stone,100,100,2863,2146,75,-53,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,08:45:00,08:50:00,gold through stone,stone,100,100,2828,2161,76,-48,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,08:50:00,08:55:00,gold through stone,stone,100,100,3080,2003,65,-43,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,08:55:00,09:00:00,gold through stone,stone,100,,81,0,0,-38,run 1: gold through stone before maintenance. 08:30 bucket includes our first ~360 asks; 08:37:44 price 150->100; 08:54 stand-down
+2026-09-18,Fri,09:30:00,09:35:00,gold through stone,stone,150,150,2719,2464,91,-3,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,09:35:00,09:40:00,gold through stone,stone,150,150,3358,1476,44,2,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,09:40:00,09:45:00,gold through stone,stone,150,150,3163,1281,40,7,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,09:45:00,09:50:00,gold through stone,stone,150,150,3119,1154,37,12,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,09:50:00,09:55:00,gold through stone,stone,150,150,3559,2095,59,17,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,09:55:00,10:00:00,gold through stone,stone,150,150,2755,1002,36,22,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,10:00:00,10:05:00,gold through stone,stone,150,150,1409,40,3,27,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,10:05:00,10:10:00,gold through stone,stone,150,150,1730,11,1,32,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,10:10:00,10:15:00,gold through stone,stone,150,100/150,1017,350,34,37,run 2: gold through stone after maintenance (monitor in 09:32:55). 09:30 bucket includes ~360 first asks; 10:08:33 runway 1b->10b; 10:14:06 price 150->100 (that bucket is mostly relisting)
+2026-09-18,Fri,10:30:00,10:35:00,stone,stone,1,1,2834,2644,93,57,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,10:35:00,10:40:00,stone,stone,1,1,3593,2544,71,62,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,10:40:00,10:45:00,stone,stone,1,1,3725,2800,75,67,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,10:45:00,10:50:00,stone,stone,1,1,3478,2537,73,72,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,10:50:00,10:55:00,stone,stone,1,1,1827,872,48,77,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,10:55:00,11:00:00,stone,stone,1,1,2185,4279,196,82,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,11:00:00,11:05:00,stone,stone,1,1,1916,5367,280,87,run 3: stone buy-back at 1. 10:30 bucket includes ~370 first bids; over 100% = other players selling stone into our bids too (confirmed by gold spent)
+2026-09-18,Fri,11:05:00,11:10:00,stone,stone,1,1,2157,5361,249,92,"run 3: stone buy-back at 1, continued. Other players keep selling into our bids at 1 (2-3x the holiday side); confirmed by gold spent"
+2026-09-18,Fri,11:10:00,11:15:00,stone,stone,1,1,1148,3434,299,97,"run 3: stone buy-back at 1, continued. Other players keep selling into our bids at 1 (2-3x the holiday side); confirmed by gold spent"
+2026-09-18,Fri,11:15:00,11:20:00,stone,stone,1,1,1964,3225,164,102,"run 3: stone buy-back at 1, continued. Other players keep selling into our bids at 1 (2-3x the holiday side); confirmed by gold spent"
+2026-09-18,Fri,11:20:00,11:25:00,stone,stone,1,1,1944,4015,207,107,"run 3: stone buy-back at 1, continued. Other players keep selling into our bids at 1 (2-3x the holiday side); confirmed by gold spent"
+2026-09-18,Fri,11:45:00,11:50:00,stone,stone,1,1,1793,1085,61,132,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,11:50:00,11:55:00,stone,stone,1,1,2238,1472,66,137,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,11:55:00,12:00:00,stone,stone,1,1,2952,1723,58,142,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:00:00,12:05:00,stone,stone,1,1,2910,1826,63,147,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:05:00,12:10:00,stone,stone,1,1,2915,1685,58,152,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:10:00,12:15:00,stone,stone,1,1,2871,1599,56,157,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:15:00,12:20:00,stone,stone,1,1,472,231,49,162,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:20:00,12:25:00,stone,stone,1,1,1270,717,56,167,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:25:00,12:30:00,stone,stone,1,1,2862,1582,55,172,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:30:00,12:35:00,stone,stone,1,1,2697,1507,56,177,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:35:00,12:40:00,stone,stone,1,1,2745,1609,59,182,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:40:00,12:45:00,stone,stone,1,1,2575,1275,50,187,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:45:00,12:50:00,stone,stone,1,1,2783,1580,57,192,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:50:00,12:55:00,stone,stone,1,1,1403,832,59,197,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,12:55:00,13:00:00,stone,stone,1,1,2415,5660,234,202,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:00:00,13:05:00,stone,stone,1,1,1596,7027,440,207,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:05:00,13:10:00,stone,stone,1,1,1642,5823,355,212,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:10:00,13:15:00,stone,stone,1,1,1499,4128,275,217,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:15:00,13:20:00,stone,stone,1,1,1722,5519,320,222,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:20:00,13:25:00,stone,stone,1,1,495,1848,373,227,run 3: stone buy-back at 1 (automatic 30-min check)
+2026-09-18,Fri,13:25:00,13:30:00,stone,stone,1,1,2471,2808,114,232,"run 3: stone buy-back at 1, then iron from 13:41:50 (the user's call)"
+2026-09-18,Fri,13:30:00,13:35:00,stone,stone,1,1,2686,1507,56,237,"run 3: stone buy-back at 1, then iron from 13:41:50 (the user's call)"
+2026-09-18,Fri,13:35:00,13:40:00,stone,stone,1,1,1960,1072,55,242,"run 3: stone buy-back at 1, then iron from 13:41:50 (the user's call)"
+2026-09-18,Fri,13:40:00,13:45:00,stone,stone,1,1,961,477,50,247,"run 3: stone buy-back at 1, then iron from 13:41:50 (the user's call)"
+2026-09-18,Fri,13:40:00,13:45:00,iron,iron,1,1,1412,5922,419,247,"run 3: stone buy-back at 1, then iron from 13:41:50 (the user's call)"

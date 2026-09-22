@@ -400,6 +400,20 @@ test('hiding: /keep leaves a garrison behind', () => {
   assert.strictEqual(a.troops.archer, 30000, '50k archers minus the 20k kept');
 });
 
+test('hiding: one march takes at most 10,000 troops per Rally Spot level, the most valuable first', () => {
+  const castle = fakeCastle({ buildings: [{ typeId: 29, level: 5, positionId: 3, status: 0 }] });
+  const ctx = makeCtx({
+    castle, config: { hiding: 2 }, otherCastles: [secondCity()],
+    incoming: [wireArmy({ inMs: 90000, troop: { archer: '200000' } })],
+  });
+  const p = W.plans.hiding(ctx, {});
+  const a = p.actions[0];
+  // 62,500 at home; Rally Spot L5 takes 50,000: cavalry and archers go first
+  assert.deepStrictEqual(a.troops, { lightCavalry: 2000, archer: 48000 });
+  assert.ok(JSON.stringify(p).includes('12,500 troop(s) stay home: one march takes at most 50,000 (10,000 per Rally Spot level)'),
+    'the plan does not say how many stayed home');
+});
+
 test('hiding: /target overrides the destination', () => {
   const ctx = makeCtx({
     config: { hiding: 2 }, goals: [HP(['/target:412,90'])],

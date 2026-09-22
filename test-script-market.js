@@ -134,8 +134,7 @@ t('buy food 10000 6 is trade.newTrade {castleId, resType 0, tradeType 0, amount,
   const r = await runIn(w, 'buy food 10000 6');
   assert.deepStrictEqual(w.of('trade.newTrade').map(({ castleId, resType, tradeType, amount, price }) => ({ castleId, resType, tradeType, amount, price })),
     [{ castleId: 1, resType: 0, tradeType: 0, amount: 10000, price: '6' }]);
-  assert.match(r.text, /buy 10,000 food @ 6 from 9 · 60,300 gold with the 0\.5% fee/);
-  assert.match(r.text, /-> ok/);
+  assert.match(r.text, /buy 10,000 food @ 6 from 9 · 60,300 gold with the 0\.5% fee — placed/);
   assert.strictEqual(r.done, 1);
 });
 t('sell 2 12345 15.623456 offers stone at 15.63 and says why', async () => {
@@ -151,16 +150,55 @@ t('a dry run says what would go out and sends nothing', async () => {
   assert.strictEqual(w.of('trade.newTrade').length, 0);
   assert.strictEqual((r.text.match(/\[dry run\] not sent/g) || []).length, 2);
 });
+t('NEAT\'s -maxtrade start-up parameter: an order over it is not sent, one at it is', async () => {
+  const w = world();
+  const r = await runIn(w, 'sell food 1000 5\nsell food 500 5', { config: { maxtrade: '500' } });
+  const sent = w.of('trade.newTrade');
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].amount ?? (sent[0].data || {}).amount, 500);
+  assert.match(r.text, /not sent — more than one order may be for \(-maxtrade 500\)/);
+});
 t('market writes are paced by tradeGapMs', async () => {
   const w = world();
   await runIn(w, 'buy food 1 6\nsell food 1 8', { tradeGapMs: 60 });
   const [a, b] = w.of('trade.newTrade');
   assert.ok(b.at - a.at >= 55, 'gap ' + (b.at - a.at));
 });
+t('x5 on a sell line places five orders at once; $result is how many were placed', async () => {
+  const w = world();
+  const r = await runIn(w, 'sell stone 1 140 x5\necho "n=" + $result + " e=" + $error');
+  assert.strictEqual(w.of('trade.newTrade').length, 5);
+  assert.ok(w.of('trade.newTrade').every((s) => s.amount === 1 && s.price === '140' && s.tradeType === 1));
+  assert.match(r.text, /5 × sell 1 stone @ 140 from 9 · a 0\.7 gold fee \(0\.5%\) each — 5 of 5 placed/);
+  assert.match(r.text, /n=5 e=(null|)$/m);
+});
+t('a batch that is partly refused says how many went and why the rest did not', async () => {
+  const FULL = { ok: -38, errorMsg: '10 offers are allowed at level 10 Marketplace.' };
+  const w = world({ replies: { 'trade.newTrade': [{ ok: 1 }, FULL, FULL, { ok: 1 }, FULL] } });
+  const r = await runIn(w, 'buy food 1 6 *5\necho "n=" + $result + " e=" + $error');
+  assert.match(r.text, /2 of 5 placed \(3 refused: FAILED \(ok=-38\) - 10 offers are allowed at level 10 Marketplace\. — marketplace full/);
+  assert.match(r.text, /n=2 e=(null|)$/m, 'some went through: the line did its job');
+});
+t('a batch that is refused whole never ends the run, and says so once', async () => {
+  const FULL = { ok: -38, errorMsg: '10 offers are allowed at level 10 Marketplace.' };
+  const w = world({ replies: { 'trade.newTrade': Array.from({ length: 60 }, () => FULL) } });
+  const r = await runIn(w, 'sell stone 1 140 x5\nrepeat 12\necho "after"');
+  assert.strictEqual(w.of('trade.newTrade').length, 60);
+  assert.doesNotMatch(r.text, /refused 10 times in a row/);
+  assert.strictEqual((r.text.match(/none placed/g) || []).length, 1, 'the same refusal is said once');
+  assert.match(r.text, /after$/m);
+});
+t('x21 is refused before the script runs; a dry run of x5 sends nothing', async () => {
+  assert.match(parseErr('sell stone 1 140 x21'), /between x1 and x20/);
+  const w = world();
+  const r = await runIn(w, 'sell stone 1 140 x5', { dryRun: true });
+  assert.strictEqual(w.of('trade.newTrade').length, 0);
+  assert.match(r.text, /5 × sell 1 stone @ 140 from 9 · a 0\.7 gold fee \(0\.5%\) each when it is placed/);
+});
 t('a refusal sets $error, and a line that works clears it', async () => {
   const w = world({ replies: { 'trade.newTrade': [{ ok: -38, errorMsg: '10 offers are allowed at level 10 Marketplace.' }] } });
   const r = await runIn(w, 'buy food 1 6\necho "e1=" + $error\nbuy food 1 6\necho "e2=" + $error');
-  assert.match(r.text, /marketplace full \(10 offers max\) — this one is skipped/);
+  assert.match(r.text, /marketplace full \(10 offers max\); the script carries on/);
   assert.match(r.text, /e1=FAILED \(ok=-38\) - 10 offers are allowed/);
   assert.match(r.text, /e2=(null|)$/m);
 });
@@ -317,9 +355,7 @@ t('canceltrade cancels every open offer of this city; $result is how many', asyn
   const r = await runIn(w, 'canceltrade\necho "n=" + $result');
   assert.deepStrictEqual(w.of('trade.cancelTrade').map((s) => [s.castleId, s.tradeId]), [[1, 101], [1, 102], [1, 103]]);
   assert.strictEqual(w.castle.trades.length, 0);
-  assert.match(r.text, /cancel bid for 5,000 food @ 10 · id 101/);
-  assert.match(r.text, /cancel offer of 700 iron @ 33 \(200 filled\) · id 102/);
-  assert.match(r.text, /not the 0\.5% fee/);
+  assert.match(r.text, /cancelled 3 of 3 offer\(s\) in 9 · about 393 gold in fees stays paid/);
   assert.match(r.text, /n=3/);
 });
 t('execute "canceltrade " + city.tradesArray[0].id cancels the oldest only', async () => {
@@ -346,7 +382,7 @@ t('an id this city does not have is refused, naming its offers; one in another c
   assert.match(r.text, /FAILED: 9 has no open offer 555 — its offers are 101, 102, 103/);
   assert.match(r.text, /e=9 has no open offer 555/);
   assert.deepStrictEqual(w.of('trade.cancelTrade').map((s) => [s.castleId, s.tradeId]), [[2, 900]]);
-  assert.match(r.text, /id 900 · in Fla/);
+  assert.match(r.text, /cancelled 1 of 1 offer\(s\) in Fla/);
 });
 t('nothing to cancel is no error; a dry run lists what would go and sends nothing', async () => {
   const w = world();
@@ -361,7 +397,7 @@ t('nothing to cancel is no error; a dry run lists what would go and sends nothin
 t('a refused cancel sets $error; a missing push does not hang the line', async () => {
   const w = world({ trades: OFFERS(), replies: { 'trade.cancelTrade': [{ ok: -1, errorMsg: 'trade not found' }] } });
   const r = await runIn(w, 'canceltrade 101\necho "e=" + $error');
-  assert.match(r.text, /-> 101: FAILED \(ok=-1\) - trade not found/);
+  assert.match(r.text, /none of the 1 offer\(s\) in 9 were cancelled: FAILED \(ok=-1\) - trade not found/);
   assert.match(r.text, /e=1 of 1 offer\(s\) not cancelled/);
   const slow = world({ trades: OFFERS(), pushes: false });
   const t0 = Date.now();
@@ -669,6 +705,147 @@ t('a dry run of holidaysnipe stop only says it would stop: the running sniper an
     assert.deepStrictEqual(asked[2], ['stop', false]);
     assert.match(r3.text, /stopped — nothing bought yet/);
   } finally { require.cache[key].exports = real; }
+});
+
+// ---------------------------------------------------------------------------
+section('transitAmount, restingAmount, waitslot, tradepace (2026-09-22)');
+
+// A buying city in the glitch: ~900 purchases in transit and ten offers, resources mixed.
+function glitchWorld(seed = 7) {
+  let x = seed;
+  const rnd = (n) => { x = (Math.imul(x, 1664525) + 1013904223) >>> 0; return (x >>> 8) % n; };
+  const transit = [];
+  for (let i = 0; i < 900; i++) transit.push({ id: 90000 + i, resType: rnd(4), amount: rnd(3) ? 99999999 : 1 + rnd(99999999), price: 0.001, endTime: 0, total: 0 });
+  transit[3].amount = '12345';            // a push may carry text
+  const trades = [];
+  for (let i = 0; i < 10; i++) {
+    trades.push({ id: 7000 + i, tradeType: (i >> 2) % 2, resType: i % 4, amount: 99999999, dealedAmount: rnd(99999999), price: 0.001 });
+  }
+  return world({ transit, trades });
+}
+// The control file's own loops (scripts/glitch-res-control.txt before 2026-09-22), then the built-ins.
+const OLD_LOOPS = `inTransit = 0
+j = 0
+label transit
+if j >= city.transingTradesArray.length goto transitdone
+if city.transingTradesArray[j].resType == rt inTransit = inTransit + city.transingTradesArray[j].amount
+j = j + 1
+goto transit
+label transitdone
+resting = 0
+k = 0
+label rest_loop
+if k >= city.tradesArray.length goto rest_done
+if city.tradesArray[k].resType == rt && city.tradesArray[k].tradeType == 0 resting = resting + city.tradesArray[k].amount - city.tradesArray[k].dealedAmount
+k = k + 1
+goto rest_loop
+label rest_done`;
+
+t('the built-ins give exactly what the control file\'s loops add up, for every resource', async () => {
+  for (const seed of [7, 11, 1234]) {
+    const w = glitchWorld(seed);
+    for (let rt = 0; rt < 4; rt++) {
+      const r = await runIn(w, `rt = ${rt}\n${OLD_LOOPS}\necho "old " + inTransit + " " + resting\n`
+        + 'echo "new " + city.transitAmount(rt) + " " + city.restingAmount(rt, 0)');
+      const [o, n] = echoed(r);
+      assert.strictEqual(n.replace('new', 'old'), o, `seed ${seed} rt ${rt}`);
+      assert.ok(Number(o.split(" ")[1]) > 0 && Number(o.split(" ")[2]) > 0, "the check has something to add up: " + o);
+    }
+  }
+});
+t('names, types and the sums without a type', async () => {
+  const w = world({
+    transit: [{ id: 1, resType: 1, amount: 5 }, { id: 2, resType: 1, amount: 7 }, { id: 3, resType: 0, amount: 100 }],
+    trades: [{ id: 4, tradeType: 0, resType: 2, amount: 10, dealedAmount: 3 }, { id: 5, tradeType: 1, resType: 2, amount: 20, dealedAmount: 5 }],
+  });
+  const r = await runIn(w, ['echo city.transitAmount(1) city.transitAmount("wood") city.transitAmount("lumber") city.transitAmount(0) city.transitAmount(3)',
+    'echo city.restingAmount(2) city.restingAmount("stone", "buy") city.restingAmount(2, 1) city.restingAmount(2, "sell") city.restingAmount(1)',
+    'x = city.transitAmount("gold")', 'echo $error'].join('\n'), { allowErrors: true });
+  const e = echoed(r);
+  assert.strictEqual(e[0], '12 12 12 100 0');
+  assert.strictEqual(e[1], '22 7 15 15 0');
+  assert.match(r.text, /transitAmount: gold is not a resource/);
+});
+t('a push that replaces the list is seen on the next read (the sums are kept per list)', async () => {
+  const w = world({ transit: [{ id: 1, resType: 1, amount: 5 }] });
+  const v = require('./script-objects').globals({ game: w.g, get castle() { return w.castle; } }).city;
+  assert.strictEqual(v.transitAmount(1), 5);
+  assert.strictEqual(v.transitAmount(1), 5);
+  w.castle.transingTrades = [...w.castle.transingTrades, { id: 2, resType: 1, amount: 6 }];
+  assert.strictEqual(v.transitAmount(1), 11);
+  w.castle.transingTrades.push({ id: 3, resType: 1, amount: 1 });      // even one added in place
+  assert.strictEqual(v.transitAmount(1), 12);
+});
+
+// a Game with a push stream, as a connected one has (game.c emits 'cmd')
+function pushWorld(opts) {
+  const w = world(opts);
+  w.g.c = new (require('events'))();
+  w.push = (castle, trades) => { castle.trades = trades; w.g.c.emit('cmd', 'server.TradesUpdate', { castleId: castle.id }); };
+  return w;
+}
+const full = () => Array.from({ length: 10 }, (_, i) => ({ id: 100 + i, tradeType: 0, resType: 1, amount: 1, dealedAmount: 0, price: 1 }));
+
+t('waitslot parses seconds and an optional offer count, and refuses the rest', () => {
+  const a = script.parseLine('waitslot 0.3');
+  assert.deepStrictEqual([a.cmd, a.seconds, a.below], ['waitslot', 0.3, null]);
+  assert.deepStrictEqual([script.parseLine('waitslot 2 10').below], [10]);
+  assert.match(parseErr('waitslot'), /waitslot: how long at most/);
+  assert.match(parseErr('waitslot soon'), /soon is not a number of seconds/);
+  assert.match(parseErr('waitslot 1 many'), /many is not a count of offers/);
+  assert.match(parseErr('tradepace'), /tradepace: the gap in seconds/);
+  assert.deepStrictEqual(script.parseLine('tradepace 1').seconds, 1);
+});
+t('waitslot returns on the push that frees a slot, not after its time', async () => {
+  const w = pushWorld({ trades: full() });
+  setTimeout(() => w.push(w.castle, w.castle.trades.slice(1)), 60);
+  const t0 = Date.now();
+  const r = await runIn(w, 'waitslot 5\necho "got " + $result');
+  const took = Date.now() - t0;
+  assert.deepStrictEqual(echoed(r), ['got 1']);
+  assert.ok(took >= 50 && took < 1000, `took ${took} ms`);
+  assert.strictEqual(w.g.c.listenerCount('cmd'), 0, 'it stops listening when it returns');
+});
+t('waitslot with no push ends after its time with $result 0; with a count it returns at once when under it', async () => {
+  const w = pushWorld({ trades: full() });
+  let t0 = Date.now();
+  const r = await runIn(w, 'waitslot 0.2\necho "got " + $result');
+  assert.deepStrictEqual(echoed(r), ['got 0']);
+  assert.ok(Date.now() - t0 >= 190, 'it waited its time');
+  w.castle.trades = full().slice(0, 9);
+  t0 = Date.now();
+  const r2 = await runIn(w, 'waitslot 5 10\necho "got " + $result');
+  assert.deepStrictEqual(echoed(r2), ['got 1']);
+  assert.ok(Date.now() - t0 < 500);
+  // a push that does not free a slot (an offer filled a little) keeps it waiting
+  const w3 = pushWorld({ trades: full() });
+  setTimeout(() => w3.push(w3.castle, w3.castle.trades.map((x) => ({ ...x }))), 30);
+  const r3 = await runIn(w3, 'waitslot 0.25\necho "got " + $result');
+  assert.deepStrictEqual(echoed(r3), ['got 0']);
+});
+t('waitslot without a push stream still sees the slot (it looks again every 100 ms), and Stop cuts it short', async () => {
+  const w = world({ trades: full() });
+  setTimeout(() => { w.castle.trades = w.castle.trades.slice(2); }, 50);
+  const r = await runIn(w, 'waitslot 5\necho "got " + $result');
+  assert.deepStrictEqual(echoed(r), ['got 1']);
+  const w2 = pushWorld({ trades: full() });
+  let stop = false;
+  setTimeout(() => { stop = true; }, 80);
+  const t0 = Date.now();
+  await runIn(w2, 'waitslot 30\necho "after"', { shouldStop: () => stop });
+  assert.ok(Date.now() - t0 < 1000, 'Stop ended the wait');
+});
+t('tradepace waits out only what is left of the gap since the last market write', async () => {
+  const w = world();
+  let t0 = Date.now();
+  const r = await runIn(w, 'tradepace 1\necho "none " + $result');
+  assert.deepStrictEqual(echoed(r), ['none 0']);
+  assert.ok(Date.now() - t0 < 300, 'no write yet: no wait');
+  t0 = Date.now();
+  const r2 = await runIn(w, 'buy wood 1000 5\nsleep 0.2\ntradepace 0.5\necho "done"');
+  const took = Date.now() - t0;
+  assert.deepStrictEqual(echoed(r2).filter((l) => l === 'done'), ['done']);
+  assert.ok(took >= 480 && took < 900, `took ${took} ms: the 0.5 s counts from the order, the sleep inside it`);
 });
 
 // ---------------------------------------------------------------------------

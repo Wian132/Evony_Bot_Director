@@ -840,10 +840,20 @@ t('\\holiday 3 needs a number of days and confirm; /autoextend is refused (it re
   assert.match((await inline(w, '\\holiday')).error, /for how many days\? \(2 or more\) — holiday 3 confirm/);
   assert.match((await inline(w, '\\holiday 3')).error, /on holiday for 3 days — the account goes off-line for days.*write {2}holiday 3 confirm/);
   assert.match((await inline(w, 'holiday 1 confirm')).error, /2 days at least/);
-  for (const t2 of ['\\holiday /autoextend', 'holiday /autoextend 7 confirm', 'holiday 3 /auto confirm']) {
-    assert.match((await inline(w, t2)).error, /holiday \/autoextend: refused — it renews the holiday at every end until the coins run out, and scripts spend coins only through buyitem/, t2);
-  }
+  // /autoextend (the user, 2026-09-20) renews the holiday until the coins run out: it still
+  // needs the day count and confirm, and the line it suggests carries the switch
+  assert.match((await inline(w, '\\holiday /autoextend')).error, /for how many days\? \(2 or more\) — holiday 3 \/autoextend confirm/);
+  assert.match((await inline(w, 'holiday 7 /autoextend')).error, /renewing itself until the coins run out.*write {2}holiday 7 \/autoextend confirm/);
   eq(w.sent, []);
+});
+t('holiday <days> confirm /autoextend sends the game\'s own isAutoFurlough flag', async () => {
+  const w = world();
+  w.g.c.passwordHash = () => 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3';
+  await runIn(w, 'command "holiday 3 /autoextend confirm"\ncommand "holiday 5 /auto confirm"');
+  eq(w.sent, [
+    { cmd: 'furlough.isFurlought', data: { playerId: 777, day: 3, password: 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3', isAutoFurlough: true } },
+    { cmd: 'furlough.isFurlought', data: { playerId: 777, day: 5, password: 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3', isAutoFurlough: true } },
+  ]);
 });
 t('without the login\'s password hash (goals/integration) holiday says so', async () => {
   const w = world();

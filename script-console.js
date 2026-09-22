@@ -167,28 +167,127 @@ const hasAutorun = (src) => AUTORUN_RE.test(String(src || ''));
 // NEAT's switch values: 1, yes, on, true are on; any other value is off.
 const switchOn = (v) => /^(1|yes|on|true)$/i.test(String(v).trim());
 
-// NEAT's CmdParms.txt: one `-name value` a line (also -name=value, -name:value,
-// /name value ...). Only the names given come back, lower case.
-function readCmdParms(file = CMDPARMS) {
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch { return {}; }
+// NEAT's start-up parameters (wiki StartupParameters): `-name value`, also
+// -name=value, -name:value, /name value, /name=value, /name:value, a value
+// with spaces in "quotes". Several may share a line, as on a command line, or
+// sit one a line, as in CmdParms.txt; a line starting # or // is a comment.
+// `text` is a string, or a command line already split (process.argv). Only the
+// names given come back, lower case; a later name wins over an earlier one.
+function parseCmdParms(text, stray = null) {
+  let toks;
+  if (Array.isArray(text)) toks = text.map(String);
+  else {
+    toks = [];
+    for (const line of String(text == null ? '' : text).split(/\r?\n/)) {
+      if (/^\s*(#|\/\/)/.test(line)) continue;
+      const re = /((?:"[^"]*"?|[^\s"])+)/g;             // /runscript:"My Items.txt" is one word
+      let m;
+      while ((m = re.exec(line))) toks.push(m[1]);
+    }
+  }
   const out = {};
-  for (const raw of text.split(/\r?\n/)) {
-    const m = /^\s*[-/]([A-Za-z]+)(?:\s*[=:]\s*|\s+)("[^"]*"|\S+)?/.exec(raw);
-    if (m) out[m[1].toLowerCase()] = m[2] === undefined ? '' : m[2].replace(/^"|"$/g, '');
+  for (let i = 0; i < toks.length; i++) {
+    const m = /^[-/]([A-Za-z]+)(?:[=:](.*))?$/.exec(toks[i]);
+    if (!m) { if (stray) stray.push(toks[i]); continue; }      // a stray word: nothing names it
+    let v = m[2];
+    if (v === undefined && i + 1 < toks.length && !/^[-/][A-Za-z]+(?:[=:].*)?$/.test(toks[i + 1])) v = toks[++i];
+    out[m[1].toLowerCase()] = v === undefined ? '' : String(v).replace(/"/g, '');
   }
   return out;
 }
 
-// What starts at startup: { on, runscript } from the environment, else
-// CmdParms.txt. Off unless one of them switches it on: a console that starts
-// scripts by itself should be one its operator meant to.
-function autorunSettings(env = process.env, parms = readCmdParms()) {
+// The console's own command line (server.js hands it over at start): the
+// Director puts its fleet-wide and per-account start-up parameters there, as
+// NEAT's Director does, and `node server.js -autoscripts 1` works by hand.
+let STARTUP_ARGS = {};
+function setStartupArgs(argv) { STARTUP_ARGS = parseCmdParms(argv || []); return STARTUP_ARGS; }
+const startupArgs = () => ({ ...STARTUP_ARGS });
+
+// NEAT's CmdParms.txt, which gives its parameters to every console started from
+// this folder, with the console's command line over it: the command line wins.
+function readCmdParms(file = CMDPARMS, args = STARTUP_ARGS) {
+  let fromFile = {};
+  try { fromFile = parseCmdParms(fs.readFileSync(file, 'utf8')); } catch { /* no file: no parameters */ }
+  return { ...fromFile, ...args };
+}
+
+// What starts at startup: { on, runscript, from } from the environment, else
+// the command line (the Director), else CmdParms.txt. Off unless one of them
+// switches it on: a console that starts scripts by itself should be one its
+// operator meant to.
+function autorunSettings(env = process.env, parms = readCmdParms(), args = STARTUP_ARGS) {
+  const where = (k) => (args && args[k] !== undefined ? 'the Director\'s start-up parameters' : 'CmdParms.txt');
   const on = env.AUTOSCRIPTS !== undefined ? switchOn(env.AUTOSCRIPTS)
     : parms.autoscripts !== undefined ? switchOn(parms.autoscripts) : false;
+  const from = env.AUTOSCRIPTS !== undefined ? 'AUTOSCRIPTS' : parms.autoscripts !== undefined ? where('autoscripts') : null;
   const named = env.RUNSCRIPT !== undefined ? env.RUNSCRIPT : parms.runscript;
-  return { on, runscript: named && String(named).trim() ? String(named).trim() : null };
+  return { on, runscript: named && String(named).trim() ? String(named).trim() : null, from };
 }
+
+// NEAT's parameters (wiki StartupParameters), and what an OTTObot console does
+// with each. `use`: it acts on it. `refuse`: the Director will not keep it,
+// and says where it belongs instead. Anything else is kept and reaches scripts
+// as Config.<name> (as -teleport does), with `note` saying OTTObot has no such
+// setting of its own.
+const STARTUP_PARMS = {
+  autoscripts: { use: 'autorun scripts: 1 on, 0 off (off unless switched on)' },
+  runscript: { use: 'the file every city runs first at autorun, from the scripts folder (else AutoRunScript.txt)' },
+  autorun: { use: 'autorun goals: 0 starts the engine paused until Resume; 1, or not set, starts it live' },
+  maxtrade: { use: 'the most one buy/sell order in a script may be for (default 99,999,999)' },
+  teleport: { use: 'Config.teleport for scripts (the state a teleport goes to)' },
+  username: { refuse: 'the account\'s own Email field is its login' },
+  u: { refuse: 'the account\'s own Email field is its login' },
+  password: { refuse: 'the account\'s own Password field is used — a parameter would sit on the command line for anyone on this PC to read' },
+  server: { refuse: 'the account\'s own Server field says where it logs in' },
+  s: { refuse: 'the account\'s own Server field says where it logs in' },
+  serverhost: { refuse: 'the game server is found from the account\'s Server field' },
+  serverport: { refuse: 'the game server is found from the account\'s Server field' },
+  proxy: { refuse: 'pick it in the account\'s Proxy dropdown (Proxies holds the list)' },
+  ssk: { refuse: 'NeatPortal keys mean nothing to OTTObot, and they are secrets' },
+  token: { refuse: 'NeatPortal keys mean nothing to OTTObot, and they are secrets' },
+  prependgoals: { refuse: 'use the account\'s Prepend goals file box' },
+  appendgoals: { refuse: 'use the account\'s Append goals file box' },
+  basedir: { refuse: 'every console uses its own folder (scripts\\, media\\, CmdParms.txt)' },
+  autologin: { note: 'a console always logs in; switch the account off to keep it out' },
+  delay: { note: 'no login delay — the Director starts a console when asked' },
+  title: { note: 'the console\'s tab is titled with the account\'s Label' },
+  maintenance: { note: 'use the account\'s After maintenance setting' },
+  secure: { note: 'always on: scripts never see the login in Config, and resetplayer needs OTTO_ALLOW_RESET_PLAYER=1' },
+  claimpackages: { note: 'packages are claimed by goals and scripts, not by a switch' },
+};
+const NO_GUI = ['netbookmode', 'connectioncheckdelay', 'logintimeout', 'minimize', 'minimizetotray', 'ttsattackwarning', 'attackfocus',
+  'balloonattackwarning', 'captchaautosolve', 'attackwarning', 'warreports', 'notradingreports', 'noattackreports', 'noamuletmessages',
+  'nosystemmessages', 'sce', 'compatible', 'resetfh', 'showsettings'];
+for (const k of NO_GUI) STARTUP_PARMS[k] = { note: 'a setting of NEAT\'s own window, which OTTObot does not have' };
+for (const k of ['player', 'sex', 'faceindex', 'zone', 'city', 'flag']) STARTUP_PARMS[k] = { note: 'for creating a new account, which OTTObot does not do' };
+
+// A start-up parameter text the Director is asked to keep, checked:
+// { parms, errors: [...], notes: [...] }. An error means it is not kept.
+function checkStartupParms(text) {
+  const src = String(text == null ? '' : text);
+  const errors = [], notes = [];
+  if (src.length > 4000) return { parms: {}, errors: ['more than 4000 characters — that is not a list of start-up parameters'], notes };
+  const stray = [];
+  const parms = parseCmdParms(src, stray);
+  // a word no -name comes before: a missing dash, or a value with spaces not in "quotes"
+  if (stray.length) {
+    errors.push(`${stray.slice(0, 3).map((w) => `"${w.slice(0, 30)}"`).join(', ')} — not a parameter: each starts with - or /`
+      + ' (-autoscripts 1), and a value with spaces goes in "quotes"');
+  }
+  for (const [k, v] of Object.entries(parms)) {
+    const p = STARTUP_PARMS[k];
+    if (p && p.refuse) errors.push(`-${k}: ${p.refuse}`);
+    else if (p && p.note) notes.push(`-${k}: ${p.note}`);
+    else if (!p) notes.push(`-${k}: not one of OTTObot's — scripts read it as Config.${k}`);
+    if (['autoscripts', 'autorun'].includes(k) && !/^(1|yes|on|true|0|no|off|false)$/i.test(v)) errors.push(`-${k} ${v}: say 1 (on) or 0 (off)`);
+    if (k === 'maxtrade' && !(/^\d+$/.test(v) && Number(v) >= 1)) errors.push(`-maxtrade ${v}: a whole number of at least 1`);
+    if (k === 'runscript') { try { scriptFile(v); } catch (e) { errors.push(`-runscript: ${e.message}`); } }
+  }
+  return { parms, errors, notes };
+}
+
+// Parameters -> a command line: ['-autoscripts', '1', ...], for spawn (no shell).
+const parmsToArgs = (parms) => Object.entries(parms || {}).flatMap(([k, v]) => (v === '' ? [`-${k}`] : [`-${k}`, String(v)]));
 
 // Autorun's last start per account, in the console's database settings (the
 // `store`: get(key, default) / set(key, value)). A console that starts again
@@ -284,6 +383,7 @@ module.exports = {
   SCRIPTS_DIR, MEDIA_DIR, MEDIA_TYPES, CMDPARMS, LOADOUTS,
   scriptFile, readScriptFile, mediaFile,
   loadName, resolveCall,
-  hasAutorun, switchOn, readCmdParms, autorunSettings, startupScript, autorunPlan, autorunGate, AUTORUN_GAP_MS, AUTORUN_KEY,
+  hasAutorun, switchOn, parseCmdParms, readCmdParms, setStartupArgs, startupArgs, checkStartupParms, parmsToArgs, STARTUP_PARMS,
+  autorunSettings, startupScript, autorunPlan, autorunGate, AUTORUN_GAP_MS, AUTORUN_KEY,
   Notifier,
 };

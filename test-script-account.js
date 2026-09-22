@@ -616,7 +616,7 @@ t('cleanreports with no text deletes every report of every kind', async () => {
   const r = await runIn(w, 'cleanreports\nkeep("r", $result)');
   assert.deepStrictEqual(w.left(), []);
   assert.strictEqual(r.kept.r, 9);
-  assert.deepStrictEqual(w.of('report.receiveReportList').map((d) => d.reportType), [0, 1, 2]);
+  assert.deepStrictEqual([...new Set(w.of('report.receiveReportList').map((d) => d.reportType))], [0, 1, 2], 'each kind in turn');
 });
 t('a text matches the subject or the "to", any case, and a comma list matches any', async () => {
   const b = reportWorld();
@@ -632,16 +632,16 @@ t('cleanreports army keeps OTTObot\'s meaning: every army report', async () => {
   const w = reportWorld();
   await runIn(w, 'cleanreports army');
   assert.deepStrictEqual(w.left(), [1, 20, 21]);
-  assert.deepStrictEqual(w.of('report.receiveReportList').map((d) => d.reportType), [1]);
+  assert.deepStrictEqual([...new Set(w.of('report.receiveReportList').map((d) => d.reportType))], [1]);
 });
 t('cleannpcreports: Barbarian attacks and their returns, and transports; nothing else', async () => {
   const w = reportWorld({ transports: 120 });
   const r = await runIn(w, 'cleannpcreports\nkeep("r", $result)');
   assert.deepStrictEqual(w.left(), [1, 12, 14, 15, 20, 21]);
   assert.strictEqual(r.kept.r, 123);
-  // page 1 read, its picks deleted, read again as the rest move up — until it keeps only 12, 14, 15
-  assert.deepStrictEqual(w.of('report.receiveReportList').map((d) => [d.reportType, d.pageNo]), [[1, 1], [1, 1], [1, 1]], 'deletes as it reads');
-  assert.deepStrictEqual(w.of('report.deleteReport').map((d) => d.idStr.split(',').length), [47, 47, 29]);
+  // page 1 read, its picks deleted, read again as the rest move up (asked with the delete, twice the size) — until it keeps only 12, 14, 15
+  assert.ok(w.of('report.receiveReportList').every((d) => d.reportType === 1 && d.pageNo === 1), 'deletes as it reads');
+  assert.deepStrictEqual(w.of('report.deleteReport').map((d) => d.idStr.split(',').length), [47, 76]);
   assert.match(r.text, /removed 123 of 126 army report\(s\)/);
 });
 t('cleanreports on a big account deletes page 1 over and over, and a filter walks past pages it keeps', async () => {
@@ -649,7 +649,7 @@ t('cleanreports on a big account deletes page 1 over and over, and a filter walk
   const r = await runIn(w, 'cleanreports army\nkeep("r", $result)');
   assert.strictEqual(r.kept.r, 5006);
   assert.ok(w.of('report.receiveReportList').every((d) => d.pageNo === 1), 'never past page 1');
-  assert.strictEqual(w.of('report.deleteReport').length, 101);
+  assert.ok(w.of('report.deleteReport').length < 15, 'the page grows: 5,006 reports in a handful of deletes, not 101');
   const k = reportWorld({ transports: 200 });
   for (let i = 0; i < 120; i++) k.R[1].unshift({ id: 5000 + i, armyType: 5, title: 'Attack Lord22', targetPos: 'Lord22(300,300)' });
   await runIn(k, 'cleannpcreports');
@@ -660,7 +660,8 @@ t('cleanreports asks again when a page goes unanswered, and keeps what it delete
   const w = reportWorld({ transports: 120 });
   let calls = 0;
   const orig = w.g.reportList.bind(w.g);
-  w.g.reportList = (...a) => (++calls === 2 ? Promise.reject(new Error('no reply to report.receiveReportList')) : orig(...a));
+  // the read sent with the first delete and the first ordinary read again both fail; the next answers
+  w.g.reportList = (...a) => (++calls === 2 || calls === 3 ? Promise.reject(new Error('no reply to report.receiveReportList')) : orig(...a));
   const r = await runIn(w, 'cleannpcreports\nkeep("r", $result)', { reportWaitMs: 0 });
   assert.strictEqual(r.kept.r, 123);
   assert.match(r.text, /no reply to report\.receiveReportList — asking again/);
@@ -671,6 +672,103 @@ t('cleanreports asks again when a page goes unanswered, and keeps what it delete
   const r2 = await runIn(dead, 'cleannpcreports', { reportWaitMs: 0 });
   assert.match(r2.text, /47 report\(s\) removed before it/);
   assert.strictEqual(dead.R[1].length, 126 - 47, 'the first page\'s deletes stay done');
+});
+// An account with `total` trade reports and a server with quirks: it hands out at most
+// `pageCap` a page (and works out totalPage by that), refuses or ignores a page bigger
+// than `refuseAbove` / `silentAbove`, refuses a delete of more than `idCap` ids, and with
+// `lateDelete` answers a read sent behind a delete before it has done the delete.
+function bigReportWorld({ total, pageCap = Infinity, refuseAbove = Infinity, silentAbove = Infinity, idCap = Infinity, lateDelete = false, deaf = false, stallAt = 0 }) {
+  let reads = 0;
+  let rows = Array.from({ length: total }, (_, i) => ({ id: i + 1, title: 'Trade completed' }));
+  let owed = null;   // a delete not done yet (lateDelete)
+  const apply = (ids) => { const gone = new Set(ids); rows = rows.filter((r) => !gone.has(r.id)); };
+  const handlers = {
+    'report.receiveReportList': (d) => {
+      if (d.reportType !== 0) return { ok: 1, pageNo: 1, totalPage: 1, reports: [] };
+      // stallAt: the server goes silent on ONE read of a page it has answered before (a busy account)
+      if (stallAt && ++reads === stallAt) return new Error('no reply to report.receiveReportList');
+      if (d.pageSize > silentAbove) return new Error('no reply to report.receiveReportList');
+      if (d.pageSize > refuseAbove) return { ok: -1, errorMsg: 'page size too big' };
+      const size = Math.min(d.pageSize, pageCap);
+      const out = { ok: 1, pageNo: d.pageNo, totalPage: Math.max(1, Math.ceil(rows.length / size)), reports: rows.slice((d.pageNo - 1) * size, d.pageNo * size) };
+      if (owed) { apply(owed); owed = null; }
+      return out;
+    },
+    'report.deleteReport': (d) => {
+      const ids = String(d.idStr).split(',').map(Number);
+      if (ids.length > idCap) return { ok: -1, errorMsg: 'too many' };
+      if (deaf) return { ok: 1 };
+      if (lateDelete) owed = ids; else apply(ids);
+      return { ok: 1 };
+    },
+  };
+  const w = world({ handlers });
+  w.left = () => rows.length;
+  return w;
+}
+const sizesOf = (w) => w.of('report.receiveReportList').filter((d) => d.reportType === 0).map((d) => d.pageSize);
+
+t('a big account: the page grows, the read rides with the delete, and 250,000 reports go in a few hundred requests', async () => {
+  const w = bigReportWorld({ total: 250000 });
+  const r = await runIn(w, 'cleanreports trade\nkeep("r", $result)');
+  assert.strictEqual(w.left(), 0);
+  assert.strictEqual(r.kept.r, 250000);
+  const sizes = sizesOf(w);
+  assert.deepStrictEqual(sizes.slice(0, 6), [50, 100, 200, 400, 800, 1000], 'doubles up to the ceiling');
+  assert.ok(Math.max(...sizes) === 1000 && w.of('report.deleteReport').length < 300, 'a delete of 1,000 ids at a time');
+  assert.ok(!/pages of/.test(r.text), 'nothing to complain about');
+});
+t('a server that hands out 50 a page however much is asked for: found out once, then 50', async () => {
+  const w = bigReportWorld({ total: 5000, pageCap: 50 });
+  const r = await runIn(w, 'cleanreports trade\nkeep("r", $result)');
+  assert.strictEqual(w.left(), 0);
+  assert.strictEqual(r.kept.r, 5000);
+  assert.match(r.text, /the server gives 50 to a page — pages of 50 from here/);
+  assert.deepStrictEqual(sizesOf(w).slice(0, 3), [50, 100, 50]);
+});
+t('a page size the server refuses or does not answer: back to the last one that worked', async () => {
+  const refused = bigReportWorld({ total: 3000, refuseAbove: 50 });
+  const r1 = await runIn(refused, 'cleanreports trade\nkeep("r", $result)');
+  assert.strictEqual(refused.left(), 0);
+  assert.strictEqual(r1.kept.r, 3000);
+  assert.match(r1.text, /a page of 100 was refused — pages of 50 from here/);
+  const silent = bigReportWorld({ total: 6000, silentAbove: 200 });
+  const r2 = await runIn(silent, 'cleanreports trade\nkeep("r", $result)', { reportWaitMs: 0 });
+  assert.strictEqual(silent.left(), 0);
+  assert.strictEqual(r2.kept.r, 6000);
+  assert.match(r2.text, /a page of 400 was no reply to report.receiveReportList — pages of 200 from here/);
+  assert.ok(Math.max(...sizesOf(silent).slice(sizesOf(silent).indexOf(400) + 1)) <= 200, 'never above 200 again');
+});
+t('a page that worked and then goes unanswered is asked again smaller, and no bigger page is tried again', async () => {
+  const w = bigReportWorld({ total: 30000, stallAt: 7 });
+  const r = await runIn(w, 'cleanreports trade' + String.fromCharCode(10) + 'keep("r", $result)', { reportWaitMs: 0 });
+  assert.strictEqual(w.left(), 0);
+  assert.strictEqual(r.kept.r, 30000);
+  assert.match(r.text, /no answer to a page of 1000 — pages of 500 from here/);
+  const sizes = sizesOf(w), at = sizes.indexOf(500);
+  assert.ok(at > 0 && Math.max(...sizes.slice(at)) <= 500, 'never above 500 after that: ' + sizes.join(','));
+});
+t('a delete of more ids than the server takes is sent in pieces of what it does take', async () => {
+  const w = bigReportWorld({ total: 3000, idCap: 100 });
+  const r = await runIn(w, 'cleanreports trade\nkeep("r", $result)');
+  assert.strictEqual(w.left(), 0);
+  assert.strictEqual(r.kept.r, 3000);
+  assert.match(r.text, /at once was refused — pages of 100 from here/);
+  assert.ok(w.of('report.deleteReport').every((d) => d.idStr.split(',').length <= 200), 'nothing over the size it had taken');
+});
+t('a read the server answers before it has done the delete is read again, not counted twice', async () => {
+  const w = bigReportWorld({ total: 1000, lateDelete: true });
+  const r = await runIn(w, 'cleanreports trade\nkeep("r", $result)');
+  assert.strictEqual(w.left(), 0);
+  assert.strictEqual(r.kept.r, 1000, 'each report counted once');
+  assert.ok(!/kept reports it said it deleted/.test(r.text));
+});
+t('a delete the game says ok to and does not do stops the run, however many pages it asked for', async () => {
+  const w = bigReportWorld({ total: 500, deaf: true });
+  const r = await runIn(w, 'cleanreports trade\nkeep("r", $result)');
+  assert.match(r.text, /the game kept reports it said it deleted — stopped/);
+  assert.strictEqual(w.left(), 500);
+  assert.ok(w.of('report.deleteReport').length <= 3, 'stops at the first repeat');
 });
 t('a dry run deletes nothing', async () => {
   const w = reportWorld();

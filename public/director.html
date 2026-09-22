@@ -18,6 +18,39 @@
     --acc:#0f7a4a; --bad:#c22f2f; --warn:#9a6400; --blue:#1857c4;
     --on-accent:#ffffff;
     --shadow:0 1px 2px rgba(20,30,45,.06), 0 6px 18px rgba(20,30,45,.06);
+    --rs-food:#2a78d6; --rs-wood:#eb6834; --rs-stone:#1baf7a; --rs-iron:#eda100; --rs-gold:#e87ba4;
+
+    /* ---- one type and spacing scale for the whole page ----
+       Everything below is written in these, so the console can be made bigger
+       or smaller in one place. The charts read them too (cssNum in the script),
+       so their labels grow with the text rather than staying tiny. */
+    --fs-xxs:11.5px;   /* the finest print: "item", "always shown" */
+    --fs-xs:12.5px;    /* column heads, chart axes, uppercase labels */
+    --fs-sm:13.5px;    /* pills, chips, help text under a heading */
+    --fs-base:15px;    /* table cells — the reading size */
+    --fs-md:15.5px;    /* body, buttons, inputs */
+    --fs-lg:17px;      /* panel headings */
+    --fs-xl:20px;      /* the page title and the hero panel */
+    --fs-huge:30px;    /* the big figure on a card */
+    --lh:1.5;
+
+    --icon:18px;       /* tick boxes */
+    --dot:11px;        /* status dots */
+    --sw:13px;         /* colour swatches beside a name */
+    --sw-sm:11px;      /* the smaller swatch in a chip */
+
+    --cell-x:14px; --cell-y:10px;   /* table cells */
+    --btn-x:14px; --btn-y:8px;      /* buttons and inputs */
+    --pad:16px;        /* page and panel padding */
+
+    --chart-h:184px;       /* the resource area charts */
+    --chart-pad-l:60px;    /* room for their y labels */
+    --chart-pad-b:26px;    /* room for their x labels */
+    --bars-h:206px;        /* the trading bar chart */
+    --bar-max:178px;       /* the tallest a bar in it may be */
+    --band-row:34px;       /* one bot's line on the uptime timeline */
+    --band-gap:11px;
+    --band-label-w:118px;  /* room for the bot name beside it */
   }
   :root[data-theme="dark"] {
     --bg:#171b22; --panel:#1f242d; --panel2:#283040; --sunken:#14181e;
@@ -26,92 +59,322 @@
     --acc:#5ed49a; --bad:#ff7b7b; --warn:#e0ad4e; --blue:#7cb0ff;
     --on-accent:#0d1219;
     --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
+    --rs-food:#3987e5; --rs-wood:#d95926; --rs-stone:#199e70; --rs-iron:#c98500; --rs-gold:#d55181;
   }
   * { box-sizing:border-box; }
+  /* One column: the header and the strip at the top, then whichever page is on,
+     which takes the rest of the window and scrolls inside itself. The three
+     panes were already written as flex:1 — at this size it matters, or the
+     header scrolls away and the tall tables push the page out of the window. */
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:14.5px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+         display:flex; flex-direction:column; height:100vh; overflow:hidden;
+         font-family:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+         font-size:var(--fs-md); line-height:var(--lh); -webkit-font-smoothing:antialiased; }
+  #pageFleet { display:flex; flex-direction:column; flex:1; min-height:0; }
+  header, #maintStrip, .views, .foot, pre { flex:none; }
   :focus-visible { outline:2px solid var(--blue); outline-offset:1px; border-radius:4px; }
-  header { display:flex; align-items:center; gap:16px; padding:11px 18px; background:var(--panel);
+  /* The header carries a lot at this size; let it take a second line on a
+     narrow screen rather than pushing the buttons off the edge. */
+  header { display:flex; align-items:center; gap:14px; row-gap:8px; flex-wrap:wrap;
+           padding:12px var(--pad); background:var(--panel);
            border-bottom:1px solid var(--line); box-shadow:var(--shadow); position:relative; z-index:5; }
-  h1 { font-size:16.5px; margin:0; font-weight:600; letter-spacing:-.01em; }
-  .badge { background:var(--acc); color:#0c1410; font-size:10.5px; font-weight:700; letter-spacing:.9px; padding:3px 8px; border-radius:4px; }
+  h1 { font-size:var(--fs-xl); margin:0; font-weight:600; letter-spacing:-.01em; }
+  .badge { background:var(--acc); color:#0c1410; font-size:var(--fs-xs); font-weight:700; letter-spacing:.9px; padding:4px 9px; border-radius:5px; }
   header .sp { flex:1; }
-  header .stat { color:var(--dim); font-size:12px; } header .stat b { color:var(--ink); font-weight:600; }
+  header .stat { color:var(--dim); font-size:var(--fs-sm); } header .stat b { color:var(--ink); font-weight:600; }
   button { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:6px;
-           padding:6px 12px; font:13.5px/1.2 inherit; cursor:pointer; transition:background .12s, border-color .12s; }
+           padding:var(--btn-y) var(--btn-x); font-family:inherit; font-size:var(--fs-md); line-height:1.2;
+           cursor:pointer; transition:background .12s, border-color .12s; }
   button:hover { background:var(--panel2); border-color:var(--faint); }
   button.primary { background:var(--acc); color:var(--on-accent); border-color:var(--acc); font-weight:600; }
   button.primary:hover { background:var(--acc); filter:brightness(1.08); }
   input, select { background:var(--panel); border:1px solid var(--line); color:var(--ink);
-                  border-radius:6px; padding:6px 10px; font:13.5px inherit; }
+                  border-radius:6px; padding:var(--btn-y) 10px; font-family:inherit; font-size:var(--fs-md); }
   input::placeholder { color:var(--faint); }
   input:focus, select:focus { outline:2px solid var(--blue); outline-offset:1px; border-color:var(--blue); }
-  .views { display:flex; gap:7px; padding:9px 18px; background:var(--panel);
+  /* Every tick box grows with the scale. !important because several of them
+     carry an inline width:auto, put there only to undo `dialog input`. */
+  input[type=checkbox] { width:var(--icon) !important; height:var(--icon); accent-color:var(--acc); }
+  .views { display:flex; gap:7px; padding:9px var(--pad); background:var(--panel);
            border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap; }
-  .views .v { padding:5px 13px; border-radius:99px; border:1px solid var(--line); background:var(--panel);
-              color:var(--dim); cursor:pointer; font-size:12.5px; }
+  .views .v { padding:6px 15px; border-radius:99px; border:1px solid var(--line); background:var(--panel);
+              color:var(--dim); cursor:pointer; font-size:var(--fs-sm); }
   .views .v:hover { color:var(--ink); border-color:var(--faint); }
   .views .v.active { background:var(--blue); color:var(--on-accent); border-color:var(--blue); font-weight:600; }
-  table { width:100%; border-collapse:collapse; font-size:13.5px; background:var(--panel); }
-  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:600;
-       color:var(--dim); padding:9px 12px; border-bottom:1px solid var(--line); cursor:pointer;
+  table { width:100%; border-collapse:collapse; font-size:var(--fs-base); background:var(--panel); }
+  th { text-align:left; font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+       color:var(--dim); padding:calc(var(--cell-y) + 1px) var(--cell-x); border-bottom:1px solid var(--line); cursor:pointer;
        white-space:nowrap; position:sticky; top:0; background:var(--panel); z-index:1; }
   th:hover { color:var(--ink); }
-  th:hover { color:var(--ink); }
-  td { padding:8px 12px; border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  /* Moving a column: the header being dragged fades, and a bar shows which side
+     of the header under the mouse it will land on. */
+  th.dragging { opacity:.4; }
+  th.drop-l { box-shadow:inset 3px 0 0 var(--blue); }
+  th.drop-r { box-shadow:inset -3px 0 0 var(--blue); }
+  .colrow { display:flex; align-items:center; gap:9px; padding:5px 7px; border-radius:5px; font-size:var(--fs-base); cursor:grab; }
+  .colrow:hover { background:var(--panel2); }
+  .colrow .grip { color:var(--faint); letter-spacing:-2px; }
+  .colrow label { display:flex; align-items:center; gap:8px; margin:0; font-size:var(--fs-base); text-transform:none;
+                  letter-spacing:0; color:var(--ink); cursor:pointer; flex:1; }
+  .colrow input { width:auto; }
+  .colrow.dragging { opacity:.4; }
+  .colrow.drop-t { box-shadow:inset 0 3px 0 var(--blue); }
+  .colrow.drop-b { box-shadow:inset 0 -3px 0 var(--blue); }
+  td { padding:var(--cell-y) var(--cell-x); border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  /* A button living in a cell keeps the row from growing a line taller. */
+  td button { font-size:var(--fs-sm); padding:3px 10px; }
   tbody tr:hover td { background:var(--panel2); }
+  /* Totals sit under the table and stay put while it scrolls, so the figure for
+     a column is still on screen when its rows are not. */
+  tfoot td { position:sticky; bottom:0; background:var(--panel2); border-top:1px solid var(--line);
+             border-bottom:none; font-weight:600; z-index:1; }
+  /* the holiday subtotal sits above the total and scrolls with the table, so the
+     two never pile on top of each other at the sticky bottom edge */
+  tfoot tr.sub td { position:static; font-weight:500; color:var(--dim); background:var(--sunken); }
+  /* A switched-off account is still listed, just plainly not playing. */
+  tbody tr.off td { color:var(--faint); }
+  tbody tr.off a.focus { color:var(--faint); }
+  .onoff { cursor:pointer; accent-color:var(--acc); vertical-align:-3px; }
   /* header and value share one alignment per column so they line up exactly */
   th.c, td.c { text-align:center; }
   th.l, td.l { text-align:left; }
   tr:hover td { background:var(--panel2); }
   tbody tr { cursor:pointer; }
-  .edit { color:var(--dim); padding:0 4px; border-radius:4px; }
+  .edit { color:var(--dim); padding:0 4px; border-radius:4px; font-size:var(--fs-lg); }
   .edit:hover { color:var(--ink); background:#2a313b; }
+  .brow { padding:0 10px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .brow:hover { background:#2a313b; }
   tr:hover .focus { color:var(--blue); text-decoration:underline; }
   a.focus { color:var(--blue); text-decoration:none; font-weight:600; cursor:pointer; }
   a.focus:hover { text-decoration:underline; }
   .focus.noconsole { color:var(--dim); cursor:default; }
-  .pill { font-size:11px; padding:3px 9px; border-radius:99px; font-weight:600; white-space:nowrap; }
+  .pill { font-size:var(--fs-sm); padding:3px 10px; border-radius:99px; font-weight:600; white-space:nowrap; }
   .ok { background:rgba(123,216,143,.15); color:var(--acc); }
   .stale { background:rgba(255,180,84,.15); color:var(--warn); }
   .err { background:rgba(255,107,107,.15); color:var(--bad); }
   .maint { background:rgba(110,168,254,.15); color:var(--blue); }
   .warn { background:rgba(255,180,84,.15); color:var(--warn); }
   .war { color:var(--bad); font-weight:700; }
-  .wrap { max-height:calc(100vh - 210px); overflow:auto; }
-  .foot { display:flex; gap:18px; padding:9px 18px; border-top:1px solid var(--line);
-          background:var(--panel); font-size:12.5px; color:var(--dim); }
-  pre { margin:0; padding:10px 18px; font:12.5px/1.6 "IBM Plex Mono",Consolas,ui-monospace,monospace;
-        color:var(--dim); max-height:130px; overflow:auto; background:var(--sunken);
+  /* An account holding a prisoner. It is not a fault and not an attack, so it
+     reads differently from both: a violet edge down the row and a violet pill,
+     because a prisoner sits in a Feasting Hall slot and quietly blocks the
+     training hero's round until somebody looks. */
+  .cap { background:rgba(178,132,255,.16); color:#c6a4ff; }
+  tbody tr.hascap td:first-child { box-shadow:inset 3px 0 0 #b284ff; }
+  tbody tr.hascap td { background:rgba(178,132,255,.05); }
+  tbody tr.hascap:hover td { background:rgba(178,132,255,.10); }
+  .capn { color:#c6a4ff; font-weight:700; }
+  /* The fleet table is wide — one row an account, a column a figure. It scrolls
+     both ways inside this pane instead of stretching the page out of shape.
+     min-height:0 is what lets a flex child actually shrink and scroll. */
+  .wrap { flex:1; min-height:0; overflow:auto; }
+  .foot { display:flex; gap:18px; padding:10px var(--pad); border-top:1px solid var(--line);
+          background:var(--panel); font-size:var(--fs-sm); color:var(--dim); }
+  pre { margin:0; padding:10px var(--pad); font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;
+        font-size:var(--fs-sm); line-height:1.6;
+        color:var(--dim); max-height:118px; overflow:auto; background:var(--sunken);
         border-top:1px solid var(--line); }
-  dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:9px; padding:18px; min-width:420px; }
+  /* On a short screen the log gives its room back to the table. */
+  @media (max-height: 900px) { pre { max-height:88px; } }
+  dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:9px;
+           padding:20px; min-width:460px; max-width:calc(100vw - 32px); }
+  /* the fixed-width textareas in the dialogs must not push past the screen */
+  dialog textarea { max-width:100%; box-sizing:border-box; }
+
+  /* ---- account management: every field of every account in one grid ---- */
+  #pageAccounts { display:flex; flex-direction:column; flex:1; min-height:0; }
+  .am-bar { display:flex; gap:8px; align-items:center; padding:9px var(--pad); background:var(--panel);
+            border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .am-bar .sp { flex:1; }
+  .am-bar label { display:flex; align-items:center; gap:6px; font-size:var(--fs-sm); color:var(--dim); }
+  .am-help { padding:6px var(--pad); font-size:var(--fs-sm); color:var(--dim); background:var(--panel);
+             border-bottom:1px solid var(--line); line-height:1.9; }
+  .am-help kbd { font-family:"IBM Plex Mono",Consolas,monospace; font-size:var(--fs-xs); border:1px solid var(--line);
+                 border-bottom-width:2px; border-radius:4px; padding:0 5px; background:var(--sunken); color:var(--ink); }
+  /* The grid takes the keyboard: the wrap is what has focus while no cell is
+     being edited, so the arrow keys have somewhere to land. */
+  .am-wrap { flex:1; min-height:0; overflow:auto; outline:none; }
+  #amTbl { table-layout:fixed; width:max-content; min-width:100%; }
+  #amTbl th { cursor:default; overflow:hidden; text-overflow:ellipsis; }
+  #amTbl tbody tr { cursor:default; }
+  #amTbl td { padding:0; height:40px; cursor:cell; overflow:hidden; text-overflow:ellipsis; background:var(--panel); }
+  #amTbl tbody tr:hover td { background:var(--panel2); }
+  #amTbl td > .v { padding:var(--cell-y) var(--cell-x); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #amTbl td > .v.c { text-align:center; }
+  #amTbl td > .v.pathv { display:flex; align-items:center; gap:6px; }
+  #amTbl td > .v.pathv .p { flex:1; overflow:hidden; text-overflow:ellipsis; }
+  #amTbl .empty { color:var(--faint); }
+  /* the tick box and the account name stay put while the rest scrolls sideways */
+  #amTbl th.stick, #amTbl td.stick { position:sticky; left:0; z-index:2; }
+  #amTbl th.stick2, #amTbl td.stick2 { position:sticky; left:38px; z-index:2; box-shadow:inset -1px 0 0 var(--line); font-weight:600; }
+  #amTbl th.stick, #amTbl th.stick2 { z-index:3; }
+  /* the cell the keys act on, and the rows a value will be applied to */
+  #amTbl td.cur { box-shadow:inset 0 0 0 2px var(--blue); }
+  #amTbl td.stick2.cur { box-shadow:inset 0 0 0 2px var(--blue), inset -1px 0 0 var(--line); }
+  #amTbl tr.ticked td { background:var(--panel2); }
+  #amTbl tr.ticked td.stick { box-shadow:inset 3px 0 0 var(--blue); }
+  /* the editor fills its cell */
+  #amTbl td.ed { overflow:visible; }
+  #amTbl td.ed input, #amTbl td.ed select, #amTbl td.ed textarea {
+    display:block; width:100%; height:100%; min-height:40px; border:none; border-radius:0; background:var(--sunken);
+    box-shadow:inset 0 0 0 2px var(--blue); padding:var(--btn-y) var(--cell-x); font-family:inherit;
+    font-size:var(--fs-base); color:var(--ink); outline:none; box-sizing:border-box; }
+  #amTbl td.ed textarea { min-height:110px; font-family:"IBM Plex Mono",Consolas,monospace; font-size:var(--fs-sm);
+                          line-height:1.55; resize:vertical; white-space:pre; }
+  #amTbl td .am-browse, #amTbl td .am-del { font-size:var(--fs-xs); padding:2px 7px; }
+  #amTbl td .am-del { color:var(--dim); }
+  #amTbl td .am-del:hover { color:var(--bad); border-color:var(--bad); }
+  #amTbl input[type=checkbox] { cursor:pointer; vertical-align:-3px; }
 
   /* ---- page tabs ---- */
   .tabs { display:flex; gap:2px; margin-right:4px; }
-  .tab { padding:5px 13px; border-radius:6px 6px 0 0; font-size:12px; cursor:pointer; color:var(--dim); border:1px solid transparent; border-bottom:none; }
+  .tab { padding:7px 15px; border-radius:6px 6px 0 0; font-size:var(--fs-base); cursor:pointer; color:var(--dim); border:1px solid transparent; border-bottom:none; }
   .tab.on { background:var(--panel); color:var(--ink); border-color:var(--line); font-weight:600; }
 
   /* ---- uptime ---- */
-  #pageUptime { padding:14px 16px; overflow:auto; flex:1; }
-  .cards { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px 14px; min-width:206px; }
-  .card h4 { margin:0 0 8px; font-size:12.5px; display:flex; align-items:center; gap:7px; }
-  .card .big { font-size:25px; font-variant-numeric:tabular-nums; line-height:1.15; }
-  .card .sub { font-size:11px; color:var(--dim); margin-top:5px; line-height:1.65; }
-  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
-  .bandwrap { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:13px 15px; margin-bottom:14px; }
-  .bandwrap h3 { margin:0 0 3px; font-size:13px; }
-  .legend { display:flex; gap:15px; flex-wrap:wrap; font-size:11px; color:var(--dim); margin:10px 0 13px; align-items:center; }
-  .legend span.k { display:flex; align-items:center; gap:5px; }
-  .legend i { width:11px; height:11px; border-radius:2px; display:inline-block; }
+  #pageUptime { padding:var(--pad); overflow:auto; flex:1; }
+  .cards { display:flex; gap:13px; flex-wrap:wrap; margin-bottom:16px; }
+  /* a max-width as well as a min: a card with a long list in it used to stretch
+     halfway across the screen and break the row */
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:13px 16px; min-width:248px; max-width:420px; }
+  /* the trading tab's 6 summary cards: always one row, shrinking together rather
+     than wrapping to a second line — only overflow-scroll if a window is truly too narrow */
+  #trCards { flex-wrap:nowrap; overflow-x:auto; }
+  #trCards .card { flex:1 1 0; min-width:190px; max-width:none; }
+  .card h4 { margin:0 0 8px; font-size:var(--fs-base); display:flex; align-items:center; gap:8px; }
+  .card .big { font-size:var(--fs-huge); font-variant-numeric:tabular-nums; line-height:1.15; }
+  .card .sub { font-size:var(--fs-sm); color:var(--dim); margin-top:6px; line-height:1.6; }
+  .dot { width:var(--dot); height:var(--dot); border-radius:50%; display:inline-block; flex:none; }
+  .bandwrap { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:15px 17px; margin-bottom:14px; }
+  .bandwrap h3 { margin:0 0 4px; font-size:var(--fs-lg); }
+  .band-hero { padding:18px 20px 20px; border-color:var(--blue); box-shadow:0 0 0 1px var(--blue) inset; }
+  .band-hero h3 { font-size:var(--fs-xl); }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:var(--fs-sm); color:var(--dim); margin:11px 0 14px; align-items:center; }
+  .legend span.k { display:flex; align-items:center; gap:6px; }
+  .legend i { width:var(--sw); height:var(--sw); border-radius:2px; display:inline-block; }
   #bandTip { position:fixed; pointer-events:none; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:6px;
-             padding:7px 9px; font-size:11.5px; line-height:1.65; display:none; z-index:50; max-width:290px; box-shadow:var(--shadow); }
+             padding:8px 11px; font-size:var(--fs-sm); line-height:1.6; display:none; z-index:50; max-width:330px; box-shadow:var(--shadow); }
+  #bandAxis { font-size:var(--fs-xs); }
   .range { display:flex; gap:5px; }
-  .range div { padding:3px 10px; border:1px solid var(--line); border-radius:5px; font-size:11.5px; cursor:pointer; color:var(--dim); }
+  .range div { padding:5px 12px; border:1px solid var(--line); border-radius:5px; font-size:var(--fs-sm); cursor:pointer; color:var(--dim); }
   .range div.on { background:var(--panel2); color:var(--ink); border-color:var(--blue); font-weight:600; }
-  .trouble { font-size:11.5px; border-collapse:collapse; width:100%; }
-  .trouble td { padding:6px 10px; border-bottom:1px solid var(--line-soft); }
-  dialog label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin:10px 0 4px; }
+  /* ---- trading ---- */
+  #pageTrading { padding:var(--pad); overflow:auto; flex:1; }
+  .tr-bars { display:flex; align-items:flex-end; gap:6px; height:var(--bars-h); padding:24px 0 0; border-bottom:1px solid var(--line); }
+  .tr-bars .col { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; height:100%; justify-content:flex-end; position:relative; }
+  .tr-bars .pair { display:flex; gap:2px; align-items:flex-end; width:100%; justify-content:center; height:100%; }
+  .tr-bars .b { width:42%; max-width:26px; border-radius:3px 3px 0 0; min-height:1px; }
+  .tr-bars .pct { position:absolute; top:-20px; font-size:var(--fs-xs); font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; }
+  .tr-axis { display:flex; gap:6px; margin-top:6px; }
+  .tr-axis div { flex:1; min-width:0; text-align:center; font-size:var(--fs-xs); color:var(--dim); white-space:nowrap; overflow:hidden; }
+  .tr-tbl { font-size:var(--fs-base); border-collapse:collapse; width:100%; background:transparent; }
+  .tr-tbl th { position:static; background:transparent; cursor:default; padding:8px 11px; }
+  .tr-tbl td { padding:8px 11px; border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; vertical-align:top; }
+  .tr-tag { display:inline-block; font-size:var(--fs-xs); font-weight:600; padding:1px 8px; border-radius:4px; border:1px solid var(--line); color:var(--dim); }
+  .tr-tag.hol { color:var(--warn); border-color:var(--warn); }
+  .tr-tag.ours { color:var(--blue); border-color:var(--blue); }
+  .tr-muted { color:var(--dim); font-size:var(--fs-sm); }
+  .tr-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:14px; }
+  /* a table wider than its panel scrolls inside the panel, it does not stretch the page */
+  .tr-scroll { overflow-x:auto; }
+  @media (max-width: 1100px) { .tr-grid { grid-template-columns:minmax(0,1fr); } }
+  /* ---- trading: the setup view ---- */
+  .tr-subtabs { margin-bottom:14px; }
+  .tr-subtabs div { font-size:var(--fs-base); padding:7px 16px; }
+  .ts-runhead { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .ts-cols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
+  @media (max-width: 900px) { .ts-cols { grid-template-columns:minmax(0,1fr); } }
+  .ts-col { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; min-height:150px;
+            display:flex; flex-direction:column; transition:border-color .12s, box-shadow .12s; }
+  .ts-col.over { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue) inset; }
+  .ts-col[data-side="buy"] { border-top:3px solid var(--blue); }
+  .ts-col[data-side="sell"] { border-top:3px solid var(--warn); }
+  .ts-colhead { display:flex; align-items:baseline; gap:8px; }
+  .ts-colhead h3 { margin:0; font-size:var(--fs-lg); }
+  .ts-count { color:var(--dim); font-size:var(--fs-sm); }
+  .ts-sub { font-size:var(--fs-sm); margin:3px 0 9px; min-height:1.5em; }
+  .ts-list { display:flex; flex-direction:column; gap:7px; flex:1; }
+  .ts-acc { border:1px solid var(--line); border-radius:7px; padding:8px 10px; background:var(--sunken); cursor:grab;
+            display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .ts-acc:hover { border-color:var(--faint); }
+  .ts-acc.dragging { opacity:.4; }
+  .ts-acc .nm { font-weight:600; font-size:var(--fs-base); }
+  .ts-acc .meta { color:var(--dim); font-size:var(--fs-sm); flex-basis:100%; }
+  .ts-acc .mv { margin-left:auto; display:flex; gap:4px; }
+  .ts-acc .mv button { font-size:var(--fs-xs); padding:2px 8px; }
+  .ts-hol { color:var(--warn); border-color:var(--warn); }
+  .ts-ladder { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; margin:2px 0 4px 24px; }
+  .ts-ladder input { font-variant-numeric:tabular-nums; }
+  .ts-unk { color:var(--bad); border-color:var(--bad); }
+  .ts-form { display:grid; grid-template-columns:auto minmax(120px, 220px) minmax(0,1fr); gap:7px 12px; align-items:center; }
+  .ts-form label { font-size:var(--fs-sm); color:var(--dim); }
+  .ts-form input, .ts-form select { width:100%; }
+  .ts-fh { font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:600; }
+  .ts-now { font-size:var(--fs-sm); color:var(--dim); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .ts-now.diff { color:var(--warn); font-weight:600; }
+  .ts-fixed { font-size:var(--fs-sm); }
+  .ts-opts { display:flex; flex-direction:column; gap:7px; margin-top:14px; }
+  .ts-opts label { display:flex; align-items:center; gap:8px; font-size:var(--fs-base); flex-wrap:wrap; }
+  .ts-msg { border-radius:6px; padding:7px 11px; margin-top:8px; font-size:var(--fs-sm); white-space:pre-wrap; }
+  .ts-msg.bad { background:rgba(255,107,107,.13); color:var(--bad); }
+  .ts-msg.warn { background:rgba(255,180,84,.13); color:var(--warn); }
+  .ts-msg.ok { background:rgba(123,216,143,.13); color:var(--acc); }
+  .ts-events { max-height:520px; overflow:auto; font-size:var(--fs-sm); line-height:1.55; }
+  .ts-events div { padding:4px 0; border-bottom:1px solid var(--line-soft); }
+  .ts-events .t { color:var(--faint); font-variant-numeric:tabular-nums; margin-right:8px; }
+  button.danger { background:var(--bad); color:var(--on-accent); border-color:var(--bad); font-weight:600; }
+  button.danger:hover { background:var(--bad); filter:brightness(1.08); }
+  button[disabled] { opacity:.5; cursor:default; }
+  /* ask() / tell(): the page's own confirm and alert boxes, never the browser's */
+  dialog.ask { width:min(580px, 92vw); min-width:0; padding:0; box-shadow:var(--shadow); }
+  dialog.ask::backdrop { background:rgba(0,0,0,.35); }
+  .ask-cap { padding:12px 18px; font-weight:600; font-size:var(--fs-lg); border-bottom:1px solid var(--line); }
+  .ask-body { padding:14px 18px 4px; max-height:60vh; overflow:auto; font-size:var(--fs-base); line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+  .ask-q { font-weight:600; }
+  .ask-more { color:var(--dim); margin-top:9px; font-size:var(--fs-sm); }
+  .ask-btns { display:flex; justify-content:flex-end; gap:9px; padding:13px 18px 16px; }
+  .ask-btns button { min-width:90px; }
+  /* ---- resources ---- */
+  #pageResources { padding:var(--pad); overflow:auto; flex:1; }
+  .rs-bar { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .rs-chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .rs-chips div { padding:5px 12px; border:1px solid var(--line); border-radius:99px; font-size:var(--fs-sm); cursor:pointer; color:var(--dim); display:flex; align-items:center; gap:6px; }
+  .rs-chips div.on { background:var(--panel2); color:var(--ink); border-color:var(--blue); font-weight:600; }
+  .rs-chips i { width:var(--sw-sm); height:var(--sw-sm); border-radius:2px; display:inline-block; }
+  .rs-grid-wrap { display:grid; grid-template-columns:repeat(auto-fill, minmax(400px, 1fr)); gap:14px; }
+  .rs-panel { margin-bottom:0; }
+  .rs-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .rs-head h3 { margin:0; }
+  .rs-now { margin-left:auto; font-size:var(--fs-xl); font-variant-numeric:tabular-nums; font-weight:600; }
+  .rs-sw { width:var(--sw); height:var(--sw); border-radius:2px; display:inline-block; }
+  .rs-plot svg { display:block; }
+  .rs-grid { stroke:var(--line-soft); stroke-width:1; }
+  .rs-cross { stroke:var(--faint); stroke-width:1; stroke-dasharray:3 3; }
+  /* the chart labels ride the same scale as the text around them */
+  .rs-ax { fill:var(--dim); font-size:var(--fs-xs); font-variant-numeric:tabular-nums; }
+  #rsTable th { cursor:pointer; }
+  #rsTable .num { text-align:right; }
+  #rsTable .rs-total td { font-weight:600; border-top:1px solid var(--line); }
+  #rsTable .rs-side td { color:var(--dim); }
+  .rs-split { display:flex; flex-direction:column; gap:1px; margin:4px 0 2px; font-size:var(--fs-xs); color:var(--dim); font-variant-numeric:tabular-nums; }
+  .rs-split-part { display:flex; align-items:center; gap:5px; }
+  .rs-split-part b { margin-left:auto; font-weight:600; color:var(--ink); }
+  .rs-dot { display:inline-block; width:7px; height:7px; border-radius:50%; flex:none; }
+  .rs-dot.hol { background:var(--warn); }
+  .rs-dot.out { background:var(--acc); }
+  .rs-dot.unk { background:var(--faint); }
+  /* the 08:30 record */
+  #rsMornTbl .num { text-align:right; }
+  .rs-late { color:var(--warn); margin-left:3px; font-size:var(--fs-xxs); vertical-align:super; }
+  #rsMornTbl th { cursor:default; }
+  @media (max-width: 480px) { .rs-grid-wrap { grid-template-columns:minmax(0,1fr); } }
+  .trouble { font-size:var(--fs-base); border-collapse:collapse; width:100%; }
+  /* the reason can be a long sentence: let it wrap instead of running off */
+  .trouble td { padding:7px 11px; border-bottom:1px solid var(--line-soft); white-space:normal; }
+  /* The account dialog carries two lines of help; without a width it grows to
+     fit them on one line each and spans the screen. */
+  #dlg { width:560px; max-width:calc(100vw - 32px); }
+  dialog label { display:block; font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin:12px 0 5px; }
   dialog input { width:100%; }
 </style>
 </head>
@@ -122,39 +385,70 @@
   <span class="stat"><b id="cAcc">0</b> accounts</span>
   <span class="stat"><b id="cOk">0</b> reporting</span>
   <span class="stat"><b id="cWar">0</b> under attack</span>
-  <span class="stat"><b id="cProc">0</b> bobby.exe</span>
+  <span class="stat" id="offStat" hidden><b id="cOff">0</b> switched off</span>
   <span class="sp"></span>
   <div class="tabs">
     <div class="tab on" data-p="fleet">Fleet</div>
     <div class="tab" data-p="uptime">Uptime</div>
+    <div class="tab" data-p="trading">Trading</div>
+    <div class="tab" data-p="resources">Resources</div>
+    <div class="tab" data-p="accounts" title="Every field of every account in one grid">Accounts</div>
   </div>
-  <input id="q" placeholder="filter…" style="width:150px">
+  <input id="q" placeholder="filter…" style="width:170px">
   <button id="colsBtn">Columns</button>
   <button id="proxyBtn">Proxies</button>
+  <button id="startupBtn" title="NEAT's start-up parameters for every account: autorun scripts, -runscript, …">Start-up</button>
   <button id="add">Add account</button>
   <button id="themeBtn" title="Switch between light and dark">Dark</button>
   <button id="pollAll" class="primary">Poll all</button>
 </header>
 
 <div id="maintStrip" hidden style="display:flex;align-items:center;gap:10px;padding:6px 16px;
-     background:#1b2740;border-bottom:1px solid #2b3c5c;font-size:12px;color:#cfe0ff">
+     background:#1b2740;border-bottom:1px solid #2b3c5c;font-size:var(--fs-sm);color:#cfe0ff">
   <b style="color:#6ea8fe">SERVER MAINTENANCE</b><span id="maintStripText"></span>
 </div>
 
 <div id="pageFleet">
 <div class="views" id="views">
-  <span style="color:var(--dim);font-size:11.5px">views</span>
+  <span style="color:var(--dim);font-size:var(--fs-sm)">views</span>
   <div class="v active" data-v="all">All</div>
+  <div class="v" data-v="holiday">On holiday</div>
   <div class="v" data-v="war">Under attack</div>
+  <div class="v" data-v="captives">Holding prisoners</div>
   <div class="v" data-v="rich">High resources</div>
   <div class="v" data-v="troops">Big armies</div>
   <div class="v" data-v="idle">Idle / stale</div>
   <div class="v" data-v="fail">Errors</div>
+  <div class="v" data-v="off">Switched off</div>
 </div>
 
-<div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+<div class="wrap"><table id="tbl"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
 <div class="foot"><span id="status">—</span></div>
 <pre id="log"></pre>
+</div>
+
+<div id="pageAccounts" hidden>
+  <div class="am-bar">
+    <b style="font-size:var(--fs-lg)">Account management</b>
+    <input id="amQ" placeholder="filter accounts…" style="width:190px">
+    <label><input type="checkbox" id="amShowPw" checked style="width:auto"> show passwords</label>
+    <span class="sp"></span>
+    <button id="amApplyAll" title="Copy the selected cell's value to every account listed — or to the ticked ones (Ctrl+Shift+A)">Apply to all…</button>
+    <button id="amFillDown" title="Copy the cell above into the selected cell (Ctrl+D)">Fill down</button>
+    <button id="amRenumber" title="Number the sort order 1, 2, 3… in the order shown">Renumber</button>
+    <button id="amUndo" title="Put back the last change made here (Ctrl+Z)" disabled>Undo</button>
+    <button id="amAdd" class="primary">Add account</button>
+  </div>
+  <div class="am-help">
+    Click a cell to change it — the save is immediate, there is no Save button.
+    <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> move · <kbd>Enter</kbd> edits, then saves and moves down ·
+    <kbd>Tab</kbd> saves and moves right · <kbd>Esc</kbd> cancels · <kbd>Space</kbd> ticks a box ·
+    typing starts an edit · <kbd>Ctrl</kbd><kbd>D</kbd> copies the cell above ·
+    <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>A</kbd> applies the cell to every account (or the ticked ones) ·
+    <kbd>Alt</kbd><kbd>↑</kbd><kbd>↓</kbd> moves the row · <kbd>Ctrl</kbd><kbd>Z</kbd> undoes
+  </div>
+  <div class="am-wrap" id="amWrap" tabindex="0"><table id="amTbl"></table></div>
+  <div class="foot"><span id="amStatus">—</span></div>
 </div>
 
 <div id="pageUptime" hidden>
@@ -163,16 +457,14 @@
       <div data-h="3">3h</div><div data-h="12" class="on">12h</div>
       <div data-h="24">24h</div><div data-h="72">3d</div><div data-h="168">7d</div>
     </div>
-    <span style="color:var(--dim);font-size:11.5px" id="upMeta">—</span>
+    <span style="color:var(--dim);font-size:var(--fs-sm)" id="upMeta">—</span>
     <span class="sp" style="flex:1"></span>
     <button id="probeBtn">Probes</button>
   </div>
 
-  <div class="cards" id="upCards"></div>
-
-  <div class="bandwrap">
+  <div class="bandwrap band-hero">
     <h3>Timeline</h3>
-    <div style="color:var(--dim);font-size:11.5px">Each bot, sampled once a minute. A red gap means the bot process was not running at all — nothing was there to record a sample.</div>
+    <div style="color:var(--dim);font-size:var(--fs-sm)">Each bot, sampled once a minute. A red gap means the bot process was not running at all — nothing was there to record a sample.</div>
     <div class="legend">
       <span class="k"><i style="background:#4ea96b"></i>up &amp; active</span>
       <span class="k"><i style="background:#2e5f43"></i>up but silent</span>
@@ -182,8 +474,10 @@
       <span class="k"><i style="background:#2b313c"></i>no data</span>
     </div>
     <canvas id="band" style="width:100%;display:block"></canvas>
-    <div id="bandAxis" style="display:flex;justify-content:space-between;color:var(--dim);font-size:10.5px;margin-top:6px"></div>
+    <div id="bandAxis" style="display:flex;justify-content:space-between;color:var(--dim);font-size:var(--fs-xs);margin-top:6px"></div>
   </div>
+
+  <div class="cards" id="upCards"></div>
 
   <div class="bandwrap">
     <h3>Recent trouble</h3>
@@ -192,13 +486,185 @@
 </div>
 <div id="bandTip"></div>
 
+<div id="pageResources" hidden>
+  <div class="rs-bar">
+    <div class="range" id="rsRange">
+      <div data-h="24">24h</div><div data-h="72">3d</div><div data-h="168" class="on">7d</div><div data-h="720">30d</div>
+    </div>
+    <div class="rs-chips" id="rsTypes">
+      <div data-r="all" class="on">all</div>
+      <div data-r="food"><i style="background:var(--rs-food)"></i>food</div>
+      <div data-r="wood"><i style="background:var(--rs-wood)"></i>wood</div>
+      <div data-r="stone"><i style="background:var(--rs-stone)"></i>stone</div>
+      <div data-r="iron"><i style="background:var(--rs-iron)"></i>iron</div>
+      <div data-r="gold"><i style="background:var(--rs-gold)"></i>gold</div>
+    </div>
+    <select id="rsAcc" title="account"><option value="">every account</option></select>
+    <input id="rsQ" placeholder="search city, account or x,y" style="width:250px">
+    <button id="rsRecord" title="record every city now, besides the hourly record">Record now</button>
+  </div>
+  <div class="tr-muted" id="rsMeta" style="margin:-6px 0 12px">—</div>
+  <div class="rs-grid-wrap" id="rsCharts"></div>
+
+  <div class="bandwrap">
+    <div class="rs-head"><h3>At 08:30 every morning</h3>
+      <div class="range" id="rsMornRange" style="margin-left:auto">
+        <div data-d="3">3d</div><div data-d="7" class="on">7d</div><div data-d="14">14d</div><div data-d="30">30d</div>
+      </div></div>
+    <div class="tr-muted" id="rsMornMeta">reading the record…</div>
+    <div class="rs-chips" id="rsMornRes" style="margin:8px 0">
+      <div data-r="food" class="on"><i style="background:var(--rs-food)"></i>food</div>
+      <div data-r="wood"><i style="background:var(--rs-wood)"></i>wood</div>
+      <div data-r="stone"><i style="background:var(--rs-stone)"></i>stone</div>
+      <div data-r="iron"><i style="background:var(--rs-iron)"></i>iron</div>
+      <div data-r="gold"><i style="background:var(--rs-gold)"></i>gold</div>
+    </div>
+    <div class="tr-scroll"><table class="tr-tbl" id="rsMornTbl"></table></div>
+  </div>
+
+  <div class="bandwrap" style="margin-top:14px">
+    <h3>Cities, latest record</h3>
+    <div class="tr-muted" style="margin-bottom:6px">Each city's stock as its console had it at the last record — click a column to sort. The figures lag on a busy account; a console's login refreshes them.</div>
+    <div class="tr-scroll"><table class="tr-tbl" id="rsTable"></table></div>
+  </div>
+</div>
+
+<div id="pageTrading" hidden>
+  <!-- two views: what the play is doing (the default) and setting one up -->
+  <div class="range tr-subtabs" id="trSub" role="tablist">
+    <div data-s="results" class="on" role="tab" tabindex="0">Trading results</div>
+    <div data-s="setup" role="tab" tabindex="0">Trading</div>
+  </div>
+  <div id="trResults">
+  <div id="trRunBanner"></div>
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+    <div class="range" id="trRange">
+      <div data-m="30">30m</div><div data-m="60" class="on">1h</div><div data-m="180">3h</div>
+      <div data-m="360">6h</div><div data-m="720">12h</div>
+    </div>
+    <span class="tr-muted" id="trMeta">—</span>
+  </div>
+  <div class="cards" id="trCards"></div>
+  <div class="tr-grid">
+    <div class="bandwrap">
+      <h3>Orders every 5 minutes</h3>
+      <div class="tr-muted">What the holiday side placed against what our accounts placed, and the share that reached us above each pair.
+        Over 100% means other players traded into our orders too.</div>
+      <div class="legend">
+        <span class="k"><i style="background:var(--warn)"></i>holiday side</span>
+        <span class="k"><i style="background:var(--blue)"></i>our accounts</span>
+      </div>
+      <div class="tr-bars" id="trBars"></div>
+      <div class="tr-axis" id="trAxis"></div>
+    </div>
+    <div class="bandwrap">
+      <h3>Readings, 10 minutes each</h3>
+      <div class="tr-muted" style="margin-bottom:6px">The last hour; the newest is still filling.</div>
+      <table class="tr-tbl" id="trReadings"></table>
+    </div>
+  </div>
+  <div class="bandwrap">
+    <h3>Accounts</h3>
+    <div class="tr-muted" style="margin-bottom:6px">Orders are the last 2 minutes; cities trading, the last 10. The stock is what each city printed at the
+      console's last login — a relog refreshes it (the console's own figures lag on a busy account).</div>
+    <div class="tr-scroll"><table class="tr-tbl" id="trAccounts"></table></div>
+  </div>
+  </div>
+
+  <!-- ---- Trading: which accounts buy / sell, the play, Start process / Stop ---- -->
+  <div id="trSetup" hidden>
+    <div class="bandwrap" id="tsRunBox">
+      <div class="ts-runhead">
+        <h3 style="margin:0">The process</h3>
+        <span id="tsRunState" class="tr-tag">—</span>
+        <span class="tr-muted" id="tsRunMeta"></span>
+        <span style="flex:1"></span>
+        <button id="tsStart" class="primary">Start process</button>
+        <button id="tsStop" class="danger">Stop</button>
+      </div>
+      <div id="tsChecks"></div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin:0 0 8px">
+      <div class="tr-muted" style="flex:1">Drag an account between the lists, or focus it and press <b>B</b> (buying), <b>S</b> (selling) or <b>N</b> (not trading), or use its buttons.
+        The lists are kept until you or Claude change them. A change applies at the next Start.</div>
+      <button id="tsSwap">Swap buyers and sellers</button>
+    </div>
+    <div class="ts-cols" id="tsCols">
+      <div class="ts-col" data-side="none"><div class="ts-colhead"><h3>Not trading</h3><span class="ts-count"></span></div><div class="ts-sub tr-muted">left alone</div><div class="ts-list"></div></div>
+      <div class="ts-col" data-side="buy"><div class="ts-colhead"><h3>Buying</h3><span class="ts-count"></span></div><div class="ts-sub" id="tsBuySub"></div><div class="ts-list"></div></div>
+      <div class="ts-col" data-side="sell"><div class="ts-colhead"><h3>Selling</h3><span class="ts-count"></span></div><div class="ts-sub" id="tsSellSub"></div><div class="ts-list"></div></div>
+    </div>
+
+    <div class="tr-grid" style="margin-top:14px">
+      <div class="bandwrap">
+        <h3>The play</h3>
+        <div class="tr-muted" style="margin-bottom:10px">Saved with the setup; written to the control file (<code>scripts/glitch-res-control.txt</code>) in ONE write when the process starts,
+          or now with <i>Apply to the control file now</i>, which every running city reads within a second. Amounts take 10m, 800b, 25t.</div>
+        <div class="ts-form" id="tsForm">
+          <div class="ts-fh"></div><div class="ts-fh">setup</div><div class="ts-fh">control file now</div>
+          <label for="tsRes">resource</label>
+          <select id="tsRes"><option>food</option><option>wood</option><option>stone</option><option>iron</option></select><span class="ts-now" data-k="res"></span>
+          <label for="tsPrice">price</label>
+          <input id="tsPrice" inputmode="decimal" placeholder="1 or 150"><span class="ts-now" data-k="price"></span>
+          <label for="tsPrev">previous resource</label>
+          <select id="tsPrev"><option value="auto">auto: the one before</option><option value="">none</option><option>food</option><option>wood</option><option>stone</option><option>iron</option></select><span class="ts-now" data-k="prevRes"></span>
+          <label for="tsCapFood">food cap (soft)</label>
+          <input id="tsCapFood" data-cap="food"><span class="ts-now" data-k="cap.food"></span>
+          <label for="tsCapWood">wood cap</label>
+          <input id="tsCapWood" data-cap="wood"><span class="ts-now" data-k="cap.wood"></span>
+          <label for="tsCapStone">stone cap</label>
+          <input id="tsCapStone" data-cap="stone"><span class="ts-now" data-k="cap.stone"></span>
+          <label for="tsCapIron">iron cap</label>
+          <input id="tsCapIron" data-cap="iron"><span class="ts-now" data-k="cap.iron"></span>
+          <label for="tsCapGold">gold cap</label>
+          <input id="tsCapGold"><span class="ts-now" data-k="capGold"></span>
+          <label for="tsKeepRes">keep resource (runway)</label>
+          <input id="tsKeepRes"><span class="ts-now" data-k="keepRes"></span>
+          <label for="tsKeepGold">keep gold (runway)</label>
+          <input id="tsKeepGold"><span class="ts-now" data-k="keepGold"></span>
+          <label>food hard cap</label>
+          <span class="ts-fixed" title="At 1t food a city's food resets to 0. Never loosened from here.">950b, fixed</span><span class="ts-now" data-k="foodCap"></span>
+          <label>holi list</label>
+          <span class="ts-fixed tr-muted">the holiday lords the SAFETY lines allow</span><span class="ts-now" data-k="holi"></span>
+        </div>
+        <div class="ts-opts">
+          <label><input type="checkbox" id="tsCleanBefore"> clean reports before <span class="tr-muted">(clean-then-buy / clean-then-sell: the first city cleans, the rest trade)</span></label>
+          <label><input type="checkbox" id="tsCleanAfter"> clean reports after <span class="tr-muted">(once stopped, each account restarts onto clean-reports.txt)</span></label>
+          <label><input type="checkbox" id="tsWatchdog"> watchdog <span class="tr-muted">(puts back a console that came up without its script)</span></label>
+          <label><input type="checkbox" id="tsLadder"> price ladder <span class="tr-muted">(on/off applies to a running play within seconds)</span></label>
+          <div class="ts-ladder">
+            <label>resource rungs, cheap → dear <input id="tsLadRes" style="width:260px" placeholder="0.001 0.01 0.1 0.5 1 2 3"></label>
+            <label>gold rungs <input id="tsLadGold" style="width:220px" placeholder="100 110 120 130 140 150"></label>
+            <label>every <input id="tsLadEvery" inputmode="numeric" style="width:50px"> min: over <input id="tsLadHigh" inputmode="numeric" style="width:44px">% of the banks' orders captured steps our way, under <input id="tsLadLow" inputmode="numeric" style="width:44px">% steps back</label>
+            <span class="tr-muted">It only moves a price that is one of its rungs, one rung at a time, and never past either end. Saved rungs, shares and interval apply to a running play at its next reading.</span>
+          </div>
+          <label>the selling side starts <input id="tsDelay" inputmode="numeric" style="width:90px"> seconds after the buyers</label>
+          <label>restart gate <input id="tsGate" inputmode="decimal" style="width:60px"> minutes <span class="tr-muted">(how long after an account's last restart the tab waits before starting it; 0 = at once. The console's own 10-minute guard is lifted for these starts)</span></label>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+          <button id="tsSave" class="primary">Save setup</button>
+          <button id="tsApply">Apply to the control file now</button>
+          <button id="tsHoli">Set holi list to the holiday side</button>
+          <span class="tr-muted" id="tsSaved"></span>
+        </div>
+      </div>
+      <div class="bandwrap">
+        <h3>What it did</h3>
+        <div class="tr-muted" style="margin-bottom:6px">The process's own log, the newest at the top. The Director's log has it too.</div>
+        <div id="tsEvents" class="ts-events"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <dialog id="probeDlg">
   <b>Uptime probes</b>
-  <div style="color:var(--dim);font-size:11.5px;margin:6px 0 10px;line-height:1.6">
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin:6px 0 10px;line-height:1.6">
     One line per bot console: <code>name http://host:port</code>.<br>
     The Director asks each one every minute. This costs no game traffic — it is a local HTTP call — so it is safe while the game poller stays slow.
   </div>
-  <textarea id="probeText" spellcheck="false" style="width:520px;height:140px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font:12.5px/1.6 Consolas,monospace;resize:vertical"></textarea>
+  <textarea id="probeText" spellcheck="false" style="width:520px;height:140px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.6;resize:vertical"></textarea>
   <div style="display:flex;gap:8px;margin-top:12px">
     <button id="probeSave" class="primary">Save</button>
     <button id="probeClose">Close</button>
@@ -207,8 +673,9 @@
 
 <dialog id="colsDlg">
   <b>Columns</b>
-  <div style="color:var(--dim);font-size:11.5px;margin:5px 0 10px">Pick what the table shows. Click any header to sort by it.</div>
-  <div id="colsList" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 18px;max-height:340px;overflow:auto"></div>
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 10px;line-height:1.55">Tick what the table shows, and drag a row to move
+    its column (or drag a header in the table itself). Click any header to sort by it.</div>
+  <div id="colsList" style="max-height:420px;overflow:auto"></div>
   <div style="display:flex;gap:8px;margin-top:14px">
     <button id="colsAll">All</button>
     <button id="colsReset">Defaults</button>
@@ -219,7 +686,7 @@
 
 <dialog id="proxyDlg">
   <b>Proxy list</b>
-  <div style="color:var(--dim);font-size:11.5px;margin:6px 0 10px;line-height:1.6">
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin:6px 0 10px;line-height:1.6">
     One per line. Paste straight from your provider — these all work:<br>
     <code style="color:var(--blue)">host:port</code> ·
     <code style="color:var(--blue)">host:port:user:pass</code> ·
@@ -227,12 +694,58 @@
     <code style="color:var(--blue)">http://host:port</code><br>
     Bare <code style="color:var(--blue)">host:port</code> is treated as socks5. Blank lines and <code>#</code> comments are ignored.
   </div>
-  <textarea id="proxyText" spellcheck="false" style="width:560px;height:230px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font:12.5px/1.6 Consolas,monospace;resize:vertical"></textarea>
-  <div id="proxyStat" style="margin-top:9px;font-size:12px;color:var(--dim)"></div>
-  <div id="proxyList" style="margin-top:8px;max-height:130px;overflow:auto;font:11.5px/1.7 Consolas,monospace;color:#9aa3b2"></div>
+  <textarea id="proxyText" spellcheck="false" style="width:560px;height:230px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.6;resize:vertical"></textarea>
+  <div id="proxyStat" style="margin-top:9px;font-size:var(--fs-sm);color:var(--dim)"></div>
+  <div id="proxyList" style="margin-top:8px;max-height:130px;overflow:auto;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.7;color:#9aa3b2"></div>
   <div style="display:flex;gap:8px;margin-top:14px">
     <button id="proxySave" class="primary">Save</button>
+    <button id="proxyTest" title="Tunnel to the game server through each proxy and ask for the policy file — no login">Test all</button>
     <button id="proxyClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="startupDlg" style="width:580px;max-width:calc(100vw - 32px)">
+  <b>Start-up parameters for every account</b>
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin:6px 0 10px;line-height:1.6">
+    NEAT's Custom Parameters: every console gets them when it starts, and an account's own
+    (✎ → Start-up parameters) win over them. <code>-name value</code>, one a line or several on one.
+    Applies from each console's next start, never to a running one.
+  </div>
+  <label style="display:block;font-size:var(--fs-sm);text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin:0 0 4px">Autorun scripts</label>
+  <select id="startupAuto" style="width:100%">
+    <option value="">Not set — off, unless an account or CmdParms.txt switches it on</option>
+    <option value="1">On — every account's cities run their label autorun scripts at start</option>
+    <option value="0">Off — no account's scripts start by themselves (an account's own setting still wins)</option>
+  </select>
+  <textarea id="startupText" spellcheck="false" placeholder="-autoscripts 1&#10;-runscript AutoRunScript.txt"
+    style="width:100%;box-sizing:border-box;height:130px;margin-top:10px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.6;resize:vertical"></textarea>
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:8px;line-height:1.65">
+    What an OTTObot console does with NEAT's parameters:
+    <code>-autoscripts 1|0</code> autorun scripts ·
+    <code>-runscript File.txt</code> the file each city runs first (from <code>scripts\</code>, else AutoRunScript.txt) ·
+    <code>-autorun 0</code> the engine starts paused ·
+    <code>-maxtrade N</code> the most one script order may be for ·
+    anything else, e.g. <code>-teleport tuscany</code>, reaches scripts as <code>Config.teleport</code>.
+    Login, server and proxy are each account's own fields, never parameters.
+  </div>
+  <div id="startupMsg" style="margin-top:9px;font-size:var(--fs-sm);color:var(--dim);line-height:1.6"></div>
+  <div style="display:flex;gap:8px;margin-top:14px">
+    <button id="startupSave" class="primary">Save</button>
+    <button id="startupClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="browseDlg" style="width:560px">
+  <b>Pick a goals file</b>
+  <div style="display:flex;gap:6px;margin-top:10px">
+    <select id="browseRoot" style="width:auto"></select>
+    <input id="browseDir" spellcheck="false" style="flex:1">
+    <button type="button" id="browseGo">Open</button>
+  </div>
+  <div id="browseList" style="margin-top:9px;height:300px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--sunken);font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.9;padding:4px 0"></div>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <span id="browseMsg" style="flex:1;color:var(--dim);font-size:var(--fs-sm);align-self:center"></span>
+    <button type="button" id="browseClose">Cancel</button>
   </div>
 </dialog>
 
@@ -243,7 +756,80 @@
     <label>Server</label><input name="server" value="ss71">
     <label>Email</label><input name="email" required>
     <label>Password</label><input name="password" type="text">
+    <label>Security code</label><input name="securityCode" type="text" placeholder="the game's second password — blank if this account has none">
     <label>Notes</label><input name="notes">
+    <label>After a kick (minutes)</label>
+    <input name="kickHoldMin" inputmode="numeric" placeholder="blank or 0 = log straight back in">
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      When another login takes the account (NEAT, or you in the game), its console stays out
+      this long before it logs back in — 5, 30, 300… Blank or 0: straight back, as before.
+      Connect on its console takes it back early. Applies without a restart.
+    </div>
+    <label>After maintenance</label>
+    <select name="maintRole" style="width:100%">
+      <option value="">Normal — comes back on its own schedule</option>
+      <option value="monitor">Maintenance monitor — finds the end of maintenance, takes the login risk</option>
+      <option value="follow">Follower — no login until the monitor is in, then straight back</option>
+    </select>
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      <b>The monitor and follower roles do nothing at the moment</b> (2026-09-20): every
+      account stands down before the announced start and comes back at the announced end,
+      checking the game port — which costs no login — until it answers. The race bought no
+      real speed and the monitor's repeated logins into a closed server killed its proxy.
+      A console started with <code>OTTO_MAINT_RACE=1</code> uses the roles again.
+    </div>
+    <label>Proxy</label>
+    <select name="proxy" style="width:100%"></select>
+    <div id="proxyHint" style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      The IP this account's console logs in from. <b>Random</b>, the default, picks a line of
+      the list that no other account uses and that has not failed its test, and keeps it for
+      this account until that line fails or leaves the list. Or pin one line yourself — one
+      proxy per account (two on one line both lost their logins). Test the list first
+      (Proxies → Test all). Takes effect on the console's next login.
+    </div>
+    <label>Autorun scripts</label>
+    <select name="autoscripts" style="width:100%">
+      <option value="">As every account (Start-up)</option>
+      <option value="1">On — at its console's start, each city runs its label autorun scripts</option>
+      <option value="0">Off — no script starts by itself</option>
+    </select>
+    <label>Start-up parameters</label>
+    <textarea name="startupParms" spellcheck="false" rows="3" placeholder="-autoscripts 1&#10;-runscript MyScript.txt"
+      style="width:100%;box-sizing:border-box;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:7px;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.55;resize:vertical"></textarea>
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      NEAT's start-up parameters, for this account only — they win over <b>Start-up</b> (every
+      account) and CmdParms.txt. <code>-autoscripts 1</code> runs its scripts at start (the startup
+      file, then each loadout's <code>label autorun</code>), <code>-runscript File.txt</code> names the
+      startup file, <code>-autorun 0</code> starts the engine paused, <code>-maxtrade N</code> caps a
+      script's orders; any other <code>-name value</code> reaches scripts as <code>Config.name</code>.
+      Applies from the console's next start (↻ in the table until then).
+    </div>
+    <div id="goalFileBox">
+      <label>Prepend goals file</label>
+      <div style="display:flex;gap:6px"><input name="prependFile" placeholder="C:\EvonyTool\prepend-goals.txt" spellcheck="false"><button type="button" class="browse" data-for="prependFile">Browse…</button></div>
+      <label>Append goals file</label>
+      <div style="display:flex;gap:6px"><input name="appendFile" placeholder="none" spellcheck="false"><button type="button" class="browse" data-for="appendFile">Browse…</button></div>
+      <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+        A .txt file of goal lines for every city of this account. The Director checks it every
+        15 seconds and saves a changed file as the account's Prepend or Append goals; the console
+        reads them from its next turn, no restart. Edit the file, not the console's editor. A
+        city runs its own goals first, then the prepend, then the append, and where they
+        disagree the earlier one wins. Clearing a box stops the copying and leaves the goals as
+        they are.
+      </div>
+    </div>
+    <label>Sort order</label><input name="pos" type="number" step="1" inputmode="numeric">
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      Lowest first; the table starts in this order.
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:var(--fs-base);color:var(--ink)">
+      <input name="keepOn" type="checkbox" style="width:auto"> Keep bot on
+    </label>
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:4px;line-height:1.55">
+      On: the Director starts this console again whenever it finds it down, and switching
+      the account off only restarts it. Off: a stopped bot stays stopped, and switching the
+      account off keeps it off for as long as you like.
+    </div>
     <div style="display:flex;gap:8px;margin-top:16px">
       <button value="save" class="primary">Save</button>
       <button value="cancel">Cancel</button>
@@ -255,6 +841,14 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
+// The charts are drawn, not styled, so they read the page's type and spacing
+// scale (the --fs-… and chart sizes on :root) and grow with the rest of the UI.
+const cssNum = (name, dflt) => {
+  try {
+    const n = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+    return Number.isFinite(n) ? n : dflt;
+  } catch { return dflt; }
+};
 const fmt = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-US'));
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const short = (v) => {
@@ -264,8 +858,10 @@ const short = (v) => {
   if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
   return String(v);
 };
-let DATA = { accounts: [], processes: [], log: [] };
-let view = 'all', sortKey = 'label', sortDir = 1, editing = null;
+let DATA = { accounts: [], log: [] };
+// Sorted by your own order to start with: that is what the Sort order box on
+// each account is for. Any header still sorts by itself when clicked.
+let view = 'all', sortKey = 'pos', sortDir = 1, editing = null;
 
 const CONSOLE_URL = localStorage.getItem('consoleUrl') || 'http://localhost:8711';
 // Item ids come from the client's own <itemEum> table.
@@ -284,58 +880,201 @@ const itemCount = (a, id) => Number(((s(a).items) || {})[id] || 0);
 
 // {key, head, render, align, item?}  — align 'l' for names, 'c' for everything else
 const COLS = [
-  { key: '_edit', head: '', align: 'c', render: () => '<span class="edit" title="Edit details">✎</span>', fixed: true },
+  // The switch. Off leaves the account and its history exactly where they are —
+  // it only stops anything playing it: no polling, and its console comes down.
+  { key: '_on', head: 'On', align: 'c', fixed: true,
+    render: (a) => `<input type="checkbox" class="onoff" ${a.enabled === false ? '' : 'checked'}`
+      + ` title="${a.enabled === false ? 'Switched off — switch on to run it again' : 'Running — uncheck to switch this account off'}">` },
+  { key: '_edit', head: '', name: 'Edit ✎', align: 'c', render: () => '<span class="edit" title="Edit details">✎</span>', fixed: true },
+  // Your own order for the fleet, and the column the table starts sorted by.
+  { key: 'pos', head: 'Order', align: 'c', render: (a) => `<span style="color:var(--dim)">${fmt(a.pos)}</span>` },
+  // Keep this bot on: the Director starts its console again whenever it finds it
+  // down, and switching the account off only restarts it.
+  { key: 'keepOn', head: 'Keep on', align: 'c',
+    render: (a) => `<input type="checkbox" class="keepon" ${a.keepOn ? 'checked' : ''}`
+      + ` title="${a.keepOn ? 'Kept on — its console is started again whenever it is found down, and switching it off only restarts it'
+                            : 'Not kept on — a stopped console stays stopped, and switching it off makes it stay off'}">` },
   // A real anchor, not window.open: a scripted popup is blocked by the browser,
   // a link click never is. target names the tab after the account, so each bot
   // gets its own tab and clicking it again focuses that tab instead of opening
   // another.
   { key: 'label', head: 'Account', align: 'l', fixed: true,
     render: (a) => (a.consoleUrl
-      ? `<a class="focus" href="${esc(a.consoleUrl)}/" target="otto_bot_${esc(a.id)}"
+      ? `<a class="focus" href="${esc(a.consoleUrl)}/" target="${esc(botTabName(a.id))}"
             title="Open ${esc(a.label)} — ${esc(a.consoleUrl)}">${esc(a.label)}</a>`
       : `<span class="focus noconsole" title="No console is running for this account">${esc(a.label)}</span>`) },
   { key: 'status', head: 'Status', align: 'c', render: (a) => statusPill(a) },
-  { key: 'mem', head: 'Memory', align: 'c', render: (a) => memCell(a), sort: (a) => memOf(a) },
-  { key: 'coins', head: 'Coins', align: 'c', render: (a) => fmt(s(a).coins) },
+  { key: 'mem', head: 'Memory', align: 'c', render: (a) => memCell(a), sort: (a) => memOf(a),
+    tot: (v) => (v ? v.toFixed(0) + ' MB' : '') },
+  { key: 'coins', head: 'Coins', align: 'c', render: (a) => fmt(s(a).coins), tot: fmt },
   { key: 'server', head: 'Server', align: 'c', render: (a) => esc(a.server || '') },
   { key: 'lord', head: 'Lord', align: 'l', render: (a) => esc(s(a).lord || '—') },
   { key: 'alliance', head: 'Alliance', align: 'l', render: (a) => esc(s(a).alliance || '—') },
-  { key: 'cities', head: 'Cities', align: 'c', render: (a) => fmt(s(a).cities) },
-  { key: 'prestige', head: 'Prestige', align: 'c', render: (a) => fmt(s(a).prestige) },
-  { key: 'honor', head: 'Honor', align: 'c', render: (a) => fmt(s(a).honor) },
+  { key: 'cities', head: 'Cities', align: 'c', render: (a) => fmt(s(a).cities), tot: fmt },
+  { key: 'prestige', head: 'Prestige', align: 'c', render: (a) => fmt(s(a).prestige), tot: fmt },
+  { key: 'honor', head: 'Honor', align: 'c', render: (a) => fmt(s(a).honor), tot: fmt },
   { key: 'rank', head: 'Rank', align: 'c', render: (a) => fmt(s(a).rank) },
-  { key: 'incoming', head: 'On wars', align: 'c', render: (a) => (s(a).incoming ? `<span class="war">${s(a).incoming}</span>` : '0') },
-  { key: 'marching', head: 'Marching', align: 'c', render: (a) => fmt(s(a).marching) },
-  { key: 'troops', head: 'Troops', align: 'c', render: (a) => short(s(a).troops) },
-  { key: 'heroes', head: 'Heroes', align: 'c', render: (a) => fmt(s(a).heroes) },
-  { key: 'food', head: 'Food', align: 'c', render: (a) => short(t(a).food) },
-  { key: 'wood', head: 'Wood', align: 'c', render: (a) => short(t(a).wood) },
-  { key: 'stone', head: 'Stone', align: 'c', render: (a) => short(t(a).stone) },
-  { key: 'iron', head: 'Iron', align: 'c', render: (a) => short(t(a).iron) },
-  { key: 'gold', head: 'Gold', align: 'c', render: (a) => short(t(a).gold) },
+  { key: 'incoming', head: 'Incoming waves', align: 'c', render: (a) => (s(a).incoming ? `<span class="war">${s(a).incoming}</span>` : '0'), tot: fmt },
+  { key: 'marching', head: 'Marching', align: 'c', render: (a) => fmt(s(a).marching), tot: fmt },
+  { key: 'troops', head: 'Troops', align: 'c', render: (a) => short(s(a).troops), tot: short },
+  { key: 'heroes', head: 'Heroes', align: 'c', render: (a) => fmt(s(a).heroes), tot: fmt },
+  // Prisoners held. Not ours, but they take hall slots, so they belong beside
+  // the hero count rather than buried in a console's log.
+  { key: 'captives', head: 'Prisoners', align: 'c', tot: fmt,
+    render: (a) => { const c = capsOf(a); return c.length ? `<span class="capn" title="${escq(capText(c))}">${c.length}</span>` : '<span style="color:#3d434d">0</span>'; },
+    sort: (a) => capsOf(a).length },
+  // Cities the training hero cannot use: none at all, or ten and no free slot.
+  { key: 'heroGaps', head: 'Empty / full cities', align: 'c',
+    render: (a) => {
+      const t = cityHeroTrouble(a);
+      if (!t.empty.length && !t.full.length) return '<span style="color:#3d434d">—</span>';
+      const bits = [];
+      if (t.empty.length) bits.push(`<span class="war" title="${escq('no heroes at all: ' + t.empty.join(', '))}">${t.empty.length} empty</span>`);
+      if (t.full.length) bits.push(`<span style="color:var(--warn)" title="${escq('ten heroes, no slot for the training hero: ' + t.full.join(', '))}">${t.full.length} full</span>`);
+      return bits.join(' · ');
+    },
+    sort: (a) => { const t = cityHeroTrouble(a); return t.empty.length * 100 + t.full.length; } },
+  { key: 'food', head: 'Food', align: 'c', render: (a) => short(t(a).food), tot: short },
+  { key: 'wood', head: 'Wood', align: 'c', render: (a) => short(t(a).wood), tot: short },
+  { key: 'stone', head: 'Stone', align: 'c', render: (a) => short(t(a).stone), tot: short },
+  { key: 'iron', head: 'Iron', align: 'c', render: (a) => short(t(a).iron), tot: short },
+  { key: 'gold', head: 'Gold', align: 'c', render: (a) => short(t(a).gold), tot: short },
   ...ITEM_COLS.map((ic) => ({
-    key: ic.key, head: ic.head, align: 'c', itemId: ic.id,
+    key: ic.key, head: ic.head, align: 'c', itemId: ic.id, tot: fmt,
     render: (a) => { const n = itemCount(a, ic.id); return n ? fmt(n) : '<span style="color:#3d434d">0</span>'; },
   })),
+  // the roles are dormant unless a console runs with OTTO_MAINT_RACE=1 (session.js)
+  { key: 'maintRole', head: 'After maintenance', align: 'c',
+    render: (a) => (a.maintRole === 'monitor' ? '<span class="pill ok" title="finds the end of maintenance and logs in first">monitor</span>'
+      : a.maintRole === 'follow' ? '<span class="pill maint" title="no login until the monitor is in, then straight back">follower</span>'
+        : '<span style="color:#3d434d">—</span>'),
+    sort: (a) => (a.maintRole === 'monitor' ? 2 : a.maintRole === 'follow' ? 1 : 0) },
+  // NEAT's -autoscripts: the account's own, else the fleet's (Start-up), else CmdParms.txt
+  { key: 'autoscripts', head: 'Autorun scripts', align: 'c',
+    render: (a) => {
+      const x = a.autoscripts || {};
+      const from = { account: 'set on this account', fleet: 'set for every account (Start-up)', 'CmdParms.txt': 'from CmdParms.txt',
+        AUTOSCRIPTS: 'the Director was started with AUTOSCRIPTS, which wins' }[x.from] || 'not set anywhere — off';
+      const later = x.pending ? ' · its console is still on its old parameters: they apply from its next start' : '';
+      return (x.on ? `<span class="pill ok" title="${esc(from + later)}">on</span>` : `<span style="color:var(--dim)" title="${esc(from + later)}">off</span>`)
+        + (x.from === 'fleet' || x.from === 'CmdParms.txt' ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">fleet</span>' : '')
+        + (x.pending ? ' <span title="applies from its console\'s next start" style="color:var(--warn)">↻</span>' : '');
+    },
+    sort: (a) => (a.autoscripts && a.autoscripts.on ? 1 : 0) },
+  { key: 'glitch', head: 'Market glitch ready', align: 'c', render: (a) => glitchCell(a), sort: (a) => {
+    const h = holidayRunOf(a);
+    return h ? h.maints + 1 : 0;
+  } },
   { key: 'lastPolled', head: 'Polled', align: 'c', render: (a) => (a.lastPolled ? ago(a.lastPolled) : 'never') },
 ];
 
 // which columns are on screen (persisted)
-const DEFAULT_VISIBLE = ['_edit', 'label', 'status', 'mem', 'coins', 'server', 'lord', 'alliance', 'cities',
-  'prestige', 'honor', 'rank', 'incoming', 'marching', 'troops', 'heroes',
-  'food', 'wood', 'stone', 'iron', 'gold', 'lastPolled'];
+const DEFAULT_VISIBLE = ['_edit', 'pos', 'keepOn', 'label', 'status', 'mem', 'coins', 'server', 'lord', 'alliance', 'cities',
+  'prestige', 'honor', 'rank', 'incoming', 'marching', 'troops', 'heroes', 'captives', 'heroGaps',
+  'food', 'wood', 'stone', 'iron', 'gold', 'maintRole', 'autoscripts', 'glitch', 'lastPolled'];
 let VISIBLE = (() => {
   try { const v = JSON.parse(localStorage.getItem('director_cols') || 'null'); return new Set(v && v.length ? v : DEFAULT_VISIBLE); }
   catch { return new Set(DEFAULT_VISIBLE); }
 })();
+// Columns added since a viewer saved their set are shown to them once; after
+// that, unticking one sticks.
+try {
+  const seen = new Set(JSON.parse(localStorage.getItem('director_cols_seen') || '[]'));
+  for (const k of ['autoscripts', 'captives', 'heroGaps']) if (!seen.has(k)) { VISIBLE.add(k); seen.add(k); }
+  localStorage.setItem('director_cols_seen', JSON.stringify([...seen]));
+} catch { /* no storage: the defaults stand */ }
 const saveCols = () => localStorage.setItem('director_cols', JSON.stringify([...VISIBLE]));
-const shownCols = () => COLS.filter((c) => c.fixed || VISIBLE.has(c.key));
+// The order columns sit in, left to right (persisted). Dragging a header, or a
+// row in the Columns box, moves a column. A column added to COLS since the order
+// was saved is not in it yet: it lands right after the column it follows in COLS.
+let ORDER = (() => {
+  try { const v = JSON.parse(localStorage.getItem('director_col_order') || 'null'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+})();
+const saveOrder = () => localStorage.setItem('director_col_order', JSON.stringify(ORDER));
+function orderedCols() {
+  const keys = ORDER.filter((k) => COLS.some((c) => c.key === k));
+  COLS.forEach((c, i) => {
+    if (!keys.includes(c.key)) keys.splice(i ? keys.indexOf(COLS[i - 1].key) + 1 : 0, 0, c.key);
+  });
+  return keys.map((k) => COLS.find((c) => c.key === k));
+}
+// Put column `from` just before (or after) column `to`.
+function moveCol(from, to, after) {
+  if (!from || from === to) return;
+  const keys = orderedCols().map((c) => c.key).filter((k) => k !== from);
+  const at = keys.indexOf(to);
+  if (at < 0) return;
+  keys.splice(at + (after ? 1 : 0), 0, from);
+  ORDER = keys; saveOrder();
+}
+const shownCols = () => orderedCols().filter((c) => c.fixed || VISIBLE.has(c.key));
 const s = (a) => a.snapshot || {};
 const t = (a) => (a.snapshot && a.snapshot.totals) || {};
 const ago = (ts) => { const m = Math.round((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm' : Math.round(m / 60) + 'h'; };
 // A wait, said the way a person would. Holiday mode parks a bot for hours, and
 // "(34419s)" is not a number anyone reads.
 const wait = (sec) => { sec = Number(sec) || 0; return sec < 90 ? sec + 's' : sec < 5400 ? Math.round(sec / 60) + 'm' : Math.round(sec / 3600) + 'h'; };
+// The prisoners an account holds, from its snapshot (snapshot.js captivesOf):
+// [{city, id, name, level}]. A prisoner takes a Feasting Hall slot, so a city
+// full of them silently stops the training hero's round — and with a
+// keepcapturedheroes line the bot frees the ones the line does not keep. Either
+// way the fleet table should say out loud that they are there.
+function capsOf(a) { const c = s(a).captives; return Array.isArray(c) ? c : []; }
+function capText(list) {
+  if (!list.length) return '';
+  const by = new Map();
+  for (const c of list) { if (!by.has(c.city)) by.set(c.city, []); by.get(c.city).push(`${c.name} L${c.level}`); }
+  return [...by].map(([city, who]) => `${city}: ${who.join(', ')}`).join(' · ');
+}
+// Cities of this account with no heroes at all, or packed to ten — the two
+// states that stop the training hero getting in (cityList, snapshot.js). A
+// city packed to ten doesn't count if one of the ten has 1526+ attack (it
+// insta-trains anything, so the city isn't actually blocked) or if the
+// traininghero itself holds the tenth slot.
+function cityHeroTrouble(a) {
+  const list = s(a).cityList;
+  if (!Array.isArray(list)) return { empty: [], full: [] };
+  return {
+    empty: list.filter((c) => c.heroes === 0).map((c) => c.name),
+    full: list.filter((c) => Number(c.heroes) >= 10 && !c.hasInstaHero && !c.hasTrainingHero).map((c) => c.name),
+  };
+}
+
+// Under attack: the console's live word (session.js underAttackView) — hostile
+// armies marching at a city now, or a wave landed in the last 30 min — else
+// the snapshot's count of inbound armies, which can be minutes old.
+function warOf(a) {
+  const U = a.live && Date.now() - a.live.at < 5 * 60000 ? a.live.underAttack : null;
+  if (U) return { on: !!U.on, cities: U.cities || [], at: U.at || Date.now() };
+  return { on: s(a).incoming > 0, cities: [], at: null };
+}
+// "Home: 2 inbound, first in 40s, loyalty 85 · Fort: hit 3m ago, loyalty 62"
+function warText(w) {
+  if (!w.cities.length) return 'hostile armies inbound (from the last snapshot)';
+  return w.cities.map((c) => `${c.name}: `
+    + (c.inbound ? `${c.inbound} inbound${c.firstLandsAt ? `, first lands in ${wait(Math.max(0, Math.round((c.firstLandsAt - w.at) / 1000)))}` : ''}`
+      : `last wave ${wait(Math.round((w.at - c.lastWaveAt) / 1000))} ago`)
+    + `, loyalty ${c.loyalty ?? '?'}`).join(' · ');
+}
+
+// The prisoner pill, and the one for cities the training hero cannot use.
+function capPill(a) {
+  const caps = capsOf(a);
+  const t = cityHeroTrouble(a);
+  const cap = caps.length
+    ? ` <span class="pill cap" title="${escq('holding ' + caps.length + ' prisoner(s) — each one sits in a Feasting Hall slot. ' + capText(caps))}">`
+      + `${caps.length} prisoner${caps.length === 1 ? '' : 's'}</span>`
+    : '';
+  const bad = [];
+  if (t.empty.length) bad.push(`${t.empty.length} empty (${t.empty.join(', ')})`);
+  if (t.full.length) bad.push(`${t.full.length} full (${t.full.join(', ')})`);
+  const cities = bad.length
+    ? ` <span class="pill warn" title="${escq('a city with no heroes has no mayor and trains nothing; a city holding ten has no slot for the training hero. ' + bad.join('; '))}">`
+      + `${bad.join(', ')}</span>`
+    : '';
+  return cap + cities;
+}
 
 // The console process this account runs in. One process may carry several
 // accounts, so the figure is labelled per-process, not per-account.
@@ -360,9 +1099,41 @@ function memCell(a) {
        + `${p.rssMb.toFixed(0)} MB</span>`;
 }
 
-function statusPill(a) {
+// Is this account usable for the market play? A holidayed account's resources
+// are put back at every maintenance to what they were at the one before, so an
+// account that has only just gone on holiday has no earlier amount to be put
+// back to — it has to have been on holiday ACROSS a maintenance. The console
+// counts those (session.js holidayRun); this only reads the count.
+const holidayRunOf = (a) => (a.live && a.live.holidayRun) || (a.snapshot && a.snapshot.holidayRun) || null;
+// On holiday: its console says so now, or it keeps a holiday's maintenance count
+// (dropped the moment the holiday ends). A switched-off account counts as off.
+const onHoliday = (a) => a.enabled !== false && (!!(a.live && a.live.holiday) || !!holidayRunOf(a));
+function glitchCell(a) {
+  const h = holidayRunOf(a);
+  const onHoliday = !!(a.live && a.live.holiday) || !!h;
+  if (!onHoliday) return '<span style="color:#3d434d" title="not on holiday — nothing to put back">—</span>';
+  if (!h) {
+    return '<span class="pill maint" title="on holiday, but no console has watched it through a maintenance yet">holiday · counting</span>';
+  }
+  const since = new Date(h.since).toLocaleString();
+  const n = `${h.maints} maintenance${h.maints === 1 ? '' : 's'}`;
+  if (!h.ready) {
+    return `<span class="pill warn" title="on holiday since ${esc(since)}, but no maintenance has passed while it was — its resources have not been put back yet">not yet · ${n}</span>`;
+  }
+  return `<span class="pill ok" title="on holiday since ${esc(since)}, through ${n} — its resources are put back to the previous maintenance's amounts">ready · ${n}</span>`;
+}
+
+// The prisoner and empty/full-city pills ride on EVERY status, not only on
+// "online": an account whose console is down still holds whatever it held at its
+// last snapshot, and that is exactly when nobody is watching it.
+function statusPill(a) { return statusPillFor(a) + capPill(a); }
+
+function statusPillFor(a) {
   const sn = s(a);
-  if (a.enabled === false) return '<span class="pill stale">disabled</span>';
+  // Switched off by hand: say so plainly, and offer no Start button — the switch
+  // in the first column is the way back.
+  if (a.enabled === false) return '<span class="pill stale" title="switched off '
+    + '— nothing polls it and no console runs it">off</span>';
 
   // A console that holds this account is the authority on it. The Director never
   // polls such an account, so its snapshot is always older than what the bot
@@ -383,7 +1154,21 @@ function statusPill(a) {
       const hol = L.holiday
         ? ` <span class="pill maint" title="attack protection, ${esc(L.holiday.text)} left — the bot plays as usual">holiday ${esc(L.holiday.text)}</span>`
         : '';
-      return `<span class="pill ok" title="live from ${esc(L.probe)}">online${mode}</span>${hol}`;
+      const w = warOf(a);
+      const war = w.on ? ` <span class="pill err" title="${esc(warText(w))}">under attack${w.cities.length ? ` · ${w.cities.length} cit${w.cities.length === 1 ? 'y' : 'ies'}` : ''}</span>` : '';
+      // if the bot is on, the goals are on (the user, 2026-09-18) — a paused engine is a fault
+      const held = L.enginePaused ? ' <span class="pill warn" title="its goal engine is paused: no goals, no Speech Text or truce — press Resume on its console">engine paused</span>' : '';
+      return `<span class="pill ok" title="live from ${esc(L.probe)}">online${mode}</span>${war}${held}${hol}`;
+    }
+    // Somebody else logged into this account — the game's own "Another user has logged
+    // into your account". It is not an ordinary disconnect and must not read like one.
+    if (L.state === 'kicked' && L.kick) {
+      const back = new Date(L.kick.until).toLocaleTimeString();
+      const times = L.kickStep > 1 ? ` ${L.kickStep}x` : '';
+      return `<span class="pill err" title="another user logged in${L.kick.ip ? ' from ' + esc(L.kick.ip) : ''} at `
+        + `${new Date(L.kick.at).toLocaleTimeString()} — this console stood down until ${back}`
+        + `${L.kickStep > 1 ? `, and it has happened ${L.kickStep} times in a row, so each wait is longer` : ''}. `
+        + `Only one bot should play an account.">someone else logged in${times} · back ${back}</span>`;
     }
     const retry = L.retryInSec != null ? ` (${wait(L.retryInSec)})` : '';
     return `<span class="pill warn" title="${why}">${esc(L.state || 'offline')}${retry}</span>`;
@@ -400,14 +1185,43 @@ function statusPill(a) {
   const mins = (Date.now() - a.lastPolled) / 60000;
   return mins > 45 ? '<span class="pill stale">stale</span>' : '<span class="pill ok">reporting</span>';
 }
+// Sorting by Status groups the fleet the way statusPill reads it: under attack
+// first, then everyone on holiday together, then plain online, and the ones
+// needing a hand towards the bottom.
+function statusRank(a) {
+  if (a.enabled === false) return 9;
+  if (warOf(a).on) return 0;
+  // somebody else on one of our accounts is second only to being attacked
+  if (a.live && a.live.state === 'kicked' && a.live.kick) return 0.5;
+  if (onHoliday(a)) return 1;
+  const L = a.live;
+  if (L && Date.now() - L.at < 5 * 60000) {
+    if (L.state === 'maintenance') return 4;
+    if (L.state === 'process down') return 7;
+    return L.connected ? 2 : 5;
+  }
+  if (!a.consoleUrl) return 8;
+  if (!a.lastPolled) return 6;
+  if (!s(a).ok) return 7;
+  return (Date.now() - a.lastPolled) / 60000 > 45 ? 6 : 3;
+}
 function sortVal(a, key) {
   const col = COLS.find((c) => c.key === key);
   if (col && col.itemId) return itemCount(a, col.itemId);
+  // A column that brought its own reader (Memory) is read with it — otherwise
+  // it sorts, and totals, as a column of zeroes.
+  if (col && col.sort) return Number(col.sort(a) || 0);
+  if (key === '_on') return a.enabled === false ? 0 : 1;
+  if (key === 'keepOn') return a.keepOn ? 1 : 0;
+  // Ties on the same number keep the fleet in a settled order rather than
+  // swapping about between refreshes.
+  if (key === 'pos') return Number(a.pos || 0) * 1e6 + Math.max(0, DATA.accounts.indexOf(a));
   if (key === 'label' || key === 'server') return String(a[key] || '').toLowerCase();
   if (['lord', 'alliance'].includes(key)) return String(s(a)[key] || '').toLowerCase();
   if (['food', 'wood', 'stone', 'iron', 'gold'].includes(key)) return Number(t(a)[key] || 0);
   if (key === 'lastPolled') return Number(a.lastPolled || 0);
-  if (key === 'status') return s(a).ok ? 1 : 0;
+  if (key === 'status') return statusRank(a);
+  if (key === 'captives') return capsOf(a).length;
   if (key === '_edit') return 0;
   return Number(s(a)[key] || 0);
 }
@@ -415,30 +1229,62 @@ function filtered() {
   const q = $('#q').value.trim().toLowerCase();
   let rows = DATA.accounts.slice();
   if (q) rows = rows.filter((a) => JSON.stringify([a.label, a.email, a.server, s(a).lord, s(a).alliance, a.notes]).toLowerCase().includes(q));
-  if (view === 'war') rows = rows.filter((a) => s(a).incoming > 0);
+  if (view === 'war') rows = rows.filter((a) => warOf(a).on);
+  if (view === 'captives') rows = rows.filter((a) => capsOf(a).length);
   if (view === 'rich') rows = rows.filter((a) => Object.values(t(a)).some((v) => Number(v) > 1e9));
   if (view === 'troops') rows = rows.filter((a) => Number(s(a).troops || 0) > 10000);
   if (view === 'idle') rows = rows.filter((a) => !a.lastPolled || (Date.now() - a.lastPolled) / 60000 > 45);
   if (view === 'fail') rows = rows.filter((a) => a.lastPolled && !s(a).ok);
-  rows.sort((x, y) => { const p = sortVal(x, sortKey), q2 = sortVal(y, sortKey); return (p < q2 ? -1 : p > q2 ? 1 : 0) * sortDir; });
+  if (view === 'off') rows = rows.filter((a) => a.enabled === false);
+  if (view === 'holiday') rows = rows.filter(onHoliday);
+  // Rows that tie (the same status, say) stay in the fleet's own order whichever
+  // way the column is sorted, so a group reads the same as the fleet list.
+  const posOf = (a) => sortVal(a, 'pos');
+  rows.sort((x, y) => {
+    const p = sortVal(x, sortKey), q2 = sortVal(y, sortKey);
+    return ((p < q2 ? -1 : p > q2 ? 1 : 0) * sortDir) || (posOf(x) - posOf(y));
+  });
   return rows;
 }
 // The table refreshes every 5s. Rebuilding the DOM each time throws away
 // whatever the mouse was over, so a click landing mid-refresh can be lost —
 // write the HTML only when it has actually changed.
-let lastHead = '', lastBody = '';
+let lastHead = '', lastBody = '', lastFoot = '';
+
+// The bottom row: every column that can be added up says so with `tot`, which
+// prints the sum its own way (coins in full, resources short). It totals what is
+// on screen, so a filter or a view narrows the figures with the rows.
+function footRow(cols, rows, label = 'total of', cls = '') {
+  return `<tr${cls ? ` class="${cls}"` : ''}>` + cols.map((c) => {
+    if (c.key === 'label') return `<td class="l">${label} ${rows.length}</td>`;
+    if (!c.tot) return `<td class="${c.align}"></td>`;
+    // Rounded: these are all whole things (coins, cities, bushels), and a sum of
+    // averaged or divided figures would otherwise print a tail of decimals.
+    const v = Math.round(rows.reduce((sum, a) => sum + (Number(sortVal(a, c.key)) || 0), 0));
+    return `<td class="${c.align}">${c.tot(v)}</td>`;
+  }).join('') + '</tr>';
+}
 
 function render() {
   const cols = shownCols();
   const head = '<tr>' + cols.map((c) =>
-    `<th class="${c.align}" data-k="${c.key}">${c.head}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
+    `<th class="${c.align}" data-k="${c.key}" draggable="true" title="Click to sort · drag to move">${c.head}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
   if (head !== lastHead) { $('#tbl thead').innerHTML = head; lastHead = head; }
 
   const rows = filtered();
   const body = rows.map((a) =>
-    `<tr data-id="${a.id}">` + cols.map((c) => `<td class="${c.align}">${c.render(a)}</td>`).join('') + '</tr>').join('')
+    `<tr data-id="${a.id}" class="${[a.enabled === false ? 'off' : '', capsOf(a).length ? 'hascap' : ''].filter(Boolean).join(' ')}">`
+      + cols.map((c) => `<td class="${c.align}">${c.render(a)}</td>`).join('') + '</tr>').join('')
     || `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--dim);padding:26px">no accounts match</td></tr>`;
   if (body !== lastBody) { $('#tbl tbody').innerHTML = body; lastBody = body; }
+
+  // What the holidayed accounts among those rows hold, on a line of its own —
+  // unless every row shown is on holiday already, when the total says it.
+  const hol = rows.filter(onHoliday);
+  const foot = rows.length
+    ? (hol.length && hol.length < rows.length ? footRow(cols, hol, 'on holiday:', 'sub') : '') + footRow(cols, rows)
+    : '';
+  if (foot !== lastFoot) { $('#tbl tfoot').innerHTML = foot; lastFoot = foot; }
 
   const inMaint = DATA.accounts.filter((a) => a.live && a.live.state === 'maintenance'
     && Date.now() - a.live.at < 5 * 60000);
@@ -450,29 +1296,88 @@ function render() {
   }
   $('#cAcc').textContent = DATA.accounts.length;
   $('#cOk').textContent = DATA.accounts.filter((a) => {
+    if (a.enabled === false) return false;      // switched off is not reporting
     const L = a.live;
     if (L && Date.now() - L.at < 5 * 60000) return L.connected;
     return s(a).ok;
   }).length;
-  $('#cWar').textContent = DATA.accounts.filter((a) => s(a).incoming > 0).length;
-  $('#cProc').textContent = (DATA.processes || []).length;
+  const atWar = DATA.accounts.filter((a) => warOf(a).on);
+  $('#cWar').textContent = atWar.length;
+  $('#cWar').parentElement.classList.toggle('war', atWar.length > 0);
+  $('#cWar').parentElement.title = atWar.length
+    ? atWar.map((a) => `${a.label}: ${warText(warOf(a))}`).join('\n')
+    : 'no hostile armies marching at any account, and no wave in the last 30 min';
+  const off = DATA.accounts.filter((a) => a.enabled === false).length;
+  $('#cOff').textContent = off;
+  $('#offStat').hidden = !off;
   // The five-second refresh used to wipe whatever the footer was saying, which
   // took any button in it with it before it could be clicked.
   if (Date.now() > sticky) {
-    $('#status').textContent = `${rows.length} shown · polling ${DATA.polling ? 'in progress' : 'idle'} · ${Math.round((DATA.gapMs || 0) / 1000)}s between accounts · click a row to focus that bot, ✎ to edit, header to sort`;
+    $('#status').textContent = `${rows.length} shown · polling ${DATA.polling ? 'in progress' : 'idle'} · ${Math.round((DATA.gapMs || 0) / 1000)}s between accounts · click a row to focus that bot, ✎ to edit, header to sort, drag a header to move it`;
   }
   $('#log').textContent = (DATA.log || []).slice(-12).map((l) => new Date(l.t).toLocaleTimeString() + '  ' + l.m).join('\n');
 }
 async function refresh() {
   DATA = await fetch('/api/accounts').then((r) => r.json()).catch(() => DATA);
   render();
+  if (PAGE === 'accounts') paintAccounts();
 }
+// ---------- moving columns by their headers ----------
+// A drag never ends in a click, so a header dropped somewhere does not also sort.
+// The header row is only rewritten when it changes, so the 5s refresh leaves a
+// drag in progress alone.
+let dragKey = null;
+const clearDrop = (root) => root.querySelectorAll('.drop-l,.drop-r,.drop-t,.drop-b,.dragging')
+  .forEach((el) => el.classList.remove('drop-l', 'drop-r', 'drop-t', 'drop-b', 'dragging'));
+const thead = $('#tbl thead');
+thead.addEventListener('dragstart', (e) => {
+  const th = e.target.closest('th');
+  if (!th) return;
+  dragKey = th.dataset.k;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragKey);
+  th.classList.add('dragging');
+});
+thead.addEventListener('dragover', (e) => {
+  const th = e.target.closest('th');
+  if (!th || !dragKey) return;
+  e.preventDefault();
+  const r = th.getBoundingClientRect();
+  const after = e.clientX > r.left + r.width / 2;
+  thead.querySelectorAll('.drop-l,.drop-r').forEach((el) => el !== th && el.classList.remove('drop-l', 'drop-r'));
+  th.classList.toggle('drop-r', after);
+  th.classList.toggle('drop-l', !after);
+});
+thead.addEventListener('drop', (e) => {
+  const th = e.target.closest('th');
+  if (!th || !dragKey) return;
+  e.preventDefault();
+  const after = th.classList.contains('drop-r');
+  moveCol(dragKey, th.dataset.k, after);
+  dragKey = null;
+  render();
+});
+thead.addEventListener('dragend', () => { dragKey = null; clearDrop(thead); });
+
+$('#views').addEventListener('click', (e) => {
+  const v = e.target.closest('.v');
+  if (!v) return;
+  view = v.dataset.v;
+  $('#views').querySelectorAll('.v').forEach((el) => el.classList.toggle('active', el === v));
+  render();
+});
+$('#q').addEventListener('input', render);
+
 $('#tbl').addEventListener('click', (e) => {
   const th = e.target.closest('th');
   if (th) { const k = th.dataset.k; sortDir = sortKey === k ? -sortDir : 1; sortKey = k; return render(); }
   const tr = e.target.closest('tr[data-id]');
   if (!tr) return;
   const acc = DATA.accounts.find((a) => a.id === tr.dataset.id);
+  const sw = e.target.closest('.onoff');
+  if (sw) return setEnabled(acc, sw.checked, sw);
+  const keep = e.target.closest('.keepon');
+  if (keep) return setKeepOn(acc, keep.checked, keep);
   const start = e.target.closest('.startBot');
   if (start) return startBot(acc, start);
   if (e.target.closest('.edit')) return openDlg(acc);
@@ -503,7 +1408,40 @@ async function post(path, payload) {
 // A footer message that survives the next refresh, so a button in it can
 // actually be reached. sticky is a timestamp: until then, render() leaves it be.
 let sticky = 0;
-function say(html, ms = 20000) { $('#status').innerHTML = html; sticky = Date.now() + ms; }
+function say(html, ms = 20000) { $('#status').innerHTML = html; sticky = Date.now() + ms; amSay(html, ms); }
+
+// The tab an account's console lives in. app.html claims this same name, so a console
+// tab is found again whoever opened it.
+const botTabName = (id) => 'otto_bot_' + id;
+
+// Bring that tab to the front WITHOUT reloading what is in it. Opening the url by name
+// would work too, but it navigates the tab again and throws away whatever you had open
+// in the console — its tab, its scroll, a half-typed script. So: ask for the named tab
+// with no url first. If it is already the console, its location is cross-origin and
+// reading it throws — that is our signal to just focus it. A tab that is new (or was
+// closed) answers about:blank, and that one we do navigate.
+// Returns false when the browser blocked it, so the caller can fall back to the link.
+function openBotTab(url, name) {
+  let w = null;
+  try { w = window.open('', name); } catch { w = null; }
+  if (!w) return false;
+  let blank = false;
+  try { blank = !w.location.href || w.location.href === 'about:blank'; } catch { blank = false; }
+  if (blank) w.location.href = url;
+  try { w.focus(); } catch {}
+  return true;
+}
+
+// The account name is a real anchor (a link click is never blocked), but a plain click
+// on it would reload a console that is already open. Take it over when we can, and let
+// the anchor do its ordinary job when we cannot — including ctrl/cmd/middle clicks,
+// which mean "a new tab" and must keep meaning that.
+document.addEventListener('click', (e) => {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest('a.focus[target^="otto_bot_"]');
+  if (!a || !a.href) return;
+  if (openBotTab(a.href, a.target)) e.preventDefault();
+});
 
 function focusBot(acc) {
   if (!acc) return;
@@ -512,15 +1450,56 @@ function focusBot(acc) {
   if (!acc.consoleUrl) {
     return say(`No console is running for <b>${esc(acc.label)}</b>. `
       + `<button class="startBot" data-id="${esc(acc.id)}">Start its bot</button> `
-      + `<span style="color:var(--dim)">— it logs into the game as this account; `
-      + `until goals are set its engine starts paused.</span>`, 60000);
+      + `<span style="color:var(--dim)">— it logs into the game as this account `
+      + `and runs its goals from the start.</span>`, 60000);
   }
-  const w = window.open(acc.consoleUrl + '/', 'otto_bot_' + acc.id);
-  if (w) { w.focus(); say(`${esc(acc.label)} -> ${esc(acc.consoleUrl)}`, 6000); }
-  else {
+  if (openBotTab(acc.consoleUrl + '/', botTabName(acc.id))) {
+    say(`${esc(acc.label)} -> ${esc(acc.consoleUrl)}`, 6000);
+  } else {
     say(`Your browser blocked the pop-up. Click the account name `
       + `<b>${esc(acc.label)}</b> instead — that is a normal link and always opens.`);
   }
+}
+
+// Switching an account off is not deleting it: the row, its history and its
+// goals all stay. What stops is anything playing it — the Director stops polling
+// it and its console is taken down, because the console is what is logged in.
+// Switching it back on starts the console again, which is what "on" means.
+async function setEnabled(acc, on, box) {
+  if (!acc) return;
+  if (box) box.disabled = true;
+  say(on ? `Switching <b>${esc(acc.label)}</b> back on — starting its console, this takes a few seconds…`
+         : `Switching <b>${esc(acc.label)}</b> off — taking its console down…`, 120000);
+  const r = await post('/api/account', { id: acc.id, enabled: on });
+  await refresh();
+  if (!r.ok) return say(`<b>${esc(acc.label)}</b>: ${esc(r.error || 'could not be changed')}`, 60000);
+  if (r.restarted) {
+    say(`<b>${esc(acc.label)}</b> is set to <b>keep bot on</b>, so its console was restarted rather than `
+      + `switched off. Clear that box (✎, or the Keep on column) to let it stay off.`, 60000);
+    return;
+  }
+  if (on) return reportBot(acc.label, r.bot);
+  if (r.bot && r.bot.stillRunning) {
+    return say(`<b>${esc(acc.label)}</b> is switched off and will not be polled — but the console on `
+      + `<a href="${esc(r.bot.stillRunning)}/" target="otto_bot_${esc(acc.id)}">${esc(r.bot.stillRunning)}</a> `
+      + `was not started by the Director, so it is still logged in and playing. Stop it there.`, 120000);
+  }
+  say(`<b>${esc(acc.label)}</b> is switched off — nothing polls or plays it until you switch it back on.`
+    + (r.bot && r.bot.ok ? ` Its console on ${esc(r.bot.url)} has been stopped.` : ''), 30000);
+}
+
+// Keep bot on, from the row. It changes nothing about the account itself — only
+// what the Director does when it finds its console down.
+async function setKeepOn(acc, on, box) {
+  if (!acc) return;
+  if (box) box.disabled = true;
+  const r = await post('/api/account', { id: acc.id, keepOn: on });
+  await refresh();
+  if (!r.ok) return say(`<b>${esc(acc.label)}</b>: ${esc(r.error || 'could not be changed')}`, 60000);
+  say(on ? `<b>${esc(acc.label)}</b> will be kept on — the Director starts its console again whenever `
+         + `it finds it down, and switching it off now only restarts it.`
+         : `<b>${esc(acc.label)}</b> is no longer kept on — a stopped bot stays stopped, and switching `
+         + `it off keeps it off.`, 20000);
 }
 
 // Starting a bot takes a while: the process comes up, reads the server's config
@@ -550,7 +1529,20 @@ function reportBot(label, r) {
 function openDlg(acc) {
   editing = acc;
   $('#dlgTitle').textContent = acc ? 'Edit ' + acc.label : 'Add account';
-  for (const k of ['label', 'server', 'email', 'password', 'notes']) $('#frm')[k].value = acc ? (acc[k] || '') : (k === 'server' ? 'ss71' : '');
+  for (const k of ['label', 'server', 'email', 'password', 'securityCode', 'notes']) $('#frm')[k].value = acc ? (acc[k] || '') : (k === 'server' ? 'ss71' : '');
+  $('#frm').pos.value = acc && acc.pos !== undefined && acc.pos !== null ? acc.pos : '';
+  $('#frm').keepOn.checked = !!(acc && acc.keepOn);
+  paintProxySelect(acc);
+  $('#frm').maintRole.value = (acc && acc.maintRole) || '';
+  $('#frm').kickHoldMin.value = acc && acc.kickHoldMin !== null && acc.kickHoldMin !== undefined ? acc.kickHoldMin : '';
+  // goal files are only offered by a Director on this machine (director.js LOCAL_FILES)
+  $('#goalFileBox').hidden = !DATA.goalFiles;
+  $('#frm').prependFile.value = (acc && acc.prependFile) || '';
+  $('#frm').appendFile.value = (acc && acc.appendFile) || '';
+  $('#frm').startupParms.value = (acc && acc.startupParms) || '';
+  const fleetAuto = autoscriptsIn(DATA.startupFleet);
+  $('#frm').autoscripts.options[0].textContent = `As every account (Start-up: ${fleetAuto === '1' ? 'on' : fleetAuto === '0' ? 'off' : 'not set, so off'})`;
+  $('#frm').autoscripts.value = autoscriptsIn($('#frm').startupParms.value) || '';
   // nothing to delete when there is no account yet
   $('#frm').querySelector('button[value="delete"]').hidden = !acc;
   $('#dlg').showModal();
@@ -563,21 +1555,152 @@ $('#frm').addEventListener('submit', async (e) => {
   const f = $('#frm');
   const payload = action === 'delete'
     ? { id: editing && editing.id, delete: true }
-    : { id: editing && editing.id, label: f.label.value, server: f.server.value, email: f.email.value, password: f.password.value, notes: f.notes.value };
+    : { id: editing && editing.id, label: f.label.value, server: f.server.value, email: f.email.value,
+        password: f.password.value, securityCode: f.securityCode.value, notes: f.notes.value, keepOn: f.keepOn.checked, proxy: f.proxy.value,
+        maintRole: f.maintRole.value, kickHoldMin: f.kickHoldMin.value, startupParms: f.startupParms.value,
+        ...(DATA.goalFiles ? { prependFile: f.prependFile.value, appendFile: f.appendFile.value } : {}),
+        // Blank means "leave it where it is": db.js keeps the account's own
+        // place rather than moving it to the end of the list.
+        ...(String(f.pos.value).trim() === '' ? {} : { pos: Number(f.pos.value) }) };
   const creating = !payload.delete && !payload.id;
   if (creating) say(`Adding <b>${esc(f.label.value)}</b> and starting its bot — this takes a few seconds…`, 120000);
+  // a pinned proxy that failed its last test, was never tested, or is another
+  // account's: say so, it is the user's call. Random looks after itself.
+  const shared = !payload.delete && payload.proxy && payload.proxy !== 'random' ? proxyHolders(payload.proxy, payload.id) : [];
+  if (shared.length) {
+    say(`<b>${esc(f.label.value)}</b> will share its proxy with <b>${esc(shared.join(', '))}</b> — one proxy per account: two on one line both lost their logins (EVONY-RULES §1). Random picks a free one.`, 45000);
+  } else if (!payload.delete && payload.proxy && payload.proxy !== 'random') {
+    const opt = (DATA.proxyOptions || []).find((o) => o.raw === payload.proxy);
+    const t = opt && opt.test;
+    if (!t) say(`<b>${esc(f.label.value)}</b> will log in through <b>${esc(opt ? opt.label : payload.proxy)}</b>, which has not been tested — Proxies → Test all first`, 20000);
+    else if (!t.ok) say(`<b>${esc(f.label.value)}</b> will log in through <b>${esc(opt.label)}</b>, which FAILED its last test (${esc(t.why || '')}) — its console will not get in until that is fixed`, 30000);
+  }
   const r = await post('/api/account', payload);
   await refresh();
+  if (r && r.ok === false) return say(`<b>${esc(f.label.value)}</b> not saved: ${esc(r.error || 'failed')}`, 60000);
   if (creating && r && r.bot) reportBot(f.label.value, r.bot);
+  // start-up parameters kept: what OTTObot does not act on, and when they apply
+  const saved = r && r.accounts && editing ? r.accounts.find((a) => a.id === editing.id) : null;
+  if (r && r.startupNotes && r.startupNotes.length) say(`<b>${esc(f.label.value)}</b>: start-up parameters saved · ${r.startupNotes.map(esc).join(' · ')}`, 30000);
+  else if (!creating && saved && (editing.startupParms || '') !== String(f.startupParms.value).trim()) {
+    say(`<b>${esc(f.label.value)}</b>: start-up parameters saved — they apply from its console's next start`, 20000);
+  }
+  // what the goal files did straight away
+  const gf = (r && r.goalFiles) || [];
+  if (gf.length) {
+    say(`<b>${esc(f.label.value)}</b>: ` + gf.map((g) => g.why ? `${g.which} goals file not read — ${esc(g.why)}`
+      : g.synced ? `${g.which} goals set from the file, ${g.lines} line(s)${g.errors ? `, <b style="color:var(--bad)">${g.errors} with an error</b> (see the log)` : ''}`
+      : `${g.which} goals already match the file`).join(' · '), 30000);
+  }
 });
 
+// ---------- start-up parameters (NEAT's Custom Parameters / CmdParms.txt) ----------
+// The -autoscripts a parameter text sets: '1', '0', or '' when it sets none.
+// The last one wins, as it does in the console (script-console.js parseCmdParms).
+function autoscriptsIn(text) {
+  let v = '';
+  const re = /(?:^|\s)[-/]autoscripts(?:[=:]|\s+)"?([^\s"]*)/gim;
+  let m;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^\s*(#|\/\/)/.test(line)) continue;
+    re.lastIndex = 0;
+    while ((m = re.exec(line))) v = /^(1|yes|on|true)$/i.test(m[1]) ? '1' : '0';
+  }
+  return v;
+}
+// The text with its -autoscripts line set to '1' / '0', or taken out ('').
+function withAutoscripts(text, value) {
+  const lines = String(text || '').split(/\r?\n/).filter((l) => !/^\s*[-/]autoscripts(?:[=:\s]|$)/i.test(l));
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (value) lines.unshift(`-autoscripts ${value}`);
+  return lines.join('\n');
+}
+// the dropdown and the text box say the same thing
+function pairAutoscripts(sel, box) {
+  sel.addEventListener('change', () => { box.value = withAutoscripts(box.value, sel.value); });
+  box.addEventListener('input', () => { sel.value = autoscriptsIn(box.value); });
+}
+pairAutoscripts($('#frm').autoscripts, $('#frm').startupParms);
+pairAutoscripts($('#startupAuto'), $('#startupText'));
+
+$('#startupBtn').onclick = () => {
+  $('#startupText').value = DATA.startupFleet || '';
+  $('#startupAuto').value = autoscriptsIn($('#startupText').value);
+  $('#startupMsg').textContent = '';
+  $('#startupDlg').showModal();
+};
+$('#startupClose').onclick = () => $('#startupDlg').close();
+$('#startupSave').onclick = async () => {
+  $('#startupSave').disabled = true;
+  const r = await post('/api/startup', { text: $('#startupText').value });
+  $('#startupSave').disabled = false;
+  if (!r || !r.ok) {
+    $('#startupMsg').innerHTML = `<span style="color:var(--bad)">Not saved: ${esc((r && r.error) || 'failed')}</span>`;
+    return;
+  }
+  await refresh();
+  $('#startupMsg').innerHTML = '<span style="color:var(--acc)">Saved.</span> Each console reads them at its next start — '
+    + 'the ↻ in the Autorun scripts column marks the ones still on the old ones.'
+    + (r.notes && r.notes.length ? '<br>' + r.notes.map(esc).join('<br>') : '');
+};
+
+// ---------- Browse for a goals file ----------
+// The Director lists a folder on this machine (/api/browse); a click on a
+// folder opens it, a click on a .txt file puts its path in the box.
+let browseFor = null, browseAt = null;   // browseFor: (path) => void
+async function browseOpen(dir) {
+  $('#browseMsg').textContent = 'reading…';
+  let r;
+  try { r = await (await fetch('/api/browse?dir=' + encodeURIComponent(dir || ''))).json(); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!r || !r.ok) { $('#browseMsg').textContent = (r && r.error) || 'could not read that folder'; return; }
+  browseAt = r;
+  $('#browseDir').value = r.dir;
+  $('#browseRoot').innerHTML = r.roots.map((x) => `<option${r.dir.toUpperCase().startsWith(x.toUpperCase()) ? ' selected' : ''}>${esc(x)}</option>`).join('');
+  const row = (kind, name, icon) => `<div class="brow" data-kind="${kind}" data-name="${esc(name).replace(/"/g, '&quot;')}">${icon} ${esc(name)}</div>`;
+  $('#browseList').innerHTML = (r.parent ? row('up', '..', '↑') : '')
+    + r.dirs.map((d) => row('dir', d, '📁')).join('') + r.files.map((x) => row('file', x, '📄')).join('')
+    || '<div class="brow" style="cursor:default;color:var(--dim)">nothing here</div>';
+  $('#browseMsg').textContent = `${r.dirs.length} folder(s), ${r.files.length} .txt file(s)`;
+}
+const joinPath = (dir, name) => dir.replace(/[\\/]+$/, '') + (dir.includes('/') && !dir.includes('\\') ? '/' : '\\') + name;
+// Open the browser in the folder of `current` (else the Director's own) and
+// hand the picked path to `set` — the ✎ dialog's box, or a cell of the grid.
+function browsePick(current, set) {
+  browseFor = set;
+  const cur = String(current || '').trim();
+  const start = cur ? cur.replace(/[\\/][^\\/]*$/, '') : '';
+  $('#browseDlg').showModal();
+  browseOpen(start);
+}
+document.querySelectorAll('.browse').forEach((b) => b.onclick = () => {
+  const box = $('#frm')[b.dataset.for];
+  browsePick(box.value, (p) => { box.value = p; });
+});
+$('#browseList').onclick = (e) => {
+  const el = e.target.closest('.brow');
+  if (!el || !browseAt || !el.dataset.kind) return;
+  if (el.dataset.kind === 'up') return browseOpen(browseAt.parent);
+  const p = joinPath(browseAt.dir, el.dataset.name);
+  if (el.dataset.kind === 'dir') return browseOpen(p);
+  if (browseFor) browseFor(p);
+  $('#browseDlg').close();
+};
+$('#browseRoot').onchange = () => browseOpen($('#browseRoot').value);
+$('#browseGo').onclick = () => browseOpen($('#browseDir').value);
+$('#browseDir').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); browseOpen($('#browseDir').value); } };
+$('#browseClose').onclick = () => $('#browseDlg').close();
+
 // ---------- column chooser ----------
+// Every column, in table order. The ones that are always shown (the switch, ✎,
+// Account) can be moved but not hidden, so their box is ticked and greyed.
 function paintCols() {
-  $('#colsList').innerHTML = COLS.filter((c) => !c.fixed).map((c) =>
-    `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer">
-       <input type="checkbox" data-k="${c.key}" ${VISIBLE.has(c.key) ? 'checked' : ''}>
-       <span>${c.head}${c.itemId ? ' <span style="color:var(--dim);font-size:10.5px">item</span>' : ''}</span>
-     </label>`).join('');
+  $('#colsList').innerHTML = orderedCols().map((c) =>
+    `<div class="colrow" draggable="true" data-k="${c.key}">
+       <span class="grip">⋮⋮</span>
+       <label><input type="checkbox" data-k="${c.key}" ${c.fixed || VISIBLE.has(c.key) ? 'checked' : ''} ${c.fixed ? 'disabled' : ''}>
+       <span>${c.head || c.name || c.key}${c.itemId ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">item</span>' : ''}`
+       + `${c.fixed ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">always shown</span>' : ''}</span></label>
+     </div>`).join('');
   $('#colsList').querySelectorAll('input').forEach((el) => {
     el.onchange = () => {
       if (el.checked) VISIBLE.add(el.dataset.k); else VISIBLE.delete(el.dataset.k);
@@ -585,10 +1708,43 @@ function paintCols() {
     };
   });
 }
+const colsList = $('#colsList');
+colsList.addEventListener('dragstart', (e) => {
+  const row = e.target.closest('.colrow');
+  if (!row) return;
+  dragKey = row.dataset.k;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragKey);
+  row.classList.add('dragging');
+});
+colsList.addEventListener('dragover', (e) => {
+  const row = e.target.closest('.colrow');
+  if (!row || !dragKey) return;
+  e.preventDefault();
+  const r = row.getBoundingClientRect();
+  const after = e.clientY > r.top + r.height / 2;
+  colsList.querySelectorAll('.drop-t,.drop-b').forEach((el) => el !== row && el.classList.remove('drop-t', 'drop-b'));
+  row.classList.toggle('drop-b', after);
+  row.classList.toggle('drop-t', !after);
+});
+colsList.addEventListener('drop', (e) => {
+  const row = e.target.closest('.colrow');
+  if (!row || !dragKey) return;
+  e.preventDefault();
+  moveCol(dragKey, row.dataset.k, row.classList.contains('drop-b'));
+  dragKey = null;
+  paintCols(); render();
+});
+colsList.addEventListener('dragend', () => { dragKey = null; clearDrop(colsList); });
 $('#colsBtn').onclick = () => { paintCols(); $('#colsDlg').showModal(); };
 $('#colsClose').onclick = () => $('#colsDlg').close();
 $('#colsAll').onclick = () => { COLS.forEach((c) => { if (!c.fixed) VISIBLE.add(c.key); }); saveCols(); paintCols(); render(); };
-$('#colsReset').onclick = () => { VISIBLE = new Set(DEFAULT_VISIBLE); saveCols(); paintCols(); render(); };
+// Defaults puts back both which columns show and the order they come in.
+$('#colsReset').onclick = () => {
+  VISIBLE = new Set(DEFAULT_VISIBLE); saveCols();
+  ORDER = []; saveOrder();
+  paintCols(); render();
+};
 
 // ---------- proxies ----------
 $('#proxyBtn').onclick = () => {
@@ -609,6 +1765,47 @@ function paintProxyStat() {
   $('#proxyList').innerHTML = (DATA.proxies || []).map((p) =>
     `${esc(p.label)} <span style="color:${p.accounts > per ? 'var(--bad)' : 'var(--dim)'}">— ${p.accounts} account(s)</span>`).join('<br>');
 }
+// An account's Proxy dropdown: this PC's own IP, or one line of the list with
+// how its last test went — a proxy only counts as usable once it has passed.
+function proxyTestText(t) {
+  if (!t) return 'not tested';
+  return t.ok ? `works · ${t.ms} ms to the game server (${t.type})` : `FAILED — ${String(t.why || '').slice(0, 70)}`;
+}
+// Which accounts, other than `id`, log in through this line — pinned or picked.
+function proxyHolders(raw, id) {
+  return DATA.accounts.filter((a) => a.id !== id && a.proxyRaw && a.proxyRaw === raw).map((a) => a.label);
+}
+// The proxy dropdown's choices, for the ✎ dialog and the Accounts grid alike:
+// [value, text, option]. Random comes first, saying what it picked for this account.
+function proxyChoices(acc) {
+  const opts = DATA.proxyOptions || [], cur = (acc && acc.proxy) || '', id = acc && acc.id;
+  const picked = acc && acc.proxy === 'random' && acc.proxyLabel ? ` (now ${acc.proxyLabel})` : '';
+  return [['random', `Random — a free working line of the list, kept for this account${picked}`],
+    ['', "Direct — this PC's own IP"],
+    ...opts.map((o) => { const who = proxyHolders(o.raw, id);
+      return [o.raw, `${o.label} — ${proxyTestText(o.test)}${who.length ? ` — in use by ${who.join(', ')}` : ''}`, o]; }),
+    ...(cur && cur !== 'random' && !opts.some((o) => o.raw === cur) ? [[cur, `${cur} — no longer in the list`]] : [])];
+}
+function paintProxySelect(acc) {
+  const sel = $('#frm').proxy;
+  sel.innerHTML = proxyChoices(acc).map(([v, t, o]) =>
+    `<option value="${esc(v)}"${o && o.test && !o.test.ok ? ' style="color:var(--bad)"' : ''}>${esc(t)}</option>`).join('');
+  // a new account starts on Random
+  sel.value = acc ? (acc.proxy || '') : 'random';
+}
+// Test every proxy (a tunnel to the game server and the policy request — never a
+// login), then show which work.
+async function testProxies() {
+  $('#proxyTest').disabled = true;
+  $('#proxyList').innerHTML = 'testing every proxy against the game server…';
+  const r = await post('/api/proxies/test', {});
+  $('#proxyTest').disabled = false;
+  await refresh();
+  if (!r || !r.ok) { $('#proxyList').innerHTML = `<span style="color:var(--bad)">${esc((r && r.error) || 'the test did not run')}</span>`; return; }
+  $('#proxyList').innerHTML = `<b style="color:var(--ink)">${r.good} of ${r.total} work</b><br>` + Object.values(r.results).map((t) =>
+    `<span style="color:${t.ok ? 'var(--acc)' : 'var(--bad)'}">${t.ok ? '✓' : '✗'}</span> ${esc(t.label)} — ${esc(proxyTestText(t))}`).join('<br>');
+}
+$('#proxyTest').onclick = testProxies;
 $('#proxySave').onclick = async () => {
   await fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('#proxyText').value }) });
   await refresh(); paintProxyStat();
@@ -625,9 +1822,720 @@ document.querySelectorAll('.tab').forEach((t) => {
     PAGE = t.dataset.p;
     $('#pageFleet').hidden = PAGE !== 'fleet';
     $('#pageUptime').hidden = PAGE !== 'uptime';
+    $('#pageTrading').hidden = PAGE !== 'trading';
+    $('#pageResources').hidden = PAGE !== 'resources';
+    $('#pageAccounts').hidden = PAGE !== 'accounts';
+    if (PAGE === 'accounts') { amRepaint(); $('#amWrap').focus({ preventScroll: true }); }
+    if (PAGE === 'resources') loadResources();
     if (PAGE === 'uptime') loadUptime();
+    if (PAGE === 'trading') (TR_SUB === 'setup' ? loadSetup() : loadTrading());
   };
 });
+
+// ======================================================================
+//  Trading — the market play, read off the consoles' logs (/api/trading)
+// ======================================================================
+let TR = null, TR_MIN = 60;
+// Trading's two views: "Trading results" (what the play is doing) and "Trading" (the setup).
+let TR_SUB = (() => { try { return localStorage.getItem('dir_trsub') === 'setup' ? 'setup' : 'results'; } catch { return 'results'; } })();
+function showTrSub(v) {
+  TR_SUB = v;
+  try { localStorage.setItem('dir_trsub', v); } catch { /* private window */ }
+  document.querySelectorAll('#trSub [data-s]').forEach((x) => x.classList.toggle('on', x.dataset.s === v));
+  $('#trResults').hidden = v !== 'results';
+  $('#trSetup').hidden = v !== 'setup';
+  if (PAGE === 'trading') (v === 'setup' ? loadSetup() : loadTrading());
+}
+$('#trSub').onclick = (e) => { const d = e.target.closest('[data-s]'); if (d) showTrSub(d.dataset.s); };
+$('#trSub').onkeydown = (e) => { const d = e.target.closest('[data-s]'); if (d && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showTrSub(d.dataset.s); } };
+showTrSub(TR_SUB);
+$('#trRange').onclick = (e) => {
+  const d = e.target.closest('[data-m]');
+  if (!d) return;
+  document.querySelectorAll('#trRange div').forEach((x) => x.classList.toggle('on', x === d));
+  TR_MIN = Number(d.dataset.m);
+  loadTrading();
+};
+async function loadTrading() {
+  TR = await fetch('/api/trading?minutes=' + TR_MIN).then((r) => r.json()).catch(() => TR);
+  if (TR && !TR.error) paintTrading();
+  else $('#trMeta').textContent = 'could not read the trading logs' + (TR && TR.error ? ': ' + TR.error : '');
+}
+// every 15 s while the tab is open
+setInterval(() => { if (PAGE === 'trading' && TR_SUB === 'results' && !document.hidden) loadTrading(); }, 15000);
+
+const trAmt = (x) => {
+  const n = Number(x) || 0;
+  if (n >= 1e12) return (n / 1e12).toFixed(n >= 1e13 ? 1 : 2) + 't';
+  if (n >= 1e9) return Math.round(n / 1e9) + 'b';
+  if (n >= 1e6) return Math.round(n / 1e6) + 'm';
+  return String(Math.round(n));
+};
+const trPctColour = (p) => (p === null || p === undefined ? 'var(--dim)' : p > 100 ? 'var(--blue)' : p >= 75 ? 'var(--acc)' : p >= 50 ? 'var(--warn)' : 'var(--bad)');
+const trPct = (p) => (p === null || p === undefined ? '—' : p + '%');
+const trClock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const TR_SHAKY = /ignoring|failed|closed|heartbeat/i;
+
+function paintTrading() {
+  const c = TR.control || {};
+  const now = TR.now;
+  $('#trMeta').textContent = `updated ${new Date(now).toLocaleTimeString()} · refreshes every 15 s · from the consoles' own logs`;
+
+  // the latest full 10-minute reading, and the one still filling
+  const rd = TR.readings || [];
+  const last = rd.length ? rd[rd.length - 1] : null;
+  const prev = rd.length > 1 ? rd[rd.length - 2] : null;
+  const accts = TR.accounts || [];
+  const perMin = (hol) => accts.filter((a) => a.holiday === hol).reduce((s, a) => s + a.placed2, 0) / 2;
+  const trouble = accts.filter((a) => a.conn.some((e) => now - e.t < 10 * 60000 && TR_SHAKY.test(e.text)));
+  const T = TR.total;
+  const playText = c.kind === 'gold' ? 'gold play — holiday buys, ours sell' : 'resource play — holiday sells, ours buy';
+  const RN = TR.run;
+  $('#trRunBanner').innerHTML = RN ? `<div class="ts-msg ${RN.state === 'running' ? 'ok' : RN.state === 'stopped' ? '' : 'warn'}" style="margin:0 0 12px">
+    <b>Started from the Trading tab</b> ${trClock(RN.createdAt)} · ${esc(RN.state)}${RN.stoppedAt ? ' at ' + trClock(RN.stoppedAt) : ''} ·
+    ${RN.kind === 'gold' ? 'gold play' : 'resource play'} ${esc(RN.res)} @ ${esc(RN.price)} ·
+    buying: ${RN.buy.map((id) => esc(RN.labels[id] || id)).join(', ')}${RN.bankSide === 'buy' ? ' (holiday side)' : ''} ·
+    selling: ${RN.sell.map((id) => esc(RN.labels[id] || id)).join(', ')}${RN.bankSide === 'sell' ? ' (holiday side)' : ''}
+    ${RN.cleanBefore ? ' · reports cleaned before' : ''}${RN.cleanAfter ? ' · and after' : ''}
+    <span class="tr-muted"> — only these accounts are counted below</span></div>` : '';
+  const CL = TR.cleaned || { removed: 0, runs: 0, running: [] };
+  $('#trCards').innerHTML = `
+    <div class="card"><h4>The play${c.stopped ? ' <span class="tr-tag" style="color:var(--bad);border-color:var(--bad)">STOPPED</span>' : ''}</h4>
+      <div class="big">${esc(String(c.res || '—').toUpperCase())} <span style="font-size:var(--fs-lg);color:var(--dim)">@ ${esc(c.price ?? '—')}</span></div>
+      <div class="sub">${esc(playText)}<br>
+        caps: ${c.capRes ? trAmt(c.capRes) : 'off'} resource · ${c.capGold ? trAmt(c.capGold) : 'off'} gold${c.res === 'food' ? ` · food hard cap ${trAmt(c.foodCap)}` : ''}<br>
+        keeps ${trAmt(c.keepRes)} resource · ${trAmt(c.keepGold)} gold per city</div></div>
+    <div class="card"><h4>Return, last reading</h4>
+      <div class="big" style="color:${trPctColour(prev && prev.pct)}">${trPct(prev && prev.pct)}</div>
+      <div class="sub">${prev ? `${trClock(prev.t)}–${trClock(prev.t + 600000)}: holiday ${prev.hol} · ours ${prev.ours} orders` : '—'}<br>
+        now filling: ${last ? `${trPct(last.pct)} (${last.hol} / ${last.ours})` : '—'}</div></div>
+    <div class="card"><h4>Since ${esc(T ? T.res : '')} started</h4>
+      <div class="big" style="color:${trPctColour(T && T.pct)}">${trPct(T && T.pct)}</div>
+      <div class="sub">${T ? `from ${trClock(T.since)}<br>holiday sold ${T.holT.toFixed(2)}t · ours bought ${T.oursT.toFixed(2)}t` : '—'}</div></div>
+    <div class="card"><h4>Speed, last 2 minutes</h4>
+      <div class="big">${Math.round(perMin(true))} <span style="font-size:var(--fs-lg);color:var(--dim)">/ ${Math.round(perMin(false))} a minute</span></div>
+      <div class="sub">orders: holiday side / our accounts<br>
+        ${accts.filter((a) => a.placed10 > 0).reduce((s, a) => s + a.active, 0)} cities trading</div></div>
+    <div class="card"><h4><span class="dot" style="background:${trouble.length ? 'var(--warn)' : 'var(--acc)'}"></span>Connections</h4>
+      <div class="big" style="color:${trouble.length ? 'var(--warn)' : 'var(--acc)'}">${trouble.length ? trouble.length + ' shaky' : 'steady'}</div>
+      <div class="sub">${trouble.length ? trouble.map((a) => esc(a.label)).join(', ') + ' — in the last 10 min' : 'no drops or unanswered orders in the last 10 min'}</div></div>
+    <div class="card"><h4>Reports cleaned</h4>
+      <div class="big">${CL.removed.toLocaleString()}</div>
+      <div class="sub">${CL.runs} clean(s) finished in this window${CL.running.length ? `<br><span style="color:var(--warn)">cleaning now: ${CL.running.map((id) => esc((accts.find((a) => a.id === id) || {}).label || id)).join(', ')} — an account is quiet for minutes while it cleans</span>` : ''}</div></div>`;
+
+  // ---- the 5-minute bars
+  const bs = TR.buckets || [];
+  const top = Math.max(1, ...bs.map((b) => Math.max(b.hol, b.ours)));
+  const barMax = cssNum('--bar-max', 178);   // the plot area inside .tr-bars, from the scale
+  // At this type size four digits and a % need about 46px. Where the columns are
+  // narrower than that the labels would sit on top of each other, so only every
+  // second or third one is printed — every bar still says its figures on hover.
+  const colW = ($('#trBars').clientWidth || 800) / Math.max(1, bs.length);
+  const lblEvery = Math.max(1, Math.ceil(46 / Math.max(1, colW)));
+  $('#trBars').innerHTML = bs.map((b, i) => {
+    const h = (n) => Math.max(n ? 2 : 0, Math.round(barMax * n / top));
+    return `<div class="col" title="${trClock(b.t)}: holiday ${b.hol} · ours ${b.ours}${b.prices.length ? ' · price ' + b.prices.join('/') : ''}">
+      <div class="pct" style="color:${trPctColour(b.pct)}">${b.pct === null || i % lblEvery ? '' : b.pct + '%'}</div>
+      <div class="pair"><div class="b" style="height:${h(b.hol)}px;background:var(--warn)"></div><div class="b" style="height:${h(b.ours)}px;background:var(--blue)"></div></div></div>`;
+  }).join('');
+  const every = Math.max(1, Math.ceil(bs.length / 12));
+  let lastPrice = null;
+  $('#trAxis').innerHTML = bs.map((b, i) => {
+    const p = b.prices.join('/');
+    const changed = p && p !== lastPrice;
+    if (p) lastPrice = p;
+    return `<div>${i % every === 0 ? trClock(b.t) : '&nbsp;'}${changed ? `<br><span style="color:var(--ink)">@${esc(p)}</span>` : ''}</div>`;
+  }).join('');
+
+  // ---- readings
+  $('#trReadings').innerHTML = '<tr><th>from</th><th>holiday</th><th>ours</th><th>return</th></tr>'
+    + rd.slice().reverse().map((r, i) => `<tr><td>${trClock(r.t)}${i === 0 ? ' <span class="tr-muted">(now)</span>' : ''}</td>
+      <td>${r.hol}</td><td>${r.ours}</td><td style="color:${trPctColour(r.pct)};font-weight:600">${trPct(r.pct)}</td></tr>`).join('');
+
+  // ---- accounts: the ones in the play, holiday side on top
+  const inPlay = accts.filter((a) => a.placed10 > 0 || (a.lastOrderAt && now - a.lastOrderAt < TR_MIN * 60000)
+    || (a.clean && (a.clean.running || (a.clean.doneAt && now - a.clean.doneAt < TR_MIN * 60000))) || !!TR.run);
+  const idle = accts.filter((a) => !inPlay.includes(a));
+  inPlay.sort((a, b) => (b.holiday - a.holiday) || String(a.label).localeCompare(String(b.label)));
+  const stock = (a) => {
+    if (!a.fresh) return '<span class="tr-muted">—</span>';
+    const k = c.res && a.fresh[c.res] !== undefined ? c.res : null;
+    return `${k ? `<b>${trAmt(a.fresh[k])}</b> ${esc(k)} · ` : ''}<span class="tr-muted">${['food', 'wood', 'stone', 'iron'].filter((x) => x !== k).map((x) => trAmt(a.fresh[x]) + ' ' + x).join(' · ')}<br>
+      ${a.freshCities} cities, at ${trClock(a.freshAt)}</span>`;
+  };
+  const lastConn = (a) => {
+    const e = a.conn[a.conn.length - 1];
+    if (!e) return '<span class="tr-muted">—</span>';
+    const bad = TR_SHAKY.test(e.text) && now - e.t < 10 * 60000;
+    return `<span class="tr-muted">${trClock(e.t)}</span> <span style="color:${bad ? 'var(--warn)' : 'var(--dim)'}">${esc(e.text.slice(0, 90))}</span>`;
+  };
+  const cleanCell = (a) => {
+    const k = a.clean;
+    if (!k) return '<span class="tr-muted">—</span>';
+    if (k.running) return `<span style="color:var(--warn)">cleaning since ${trClock(k.startAt)}</span>`;
+    return `<b>${(k.removed || 0).toLocaleString()}</b> <span class="tr-muted">at ${trClock(k.doneAt)}${k.startAt ? ` (${Math.max(1, Math.round((k.doneAt - k.startAt) / 60000))} min)` : ''}</span>`;
+  };
+  $('#trAccounts').innerHTML = '<tr><th>account</th><th>side</th><th>orders /min</th><th>refused</th><th>cities trading</th><th>sitting out</th><th>stock at last login</th><th>reports cleaned</th><th>connection</th></tr>'
+    + inPlay.map((a) => `<tr>
+      <td><b>${esc(a.label)}</b>${a.connected === false ? ' <span class="tr-tag" style="color:var(--bad);border-color:var(--bad)">offline</span>' : ''}</td>
+      <td><span class="tr-tag ${a.holiday ? 'hol' : 'ours'}">${a.holiday ? 'holiday' : 'ours'}</span> <span class="tr-muted">${a.side ? (a.side === 'sell' ? 'sells' : 'buys') : ''}</span></td>
+      <td>${(a.placed2 / 2).toFixed(0)}</td>
+      <td style="color:${a.refused2 ? 'var(--warn)' : 'var(--dim)'}">${a.refused2}</td>
+      <td>${a.active}</td>
+      <td>${a.sitting.length ? a.sitting.map((x) => esc(x.city)).join(', ') + ` <span class="tr-muted">(${esc(a.sitting[0].res)})</span>` : '<span class="tr-muted">—</span>'}</td>
+      <td>${stock(a)}</td>
+      <td>${cleanCell(a)}</td>
+      <td>${lastConn(a)}</td></tr>`).join('')
+    + (idle.length ? `<tr><td colspan="9" class="tr-muted">not trading in this window: ${idle.map((a) => esc(a.label)).join(', ')}</td></tr>` : '');
+}
+
+// ---------- ask / tell ----------
+// The page's own confirm() and alert(): never the browser's box. ask() resolves true only
+// on its confirm button; Cancel and Esc resolve false. A dangerous one starts with Cancel
+// focused, so a stray Enter changes nothing.
+function modal({ title, text, detail, ok = 'OK', cancel, danger }) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'ask';
+    dlg.innerHTML = `<div class="ask-cap">${esc(title)}</div>`
+      + `<div class="ask-body"><div class="ask-q">${esc(text)}</div>${detail ? `<div class="ask-more">${esc(detail)}</div>` : ''}</div>`
+      + '<form method="dialog" class="ask-btns">'
+      + `<button value="ok" class="${danger ? 'danger' : 'primary'}"${danger ? '' : ' autofocus'}>${esc(ok)}</button>`
+      + (cancel ? `<button value="no"${danger ? ' autofocus' : ''}>${esc(cancel)}</button>` : '')
+      + '</form>';
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(dlg.returnValue === 'ok'); });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  });
+}
+const ask = (text, o = {}) => modal({ title: 'Please confirm', cancel: 'Cancel', ...o, text });
+const tell = (text, o = {}) => modal({ title: 'OTTObot', ...o, text }).then(() => {});
+
+// ======================================================================
+//  Trading — the setup: Buying / Selling, the play, Start process / Stop
+//  (/api/trading/setup, /control, /start, /stop — trading-setup.js)
+// ======================================================================
+let TS = null;              // the last /api/trading/setup answer
+let TS_DIRTY = false;       // the play form has edits not saved yet: a refresh leaves it alone
+const TS_RES = ['food', 'wood', 'stone', 'iron'];
+const tsAmt = (x) => {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return '—';
+  for (const [d, u] of [[1e12, 't'], [1e9, 'b'], [1e6, 'm']]) if (n >= d) return +(n / d).toFixed(2) + u;
+  return String(n);
+};
+async function tsPost(url, data) {
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) });
+    return await r.json();
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+async function loadSetup() {
+  // A Director started before the Trading tab was built has no /api/trading/* at all: it
+  // answers 404 "not found", which is not JSON. Say what that means rather than a parse error.
+  const r = await fetch('/api/trading/setup').then(async (x) => {
+    if (x.status === 404) return { ok: false, error: 'this Director is older than the Trading tab — restart the Director (node director.js) to use it' };
+    return x.json();
+  }).catch((e) => ({ ok: false, error: e.message }));
+  if (!r || r.ok === false) { $('#tsRunMeta').textContent = 'could not read the setup' + (r && r.error ? ': ' + r.error : ''); return; }
+  TS = r;
+  paintSetup();
+}
+setInterval(() => { if (PAGE === 'trading' && TR_SUB === 'setup' && !document.hidden && !TS_DRAG) loadSetup(); }, 5000);
+
+// the form <-> the setup's play
+function tsFormPlay() {
+  const v = (id) => $(id).value.trim();
+  const caps = {};
+  for (const r of TS_RES) caps[r] = v('#tsCap' + r[0].toUpperCase() + r.slice(1));
+  return { res: v('#tsRes'), price: v('#tsPrice'), prevRes: $('#tsPrev').value, capGold: v('#tsCapGold'),
+    keepRes: v('#tsKeepRes'), keepGold: v('#tsKeepGold'), caps };
+}
+function tsFormSetup() {
+  return { play: tsFormPlay(), cleanBefore: $('#tsCleanBefore').checked, cleanAfter: $('#tsCleanAfter').checked,
+    watchdog: $('#tsWatchdog').checked, ladder: $('#tsLadder').checked, delaySec: Number($('#tsDelay').value) || 0,
+    ladderCfg: { res: $('#tsLadRes').value, gold: $('#tsLadGold').value, everyMin: $('#tsLadEvery').value, high: $('#tsLadHigh').value, low: $('#tsLadLow').value },
+    gateMin: $('#tsGate').value.trim() === '' ? 10 : Number($('#tsGate').value) };
+}
+function tsFillForm(s) {
+  const p = s.play;
+  $('#tsRes').value = p.res; $('#tsPrice').value = p.price; $('#tsPrev').value = p.prevRes;
+  for (const r of TS_RES) $('#tsCap' + r[0].toUpperCase() + r.slice(1)).value = tsAmt(p.caps[r]);
+  $('#tsCapGold').value = tsAmt(p.capGold); $('#tsKeepRes').value = tsAmt(p.keepRes); $('#tsKeepGold').value = tsAmt(p.keepGold);
+  $('#tsCleanBefore').checked = !!s.cleanBefore; $('#tsCleanAfter').checked = !!s.cleanAfter;
+  $('#tsWatchdog').checked = !!s.watchdog; $('#tsLadder').checked = !!s.ladder; $('#tsDelay').value = s.delaySec; $('#tsGate').value = s.gateMin ?? 10;
+  const lc = s.ladderCfg || {};
+  $('#tsLadRes').value = (lc.res || []).join(' '); $('#tsLadGold').value = (lc.gold || []).join(' ');
+  $('#tsLadEvery').value = lc.everyMin ?? 10; $('#tsLadHigh').value = lc.high ?? 80; $('#tsLadLow').value = lc.low ?? 60;
+  TS_DIRTY = false;
+}
+$('#tsForm').addEventListener('input', () => { TS_DIRTY = true; $('#tsSaved').textContent = 'not saved'; paintSides(); });
+document.querySelectorAll('#tsForm select').forEach((x) => x.addEventListener('change', () => { TS_DIRTY = true; $('#tsSaved').textContent = 'not saved'; paintSides(); }));
+document.querySelectorAll('.ts-opts input').forEach((x) => x.addEventListener('input', () => { TS_DIRTY = true; $('#tsSaved').textContent = 'not saved'; }));
+
+// which side is the holiday (bank) side at the price in the form
+const tsKind = () => (Number($('#tsPrice').value) >= 50 ? 'gold' : 'res');
+function paintSides() {
+  const res = $('#tsRes').value, price = $('#tsPrice').value, gold = tsKind() === 'gold';
+  $('#tsBuySub').innerHTML = `buys <b>${esc(res)}</b> @ <b>${esc(price || '?')}</b> — ${gold
+    ? '<span class="ts-hol">the holiday side (banks buy dear)</span>' : 'our accounts'}`;
+  $('#tsSellSub').innerHTML = `sells <b>${esc(res)}</b> @ <b>${esc(price || '?')}</b> — ${gold
+    ? 'our accounts' : '<span class="ts-hol">the holiday side (banks sell cheap)</span>'}`;
+}
+
+function paintSetup() {
+  const { setup, run, control, accounts, check } = TS;
+  if (!TS_DIRTY) tsFillForm(setup);
+  $('#tsSaved').textContent = TS_DIRTY ? 'not saved' : setup.updatedAt ? `saved ${new Date(setup.updatedAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${setup.updatedBy ? ' by ' + setup.updatedBy : ''}` : '';
+  paintSides();
+
+  // ---- the process
+  const st = run ? run.state : 'idle';
+  const col = { running: 'var(--acc)', starting: 'var(--blue)', stopping: 'var(--warn)', interrupted: 'var(--bad)', stopped: 'var(--dim)', idle: 'var(--dim)' }[st] || 'var(--dim)';
+  $('#tsRunState').textContent = st.toUpperCase();
+  $('#tsRunState').style.cssText = `color:${col};border-color:${col}`;
+  const active = run && ['starting', 'running', 'stopping'].includes(run.state);
+  let meta = '';
+  if (run && run.buy) {
+    meta = `${run.kind === 'gold' ? 'gold' : 'resource'} play ${run.res} @ ${run.price} · started ${new Date(run.createdAt).toLocaleTimeString()}`;
+    if (run.state === 'starting') meta += ` · ${run.phase === 'delay' && run.sellAt ? `sellers at ${new Date(run.sellAt).toLocaleTimeString()}` : 'phase ' + run.phase}`;
+    if (run.stoppedAt) meta += ` · stopped ${new Date(run.stoppedAt).toLocaleTimeString()}`;
+    if (run.stopPending) meta += ' · stop asked — after the current step';
+  }
+  $('#tsRunMeta').textContent = meta;
+  $('#tsStart').disabled = !!active;
+  $('#tsStop').disabled = !!(run && run.state === 'stopping');
+  $('#tsStop').textContent = active ? 'Stop' : 'Stop (end the control file)';
+  const cs = control ? `control file now: <b>${esc(control.res)} @ ${esc(control.price)}</b> (${control.kind === 'gold' ? 'gold play' : 'resource play'})${control.stopped ? ' · <b style="color:var(--bad)">STOPPED — `end` is its first line</b>' : ''}` : `control file: ${esc(TS.controlError || 'unreadable')}`;
+  $('#tsChecks').innerHTML = `<div class="tr-muted" style="margin-top:8px">${cs}</div>`
+    // A Stop in progress: what it is doing and when Start comes back (the runner's own
+    // times — the drain window and each account's restart gate), not a blank grey button.
+    + (TS.stopStatus ? (() => {
+      const ss = TS.stopStatus, left = Math.max(0, Math.round((ss.eta - TS.now) / 60000));
+      return `<div class="ts-msg warn"><b>Stopping — ${esc(ss.text)}.</b>\nStart comes back at about <b>${new Date(ss.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>`
+        + ` (${left ? 'in ~' + left + ' min' : 'any moment'}). Changes to the setup can be saved meanwhile.</div>`;
+    })() : '')
+    + (check.errors.length ? `<div class="ts-msg bad"><b>Start is refused until these are fixed:</b>\n${check.errors.map((e) => '• ' + esc(e)).join('\n')}</div>` : '<div class="ts-msg ok">Every check for a start passes.</div>')
+    + (check.warnings.length ? `<div class="ts-msg warn">${check.warnings.map((e) => '• ' + esc(e)).join('\n')}</div>` : '');
+
+  // ---- the three lists
+  const now = TS.now;
+  const lists = { none: [], buy: [], sell: [] };
+  for (const a of accounts) lists[setup.sides[a.id] || 'none'].push(a);
+  const inRun = new Set(active && run.buy ? [...run.buy, ...run.sell] : []);
+  for (const side of ['none', 'buy', 'sell']) {
+    const colEl = document.querySelector(`.ts-col[data-side="${side}"]`);
+    colEl.querySelector('.ts-count').textContent = lists[side].length ? `${lists[side].length}` : '';
+    colEl.querySelector('.ts-list').innerHTML = lists[side].map((a) => {
+      const hol = a.holiday === true ? `<span class="tr-tag ts-hol" title="${esc(a.holidayText || '')}">holiday${a.holidayText ? ' ' + esc(a.holidayText) : ''}</span>`
+        : a.holiday === false ? '<span class="tr-tag">not on holiday</span>' : '<span class="tr-tag ts-unk">holiday unknown</span>';
+      const dot = a.connected ? 'var(--acc)' : a.processDown ? 'var(--faint)' : 'var(--bad)';
+      const gate = a.gateUntil > now ? ` · <span style="color:var(--warn)">restart gate ${Math.ceil((a.gateUntil - now) / 60000)} min</span>` : '';
+      const conn = a.connected ? 'logged in' : a.processDown ? 'console not reporting' : esc(a.reason || a.state || 'not logged in');
+      const b = (to, t) => `<button data-to="${to}" ${side === to ? 'disabled' : ''} title="${to === 'none' ? 'not trading' : to === 'buy' ? 'buying' : 'selling'}">${t}</button>`;
+      return `<div class="ts-acc" draggable="true" tabindex="0" data-id="${esc(a.id)}" aria-label="${esc(a.label)}: press B, S or N">
+        <span class="dot" style="background:${dot}"></span><span class="nm">${esc(a.label)}</span>${hol}
+        ${a.enabled ? '' : '<span class="tr-tag ts-unk">switched off</span>'}${inRun.has(a.id) ? '<span class="tr-tag ours">in the play</span>' : ''}
+        <span class="mv">${b('buy', 'B')}${b('sell', 'S')}${b('none', '–')}</span>
+        <span class="meta">${a.lord ? 'in-game ' + esc(a.lord) + ' · ' : ''}${conn}${gate}</span></div>`;
+    }).join('') || '<div class="tr-muted" style="padding:10px 2px">drop accounts here</div>';
+  }
+
+  // ---- the control file beside the form
+  const nowV = (k) => {
+    if (!control) return '';
+    if (k.startsWith('cap.')) return control.caps[k.slice(4)];
+    return control[k];
+  };
+  const fp = TS_DIRTY ? tsFormPlay() : setup.play;
+  const want = { res: fp.res, price: fp.price, prevRes: fp.prevRes, capGold: fp.capGold, keepRes: fp.keepRes, keepGold: fp.keepGold };
+  for (const r of TS_RES) want['cap.' + r] = fp.caps[r];
+  document.querySelectorAll('#tsForm .ts-now').forEach((el) => {
+    const k = el.dataset.k;
+    const v = nowV(k);
+    if (k === 'holi') { el.textContent = control && control.holi.length ? control.holi.join(', ') : '—'; return; }
+    const amountish = /^(cap|keep)/.test(k) || k === 'foodCap';
+    el.textContent = v === null || v === undefined ? '—' : amountish ? tsAmt(v) : (k === 'prevRes' && v === '' ? 'none' : String(v));
+    const w = want[k];
+    const same = w === undefined || k === 'prevRes' || (amountish ? tsParse(w) === Number(v) : String(w) === String(v) || Number(w) === Number(v));
+    el.classList.toggle('diff', !same);
+  });
+
+  // ---- what it did
+  const ev = (run && run.events) || [];
+  $('#tsEvents').innerHTML = ev.slice().reverse().map((e) => `<div><span class="t">${new Date(e.t).toLocaleTimeString()}</span>${esc(e.m)}</div>`).join('')
+    || '<div class="tr-muted">nothing yet — Start process runs the play from here</div>';
+}
+// "800b" -> 800e9, as the server reads it (trading-setup.js parseAmount)
+function tsParse(v) {
+  if (typeof v === 'number') return v;
+  const m = /^(\d+(?:\.\d+)?(?:e\d+)?)([kmbt]?)$/.exec(String(v || '').trim().toLowerCase().replace(/[,_\s]/g, ''));
+  return m ? Math.round(Number(m[1]) * ({ '': 1, k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[m[2]])) : NaN;
+}
+
+// ---- moving accounts: drag and drop, B / S / N on a focused card, or its buttons
+let TS_DRAG = null;
+async function tsMove(id, to) {
+  if (!TS) return;
+  const sides = { ...TS.setup.sides };
+  if (to === 'none') delete sides[id]; else sides[id] = to;
+  TS.setup.sides = sides;
+  paintSetup();
+  const r = await tsPost('/api/trading/setup', { sides });
+  if (r.ok === false) return tell(r.error || 'could not be saved', { title: 'Trading' });
+  const keep = TS_DIRTY;
+  TS = r; if (keep) TS_DIRTY = true;
+  paintSetup();
+  const el = document.querySelector(`.ts-acc[data-id="${CSS.escape(id)}"]`);
+  if (el) el.focus();
+}
+// every buyer becomes a seller and every seller a buyer, in one save
+$('#tsSwap').onclick = async () => {
+  if (!TS) return;
+  const lbl = (id) => (TS.accounts.find((a) => a.id === id) || {}).label || id;
+  const sides = TS.setup.sides;
+  const buy = Object.keys(sides).filter((id) => sides[id] === 'buy');
+  const sell = Object.keys(sides).filter((id) => sides[id] === 'sell');
+  if (!buy.length && !sell.length) return tell('Nobody is buying or selling.', { title: 'Swap buyers and sellers' });
+  const active = TS.run && ['starting', 'running', 'stopping'].includes(TS.run.state);
+  const ok = await ask('Swap buyers and sellers?', {
+    title: 'Swap buyers and sellers', ok: 'Swap',
+    detail: `Buying after the swap: ${sell.map(lbl).join(', ') || 'nobody'}
+`
+      + `Selling after the swap: ${buy.map(lbl).join(', ') || 'nobody'}
+
+`
+      + 'Only the lists change. '
+      + (active ? 'The process running now is not touched — the swap applies at the next Start.' : 'It applies at the next Start.'),
+  });
+  if (!ok) return;
+  const swapped = {};
+  for (const id of buy) swapped[id] = 'sell';
+  for (const id of sell) swapped[id] = 'buy';
+  const r = await tsPost('/api/trading/setup', { sides: swapped });
+  if (r.ok === false) return tell(r.error || 'could not be saved', { title: 'Swap buyers and sellers' });
+  const keep = TS_DIRTY;
+  TS = r; if (keep) TS_DIRTY = true;
+  paintSetup();
+};
+$('#tsCols').addEventListener('click', (e) => {
+  const b = e.target.closest('.mv button');
+  if (!b || b.disabled) return;
+  tsMove(b.closest('.ts-acc').dataset.id, b.dataset.to);
+});
+$('#tsCols').addEventListener('keydown', (e) => {
+  const card = e.target.closest('.ts-acc');
+  if (!card || e.target !== card) return;
+  const k = e.key.toLowerCase();
+  const to = k === 'b' ? 'buy' : k === 's' ? 'sell' : (k === 'n' || k === 'delete' || k === 'backspace') ? 'none' : null;
+  if (to) { e.preventDefault(); tsMove(card.dataset.id, to); }
+});
+$('#tsCols').addEventListener('dragstart', (e) => {
+  const card = e.target.closest('.ts-acc');
+  if (!card) return;
+  TS_DRAG = card.dataset.id;
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', TS_DRAG);
+});
+$('#tsCols').addEventListener('dragend', (e) => {
+  const card = e.target.closest('.ts-acc');
+  if (card) card.classList.remove('dragging');
+  document.querySelectorAll('.ts-col.over').forEach((x) => x.classList.remove('over'));
+  TS_DRAG = null;
+});
+document.querySelectorAll('.ts-col').forEach((col) => {
+  col.addEventListener('dragover', (e) => { if (!TS_DRAG) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('over'); });
+  col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('over'); });
+  col.addEventListener('drop', (e) => {
+    e.preventDefault();
+    col.classList.remove('over');
+    const id = TS_DRAG || e.dataTransfer.getData('text/plain');
+    TS_DRAG = null;
+    if (id) tsMove(id, col.dataset.side);
+  });
+});
+
+// ---- the buttons
+$('#tsSave').onclick = async () => {
+  const r = await tsPost('/api/trading/setup', tsFormSetup());
+  if (r.ok === false) return tell(r.error || 'could not be saved', { title: 'Trading' });
+  TS = r; TS_DIRTY = false; paintSetup();
+};
+$('#tsStart').onclick = async () => {
+  if (!TS) return;
+  // what will be started, from the form as it stands (it is saved with the start)
+  const f = tsFormSetup();
+  const lbl = (id) => (TS.accounts.find((a) => a.id === id) || {}).label || id;
+  const buy = Object.keys(TS.setup.sides).filter((id) => TS.setup.sides[id] === 'buy').map(lbl);
+  const sell = Object.keys(TS.setup.sides).filter((id) => TS.setup.sides[id] === 'sell').map(lbl);
+  const gold = Number(f.play.price) >= 50;
+  const ok = await ask(`Start the ${gold ? 'GOLD' : 'RESOURCE'} play: ${f.play.res} @ ${f.play.price}?`, {
+    title: 'Start process', ok: 'Start process', danger: true,
+    detail: `Buying${gold ? ' (holiday side)' : ''}: ${buy.join(', ') || 'nobody'}\n`
+      + `Selling${gold ? '' : ' (holiday side)'}: ${sell.join(', ') || 'nobody'}\n\n`
+      + `The control file is written now, in one write — whatever play is running reads it within a second. `
+      + `Then ${buy.length + sell.length} console(s) are restarted onto the play scripts: the buyers first, the sellers ${f.delaySec}s later`
+      + `${f.cleanBefore ? ', each cleaning its reports first (the account is quiet while it cleans army reports)' : ''}.`
+      + `${f.cleanAfter ? ' Reports are cleaned again after the stop.' : ''} ${Number(f.gateMin) > 0 ? `An account restarted less than ${f.gateMin} min ago is started once that has passed.` : 'Every account is started at once, however recently it restarted.'}`,
+  });
+  if (!ok) return;
+  const r = await tsPost('/api/trading/start', { setup: f });
+  if (r.ok === false) return tell(r.error || 'not started', { title: 'Not started' });
+  TS = r; TS_DIRTY = false; paintSetup();
+};
+$('#tsStop').onclick = async () => {
+  const clean = $('#tsCleanAfter').checked;
+  const active = TS && TS.run && ['starting', 'running'].includes(TS.run.state);
+  const ok = await ask(active ? 'Stop the play?' : 'Stop whatever the control file is running?', {
+    title: 'Stop', ok: 'Stop', danger: true,
+    detail: '`end` goes in as the control file\'s first line — every city of every account on the play scripts ends its run on its next loop. '
+      + 'Once their logs are quiet the line comes out again.'
+      + (clean ? ' Then each account is restarted onto clean-reports.txt (untick "clean reports after" to skip it).' : ''),
+  });
+  if (!ok) return;
+  const r = await tsPost('/api/trading/stop', { clean });
+  if (r.ok === false) return tell(r.error || 'could not stop', { title: 'Stop' });
+  TS = r; paintSetup();
+};
+$('#tsApply').onclick = async () => {
+  if (!TS || !TS.control) return;
+  const play = tsFormPlay();
+  const ok = await ask(`Write ${play.res} @ ${play.price} and these caps into the control file now?`, {
+    title: 'Apply to the control file', ok: 'Write it', danger: true,
+    detail: 'Every city of whatever play is running reads it within a second. The setup is not started or changed by this.',
+  });
+  if (!ok) return;
+  const r = await tsPost('/api/trading/control', { play, version: TS.control.version });
+  if (r.ok === false) return tell(r.error || 'not written', { title: r.conflict ? 'The control file changed' : 'Not written' });
+  const keep = TS_DIRTY; TS = r; TS_DIRTY = keep; paintSetup();
+};
+$('#tsHoli').onclick = async () => {
+  if (!TS || !TS.control) return;
+  const gold = tsKind() === 'gold';
+  const bankSide = gold ? 'buy' : 'sell';
+  const banks = TS.accounts.filter((a) => TS.setup.sides[a.id] === bankSide);
+  const lords = banks.filter((a) => a.holiday === true && a.lord).map((a) => a.lord);
+  const left = banks.filter((a) => !(a.holiday === true && a.lord)).map((a) => a.label);
+  if (!lords.length) return tell(`No account on the ${bankSide === 'buy' ? 'Buying' : 'Selling'} side is on holiday with its in-game name known, so there is nothing to list.`, { title: 'Holi list' });
+  const ok = await ask(`Set the holi list to: ${lords.join(', ')}?`, {
+    title: 'Holi list', ok: 'Set it', danger: true,
+    detail: `Now: ${TS.control.holi.join(', ') || 'none'}.\nThe holi list is what lets an account sell under 50 or buy at 50+ (the control file's SAFETY lines). `
+      + `Only accounts the consoles say are on holiday go in.${left.length ? `\nLeft out (not on holiday, or not reporting): ${left.join(', ')}` : ''}`,
+  });
+  if (!ok) return;
+  const r = await tsPost('/api/trading/control', { holi: lords, version: TS.control.version });
+  if (r.ok === false) return tell(r.error || 'not written', { title: r.conflict ? 'The control file changed' : 'Not written' });
+  const keep = TS_DIRTY; TS = r; TS_DIRTY = keep; paintSetup();
+};
+
+
+// ======================================================================
+//  Resources — every city's stock, recorded once an hour (/api/resources)
+// ======================================================================
+const RS_RES = ['food', 'wood', 'stone', 'iron', 'gold'];
+let RS = null, RS_HOURS = 168, RS_ON = new Set(RS_RES), RS_ACC = '', RS_Q = '', RS_SORT = { k: 'label', dir: 1 };
+const rsAmt = (x) => {
+  const n = Number(x) || 0;
+  if (n >= 1e12) return (n / 1e12).toFixed(n >= 1e14 ? 0 : n >= 1e13 ? 1 : 2) + 't';
+  if (n >= 1e9) return Math.round(n / 1e9) + 'b';
+  if (n >= 1e6) return Math.round(n / 1e6) + 'm';
+  return Math.round(n).toLocaleString();
+};
+const rsWhen = (t) => new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+
+$('#rsRange').onclick = (e) => {
+  const d = e.target.closest('[data-h]');
+  if (!d) return;
+  document.querySelectorAll('#rsRange div').forEach((x) => x.classList.toggle('on', x === d));
+  RS_HOURS = Number(d.dataset.h);
+  loadResources();
+};
+$('#rsTypes').onclick = (e) => {
+  const d = e.target.closest('[data-r]');
+  if (!d) return;
+  const r = d.dataset.r;
+  if (r === 'all') RS_ON = new Set(RS_RES);
+  else if (RS_ON.size === RS_RES.length) RS_ON = new Set([r]);
+  else if (RS_ON.has(r) && RS_ON.size > 1) RS_ON.delete(r);
+  else RS_ON.add(r);
+  paintResources();
+};
+$('#rsAcc').onchange = () => { RS_ACC = $('#rsAcc').value; loadResources(); };
+let rsQTimer = null;
+$('#rsQ').oninput = () => { clearTimeout(rsQTimer); rsQTimer = setTimeout(() => { RS_Q = $('#rsQ').value; loadResources(); }, 300); };
+$('#rsRecord').onclick = async () => {
+  $('#rsRecord').disabled = true;
+  const r = await fetch('/api/resources/record', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+  $('#rsRecord').disabled = false;
+  $('#rsMeta').textContent = r && r.ok ? `recorded ${r.rows} cities just now${r.skipped && r.skipped.length ? ' — skipped: ' + r.skipped.join('; ') : ''}` : 'the record failed';
+  loadResources();
+};
+
+async function loadResources() {
+  const qs = new URLSearchParams({ hours: RS_HOURS, accounts: RS_ACC, q: RS_Q });
+  RS = await fetch('/api/resources?' + qs).then((r) => r.json()).catch(() => RS);
+  loadMornings();
+  if (RS && !RS.error) paintResources();
+  else $('#rsMeta').textContent = 'could not read the resource record' + (RS && RS.error ? ': ' + RS.error : '');
+}
+// a new record lands on the hour: look again every 5 minutes while the tab is open
+setInterval(() => { if (PAGE === 'resources' && !document.hidden) loadResources(); }, 300000);
+
+function paintResources() {
+  const pts = RS.points || [];
+  const last = pts.length ? pts[pts.length - 1] : null;
+  const nextHour = Math.ceil(Date.now() / 3600000) * 3600000;
+  $('#rsMeta').textContent = last
+    ? `${pts.length} records · last ${rsWhen(last.at)} (${last.cities} cities) · next on the hour, ${new Date(nextHour).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'no records in this range yet';
+  // account picker (kept as chosen)
+  const sel = $('#rsAcc');
+  const opts = '<option value="">every account</option>' + (RS.accounts || []).map((a) => `<option value="${esc(a.id)}"${a.id === RS_ACC ? ' selected' : ''}>${esc(a.label)}</option>`).join('');
+  if (sel.innerHTML !== opts) sel.innerHTML = opts;
+  document.querySelectorAll('#rsTypes [data-r]').forEach((d) => d.classList.toggle('on', d.dataset.r === 'all' ? RS_ON.size === RS_RES.length : RS_ON.has(d.dataset.r) && RS_ON.size < RS_RES.length));
+  const split = rsHolidaySplit(RS.cities || [], RS.accounts || []);
+  // one chart per resource, each on its own scale (gold runs to hundreds of t)
+  $('#rsCharts').innerHTML = RS_RES.filter((k) => RS_ON.has(k)).map((k) => `
+    <div class="bandwrap rs-panel" data-k="${k}">
+      <div class="rs-head"><span class="rs-sw" style="background:var(--rs-${k})"></span><h3>${k[0].toUpperCase() + k.slice(1)}</h3>
+        <span class="rs-now">${last ? rsAmt(last[k]) : '—'}</span></div>
+      ${rsSplitLine(split, k)}
+      <div class="rs-plot" data-k="${k}"></div>
+    </div>`).join('');
+  document.querySelectorAll('.rs-plot').forEach((el) => drawResChart(el, el.dataset.k, pts));
+  // the latest record, city by city
+  const rows = (RS.cities || []).slice().sort((a, b) => {
+    const k = RS_SORT.k, va = a[k], vb = b[k];
+    return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * RS_SORT.dir;
+  });
+  const th = (k, t, num) => `<th data-k="${k}"${num ? ' class="num"' : ''}>${t}${RS_SORT.k === k ? (RS_SORT.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+  $('#rsTable').innerHTML = `<tr>${th('label', 'account')}${th('city', 'city')}${th('x', 'x,y')}${RS_RES.map((k) => th(k, k, 1)).join('')}</tr>`
+    + rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${esc(r.city)}</td><td class="tr-muted">${r.x},${r.y}</td>${RS_RES.map((k) => `<td class="num">${rsAmt(r[k])}</td>`).join('')}</tr>`).join('')
+    + (rows.length ? `<tr class="rs-total"><td colspan="3">total of ${rows.length} cities</td>${RS_RES.map((k) => `<td class="num">${rsAmt(rows.reduce((s, r) => s + r[k], 0))}</td>`).join('')}</tr>`
+      + RS_SIDES.filter((s) => split[s.key].cities && split[s.key].cities < rows.length).map((s) => `<tr class="rs-side"><td colspan="3"><span class="rs-dot ${s.cls}"></span>${s.name} — ${split[s.key].accounts.size} accounts, ${split[s.key].cities} cities</td>${RS_RES.map((k) => `<td class="num">${rsAmt(split[s.key][k])}</td>`).join('')}</tr>`).join('')
+      : '<tr><td colspan="8" class="tr-muted">no cities match</td></tr>');
+}
+// The latest record summed by which side of the holiday each account is on: the live
+// badge, else the last one the Director saw (the consoles are down in maintenance).
+const RS_SIDES = [
+  { key: 'hol', name: 'on holiday', cls: 'hol' },
+  { key: 'out', name: 'not on holiday', cls: 'out' },
+  { key: 'unk', name: 'holiday unknown', cls: 'unk' },
+];
+function rsHolidaySplit(cities, accounts) {
+  const side = new Map(accounts.map((a) => [a.id, a.holiday === true ? 'hol' : a.holiday === false ? 'out' : 'unk']));
+  const out = {};
+  for (const s of RS_SIDES) out[s.key] = { cities: 0, accounts: new Set(), labels: new Set(), ...Object.fromEntries(RS_RES.map((k) => [k, 0])) };
+  for (const c of cities) {
+    const g = out[side.get(c.accountId) || 'unk'];
+    g.cities++; g.accounts.add(c.accountId); g.labels.add(c.label);
+    for (const k of RS_RES) g[k] += Number(c[k]) || 0;
+  }
+  return out;
+}
+function rsSplitLine(split, k) {
+  const total = RS_SIDES.reduce((s, x) => s + split[x.key][k], 0);
+  const parts = RS_SIDES.filter((s) => split[s.key].cities).map((s) => {
+    const g = split[s.key], pct = total ? Math.round(g[k] / total * 100) : 0;
+    return `<span class="rs-split-part" title="${esc(s.name)}: ${esc([...g.labels].sort().join(', '))}"><span class="rs-dot ${s.cls}"></span>${s.name} <b>${rsAmt(g[k])}</b> <span class="tr-muted">${pct}%</span></span>`;
+  });
+  return parts.length ? `<div class="rs-split">${parts.join('')}</div>` : '';
+}
+$('#rsTable').onclick = (e) => {
+  const h = e.target.closest('th[data-k]');
+  if (!h) return;
+  RS_SORT = { k: h.dataset.k, dir: RS_SORT.k === h.dataset.k ? -RS_SORT.dir : (RS_RES.includes(h.dataset.k) ? -1 : 1) };
+  paintResources();
+};
+
+// ----------------------------------------------------------------------
+//  The 08:30 record (/api/resources/mornings)
+// ----------------------------------------------------------------------
+let RSM = null, RSM_DAYS = 7, RSM_RES = 'food';
+const rsDay = (d) => new Date(d + 'T00:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+$('#rsMornRange').onclick = (e) => {
+  const d = e.target.closest('[data-d]');
+  if (!d) return;
+  document.querySelectorAll('#rsMornRange div').forEach((x) => x.classList.toggle('on', x === d));
+  RSM_DAYS = Number(d.dataset.d);
+  loadMornings();
+};
+$('#rsMornRes').onclick = (e) => {
+  const d = e.target.closest('[data-r]');
+  if (!d) return;
+  RSM_RES = d.dataset.r;
+  paintMornings();
+};
+async function loadMornings() {
+  const qs = new URLSearchParams({ days: RSM_DAYS, accounts: RS_ACC, q: RS_Q });
+  RSM = await fetch('/api/resources/mornings?' + qs).then((r) => r.json()).catch(() => RSM);
+  paintMornings();
+}
+function paintMornings() {
+  if (!RSM || RSM.error) { $('#rsMornMeta').textContent = 'could not read it' + (RSM && RSM.error ? ': ' + RSM.error : ''); return; }
+  document.querySelectorAll('#rsMornRes [data-r]').forEach((d) => d.classList.toggle('on', d.dataset.r === RSM_RES));
+  const days = RSM.days || [];
+  $('#rsMornMeta').innerHTML = days.length
+    ? `What every town held at 08:30, just before the daily maintenance window — ${days.length} morning(s), latest ${esc(rsDay(days[days.length - 1]))}.`
+      + (RSM.due ? ' <b>Today\'s has not been taken yet.</b>' : '')
+      + ((RSM.towns || []).some((t) => days.some((d) => t.by[d] && t.by[d].late))
+        ? ' <span class="rs-late">✳</span> the Director was not up at 08:30 and caught that one up later.' : '')
+    : 'No 08:30 record yet — the first one is taken at 08:30 tomorrow (or at the Director\'s next start if it was down then).';
+  if (!days.length) { $('#rsMornTbl').innerHTML = ''; return; }
+  const towns = RSM.towns || [];
+  $('#rsMornTbl').innerHTML = `<tr><th>account</th><th>city</th><th>x,y</th>${days.map((d) => `<th class="num">${esc(rsDay(d))}</th>`).join('')}</tr>`
+    + (towns.length ? towns.map((t) => `<tr><td>${esc(t.label)}</td><td>${esc(t.city)}</td><td class="tr-muted">${t.x},${t.y}</td>`
+      + days.map((d) => {
+        const c = t.by[d];
+        if (!c) return '<td class="num"><span class="tr-muted">—</span></td>';
+        return `<td class="num"${c.late ? ` title="taken late, at ${esc(new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} — the Director was not up at 08:30"` : ''}>${rsAmt(c[RSM_RES])}${c.late ? '<span class="rs-late">✳</span>' : ''}</td>`;
+      }).join('') + '</tr>').join('')
+      : `<tr><td colspan="${days.length + 3}" class="tr-muted">no towns match</td></tr>`);
+}
+
+// an area chart: a 2px line with the area under it filled, one axis, a crosshair tooltip
+function drawResChart(el, k, pts) {
+  const W = Math.max(280, el.clientWidth || 400);
+  const H = cssNum('--chart-h', 184), L = cssNum('--chart-pad-l', 60), R = 8, T = 10, B = cssNum('--chart-pad-b', 26);
+  if (!pts.length) { el.innerHTML = '<div class="tr-muted" style="padding:30px 0">no records yet</div>'; return; }
+  const t0 = pts[0].at, t1 = Math.max(pts[pts.length - 1].at, t0 + 1);
+  const max = Math.max(1, ...pts.map((p) => p[k]));
+  const x = (t) => L + (pts.length === 1 ? (W - L - R) / 2 : (t - t0) / (t1 - t0) * (W - L - R));
+  const y = (v) => T + (1 - v / max) * (H - T - B);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(p[k]).toFixed(1)}`).join('');
+  const area = `${line}L${x(pts[pts.length - 1].at).toFixed(1)},${y(0)}L${x(pts[0].at).toFixed(1)},${y(0)}Z`;
+  const ax = cssNum('--fs-xs', 12.5);   // the label size, so they sit right whatever the scale
+  const grid = [0, 0.5, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${y(max * f)}" y2="${y(max * f)}" class="rs-grid"/>
+    <text x="${L - 8}" y="${(y(max * f) + ax * 0.35).toFixed(1)}" text-anchor="end" class="rs-ax">${rsAmt(max * f)}</text>`).join('');
+  const ticks = pts.length > 1 ? [t0, (t0 + t1) / 2, t1].map((t, i) => `<text x="${x(t)}" y="${(H - ax * 0.5).toFixed(1)}" text-anchor="${['start', 'middle', 'end'][i]}" class="rs-ax">${rsWhen(t)}</text>`).join('') : '';
+  el.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="${k} over time">
+    ${grid}
+    <path d="${area}" fill="var(--rs-${k})" fill-opacity="0.18"/>
+    <path d="${line}" fill="none" stroke="var(--rs-${k})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${pts.length === 1 ? `<circle cx="${x(pts[0].at)}" cy="${y(pts[0][k])}" r="4" fill="var(--rs-${k})" stroke="var(--panel)" stroke-width="2"/>` : ''}
+    ${ticks}
+    <line class="rs-cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+    <circle class="rs-dot" r="4" fill="var(--rs-${k})" stroke="var(--panel)" stroke-width="2" visibility="hidden"/>
+    <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" class="rs-hit"/>
+  </svg>`;
+  const svg = el.querySelector('svg'), cross = svg.querySelector('.rs-cross'), dot = svg.querySelector('.rs-dot');
+  const tip = $('#bandTip');
+  svg.querySelector('.rs-hit').onmousemove = (ev) => {
+    const bx = svg.getBoundingClientRect();
+    const mx = ev.clientX - bx.left;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(x(p.at) - mx) < Math.abs(x(best.at) - mx)) best = p;
+    cross.setAttribute('x1', x(best.at)); cross.setAttribute('x2', x(best.at)); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', x(best.at)); dot.setAttribute('cy', y(best[k])); dot.setAttribute('visibility', 'visible');
+    tip.innerHTML = `<b>${rsWhen(best.at)}</b><br>${k}: <b>${rsAmt(best[k])}</b><br><span style="color:var(--dim)">${best.cities} cities</span>`;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(window.innerWidth - 200, ev.clientX + 14) + 'px';
+    tip.style.top = (ev.clientY + 14) + 'px';
+  };
+  svg.querySelector('.rs-hit').onmouseleave = () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; };
+}
+window.addEventListener('resize', () => { if (PAGE === 'resources' && RS) paintResources(); });
 
 $('#range').onclick = (e) => {
   const d = e.target.closest('[data-h]');
@@ -672,7 +2580,7 @@ function paintUptime() {
     return `<div class="card">
       <h4><span class="dot" style="background:${s.upPct >= 95 ? 'var(--acc)' : s.upPct > 0 ? 'var(--warn)' : 'var(--bad)'}"></span>
           ${esc(name)}${s.label && s.label !== name ? ` <span style="color:var(--dim);font-weight:400">${esc(s.label)}</span>` : ''}</h4>
-      <div class="big" style="color:${healthColour(s.upPct)}">${pct(s.upPct)}<span style="font-size:14px;color:var(--dim)">% up</span></div>
+      <div class="big" style="color:${healthColour(s.upPct)}">${pct(s.upPct)}<span style="font-size:var(--fs-lg);color:var(--dim)">% up</span></div>
       <div class="sub">
         active ${pct(s.activePct)}% · process alive ${pct(s.reachablePct)}%<br>
         ${s.maintenance ? `<span style="color:var(--blue)">${dur(s.maintenance * UP.sampleMs)} of server maintenance (excluded)</span><br>` : ''}
@@ -688,8 +2596,8 @@ function paintUptime() {
   for (const s of UP.summary) for (const t of s.recentTrouble || []) rows.push({ probe: s.probe, ...t });
   rows.sort((a, b) => b.t - a.t);
   $('#troubleTbl').innerHTML = rows.length
-    ? rows.slice(0, 24).map((r) => `<tr><td style="color:var(--dim);width:78px">${clock(r.t)}</td>
-        <td style="width:96px">${esc(r.probe)}</td><td style="color:var(--warn)">${esc(r.reason || 'down')}</td></tr>`).join('')
+    ? rows.slice(0, 24).map((r) => `<tr><td style="color:var(--dim);width:92px">${clock(r.t)}</td>
+        <td style="width:120px">${esc(r.probe)}</td><td style="color:var(--warn)">${esc(r.reason || 'down')}</td></tr>`).join('')
     : '<tr><td style="color:var(--dim);padding:8px 9px">Nothing went wrong in this window.</td></tr>';
 }
 
@@ -698,7 +2606,8 @@ let BAND = { rows: [], t0: 0, t1: 0 };
 function drawBand(names) {
   const cv = $('#band');
   const cssW = cv.clientWidth || 900;
-  const rowH = 26, gap = 9, padL = 88;
+  const rowH = cssNum('--band-row', 34), gap = cssNum('--band-gap', 11), padL = cssNum('--band-label-w', 118);
+  const labelFs = cssNum('--fs-sm', 13.5);
   const h = names.length * (rowH + gap) + 6;
   const dpr = window.devicePixelRatio || 1;
   cv.width = cssW * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
@@ -720,9 +2629,9 @@ function drawBand(names) {
     }
 
     g.fillStyle = '#8b93a3';
-    g.font = '11px system-ui,sans-serif';
+    g.font = `${labelFs}px "IBM Plex Sans",system-ui,sans-serif`;
     g.textBaseline = 'middle';
-    g.fillText(name.slice(0, 12), 0, y + rowH / 2);
+    g.fillText(name.slice(0, 14), 0, y + rowH / 2);
 
     for (let sI = 0; sI < slots; sI++) {
       const b = bySlot.get(sI);
@@ -791,6 +2700,496 @@ $('#probeSave').onclick = async () => {
   loadUptime();
 };
 
+// ======================================================================
+//  Account management — every field of every account in one grid
+// ======================================================================
+// One row an account, one column a field: the same fields the ✎ dialog has,
+// saved the same way (/api/account, one field at a time — the server keeps
+// whatever a save does not mention). A click or Enter opens the cell's editor;
+// the save goes the moment it is committed, so there is no Save button and a
+// refresh loses nothing. The arrow keys move between cells as in a spreadsheet,
+// and the shortcuts do the tedious part: a value applied to every account (or
+// the ticked ones), copied down from the row above, or undone.
+const AM = { rows: [], curId: null, curC: 1, editing: null, ticked: new Set(), undo: [], busy: false,
+  lastHtml: '', pending: Promise.resolve(), showPw: (localStorage.getItem('am_showpw') || '1') === '1' };
+let amSticky = 0;
+const escq = (s) => esc(s).replace(/"/g, '&quot;');
+const amFleetAuto = () => { const v = autoscriptsIn(DATA.startupFleet); return v === '1' ? 'on' : v === '0' ? 'off' : 'not set, so off'; };
+// { key, head, type, w, help, get?, put?, options?, show?, noAll?, secret?, only? }
+//   type: tick | bool | text | number | select | multi | path | status | del
+//   get(a) is the value the cell shows; put(a, v) what to POST for a new one.
+//   noAll: each account's own — never applied to all or copied down.
+const AM_COLS = [
+  { key: '_tick', head: '', type: 'tick', w: 38, help: 'Tick rows to apply a value to just those' },
+  { key: 'label', head: 'Account', type: 'text', w: 150, noAll: true, help: 'The name the Director shows for it' },
+  { key: 'enabled', head: 'On', type: 'bool', w: 56, get: (a) => a.enabled !== false,
+    help: 'Off takes its console down and stops polling it; on starts the console again' },
+  { key: 'keepOn', head: 'Keep on', type: 'bool', w: 80, get: (a) => !!a.keepOn,
+    help: 'Kept on: the Director starts its console again whenever it finds it down, and switching it off only restarts it' },
+  { key: 'server', head: 'Server', type: 'text', w: 78, help: 'The game server, e.g. ss71' },
+  { key: 'email', head: 'Email', type: 'text', w: 230, noAll: true, help: 'The login' },
+  { key: 'password', head: 'Password', type: 'text', w: 150, secret: true },
+  { key: 'securityCode', head: 'Security code', type: 'text', w: 124, secret: true,
+    help: "The game's second password — blank if this account has none" },
+  { key: 'notes', head: 'Notes', type: 'text', w: 190 },
+  { key: 'proxy', head: 'Proxy', type: 'select', w: 230, get: (a) => a.proxy || '',
+    options: (a) => proxyChoices(a).map(([v, t]) => [v, t]),
+    show: (a) => {
+      const who = a.proxyRaw ? proxyHolders(a.proxyRaw, a.id) : [];
+      const shared = who.length ? ` <span style="color:var(--bad)" title="also ${escq(who.join(', '))} — one proxy per account">shared</span>` : '';
+      // its console moved it here itself, because it could not get in on the other one
+      if (a.proxyMoved) {
+        return `${esc(a.proxyMoved.label)} <span class="empty" title="${escq(`its console moved it${a.proxyMoved.was ? ' off ' + a.proxyMoved.was : ''}${a.proxyMoved.why ? ' — ' + a.proxyMoved.why : ''}. Choose a proxy here to put it back.`)}">· moved by its console</span>${shared}`;
+      }
+      if (a.proxy === 'random') return `random <span class="empty">· ${esc(a.proxyLabel || 'the list is empty, so direct')}</span>${shared}`;
+      if (!a.proxy) return '<span class="empty">direct</span>';
+      const o = (DATA.proxyOptions || []).find((x) => x.raw === a.proxy);
+      return (o ? esc(o.label) + (o.test && !o.test.ok ? ' <span style="color:var(--bad)">failed</span>' : !o.test ? ' <span class="empty">untested</span>' : '')
+        : esc(a.proxy) + ' <span class="empty">not in the list</span>') + shared;
+    },
+    help: 'The IP its console logs in from, from its next login. Random (the default): a free working line of the list, kept for this account. One proxy per account. A console that spends 10 minutes unable to get in moves itself to another line — saving one here puts it back' },
+  { key: 'kickHoldMin', head: 'After a kick (min)', type: 'number', w: 130,
+    get: (a) => (a.kickHoldMin === null || a.kickHoldMin === undefined ? '' : a.kickHoldMin),
+    help: 'When another login takes the account (NEAT, or you in the game), or the server drops it: minutes its console stays out before logging back in — and again the next time, this many minutes longer (5, 10, 15 … up to an hour) until a login holds for two minutes. Blank or 0 = straight back' },
+  { key: 'maintRole', head: 'After maintenance', type: 'select', w: 170, get: (a) => a.maintRole || '',
+    options: () => [['', 'Normal'], ['monitor', 'Maintenance monitor'], ['follow', 'Follower']],
+    help: 'The maintenance race, dormant since 2026-09-20 unless a console runs with OTTO_MAINT_RACE=1' },
+  { key: 'autoscripts', head: 'Autorun scripts', type: 'select', w: 160, get: (a) => autoscriptsIn(a.startupParms),
+    options: () => [['', `As every account (${amFleetAuto()})`], ['1', 'On'], ['0', 'Off']],
+    put: (a, v) => ({ startupParms: withAutoscripts(a.startupParms, v) }),
+    help: "Whether each city runs its label autorun scripts at the console's start — kept as -autoscripts in its start-up parameters" },
+  { key: 'startupParms', head: 'Start-up parameters', type: 'multi', w: 220,
+    help: "NEAT's parameters for this account only, one a line; from its console's next start. Ctrl+Enter saves" },
+  { key: 'prependFile', head: 'Prepend goals file', type: 'path', w: 250, only: () => !!DATA.goalFiles,
+    help: 'A .txt of goal lines kept in step with its Prepend goals: checked every 15 s, read by the console from its next turn' },
+  { key: 'appendFile', head: 'Append goals file', type: 'path', w: 250, only: () => !!DATA.goalFiles,
+    help: 'The same for its Append goals' },
+  { key: 'pos', head: 'Order', type: 'number', w: 74, noAll: true,
+    help: 'Your own order for the fleet, lowest first. Alt+↑/↓ moves the row' },
+  { key: '_status', head: 'Status', type: 'status', w: 210, help: 'What its console says, as on the Fleet tab' },
+  { key: '_del', head: '', type: 'del', w: 46, help: 'Delete the account' },
+];
+const amCols = () => AM_COLS.filter((c) => !c.only || c.only());
+const amGet = (c, a) => (c.get ? c.get(a) : (a[c.key] == null ? '' : a[c.key]));
+const amPut = (c, a, v) => (c.put ? c.put(a, v) : { [c.key]: v });
+const amEditable = (c) => ['bool', 'text', 'number', 'select', 'multi', 'path'].includes(c.type);
+// the value as words, for a message or a confirm box
+function amWords(c, a, v) {
+  if (c.type === 'bool') return v ? 'on' : 'off';
+  if (c.type === 'select') return (c.options(a).find((o) => o[0] === v) || [v, v || 'none'])[1];
+  if (c.secret && !AM.showPw) return '••••••';
+  const s = String(v == null ? '' : v);
+  if (c.type === 'multi') { const l = s.split(/\r?\n/).filter((x) => x.trim()); return l.length ? l[0] + (l.length > 1 ? ' …' : '') : 'nothing'; }
+  return s || 'nothing';
+}
+function amSay(html, ms = 20000) { $('#amStatus').innerHTML = html; amSticky = Date.now() + ms; }
+
+// The rows: the fleet in its own order, narrowed by the filter box.
+function amRows() {
+  const q = $('#amQ').value.trim().toLowerCase();
+  let rows = DATA.accounts.slice();
+  if (q) rows = rows.filter((a) => [a.id, a.label, a.email, a.server, a.notes].join(' ').toLowerCase().includes(q));
+  rows.sort((x, y) => (Number(x.pos || 0) - Number(y.pos || 0)) || (DATA.accounts.indexOf(x) - DATA.accounts.indexOf(y)));
+  return rows;
+}
+function amCell(c, a) {
+  const v = amGet(c, a);
+  const none = '<span class="empty">—</span>';
+  switch (c.type) {
+    case 'tick': return `<div class="v c"><input type="checkbox" class="am-tick" ${AM.ticked.has(a.id) ? 'checked' : ''} title="tick rows to apply a value to just those"></div>`;
+    case 'bool': return `<div class="v c"><input type="checkbox" class="am-bool" ${v ? 'checked' : ''} title="${escq(c.help || '')}"></div>`;
+    case 'text': case 'number':
+      if (v === '' || v == null) return `<div class="v">${none}</div>`;
+      return `<div class="v" title="${c.secret ? '' : escq(v)}">${c.secret && !AM.showPw ? '••••••' : esc(v)}</div>`;
+    case 'select': return `<div class="v">${c.show ? c.show(a) : esc(amWords(c, a, v))}</div>`;
+    case 'multi': {
+      const lines = String(v || '').split(/\r?\n/).filter((l) => l.trim());
+      return lines.length ? `<div class="v" title="${escq(v)}">${esc(lines[0])}${lines.length > 1 ? ` <span class="empty">+${lines.length - 1} line${lines.length > 2 ? 's' : ''}</span>` : ''}</div>` : `<div class="v">${none}</div>`;
+    }
+    case 'path': return `<div class="v pathv" title="${escq(v)}"><span class="p">${v ? esc(v) : '<span class="empty">none</span>'}</span><button class="am-browse" type="button" title="Pick a file">…</button></div>`;
+    case 'status': return `<div class="v">${statusPill(a)}</div>`;
+    case 'del': return `<div class="v c"><button class="am-del" type="button" title="Delete this account">🗑</button></div>`;
+  }
+  return '<div class="v"></div>';
+}
+// The grid refreshes with the page every 5 s. Like the fleet table it writes
+// the HTML only when it has changed, and never under an open editor.
+function paintAccounts() {
+  if (AM.editing) return;
+  const cols = amCols();
+  AM.rows = amRows();
+  if (!AM.rows.some((a) => a.id === AM.curId)) AM.curId = AM.rows.length ? AM.rows[0].id : null;
+  AM.curC = Math.max(0, Math.min(AM.curC, cols.length - 1));
+  const cls = (c, i) => (['tick', 'bool', 'del'].includes(c.type) ? 'c' : 'l') + (i === 0 ? ' stick' : i === 1 ? ' stick2' : '');
+  const head = '<tr>' + cols.map((c, i) => `<th class="${cls(c, i)}" title="${escq(c.help || '')}">`
+    + (c.type === 'tick' ? `<input type="checkbox" class="am-tickall" title="tick every row listed" ${AM.rows.length && AM.rows.every((a) => AM.ticked.has(a.id)) ? 'checked' : ''}>` : esc(c.head)) + '</th>').join('') + '</tr>';
+  const body = AM.rows.map((a) => `<tr data-id="${escq(a.id)}"${a.enabled === false ? ' class="off"' : ''}>`
+    + cols.map((c, i) => `<td class="${cls(c, i)}" data-c="${i}">${amCell(c, a)}</td>`).join('') + '</tr>').join('')
+    || `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--dim);padding:26px">no accounts match</td></tr>`;
+  const html = `<colgroup>${cols.map((c) => `<col style="width:${c.w}px">`).join('')}</colgroup><thead>${head}</thead><tbody>${body}</tbody>`;
+  if (html !== AM.lastHtml) { $('#amTbl').innerHTML = html; AM.lastHtml = html; }
+  amMark();
+  $('#amUndo').disabled = !AM.undo.length;
+  if (Date.now() > amSticky) {
+    $('#amStatus').textContent = `${AM.rows.length} account${AM.rows.length === 1 ? '' : 's'}`
+      + (AM.ticked.size ? ` · ${AM.ticked.size} ticked — Apply to all goes to those` : '')
+      + ' · click a cell to change it, Enter saves · Apply to all takes the selected cell to every account';
+  }
+}
+// the selected cell and the ticked rows are classes toggled on the DOM, not part
+// of the HTML, so moving about never rewrites the table
+function amMark() {
+  const tbl = $('#amTbl');
+  tbl.querySelectorAll('td.cur').forEach((td) => td.classList.remove('cur'));
+  tbl.querySelectorAll('tbody tr[data-id]').forEach((tr) => tr.classList.toggle('ticked', AM.ticked.has(tr.dataset.id)));
+  const td = amTd();
+  if (td) td.classList.add('cur');
+}
+const amTd = () => (AM.curId == null ? null : $('#amTbl').querySelector(`tbody tr[data-id="${CSS.escape(AM.curId)}"] td[data-c="${AM.curC}"]`));
+const amCur = () => ({ a: DATA.accounts.find((x) => x.id === AM.curId) || null, c: amCols()[AM.curC] });
+function amMove(dr, dc) {
+  const cols = amCols();
+  const r = Math.max(0, AM.rows.findIndex((a) => a.id === AM.curId));
+  const nr = Math.max(0, Math.min(AM.rows.length - 1, r + dr));
+  if (AM.rows[nr]) AM.curId = AM.rows[nr].id;
+  AM.curC = Math.max(0, Math.min(cols.length - 1, AM.curC + dc));
+  amMark();
+  const td = amTd();
+  if (td) td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+const amRepaint = () => { AM.lastHtml = ''; paintAccounts(); };
+
+// ---- editing one cell ----
+// seed: the character that started the edit (typing over the value), '' for Delete.
+function amStartEdit(seed, { mouse = false } = {}) {
+  const { a, c } = amCur();
+  if (!a || !c || !amEditable(c) || AM.busy || AM.editing) return;
+  if (c.type === 'bool') return amToggle(a, c);
+  const td = amTd();
+  if (!td) return;
+  const v = amGet(c, a);
+  let el;
+  if (c.type === 'select') {
+    el = document.createElement('select');
+    el.innerHTML = c.options(a).map(([k, t]) => `<option value="${escq(k)}">${esc(t)}</option>`).join('');
+    el.value = v;
+  } else if (c.type === 'multi') {
+    el = document.createElement('textarea'); el.value = v; el.spellcheck = false;
+  } else {
+    el = document.createElement('input'); el.type = 'text'; el.spellcheck = false;
+    if (c.type === 'number') el.inputMode = 'numeric';
+    el.value = seed !== undefined ? seed : String(v);
+  }
+  AM.editing = { id: a.id, c, el, was: v, mouse };
+  td.classList.add('ed'); td.innerHTML = ''; td.appendChild(el);
+  el.focus();
+  if (el.tagName === 'INPUT') { if (seed === undefined) el.select(); else el.setSelectionRange(el.value.length, el.value.length); }
+  el.addEventListener('keydown', amEditorKey);
+  // clicking anywhere else commits; the editor going away with a repaint is not a commit
+  el.addEventListener('blur', () => { if (AM.editing && AM.editing.el === el) amCommit(); });
+  // a value picked with the mouse is meant: save it. One chosen with the arrow
+  // keys waits for Enter, or every step on the way would be saved too — and a
+  // step through "monitor" hands the maintenance role about.
+  if (c.type === 'select') {
+    el.addEventListener('change', () => { if (AM.editing && AM.editing.el === el && AM.editing.mouse) amCommit(); });
+    if (mouse) { try { el.showPicker(); } catch {} }
+  }
+}
+function amEditorKey(e) {
+  const ed = AM.editing;
+  if (!ed) return;
+  // the editor owns its keys: the wrap underneath must not see the Enter that
+  // commits and open the cell again, or move on a Tab that already moved
+  e.stopPropagation();
+  const multi = ed.c.type === 'multi', sel = ed.c.type === 'select';
+  if (e.key === 'Escape') { e.preventDefault(); return amCancel(); }
+  // the move is at once; the save goes on behind it and the selection keeps its row by id
+  if (e.key === 'Enter' && (!multi || e.ctrlKey)) { e.preventDefault(); amCommit(); return amMove(1, 0); }
+  if (e.key === 'Tab') { e.preventDefault(); amCommit(); return amMove(0, e.shiftKey ? -1 : 1); }
+  if (!multi && !sel && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault(); amCommit(); return amMove(e.key === 'ArrowUp' ? -1 : 1, 0);
+  }
+}
+function amCancel() {
+  if (!AM.editing) return;
+  AM.editing = null;
+  $('#amWrap').focus({ preventScroll: true });
+  amRepaint();
+}
+async function amCommit() {
+  const ed = AM.editing;
+  if (!ed) return;
+  AM.editing = null;
+  const a = DATA.accounts.find((x) => x.id === ed.id), c = ed.c;
+  let v = ed.el.value;
+  $('#amWrap').focus({ preventScroll: true });
+  amRepaint();
+  if (!a) return;
+  if (c.type === 'number') {
+    if (String(v).trim() === '') return;
+    v = Number(v);
+    if (!Number.isInteger(v)) return amSay(`<b>${esc(c.head)}</b> needs a whole number.`);
+  } else if (c.type === 'path' || ['label', 'server', 'email', 'securityCode'].includes(c.key)) v = String(v).trim();
+  if (c.key === 'label' && !v) return amSay('An account needs a name — not saved.');
+  if (String(v) === String(ed.was)) return;
+  await amSave(a, c, v);
+}
+// One field, saved. Everything waits on `pending` so a bulk action started while
+// a save is in flight sees the saved value, not the one before it.
+function amSave(a, c, v, { undo = true } = {}) {
+  const run = async () => {
+    // the account as it is when this save's turn comes, not as it was when asked
+    a = DATA.accounts.find((x) => x.id === a.id) || a;
+    if (undo) amPushUndo([{ id: a.id, key: c.key, old: amGet(c, a) }]);
+    amSay(`Saving ${esc(c.head.toLowerCase())} for <b>${esc(a.label)}</b>…`, 60000);
+    const r = await post('/api/account', { id: a.id, ...amPut(c, a, v) });
+    await refresh();
+    if (!r || r.ok === false) {
+      amSay(`<b>${esc(a.label)}</b>: ${esc(c.head.toLowerCase())} not saved — ${esc((r && r.error) || 'failed')}`, 60000);
+      return false;
+    }
+    amReport(a, c, v, r);
+    return true;
+  };
+  AM.pending = AM.pending.then(run, run);
+  return AM.pending;
+}
+// what the save did beyond storing the value: start-up parameters apply later,
+// a goal file is read at once
+function amReport(a, c, v, r) {
+  const who = `<b>${esc(a.label)}</b>`;
+  if (c.key === 'startupParms' || c.key === 'autoscripts') {
+    return amSay(`${who}: start-up parameters saved — they apply from its console's next start`
+      + (r.startupNotes && r.startupNotes.length ? ' · ' + r.startupNotes.map(esc).join(' · ') : ''), 30000);
+  }
+  const gf = (r.goalFiles || []).filter((g) => g.which + 'File' === c.key);
+  if (c.type === 'path') {
+    if (!v) return amSay(`${who}: ${esc(c.head.toLowerCase())} cleared — the saved goals stay as they are`, 20000);
+    if (gf.length) {
+      return amSay(`${who}: ` + gf.map((g) => g.why ? `${g.which} goals file not read — ${esc(g.why)}`
+        : g.synced ? `${g.which} goals set from the file, ${g.lines} line(s)${g.errors ? `, <b style="color:var(--bad)">${g.errors} with an error</b> (see the log)` : ''}`
+        : `${g.which} goals already match the file`).join(' · '), 30000);
+    }
+  }
+  if (c.key === 'proxy') {
+    const now = DATA.accounts.find((x) => x.id === a.id) || a;
+    const held = v && v !== 'random' ? proxyHolders(v, a.id) : [];
+    return amSay(held.length ? `${who}: proxy saved — <b style="color:var(--bad)">shared with ${esc(held.join(', '))}</b>; one proxy per account (EVONY-RULES §1)`
+      : `${who}: proxy saved${v === 'random' && now.proxyLabel ? ` — random picked ${esc(now.proxyLabel)}` : ''} — its console uses it from its next login`, 30000);
+  }
+  amSay(`${who}: ${esc(c.head.toLowerCase())} saved.`, 8000);
+}
+// The two switches go the way the Fleet tab's boxes do: off takes the console
+// down, keep-on is only what the Director does when it finds one down.
+function amToggle(a, c, box) {
+  const run = () => {
+    a = DATA.accounts.find((x) => x.id === a.id) || a;
+    const on = !amGet(c, a);
+    amPushUndo([{ id: a.id, key: c.key, old: !on }]);
+    return c.key === 'enabled' ? setEnabled(a, on, box) : setKeepOn(a, on, box);
+  };
+  AM.pending = AM.pending.then(run, run);
+  return AM.pending;
+}
+function amPushUndo(entries) {
+  AM.undo.push(entries);
+  if (AM.undo.length > 50) AM.undo.shift();
+  $('#amUndo').disabled = false;
+}
+async function amUndo() {
+  if (AM.busy) return;
+  if (AM.editing) return amCancel();
+  const group = AM.undo.pop();
+  $('#amUndo').disabled = !AM.undo.length;
+  if (!group) return amSay('Nothing to undo.');
+  AM.busy = true;
+  for (const u of group) {
+    const a = DATA.accounts.find((x) => x.id === u.id), c = AM_COLS.find((x) => x.key === u.key);
+    if (!a || !c || amGet(c, a) === u.old) continue;
+    if (c.type === 'bool') await (c.key === 'enabled' ? setEnabled(a, u.old) : setKeepOn(a, u.old));
+    else if (!(c.type === 'number' && u.old == null)) await amSave(a, c, u.old, { undo: false });
+  }
+  AM.busy = false;
+  await refresh();
+  amSay(`Undone: ${group.length} change${group.length === 1 ? '' : 's'} put back.`, 10000);
+}
+
+// ---- the shortcuts ----
+// The selected cell's value, to every account listed — or, if any are ticked,
+// to those. Sequential on purpose: switching accounts on starts consoles, and
+// two of those at once is the pair of logins that fights.
+async function amApplyAll() {
+  if (AM.busy) return;
+  if (AM.editing) await amCommit();
+  await AM.pending;
+  const { a, c } = amCur();
+  if (!a || !c) return;
+  if (!amEditable(c) || c.noAll) return amSay(`<b>${esc(c.head || 'That')}</b> is each account's own — it is not applied to all.`);
+  const v = amGet(c, a);
+  const pool = AM.ticked.size ? AM.rows.filter((x) => AM.ticked.has(x.id)) : AM.rows;
+  const targets = pool.filter((x) => x.id !== a.id && amGet(c, x) !== v);
+  const scope = AM.ticked.size ? 'ticked' : 'listed';
+  if (!targets.length) return amSay(`Every ${scope} account already has that ${esc(c.head.toLowerCase())}.`);
+  const words = amWords(c, a, v);
+  const danger = c.key === 'enabled';
+  const ok = await ask(`Set ${c.head.toLowerCase()} to "${words}" on ${targets.length} ${scope} account${targets.length === 1 ? '' : 's'}?`, {
+    ok: 'Apply', danger,
+    detail: targets.map((x) => x.label).join(', ')
+      + (danger ? `\n\nThis ${v ? 'starts' : 'takes down'} each of their consoles, one after another — an account kept on is restarted instead of stopped.`
+        : c.key === 'maintRole' && v === 'monitor' ? '\n\nOne monitor per server: the last one applied keeps the role, the others become followers.'
+        : c.key === 'proxy' && v === 'random' ? '\n\nEach gets its own free, working line of the proxy list, kept for it — from its next login.'
+        : c.key === 'proxy' && v ? '\n\nThey would all share ONE proxy. One proxy per account: two on one line both lost their logins (EVONY-RULES §1). Random gives each its own.' : ''),
+  });
+  if (!ok) return;
+  AM.busy = true;
+  amPushUndo(targets.map((x) => ({ id: x.id, key: c.key, old: amGet(c, x) })));
+  const bad = [];
+  let n = 0;
+  for (const x of targets) {
+    amSay(`Applying ${esc(c.head.toLowerCase())} to <b>${esc(x.label)}</b> (${++n} of ${targets.length})…`, 120000);
+    const r = await post('/api/account', { id: x.id, ...amPut(c, x, v) });
+    if (!r || r.ok === false) bad.push(`${x.label}: ${(r && r.error) || 'failed'}`);
+  }
+  AM.busy = false;
+  await refresh();
+  const done = targets.length - bad.length;
+  amSay(bad.length ? `${done} of ${targets.length} done · <span style="color:var(--bad)">${bad.map(esc).join(' · ')}</span>`
+    : `${esc(c.head)} set to "${esc(words)}" on ${done} account${done === 1 ? '' : 's'}.`, 30000);
+}
+// the cell above, copied into this one
+async function amFillDown() {
+  if (AM.busy) return;
+  if (AM.editing) await amCommit();
+  await AM.pending;
+  const { a, c } = amCur();
+  const r = AM.rows.findIndex((x) => x.id === AM.curId);
+  if (!a || !c) return;
+  if (r < 1) return amSay('Nothing above this cell to copy down.');
+  if (!amEditable(c) || c.noAll) return amSay(`<b>${esc(c.head)}</b> is each account's own — not copied down.`);
+  const v = amGet(c, AM.rows[r - 1]);
+  if (amGet(c, a) === v) return amSay('Already the same as the cell above.');
+  if (c.type === 'bool') return amToggle(a, c);
+  await amSave(a, c, v);
+}
+// the sort order made 1, 2, 3… in a given order; only the numbers that change are saved
+async function amRenumber(order) {
+  const changes = order.map((x, i) => ({ x, pos: i + 1 })).filter(({ x, pos }) => Number(x.pos) !== pos);
+  if (!changes.length) return amSay('The order is already 1, 2, 3… as listed.');
+  AM.busy = true;
+  amPushUndo(changes.map(({ x }) => ({ id: x.id, key: 'pos', old: x.pos })));
+  for (const { x, pos } of changes) await post('/api/account', { id: x.id, pos });
+  AM.busy = false;
+  await refresh();
+  amSay(`${changes.length} account${changes.length === 1 ? '' : 's'} renumbered.`, 15000);
+}
+async function amMoveRow(d) {
+  if (AM.busy || AM.editing) return;
+  await AM.pending;
+  if ($('#amQ').value.trim()) return amSay('Clear the filter to move rows — the order is of the whole fleet.');
+  const r = AM.rows.findIndex((x) => x.id === AM.curId), t = r + d;
+  if (r < 0 || t < 0 || t >= AM.rows.length) return;
+  const order = AM.rows.slice();
+  [order[r], order[t]] = [order[t], order[r]];
+  await amRenumber(order);
+}
+async function amDelete(a) {
+  if (AM.busy) return;
+  const ok = await ask(`Delete ${a.label}?`, { ok: 'Delete', danger: true,
+    detail: 'Its console is taken down first. Its snapshots, goals and history go with it, and this cannot be undone.' });
+  if (!ok) return;
+  amSay(`Deleting <b>${esc(a.label)}</b>…`, 60000);
+  const r = await post('/api/account', { id: a.id, delete: true });
+  AM.ticked.delete(a.id);
+  await refresh();
+  amSay(r && r.ok ? `<b>${esc(a.label)}</b> deleted.` : `<b>${esc(a.label)}</b> not deleted: ${esc((r && r.error) || 'failed')}`, 30000);
+}
+
+// ---- the mouse and the keys ----
+const amWrap = $('#amWrap');
+amWrap.addEventListener('mousedown', (e) => {
+  const td = e.target.closest('#amTbl tbody td[data-c]');
+  if (!td) return;
+  if (AM.editing && AM.editing.el.contains(e.target)) return;
+  const tr = td.closest('tr[data-id]');
+  if (!tr) return;
+  if (AM.editing) amCommit();
+  AM.curId = tr.dataset.id; AM.curC = Number(td.dataset.c);
+  amMark();
+});
+amWrap.addEventListener('click', (e) => {
+  const all = e.target.closest('.am-tickall');
+  if (all) {
+    if (all.checked) AM.rows.forEach((a) => AM.ticked.add(a.id)); else AM.rows.forEach((a) => AM.ticked.delete(a.id));
+    amMark(); amRepaint(); return;
+  }
+  const td = e.target.closest('#amTbl tbody td[data-c]');
+  if (!td) return;
+  const tr = td.closest('tr[data-id]');
+  const a = DATA.accounts.find((x) => x.id === tr.dataset.id), c = amCols()[Number(td.dataset.c)];
+  if (!a || !c) return;
+  const tick = e.target.closest('.am-tick');
+  if (tick) { if (tick.checked) AM.ticked.add(a.id); else AM.ticked.delete(a.id); amMark(); amRepaint(); return; }
+  const box = e.target.closest('.am-bool');
+  if (box) return amToggle(a, c, box);
+  if (e.target.closest('.am-del')) return amDelete(a);
+  const start = e.target.closest('.startBot');
+  if (start) return startBot(a, start);
+  if (e.target.closest('.am-browse')) return browsePick(amGet(c, a), (p) => amSave(a, c, p));
+  if (AM.editing) return;
+  if (amEditable(c) && c.type !== 'bool') amStartEdit(undefined, { mouse: true });
+});
+amWrap.addEventListener('keydown', (e) => {
+  if (AM.editing || AM.busy) return;
+  const { a, c } = amCur();
+  const k = e.key, mod = e.ctrlKey || e.metaKey;
+  if (k === 'ArrowUp' && e.altKey) { e.preventDefault(); return amMoveRow(-1); }
+  if (k === 'ArrowDown' && e.altKey) { e.preventDefault(); return amMoveRow(1); }
+  if (k === 'ArrowUp') { e.preventDefault(); return amMove(-1, 0); }
+  if (k === 'ArrowDown') { e.preventDefault(); return amMove(1, 0); }
+  if (k === 'ArrowLeft') { e.preventDefault(); return amMove(0, -1); }
+  if (k === 'ArrowRight') { e.preventDefault(); return amMove(0, 1); }
+  if (k === 'Home') { e.preventDefault(); return amMove(mod ? -1e9 : 0, -1e9); }
+  if (k === 'End') { e.preventDefault(); return amMove(mod ? 1e9 : 0, 1e9); }
+  if (k === 'PageUp') { e.preventDefault(); return amMove(-10, 0); }
+  if (k === 'PageDown') { e.preventDefault(); return amMove(10, 0); }
+  if (k === 'Tab') { e.preventDefault(); return amMove(0, e.shiftKey ? -1 : 1); }
+  if (mod && e.shiftKey && k.toLowerCase() === 'a') { e.preventDefault(); return amApplyAll(); }
+  if (mod && k.toLowerCase() === 'd') { e.preventDefault(); return amFillDown(); }
+  if (mod && k.toLowerCase() === 'z') { e.preventDefault(); return amUndo(); }
+  if (mod && k.toLowerCase() === 'c' && a && c && amEditable(c)) {
+    if (navigator.clipboard) navigator.clipboard.writeText(String(amGet(c, a))).then(() => amSay('Copied.', 3000), () => {});
+    return;
+  }
+  if (!a || !c) return;
+  if (k === ' ') {
+    e.preventDefault();
+    if (c.type === 'tick') { if (AM.ticked.has(a.id)) AM.ticked.delete(a.id); else AM.ticked.add(a.id); return amRepaint(); }
+    if (c.type === 'bool') return amToggle(a, c);
+    return amStartEdit();
+  }
+  if (k === 'Enter' || k === 'F2') {
+    e.preventDefault();
+    if (c.type === 'del') return amDelete(a);
+    return amStartEdit();
+  }
+  if (k === 'Delete' && ['text', 'number', 'multi', 'path'].includes(c.type)) { e.preventDefault(); return amStartEdit(''); }
+  if (k.length === 1 && !mod && !e.altKey && ['text', 'number', 'multi', 'path'].includes(c.type)) { e.preventDefault(); return amStartEdit(k); }
+});
+$('#amQ').addEventListener('input', () => paintAccounts());
+$('#amShowPw').checked = AM.showPw;
+$('#amShowPw').onchange = () => { AM.showPw = $('#amShowPw').checked; localStorage.setItem('am_showpw', AM.showPw ? '1' : '0'); amRepaint(); };
+$('#amApplyAll').onclick = () => amApplyAll();
+$('#amFillDown').onclick = () => amFillDown();
+$('#amUndo').onclick = () => amUndo();
+$('#amAdd').onclick = () => openDlg(null);
+$('#amRenumber').onclick = async () => {
+  if (AM.busy || AM.editing) return;
+  if ($('#amQ').value.trim()) return amSay('Clear the filter first — the numbering is of the whole fleet.');
+  const ok = await ask(`Number the ${AM.rows.length} accounts 1 to ${AM.rows.length}, in the order shown?`, { ok: 'Renumber',
+    detail: 'Only the numbers that change are saved.' });
+  if (ok) amRenumber(AM.rows);
+};
+
 (function () {
   const btn = $('#themeBtn');
   const paint = () => {
@@ -808,7 +3207,7 @@ $('#probeSave').onclick = async () => {
 })();
 
 refresh();
-setInterval(() => { if (PAGE === 'fleet') refresh(); else loadUptime(); }, 5000);
+setInterval(() => { if (PAGE === 'fleet' || PAGE === 'accounts') refresh(); else loadUptime(); }, 5000);
 </script>
 </body>
 </html>

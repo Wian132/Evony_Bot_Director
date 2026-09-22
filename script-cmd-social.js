@@ -1016,7 +1016,7 @@ function passwordHash(env) {
   try { return c && typeof c.passwordHash === 'function' ? c.passwordHash() || null : null; } catch { return null; }
 }
 
-const HOLIDAY_USAGE = 'holiday <days> confirm | holiday /exit   (/autoextend is refused: it renews until the coins run out)';
+const HOLIDAY_USAGE = 'holiday <days> confirm [/autoextend] | holiday /exit   (/autoextend renews the holiday until the coins run out)';
 async function holiday(t, env) {
   const { toks, confirmed } = takeConfirm(words(t));
   let days = null, auto = false, exit = false;
@@ -1035,17 +1035,15 @@ async function holiday(t, env) {
     // furlough.cancelFurlought {playerId} — FurloughCommands.as:41-50, sent by HolidayTips.as:205
     return order(env, 'end the holiday now', 'furlough.cancelFurlought', { playerId });
   }
-  // NEAT's /autoextend renews the holiday at every end "until coins run out";
-  // scripts spend coins only through buyitem, so it is refused
-  if (auto) {
-    return bad(env, `holiday /autoextend: refused — it renews the holiday at every end until the coins run out, and scripts spend`
-      + ` coins only through buyitem. Write  holiday ${days || 3} confirm  (one holiday), or use the game's own Holiday window`);
-  }
-  const again = `holiday ${days || 3} confirm`;
+  // NEAT's /autoextend renews the holiday at every end "until coins run out" (the game's own
+  // isAutoFurlough flag). The user asked for it on 2026-09-20 for the bank accounts; it still
+  // needs `confirm`, and it is the one thing here that keeps spending coins by itself.
+  // `confirm` is always the last word (takeConfirm), so the switch goes before it
+  const again = `holiday ${days || 3}${auto ? ' /autoextend' : ''} confirm`;
   if (days === null) return bad(env, `holiday: for how many days? (2 or more) — ${again}`);
   // StageChangeWin.as:593: the Holiday window refuses fewer than 2 days
   if (days < 2) return bad(env, `holiday: 2 days at least (the game's Holiday window takes no fewer) — ${again.replace(/\d+/, '2')}`);
-  const what = `put the account on holiday for ${days} days`;
+  const what = `put the account on holiday for ${days} days${auto ? ', renewing itself until the coins run out' : ''}`;
   if (!confirmed) {
     return bad(env, `holiday: this would ${what} — the account goes off-line for days, and the game may charge coins for it — write  ${again}  to do it`);
   }
@@ -1061,9 +1059,10 @@ async function holiday(t, env) {
   if (env.dryRun) { env.log('  [dry run] not sent (furlough.isFurlought)'); return {}; }
   // furlough.isFurlought {playerId, day, password, isAutoFurlough} — FurloughCommands.as:21-33,
   // sent by StageChangeWin.as:606 with SHA1.hash of the password; the data is never logged
-  const { fail } = await ask(env, 'furlough.isFurlought', { playerId, day: days, password: hash, isAutoFurlough: false });
+  const { fail } = await ask(env, 'furlough.isFurlought', { playerId, day: days, password: hash, isAutoFurlough: auto });
   if (fail) return fail;
-  env.log('  -> ok — the account is on holiday (the game client reloads the account after this)');
+  env.log(`  -> ok — the account is on holiday${auto ? ', and renews itself while the coins last' : ''}`
+    + ' (the game client reloads the account after this)');
   return { done: 1 };
 }
 
@@ -1271,6 +1270,8 @@ const inline = {
 
 module.exports = {
   commands, inline,
+  // the console's Alliance and Friends tabs (alliance.js) name things the same way
+  POSITIONS, RANK_TYPE, titleName, officeName,
   // for tests
   _test: { neatTime, ipKind, chatParts, words, firstWord, nameOf, reportDetail, whoLine, castleLine },
 };

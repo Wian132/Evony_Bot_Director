@@ -210,16 +210,16 @@ function build(db, helpers) {
     const accounts = {
       all() {
         return all('SELECT * FROM accounts WHERE orgId = ? ORDER BY pos, rowid', orgId)
-          .map((a) => ({ ...a, enabled: !!a.enabled }));
+          .map((a) => ({ ...a, enabled: !!a.enabled, keepOn: !!a.keepOn }));
       },
       get(id) {
         const a = one('SELECT * FROM accounts WHERE id = ? AND orgId = ?', String(id), orgId);
-        return a ? { ...a, enabled: !!a.enabled } : null;
+        return a ? { ...a, enabled: !!a.enabled, keepOn: !!a.keepOn } : null;
       },
       byEmail(email) {
         const a = one('SELECT * FROM accounts WHERE lower(email) = lower(?) AND orgId = ?',
           String(email || ''), orgId);
-        return a ? { ...a, enabled: !!a.enabled } : null;
+        return a ? { ...a, enabled: !!a.enabled, keepOn: !!a.keepOn } : null;
       },
       nextId() {
         for (let i = 1; ; i++) {
@@ -232,12 +232,13 @@ function build(db, helpers) {
         const pos = acc.pos !== undefined ? acc.pos
           : (prev.pos !== undefined ? prev.pos
             : Number((one('SELECT max(pos) m FROM accounts WHERE orgId = ?', orgId) || {}).m || 0) + 1);
-        run(`INSERT INTO accounts (id,orgId,label,server,email,password,enabled,notes,proxy,pos,createdAt)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        run(`INSERT INTO accounts (id,orgId,label,server,email,password,enabled,notes,proxy,pos,keepOn,securityCode,createdAt)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(id) DO UPDATE SET
                label=excluded.label, server=excluded.server, email=excluded.email,
                password=excluded.password, enabled=excluded.enabled, notes=excluded.notes,
-               proxy=excluded.proxy, pos=excluded.pos`,
+               proxy=excluded.proxy, pos=excluded.pos, keepOn=excluded.keepOn,
+               securityCode=excluded.securityCode`,
           id, orgId,
           acc.label !== undefined ? acc.label : (prev.label || id),
           acc.server !== undefined ? acc.server : (prev.server || 'ss71'),
@@ -245,8 +246,15 @@ function build(db, helpers) {
           acc.password !== undefined ? acc.password : prev.password,
           acc.enabled !== undefined ? (acc.enabled ? 1 : 0) : (prev.enabled === false ? 0 : 1),
           acc.notes !== undefined ? acc.notes : prev.notes,
-          acc.proxy !== undefined ? acc.proxy : prev.proxy,
-          pos, prev.createdAt || now());
+          // a new account's proxy is "random" unless it says otherwise: a free
+          // line of the proxy list, picked for it and kept (proxy-pick.js)
+          acc.proxy !== undefined ? acc.proxy : (prev.id ? prev.proxy : 'random'),
+          pos,
+          acc.keepOn !== undefined ? (acc.keepOn ? 1 : 0) : (prev.keepOn ? 1 : 0),
+          // '' clears the code, undefined leaves whatever is stored alone — an
+          // upsert that never heard of security codes must not wipe one (db.js does the same)
+          acc.securityCode !== undefined ? (acc.securityCode || null) : (prev.securityCode || null),
+          prev.createdAt || now());
         return accounts.get(id);
       },
       remove(id) {

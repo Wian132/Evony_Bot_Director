@@ -63,10 +63,15 @@ function parseRule(raw) {
 }
 
 // Everything after `waterhero`, as typed, so a quoted switch keeps its spaces.
+// The switch is taken as typed by hand too: /heropoints="pol", /heropoints "pol",
+// /heropoints pol, heropoints=pol, heropoints pol:300 att (2026-09-22: the
+// user's  waterhero kush heropoints pol  was read as a hero called
+// "kush heropoints pol"). Unquoted, the value runs to the next /switch or the end.
+const SWITCH = /(^|\s)\/?heropoints(?:\s*[=:]\s*|\s+)(?:"([^"]*)"|'([^']*)'|([^/]+?)(?=\s+\/|\s*$))/i;
 function parseArgs(text) {
   let rest = String(text || '');
   let rule = null;
-  const m = rest.match(/(^|\s)\/heropoints\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))/i);
+  const m = rest.match(SWITCH);
   if (m) {
     const raw = (m[2] ?? m[3] ?? m[4] ?? '').trim();
     if (/^["']/.test(raw)) throw new Error('waterhero: the /heropoints quote is never closed');
@@ -159,6 +164,10 @@ function prepare(game, a) {
   say(`  ${LABEL} on ${hero.name} L${hero.level ?? '?'} in ${castle.name} (id ${hero.id}): ${stats(hero)}`);
   say(`  costs ${fmt(need)} ${LABEL} (one per 10 levels)${held === null ? '' : `, ${fmt(held)} held`}; `
     + `the points then go ${a.rule ? 'by ' + ruleText(a.rule) : 'to its highest stat once reset'}`);
+  // 2026-09-22: Kush (L918, all in attack) was watered with no switch and came
+  // back exactly as it was, for 92 Holy Water.
+  if (!a.rule) say(`  no /heropoints given — if ${hero.name}'s points are all in its highest stat now, it comes back the same; `
+    + `waterhero ${hero.name} /heropoints="pol" (or att, int) moves them`);
   // A reset without the Holy Water held is paid in cents (UIUtil.checkItem), so
   // an unknown count is none held.
   if (held === null) {
@@ -283,4 +292,4 @@ async function spend(game, sentTo, hero, before, seen, a, { log, need, held, wai
   log(tally());
 }
 
-module.exports = { ITEM_ID, LABEL, PACKS, cost, parseRule, parseArgs, plan, prepare, run };
+module.exports = { ITEM_ID, LABEL, PACKS, SWITCH, cost, parseRule, parseArgs, plan, prepare, run };

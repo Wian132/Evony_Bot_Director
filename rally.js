@@ -107,6 +107,20 @@ function rallyCapacity(castle) {
     .reduce((m, b) => Math.max(m, n(b.level)), 0);
 }
 
+// The most troops one march from this city may take: 10,000 per Rally Spot
+// level, never more than the server's 100,000 (constants.js MARCH_TROOP_MAX).
+// 0 with no Rally Spot, null when the building list is not known.
+//   big    a War Ensign goes with it (/big, bean.useFlag): 25% more
+//   horde  Stygandr's Banner of the Horde (/horde, bean.useItem): 1,000,000,
+//          whatever the Rally Spot (constants.js MARCH_HORDE_MAX)
+function marchTroopLimit(castle, { big = false, horde = false } = {}) {
+  const lv = rallyCapacity(castle);
+  let limit = horde ? C.MARCH_HORDE_MAX
+    : lv === null ? null : Math.min(C.MARCH_TROOP_MAX, lv * C.MARCH_TROOPS_PER_LEVEL);
+  if (limit !== null && big) limit = Math.floor(limit * C.MARCH_ENSIGN_BONUS);
+  return limit;
+}
+
 // ArmyBean, or the engine's wrapper around one. ArmyConstants.as: direction
 // 1 forward, 2 back, 3 camped. A transport keeps its load listed on the way
 // home, so only a forward march is still delivering anything.
@@ -241,6 +255,6 @@ function rallyBook({ game = null, armies = null, goalsOf = null, pending = null 
 }
 
 module.exports = {
-  parser, parseRallyPolicy, policyOf, rallyCapacity, rallyBook, kindOf, norm,
+  parser, parseRallyPolicy, policyOf, rallyCapacity, marchTroopLimit, rallyBook, kindOf, norm,
   KIND_BY_MISSION, KIND_NAME, RALLY_SPOT_TYPE, PENDING_TTL,
 };

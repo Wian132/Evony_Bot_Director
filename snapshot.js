@@ -8,6 +8,11 @@
 const n = (x) => Number(x || 0);
 
 function buildSnapshot(g, extra = {}) {
+  // Names of the traininghero goal line(s) this account runs, lowercased, so a
+  // city it is currently standing in isn't called "full" below — passed apart
+  // from `extra` since it belongs on cityList, not the top-level snapshot.
+  const { trainingHeroNames, ...rest } = extra;
+  const wantedHero = new Set((trainingHeroNames || []).map((x) => String(x).toLowerCase()));
   const p = g.player || {};
   const info = p.playerInfo || {};
   const totals = { food: 0, wood: 0, stone: 0, iron: 0, gold: 0, population: 0, maxPopulation: 0 };
@@ -42,16 +47,71 @@ function buildSnapshot(g, extra = {}) {
     coins: n(info.medal), lastLoginTime: n(info.lastLoginTime),
     totals, troops: troops + marchingTroops, garrisonTroops: troops, marchingTroops,
     heroes, walls,
-    incoming: (p.enemyArmys || []).length,      // "on wars"
+    incoming: (p.enemyArmys || []).length,      // incoming waves
     marching: (p.selfArmys || []).length,
     furlough: !!p.furlough,
     items: Object.fromEntries((p.items || []).map((i) => [i.id, i.count])),
     cityList: (g.castles || []).map((c) => {
       const xy = (g.castleXY && g.castleXY(c)) || {};
-      return { name: c.name, x: xy.x, y: xy.y, troops: Object.values(c.troop || {}).reduce((s, v) => s + n(v), 0) };
+      // each city's own stock, for the Director's hourly resource record
+      const r = c.resource || {};
+      const amt = (k) => n(r[k] && r[k].amount);
+      const roster = c.heros || [];
+      return { name: c.name, x: xy.x, y: xy.y, troops: Object.values(c.troop || {}).reduce((s, v) => s + n(v), 0),
+        id: c.id, food: amt('food'), wood: amt('wood'), stone: amt('stone'), iron: amt('iron'), gold: n(r.gold),
+        // Heroes per city, so the Director can see a city with none (nothing
+        // trains, no mayor) or one packed to its hall's limit (the training hero
+        // cannot get in). Prisoners hold slots but are not ours, so they are
+        // counted apart.
+        heroes: roster.length,
+        captives: roster.filter((h) => n(h.status) === CAPTIVE).length,
+        // A city packed to ten still isn't a bottleneck if one of the ten can
+        // insta-train anything anyway (1526+ attack), or if the traininghero
+        // itself is the one sitting in the tenth slot — director.html's "full"
+        // badge drops a city that trips either of these.
+        hasInstaHero: roster.some((h) => n(h.power) >= 1526),
+        hasTrainingHero: wantedHero.size > 0 && roster.some((h) => wantedHero.has(String(h.name || '').toLowerCase())) };
     }),
-    ...extra,
+    // Every prisoner the account holds, for the Director's highlight and for
+    // anyone reading the fleet: {city, id, name, level, at}.
+    captives: captivesOf(g),
+    // This account's OWN heroes, id and name, so db.fleetHeroes can remember
+    // them: a hero of ours captured by another of our accounts must never be
+    // released by the console holding it. Prisoners are left out -- they are
+    // someone else's heroes sitting in our cell.
+    heroIds: ownHeroes(g),
+    ...rest,
   };
+}
+
+// HeroConstants.as: 4 = a hero WE hold prisoner.
+const CAPTIVE = 4;
+
+// The prisoners this account holds, across all its cities.
+function captivesOf(g) {
+  const out = [];
+  for (const c of g.castles || []) {
+    for (const h of c.heros || []) {
+      if (n(h.status) !== CAPTIVE) continue;
+      out.push({ city: c.name, castleId: (g.castleId && g.castleId(c)) || c.id,
+        id: h.id === undefined || h.id === null ? null : String(h.id),
+        name: h.name || '', level: n(h.level) });
+    }
+  }
+  return out;
+}
+
+// Our own heroes: everything on the roster that is not a prisoner.
+function ownHeroes(g) {
+  const out = [];
+  for (const c of g.castles || []) {
+    for (const h of c.heros || []) {
+      if (n(h.status) === CAPTIVE) continue;
+      if (h.id === undefined || h.id === null) continue;
+      out.push({ id: String(h.id), name: h.name || '', level: n(h.level) });
+    }
+  }
+  return out;
 }
 
 // What our own armies are doing right now. Read-only; the fields come straight
@@ -135,6 +195,10 @@ function incomingArmies(g) {
     }
     const target = Number(a.targetFieldId);
     return {
+      // the rest of the ArmyBean, for the Incoming tab's hover card
+      armyId: a.armyId,
+      direction: { 1: 'out', 2: 'back', 3: 'camped' }[Number(a.direction)] || null,
+      restTime: Number(a.restTime || 0),
       missionType: Number(a.missionType),
       mission: MISSION_NAME[Number(a.missionType)] || String(a.missionType),
       from: a.startPosName, to: a.targetPosName || mine.get(target) || null,

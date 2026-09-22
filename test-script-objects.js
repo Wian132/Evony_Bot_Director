@@ -307,13 +307,23 @@ t('buildings and the BuildingFunctions', () => {
   assert.ok(c.getEmptyPositions(6).every((p) => p >= 1005 && p <= 1040), 'a mine goes outside');
 });
 t('fields, trades, trades in transit and the castle bean', () => {
-  const { G } = context(world());
+  const w = world();
+  const { G } = context(w);
   const c = G.city;
   assert.strictEqual(c.fields.length, 2);
   assert.deepStrictEqual([c.fields[0].id, c.fields[0].level, c.fields[0].name, c.fields[0].type, c.fields[0].coords, c.fields[0].x],
     [F(575, 650), 7, 'Forest', 1, '575,650', 575]);
   assert.deepStrictEqual([c.tradesArray.length, c.tradesArray[0].id, c.tradesArray[0].tradeTypeName], [1, 501, 'Sell']);
   assert.strictEqual(c.transingTradesArray[0].resourceName, 'Lumber');
+  // made once per list the server sent (a loop reading [j] was quadratic), each
+  // read its own array, and a push — a new list — is seen at once
+  const a = c.transingTradesArray, b = c.transingTradesArray;
+  assert.ok(a !== b && a[0] === b[0], 'the beans are reused, the array is not');
+  a.pop();
+  assert.strictEqual(c.transingTradesArray.length, 1, 'one read popping its array leaves the next read whole');
+  const raw = w.g.castle('9');
+  raw.transingTrades = [...raw.transingTrades, { ...raw.transingTrades[0], id: 777 }];
+  assert.deepStrictEqual(c.transingTradesArray.map((t) => t.id).slice(-1), [777]);
   const k = c.castle;
   assert.deepStrictEqual([k.name, k.allowAlliance, k.hasEnemy, k.goOutForBattle, k.logUrl], ['9', true, true, false, 'images/castle.png']);
   assert.deepStrictEqual([k.herosArray.length, k.buildingsArray.length, k.fieldsArray.length, k.resource.herosSalary, k.troop.archer],

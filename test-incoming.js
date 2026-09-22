@@ -234,6 +234,37 @@ t('the console path: a push that came before the engine existed is seen through 
   assert.deepStrictEqual((await ctxOf(e, home)).incoming.map((a) => a.armyId), [77]);
 });
 
+t('the console tells the Director which cities are under attack, and a loyalty push reaches the engine', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home), refuge = city(202, 'Refuge', XY.refuge);
+  const w = world({ cities: [home, refuge] });
+  const s = new Session();
+  s.note = () => {};
+  s.wire(w.game);
+  s.game = w.game;
+  Object.defineProperty(s, 'connected', { value: true, configurable: true });
+  assert.deepStrictEqual(s.underAttackView(), { on: false, at: NOW0, cities: [] });
+  const { e, lines } = engineFor(w, { 101: 'defensepolicy /usetruce:79 /usespeech:2' });
+  s.engine = e;
+  await e.focus(home);
+  w.push([army(home, { inMs: 5000 })]);
+  let v = s.underAttackView();
+  assert.strictEqual(v.on, true);
+  assert.deepStrictEqual(v.cities, [{ name: 'Home', inbound: 1, firstLandsAt: NOW0 + 5000, lastWaveAt: null, loyalty: 100 }]);
+  clock.t += 6000;
+  w.push([]);
+  v = s.underAttackView();
+  assert.deepStrictEqual(v.cities, [{ name: 'Home', inbound: 0, firstLandsAt: null, lastWaveAt: NOW0 + 5000, loyalty: 100 }],
+    'a wave landed in the last 30 min still counts');
+  let woke = 0;
+  s.armWake = () => { woke++; };
+  w.game.c.emit('cmd', 'server.ResourceUpdate', { castleId: 101, resource: { ...home.resource, support: 70 } });
+  assert.strictEqual(woke, 1, 'loyalty 70 is under the truce line: a war pass is armed');
+  assert.ok(lines.some((l) => /^loyalty 100 -> 70/.test(l.m)), lines.map((l) => l.m).join(' | '));
+  clock.t += 31 * 60000;
+  assert.strictEqual(s.underAttackView().on, false, 'half an hour after the last wave it is over');
+});
+
 // ===================================================================== 3. hiding
 section('hiding on a real inbound wave');
 
@@ -385,7 +416,9 @@ t('comfort and three defence items cannot crowd out the hide march or the gate',
   const r = await e.focus(home);
   assert.deepStrictEqual(names(w.sent), [
     'army.newArmy', 'army.setArmyGoOut',                   // first, and free
-    'interior.pacifyPeople', 'shop.useGoods', 'shop.useGoods', // the 3-action budget, unchanged
+    // then defensepolicy, also free (the user, 2026-09-18: defence before comfort)
+    'shop.useGoods', 'shop.useGoods', 'shop.useGoods',
+    'interior.pacifyPeople',                               // comfort, from the 3-action budget
   ], r.acted.join(' | '));
   assert.strictEqual(w.sent[1][1].isArmyGoOut, true);
   assert.match(r.acted[0], /^hide .* -> ok$/);
@@ -854,9 +887,112 @@ t('the live a1/a2 lines still parse, and none of them wakes the engine early', a
   const { e } = engineFor(w, { 101: A1 });
   await e.focus(home);
   w.push([army(home, { inMs: 60000, troop: { archer: '90000' } })]);
-  assert.strictEqual(e.nextWakeAt(), null, 'no hiding or gate goal is set on the live cities');
+  // no hiding or gate goal is set on the live cities; the one wake is the
+  // truce/speech look just after the wave lands (defensepolicy /usetruce:79)
+  const wake = e.nextWakeAt();
+  assert.ok(wake !== null && wake >= Date.now() + 60000 && wake <= Date.now() + 63000, `woke at +${wake - Date.now()} ms`);
   const r = await e.focus(home);
   assert.ok(!r.hiding && !r.gate && !r.warrules, 'a war goal appeared that the live goals do not ask for');
+});
+
+// ============================================================ 9. Speech Text and the truce
+section('Speech Text and the truce in the war pass (the user, 2026-09-18)');
+
+const DEF_LINES = 'defensepolicy /usetruce:79 /usespeech:2';
+const TRUCE_STOCK = () => ['truce', 'speech'].map((k) => ({ id: C.DEFENSE_ITEMS[k], count: 1 }));
+
+t('a wave landing is logged with its time and the loyalty, and a defence look follows 1.5 s later', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home);
+  const w = world({ cities: [home] });
+  const { e, lines } = engineFor(w, { 101: DEF_LINES });
+  await e.focus(home);
+  w.push([army(home, { inMs: 5000 })]);
+  clock.t += 6000;
+  home.resource.support = 70;
+  w.push([]);
+  assert.ok(lines.some((l) => /^wave landed: Raider \(200000 troops\) at \d\d:\d\d:\d\d · loyalty 70$/.test(l.m) && l.city === 'Home'),
+    lines.map((l) => l.m).join(' | '));
+  near(wakeIn(e), 1500 + 250);
+});
+
+t('an army that turns back is logged as that, not as a landing', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home);
+  const w = world({ cities: [home] });
+  const { e, lines } = engineFor(w, { 101: DEF_LINES });
+  await e.focus(home);
+  w.push([army(home, { inMs: 600000 })]);
+  w.push([]);
+  assert.ok(lines.some((l) => /^wave turned back: Raider .* was due /.test(l.m)), lines.map((l) => l.m).join(' | '));
+});
+
+t('a loyalty fall to a defence line is logged and wakes a war pass at once; a rise does not', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home);
+  const w = world({ cities: [home] });
+  const { e, lines } = engineFor(w, { 101: DEF_LINES });
+  await e.focus(home);
+  w.push([army(home, { inMs: 5000 })]);
+  clock.t += 6000;
+  home.resource.support = 85;
+  w.push([]);
+  await e.tick({ urgent: true });            // the 1.5 s look: nothing due at 85
+  home.resource.support = 79;
+  assert.strictEqual(e.noteLoyalty(home, 85), true);
+  assert.ok(lines.some((l) => /^loyalty 85 -> 79 · last wave landed \d\d:\d\d:\d\d, 1 s ago$/.test(l.m)), lines.map((l) => l.m).join(' | '));
+  near(wakeIn(e), 250);
+  home.resource.support = 100;
+  assert.strictEqual(e.noteLoyalty(home, 79), false);
+  // a fall that stays above every line is logged but wakes nothing
+  home.resource.support = 90;
+  assert.strictEqual(e.noteLoyalty(home, 100), false);
+});
+
+t('the war pass sends Speech Text, then the truce, outside the action budget', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home);
+  const w = world({ cities: [home] });
+  w.game.player.items = TRUCE_STOCK();
+  w.game.c.passwordHash = () => 'hash';
+  const { e, lines } = engineFor(w, { 101: DEF_LINES }, { live: true });
+  e.maxActionsPerSlice = 0;                  // nothing left in the budget
+  await e.focus(home);
+  w.sent.length = 0;                         // the slice's own work (the mayor)
+  w.push([army(home, { inMs: 5000 })]);
+  await e.tick({ urgent: true });            // the wave is seen: under attack
+  assert.deepStrictEqual(names(w.sent), [], 'nothing goes while loyalty is 100');
+  clock.t += 6000;
+  home.resource.support = 2;
+  w.push([]);
+  await e.tick({ urgent: true });
+  assert.deepStrictEqual(names(w.sent), ['shop.useCastleGoods', 'city.setStopWarState'], lines.map((l) => l.m).join(' | '));
+  assert.ok(lines.some((l) => /^Truce Agreement .* -> ok · 1 s after the last wave landed \(\d\d:\d\d:\d\d\)$/.test(l.m)),
+    lines.map((l) => l.m).join(' | '));
+});
+
+t('the truce waits while another city still has an army coming, and goes when that one lands', async () => {
+  resetClock();
+  const home = city(101, 'Home', XY.home), refuge = city(202, 'Refuge', XY.refuge);
+  const w = world({ cities: [home, refuge] });
+  w.game.player.items = TRUCE_STOCK();
+  w.game.c.passwordHash = () => 'hash';
+  const { e } = engineFor(w, { 101: DEF_LINES, 202: DEF_LINES }, { live: true });
+  await e.focus(home); await e.focus(refuge);
+  w.sent.length = 0;
+  const second = army(refuge, { inMs: 20000 });
+  w.push([army(home, { inMs: 5000 }), second]);
+  await e.tick({ urgent: true });
+  clock.t += 6000;
+  home.resource.support = 50;
+  w.push([second]);
+  await e.tick({ urgent: true });
+  assert.deepStrictEqual(names(w.sent), [], 'a truce is refused while any army marches at the account');
+  clock.t += 15000;
+  w.push([]);                                // the last one lands: the gap
+  near(wakeIn(e), 1500 + 250);
+  await e.tick({ urgent: true });
+  assert.deepStrictEqual(names(w.sent), ['city.setStopWarState']);
 });
 
 // ==================================================================== runner

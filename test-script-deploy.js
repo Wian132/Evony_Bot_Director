@@ -27,6 +27,10 @@ async function until(cond, ms = 3000) {
 // Fast clocks for the loops and waits.
 Object.assign(L.TIMING, { tickMs: 5, waveMs: 30, spamGapMs: 5, idleMs: 10, reportMs: 10, guardPollMs: 5, findArmyMs: 300, marginMs: 50, stopWaitMs: 1000, offlineMs: 10 });
 Object.assign(D.TIMING, { heroPollMs: 10, lostGraceMs: 40 });
+// A march now waits for what the city is short of instead of being refused
+// (script-cmd-deploy.js waitReady). Here it gives up quickly, so a line that
+// can never go fails the test rather than hanging the suite.
+Object.assign(D.WAIT, { pollMs: 5, sayEveryMs: 20, defaultMs: 40 });
 
 // base = top attribute − level (Game.heroBase, which goal-heroes reads too):
 // Ken 60, Biggy 200, Polly 70, att69int 69, Spammy 40, Disloyal 35.
@@ -135,7 +139,7 @@ t('Attack: all six examples', () => {
   assert.deepStrictEqual([horde.troops, horde.big, horde.horde], [{ scouter: 1000000 }, undefined, true]);
   const both = P('attack 111,222 any s:1.25m /big /horde');
   assert.deepStrictEqual([both.troops, both.big, both.horde], [{ scouter: 1250000 }, true, true]);
-  assert.match(parseErr('attack 111,222 any a:1 /huge'), /the switches are \/big \(a War Ensign\) and \/horde/);
+  assert.match(parseErr('attack 111,222 any a:1 /huge'), /the switches are \/big \(a War Ensign\), \/horde, \/nowait/);
 });
 t('BigAttack, BigScout, BigTransport', () => {
   const a = P('bigattack 111,222 any a:125000');
@@ -303,7 +307,10 @@ t('best compares against every hero of the city: the best is out, so nothing goe
 });
 t('a named hero that is away, the mayor, a prisoner or unknown is not sent', async () => {
   const w = world();
-  const r = await runIn(w, 'attack 111,222 Away a:1\nattack 111,222 Mayor a:1\nattack 111,222 Prisoner a:1\nattack 111,222 bob a:1');
+  // /nowait is the old behaviour: refused on the spot. Without it a hero that
+  // is merely busy is waited for (see "a march waits" below), while one the
+  // city does not have at all still fails at once — waiting cannot bring it.
+  const r = await runIn(w, 'attack 111,222 Away a:1 /nowait\nattack 111,222 Mayor a:1 /nowait\nattack 111,222 Prisoner a:1\nattack 111,222 bob a:1');
   assert.strictEqual(w.sends().length, 0, r.text);
   assert.match(r.text, /FAILED: no idle hero in Home matches Away — Away is marching/);
   assert.match(r.text, /FAILED: no idle hero in Home matches Mayor — Mayor is mayor/);
@@ -359,7 +366,8 @@ t('/big with the inventory not loaded is refused (a missing War Ensign is bought
 t('a reconnect while a timed march waits to send: it goes out on the new connection (timed-march.js gets a live view)', async () => {
   const w1 = world(), w2 = world();
   const session = { connected: true, game: w1.g, account: { id: 'acct' }, note() {} };
-  const march = C.marchTimeMs({ x: 100, y: 100 }, { x: 101, y: 101 }, ['archer'], { marchSkill: 0, driveSkill: 0 });
+  // whole seconds, rounded down, as the server counts a march (timed-march.js plans with that)
+  const march = Math.floor(C.marchTimeMs({ x: 100, y: 100 }, { x: 101, y: 101 }, ['archer'], { marchSkill: 0, driveSkill: 0 }) / 1000) * 1000;
   // to the ms: 1.7 s of slack is a 1 s camp and a send about 0.65 s from now, well after the reconnect
   const aim = new Date(Date.now() + march + 1700);
   const p2 = (x, k = 2) => String(x).padStart(k, '0');

@@ -112,6 +112,7 @@ const SCRIPT_RUNS = new Map();
 const SCRIPT_DONE = new Map();
 const SCRIPT_DONE_KEEP = 20;       // cities remembered; the oldest is forgotten
 const SCRIPT_KEEP = 2000;          // lines a run keeps; older ones are dropped
+const CALL_FRESH_MS = 1000;        // how long a run trusts what `call` last loaded
 
 // A script's parse errors, once each: loop/repeat expansion copies a bad line.
 function scriptErrors(actions) {
@@ -259,6 +260,7 @@ function scriptNotify(n, key, log) {
 // parameters (Config.<key>, e.g. -teleport), callScript, and whose run it is.
 function scriptOpts(key, running, castle, log, { dryRun = false } = {}) {
   const accountId = (SESSION.account && SESSION.account.id) || null;
+  const callCache = new Map();     // loadScript's: name -> { at, src }
   return {
     castle, session: SESSION, accountId, cityId: key,
     // CmdParms.txt's -name value pairs; the Config bean drops pass/secret/token keys
@@ -288,10 +290,17 @@ function scriptOpts(key, running, castle, log, { dryRun = false } = {}) {
       running.paused = { line, next: next || null, since: Date.now(), resolve };
     }),
     // `call`: this city's loadouts by slot or first-line name, else a file in the scripts folder
+    // A loop calling the same file every pass read the loadouts table and the file
+    // each time; what was found is kept a second, so an edit still lands at once.
     loadScript: (name) => {
+      const k = String(name), hit = callCache.get(k);
+      if (hit && Date.now() - hit.at < CALL_FRESH_MS) return hit.src;
       const org = SESSION.org;
       const slots = org && accountId && /^\d+$/.test(String(key)) ? org.goals.loadouts(accountId, key) : [];
-      return SC.resolveCall(name, slots).src;
+      const src = SC.resolveCall(name, slots).src;
+      if (callCache.size >= 20) callCache.delete(callCache.keys().next().value);
+      callCache.set(k, { at: Date.now(), src });
+      return src;
     },
     notify: (n) => scriptNotify(n, key, log),
   };
@@ -649,6 +658,25 @@ const server = http.createServer(async (req, res) => {
         }
         return typeof v === 'string' ? `"${String(v).slice(0, 24)}"` : String(v);
       };
+      // The whole roster of this city, in the few fields a hero audit needs.
+      // Read-only, off the session already in memory: it sends nothing to the
+      // game. This is how the fleet is swept for cities with no heroes, cities
+      // packed to their hall's limit, and prisoners sitting in the cells.
+      if (q.get('roster')) {
+        const G = require('./game').Game;
+        const HH = require('./goal-heroes');
+        return send(200, 'application/json', JSON.stringify({
+          city: c.name, castleId: g.castleId(c),
+          scouts: Number((c.troop && c.troop.scouter) || 0),
+          heroes: (c.heros || []).map((h) => ({
+            id: h.id, name: h.name, level: Number(h.level || 0), status: Number(h.status),
+            statusWord: G.STATUS_WORD[Number(h.status)] || `status ${h.status}`,
+            att: Number(h.power || 0), pol: Number(h.management || 0), int: Number(h.stratagem || 0),
+            base: G.heroBase(h), loyalty: h.loyalty,
+          })),
+          hall: HH.feastingHall({ castle: c, game: g, goals: [], config: {} }).capacity,
+        }, null, 1));
+      }
       // One hero in full, when asked for by name — the shape summary truncates.
       const heroName = q.get('hero');
       if (heroName) {
@@ -779,12 +807,36 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, lines, error: e.message })); }
   }
   // The Statistics tab: the game's rankings (players, alliances, heroes, cities),
-  // read into the database by statistics.js and searched there. A search never asks
-  // the server; Refresh reads the lists through this console's live connection
-  // (never a login), and every console on the same server shares what it read.
+  // statistics.js. Browsing reads a page at a time from the server (and a few ahead);
+  // a search runs in the database over what has been read, and a lookup asks the
+  // server for a name. Refresh reads every list whole. All of it through this
+  // console's live connection (never a login); every console on the server shares it.
   if (url.pathname === '/api/stats' || url.pathname.startsWith('/api/stats/')) {
     const ST = require('./statistics');
     const server = (SESSION.account && SESSION.account.server) || process.env.EVONY_SERVER || 'ss71';
+    const g = SESSION.connected ? SESSION.game : null;
+    const alive = () => !!g && SESSION.game === g && SESSION.connected;
+    const log = (m) => SESSION.note(m, { kind: 'sys' });
+    // browsing (live=1): a page of a list as the game's window shows it, from the
+    // server and read ahead; 'all' is page 1 of every list. Without a connection,
+    // what the database holds.
+    if (url.pathname === '/api/stats' && req.method === 'GET' && q.get('live')) {
+      const kind = q.get('kind') || 'all';
+      const kinds = ST.KINDS[kind] ? [kind] : ST.KIND_NAMES;
+      const lists = await Promise.all(kinds.map((k) => ST.page({ game: g, server, kind: k, alive, log,
+        pageNo: kinds.length > 1 ? 1 : q.get('page'), ahead: kinds.length > 1 ? 0 : undefined })));
+      const each = kinds.length > 1 ? Math.max(1, Math.min(100, Number(q.get('limit')) || 10)) : 0;
+      if (each) for (const l of lists) l.rows = l.rows.slice(0, each);
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, connected: !!g, status: ST.status(server), kind, lists }));
+    }
+    // a name asked of the server itself (the window's search box), in one list or all four
+    if (url.pathname === '/api/stats/lookup' && req.method === 'GET') {
+      const kind = q.get('kind') || 'all';
+      const kinds = ST.KINDS[kind] ? [kind] : ST.KIND_NAMES;
+      const lists = [];
+      for (const k of kinds) lists.push(await ST.lookup({ game: alive() ? g : null, server, kind: k, name: q.get('name') }));
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, name: q.get('name') || '', lists }));
+    }
     if (url.pathname === '/api/stats' && req.method === 'GET') {
       const res = ST.search(server, { kind: q.get('kind') || 'all', q: q.get('q') || '', sort: q.get('sort') || 'rank',
         dir: q.get('dir') || 'asc', limit: q.get('limit'), offset: q.get('offset') });
@@ -792,16 +844,36 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/stats/refresh' && req.method === 'POST') {
       const b = await body(req);
-      const g = SESSION.game;
-      if (!g || !SESSION.connected) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected — the lists are read through this account\'s live connection' }));
+      if (!g) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'not connected — the lists are read through this account\'s live connection' }));
       const account = (SESSION.account && SESSION.account.label) || (g.player && g.player.userName) || null;
-      const r = ST.start({ game: g, server, account, kinds: Array.isArray(b.kinds) && b.kinds.length ? b.kinds : undefined,
-        alive: () => SESSION.game === g && SESSION.connected, log: (m) => SESSION.note(m, { kind: 'sys' }) });
+      const r = ST.start({ game: g, server, account, kinds: Array.isArray(b.kinds) && b.kinds.length ? b.kinds : undefined, alive, log });
       return send(200, 'application/json', JSON.stringify({ ...r, status: ST.status(server) }));
     }
     if (url.pathname === '/api/stats/stop' && req.method === 'POST') {
       return send(200, 'application/json', JSON.stringify({ ...ST.stop(), status: ST.status(server) }));
     }
+  }
+  // The Alliance and Friends tabs (alliance.js): read through the live connection
+  // when the user opens a tab, never a login. The orders are the script commands'.
+  //   GET /api/alliance?view=info|members|events|war[&page=][&fresh=1]
+  //   GET /api/alliance/player?name=     GET /api/friends
+  //   POST /api/alliance/act {action: rank|expel|standing|addfriend|removefriend|block|unblock, name, rank?, standing?}
+  if (url.pathname === '/api/alliance' || url.pathname.startsWith('/api/alliance/') || url.pathname === '/api/friends') {
+    const AL = require('./alliance');
+    const reply = (v) => send(200, 'application/json', JSON.stringify(v));
+    try {
+      if (url.pathname === '/api/friends') return reply(AL.friends(SESSION));
+      if (url.pathname === '/api/alliance/player') return reply(await AL.player(SESSION, q.get('name')));
+      if (url.pathname === '/api/alliance/act' && req.method === 'POST') return reply(await AL.act(SESSION, await body(req)));
+      if (url.pathname === '/api/alliance') {
+        const view = q.get('view') || 'info', fresh = !!q.get('fresh'), page = q.get('page');
+        if (view === 'info') return reply(await AL.overview(SESSION, { fresh }));
+        if (view === 'members') return reply(await AL.members(SESSION, { fresh }));
+        if (view === 'events') return reply(await AL.events(SESSION, page));
+        if (view === 'war') return reply(await AL.war(SESSION, page));
+      }
+      return reply({ ok: false, error: 'no such alliance view' });
+    } catch (e) { return reply({ ok: false, error: e.message }); }
   }
   if (url.pathname === '/api/city') {
     return send(200, 'application/json', JSON.stringify(SESSION.city(q.get('id')) || {}));
@@ -1054,6 +1126,35 @@ const server = http.createServer(async (req, res) => {
         return send(200, 'application/json', JSON.stringify({ ok: !!r2.used && !r2.error, used: r2.used || 0, lines, error: r2.error }));
       }
 
+      // The Heroes tab's Level button. hero.levelUp moves ONE level a time, so a
+      // hero sitting on banked experience needs one send per level; each is
+      // followed by the new point going on the attribute, exactly as the
+      // `levelup <hero>` script line does (which is what runs here). times is
+      // capped so one press cannot become an unbounded run of sends.
+      if (b.action === 'levelup') {
+        if (!hero) throw new Error('hero not found in this city');
+        const times = Math.min(200, Math.max(1, Math.floor(Number(b.times) || 1)));
+        const attr = b.attr ? require('./game').Game.ATTR[String(b.attr).toLowerCase()] : null;
+        if (b.attr && !attr) throw new Error('attribute must be attack, politics or intel');
+        const lines = [];
+        const env = {
+          game: g, castle, dryRun: false,
+          log: (m) => lines.push(String(m).trim()),
+          say: (x) => (x && x.ok === 1 ? 'ok' : `FAILED (ok=${x && x.ok})${x && x.errorMsg ? ' - ' + x.errorMsg : ''}`),
+          stopped: () => false,
+        };
+        const cmd = require('./script-cmd-hero').commands.levelup;
+        let done = 0, stop = null;
+        for (let i = 0; i < times; i++) {
+          const res = await cmd.run({ cmd: 'levelup', name: hero.name, attr }, env) || {};
+          if (res.error) { stop = res.error; break; }        // out of experience, or busy
+          if (!res.done) { stop = lines[lines.length - 1] || 'nothing was levelled'; break; }
+          done += res.done;
+        }
+        SESSION.note(`manual: levelup ${hero.name} x${done}${stop ? ` (stopped: ${stop})` : ''}`, { city: castle.name, kind: 'act' });
+        return send(200, 'application/json', JSON.stringify({ ok: done > 0, done, lines, error: done ? null : stop }));
+      }
+
       // Persuade a prisoner we hold to join, as the persuadehero script line does
       // (the same gold and medal checks), its lines sent back for the page. The
       // preview is that line's dry run: it says the cost and sends nothing.
@@ -1101,9 +1202,6 @@ const server = http.createServer(async (req, res) => {
         if (!(key in alloc)) throw new Error('attribute must be attack, politics or intel');
         alloc[key] = Number(b.amount) || 1;
         r = await g.addPoint(cid, hero, alloc);   // increments; game.js converts to totals
-      } else if (b.action === 'levelup') {
-        if (!hero) throw new Error('hero not found in this city');
-        r = await g.levelUpHero(cid, hero.id);
       } else if (b.action === 'recall') {
         // hero.callBackHero {castleId, heroId}: the Feasting Hall's recall, which
         // it offers for a hero out marching (3) or defending a valley (2).

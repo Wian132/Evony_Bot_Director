@@ -191,7 +191,7 @@ t('a script\'s lines run last: config keys and singletons win, troop lines stack
   GL.setScriptLayer(id, 21, 'config npc:0\ncomfortpolicy 30 40 popraise\ntroop a:4');
   const p = running(id, 21);
   assert.deepStrictEqual(p.config, { comfort: 1, npc: 0, hero: 1 }, 'the script\'s npc:0 did not win');
-  assert.deepStrictEqual(raws(p), ['prepend:troop w:1', 'city:troop p:2', 'append:troop s:3',
+  assert.deepStrictEqual(raws(p), ['city:troop p:2', 'prepend:troop w:1', 'append:troop s:3',
     'script:comfortpolicy 30 40 popraise', 'script:troop a:4']);
   assert.deepStrictEqual(p.errors, [], 'overriding a saved line is not an error');
 });

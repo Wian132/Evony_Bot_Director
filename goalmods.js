@@ -168,6 +168,25 @@ function defensePlan(ctx, state) {
     + `${span(now - n(u.at))} ago, trying again in ${span(DEF_RETRY_MS - (now - n(u.at)))}`;
   const lacking = (it) => (heldCount(game, it.id) === null ? 'the inventory has not loaded' : `no ${it.use.name} is held`);
 
+  // ---- Speech Text: this city's loyalty back to 100. It goes first, ahead of
+  // the truce (the user, 2026-09-18): the game takes it with armies still
+  // marching, and the city is safe from capture the moment it lands.
+  if (sw.usespeech !== undefined) {
+    const t = info('speech');
+    const last = lastOk(t);
+    if (loyalty === null) notes.push('speech: loyalty unknown');
+    else if (loyalty > sw.usespeech) { /* above the line */ }
+    else if (!underAttack) notes.push(`speech: loyalty ${loyalty} <= ${sw.usespeech}, but not under attack`);
+    else if (truced) notes.push('speech: not needed, no attack can land in truce');
+    else if (last && now - last < okGuard(t)) notes.push(`speech: one went out ${span(now - last)} ago`);
+    else if (refused(t)) notes.push('speech: ' + refusedNote(t, refused(t)));
+    else if (!(heldCount(game, t.id) > 0)) notes.push(`speech: loyalty ${loyalty} <= ${sw.usespeech}, but ${lacking(t)}`);
+    else {
+      actions.push({ kind: 'defenceItem', item: t.key, itemId: t.id, scope: 'city',
+        label: `Speech Text (loyalty ${loyalty} <= ${sw.usespeech})` });
+    }
+  }
+
   // ---- Truce Agreement: the whole account, 12 hours
   let trucing = false;
   if (sw.usetruce !== undefined) {
@@ -190,28 +209,13 @@ function defensePlan(ctx, state) {
         + 'the game refuses a truce until none do, so it goes in the first gap');
     } else {
       trucing = true;
-      const mine = (ctx.selfArmies || []).length;
+      // Our own transports and reinforcements do not stop a truce; our own
+      // attacks do (the user, 2026-09-18).
+      const mine = (ctx.selfArmies || []).filter((x) => Number(x.missionType) === C.MISSION.attack).length;
       notes.push('truce: using one — it covers every city for 12 h, so no other city sends another'
-        + (mine ? `; ${mine} of our own march(es) are out, and the item text says the game refuses a truce then` : ''));
+        + (mine ? `; ${mine} of our own attack(s) are out, and the game refuses a truce then` : ''));
       actions.push({ kind: 'defenceItem', item: t.key, itemId: t.id, scope: 'account',
         label: `Truce Agreement for the whole account (loyalty ${loyalty} <= ${sw.usetruce})` });
-    }
-  }
-
-  // ---- Speech Text: this city's loyalty back to 100
-  if (sw.usespeech !== undefined) {
-    const t = info('speech');
-    const last = lastOk(t);
-    if (loyalty === null) notes.push('speech: loyalty unknown');
-    else if (loyalty > sw.usespeech) { /* above the line */ }
-    else if (!underAttack) notes.push(`speech: loyalty ${loyalty} <= ${sw.usespeech}, but not under attack`);
-    else if (truced) notes.push('speech: not needed, no attack can land in truce');
-    else if (last && now - last < okGuard(t)) notes.push(`speech: one went out ${span(now - last)} ago`);
-    else if (refused(t)) notes.push('speech: ' + refusedNote(t, refused(t)));
-    else if (!(heldCount(game, t.id) > 0)) notes.push(`speech: loyalty ${loyalty} <= ${sw.usespeech}, but ${lacking(t)}`);
-    else {
-      actions.push({ kind: 'defenceItem', item: t.key, itemId: t.id, scope: 'city',
-        label: `Speech Text (loyalty ${loyalty} <= ${sw.usespeech})` });
     }
   }
 
@@ -291,6 +295,32 @@ function mayorPlan(ctx, intent, opts = {}) {
   const heroes = (ctx.castle.heros || []);
   if (!heroes.length) return { note: 'mayor: no heroes in this city' };
 
+  // A training hero on a round is only passing through. When it is the ONLY
+  // hero in the city it must never take the mayor's office: a mayor cannot
+  // march, so the rotation has to stand it down again to move it on — and if
+  // anything stops that march (no scout in the city, no rally slot), the city
+  // re-appoints it on the next pass and the hero is stuck there for good. The
+  // user saw exactly that and asked for it to stop (2026-09-22). The city gets
+  // a hero of its own from goal-heroes emptyCityPlan; until it does, it runs
+  // with no mayor rather than swallowing the trainer.
+  const H = require('./goal-heroes');
+  // ownHeroesHere answers a busy city without reading any goals at all, so this
+  // costs nothing in the cities where it cannot apply.
+  const settled = H.ownHeroesHere(ctx);
+  if (!settled.length) {
+    const passing = H.rotatingTrainingNames(ctx);
+    const trainer = heroes.find((h) => passing.has(String(h.name || '').toLowerCase()));
+    if (!trainer) return { note: `mayor: no hero of this city's own is here (${heroes.length} held prisoner)` };
+    if (Number(trainer.status) === 1) {
+      return {
+        note: `mayor: ${trainer.name} is a training hero passing through and the only hero here — standing it down so it is free to move on`,
+        actions: [{ kind: 'dischargeChief', heroId: trainer.id, heroName: trainer.name,
+          label: `discharge ${trainer.name} as mayor (a training hero must not be the only hero holding the office)` }],
+      };
+    }
+    return { note: `mayor: only ${trainer.name} is here and it is a training hero passing through — no mayor appointed until this city has a hero of its own` };
+  }
+
   // HeroConstants.as: 0 = free, 1 = chief (mayor). 2 is GARRISON, not mayor.
   const current = heroes.find((h) => Number(h.status) === 1);
   let pool = heroes.filter((h) => h.status !== undefined && h.status !== null && (Number(h.status) === 0 || Number(h.status) === 1));
@@ -337,18 +367,31 @@ function npcHitsIn(state, game, castle, key, from) {
 }
 
 function trainingHeroPlan(game, cityGoals, state) {
-  const wanted = new Map();     // heroName -> [castle, ...]
+  // heroName -> { cities: [castle, ...], lines: castleId -> that city's line }.
+  // A city is listed ONCE, with the first line naming the hero in its goals —
+  // the city's own before the prepend's (goallayers). Listing it once per line
+  // made a city with both (`traininghero OTTO 30 60` of its own and the prepend's
+  // `traininghero OTTO`) its own next stop, so the hero never left (Lord02 and
+  // Lord09, 2026-09-19: "nowhere else to go" for a day).
+  const wanted = new Map();
   for (const { castle, parsed } of cityGoals) {
+    const cid = game.castleId(castle);
     for (const g of parsed.goals.filter((x) => x.name === 'traininghero')) {
       const key = String(g.hero).toLowerCase();
-      if (!wanted.has(key)) wanted.set(key, { goal: g, cities: [] });
-      wanted.get(key).cities.push(castle);
+      if (!wanted.has(key)) wanted.set(key, { goal: g, cities: [], lines: new Map() });
+      const w = wanted.get(key);
+      if (w.lines.has(cid)) continue;
+      w.lines.set(cid, g);
+      w.cities.push(castle);
     }
   }
   const plans = [];
-  for (const [key, { goal, cities }] of wanted) {
+  for (const [key, w] of wanted) {
+    const { cities } = w;
     const holder = game.castles.find((c) => (c.heros || []).some((h) => (h.name || '').toLowerCase() === key));
-    if (!holder) { plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: not found in any city yet` }); continue; }
+    if (!holder) { plans.push({ hero: w.goal.hero, note: `traininghero ${w.goal.hero}: not found in any city yet` }); continue; }
+    // the stay is the one the city it is in asks for
+    const goal = w.lines.get(game.castleId(holder)) || w.goal;
     if (cities.length < 2) {
       plans.push({ hero: goal.hero, note: `traininghero ${goal.hero}: parked in ${holder.name} (only one city wants it, so no rotation)` });
       continue;

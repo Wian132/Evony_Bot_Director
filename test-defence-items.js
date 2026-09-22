@@ -242,7 +242,8 @@ function engineFor(g, line = LIVE, logs = []) {
 
   await t('speech: at or below its loyalty, under attack, and it does not wait for the truce', async () => {
     const st = landed(MIN);
-    assert.deepStrictEqual(items(M.defensePlan(planCtx({ loyalty: 2 }), st)), ['truce', 'speech']);
+    // Speech Text first, then the truce (the user, 2026-09-18)
+    assert.deepStrictEqual(items(M.defensePlan(planCtx({ loyalty: 2 }), st)), ['speech', 'truce']);
     assert.ok(!items(M.defensePlan(planCtx({ loyalty: 3 }), st)).includes('speech'));
     // with the truce held back by an inbound army, speech still goes
     const p = M.defensePlan(planCtx({ loyalty: 2, incoming: [army(20000)] }), {});
@@ -378,11 +379,18 @@ function engineFor(g, line = LIVE, logs = []) {
     assert.match(p.note, /Truce Agreement from Other was refused \(troops out\) 2\d s ago/);
   });
 
-  await t('our own marches out: the truce is still tried, and the note warns the game may refuse', async () => {
+  await t('our own attacks out: the truce is still tried, and the note warns the game refuses it then', async () => {
     const st = landed(MIN);
-    const p = M.defensePlan(planCtx({ loyalty: 50, selfArmies: [{}, {}, {}] }), st);
+    const p = M.defensePlan(planCtx({ loyalty: 50, selfArmies: [{ missionType: 5 }, { missionType: 5 }, { missionType: 5 }] }), st);
     assert.deepStrictEqual(items(p), ['truce']);
-    assert.match(p.note, /3 of our own march\(es\) are out, and the item text says the game refuses a truce then/);
+    assert.match(p.note, /3 of our own attack\(s\) are out, and the game refuses a truce then/);
+  });
+
+  await t('our own transports and reinforcements do not stop a truce, and are not warned about', async () => {
+    const st = landed(MIN);
+    const p = M.defensePlan(planCtx({ loyalty: 50, selfArmies: [{ missionType: 1 }, { missionType: 2 }] }), st);
+    assert.deepStrictEqual(items(p), ['truce']);
+    assert.doesNotMatch(p.note, /our own/);
   });
 
   // ============================================================ the wire

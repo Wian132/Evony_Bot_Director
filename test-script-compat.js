@@ -1497,6 +1497,10 @@ t('Loop: upgrade farm / upgrade saw / upgrade iron / loop 5 runs the three lines
 });
 t('Gosub: medal farm, train, two cottage upgrades, a sleep, then loop 0 again (stopped on the second round)', async () => {
   const w = world({ rich: true });
+  // the wiki's line takes 400 ballistas and the fixture keeps 100: a march now
+  // waits for troops it hasn't got (script-cmd-deploy.js waitReady), and this
+  // test is about the gosub flow and the hero exclusion, not about scarcity
+  w.home.troop.ballista = 4000;
   const r = await runIn(w, 'gosub medalfarm\ngosub trainarch\ngosub upgradecot\nsleep 30\nloop 0\nlabel medalfarm\nattack 123,300 !Bubba,!Xavier,any t:400,b:400\n'
     + 'return\nlabel upgradecot\nupgrade house\nrepeat 2\nreturn\nlabel trainarch\ntrain arch:2500 Hero\nreturn',
   { shouldStop: (out) => out.filter((l) => /^line 7: attack/.test(l)).length >= 2 });

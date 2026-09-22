@@ -759,6 +759,24 @@ function buildHideMarch(ctx, opt, t, game) {
     if (send > 0) { troops[key] = send; moving += send; }
   }
   if (!moving) return { error: 'no troops left to hide once /keep is honoured' };
+  // One march takes at most 10,000 troops per Rally Spot level (100,000 at
+  // most; rally.js marchTroopLimit). Over that, the troops worth most a unit
+  // go and the rest stay home, rather than the whole march being refused.
+  // With no Rally Spot in the list (0) the server decides: hiding is never held
+  // back on what the bot thinks it knows about the city.
+  const limit = require('./rally').marchTroopLimit(castle);
+  let leftHome = 0;
+  if (limit && moving > limit) {
+    const worth = (k) => Object.values(C.BY_KEY[k].cost).reduce((s, v) => s + v, 0);
+    let room = limit;
+    for (const key of Object.keys(troops).sort((a, b) => worth(b) - worth(a))) {
+      const go = Math.min(troops[key], room);
+      leftHome += troops[key] - go;
+      if (go > 0) troops[key] = go; else delete troops[key];
+      room -= go;
+    }
+    moving = limit - room;
+  }
 
   // -- timing ------------------------------------------------------------
   // Only waves inside the horizon count; one far-future march must not force a
@@ -855,6 +873,7 @@ function buildHideMarch(ctx, opt, t, game) {
   const warn = [];
   if (!safe) warn.push('WARNING: the round trip is shorter than the wait — the army lands back before impact');
   if (clampedByFood) warn.push(`encamp time cut to fit ${fmt(foodBudget)} food`);
+  if (leftHome) warn.push(`${fmt(leftHome)} troop(s) stay home: one march takes at most ${fmt(limit)} (10,000 per Rally Spot level)`);
   if (!hero) warn.push('no hero aboard');
   else if (pick.why) warn.push(`led by ${hero.name}, ${pick.why}`);
 

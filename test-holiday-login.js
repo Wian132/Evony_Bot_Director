@@ -5,7 +5,13 @@
 // SHORT message: the reply carries the entire player bean (100 KB+), and it
 // used to end up in the log, /api/session and the Director's tooltip.
 const assert = require('assert');
+const os = require('os'), path = require('path'), fs = require('fs');
+// session.js opens the database as it loads, so point it at a throwaway one
+// before requiring it — this suite must never touch the real evony.db.
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'otto-holiday-'));
+process.env.EVONY_DB = path.join(TMP, 'test.db');
 const { Game } = require('./game');
+const { Session } = require('./session');
 
 const tests = [];
 const t = (n, f) => tests.push([n, f]);
@@ -23,6 +29,88 @@ const holidayReply = () => ({
     castles: Array.from({ length: 10 }, (_, i) => ({ fieldId: 92700 + i, name: 'City' + i, heros: [] })),
     currentTime: Date.now(),
   },
+});
+
+// A Session with no game server, no database and no console behind it: just the
+// few fields holidayRun reads, so the counting can be tested on its own.
+function fake({ holiday = null, connected = true, store = {} } = {}) {
+  const f = {
+    account: { id: 'a6' }, connected, store, note() {},
+    game: { holiday, player: { buffs: [] }, castles: [] },
+    settings: () => ({
+      get: (k, d) => (k in store ? store[k] : d),
+      set: (k, v) => { store[k] = v; },
+    }),
+  };
+  f.holidayRun = Session.prototype.holidayRun.bind(f);
+  f.holidayRunView = Session.prototype.holidayRunView.bind(f);
+  f.noteMaintenanceEnded = Session.prototype.noteMaintenanceEnded.bind(f);
+  return f;
+}
+const HOL = { hours: 9, minutes: 37, text: '9h37m' };
+
+t('a holidayed account is not market-glitch ready until a maintenance has passed', () => {
+  const f = fake({ holiday: HOL });
+  const first = f.holidayRunView();
+  assert.strictEqual(first.maints, 0);
+  assert.strictEqual(first.ready, false, 'just gone on holiday: nothing to put its resources back to yet');
+  assert.ok(first.since > 0);
+  // asking again does not restart the clock
+  const again = f.holidayRunView();
+  assert.strictEqual(again.since, first.since);
+  assert.strictEqual(again.maints, 0);
+});
+
+t('a maintenance that ends while it is on holiday counts once, and then it is ready', () => {
+  const f = fake({ holiday: HOL });
+  f.holidayRun();                        // first sighting
+  f.noteMaintenanceEnded();
+  assert.strictEqual(f.holidayRunView().maints, 1);
+  assert.strictEqual(f.holidayRunView().ready, true);
+  // every way back after the same maintenance says so: it still counts once
+  f.noteMaintenanceEnded();
+  f.holidayRun();
+  assert.strictEqual(f.holidayRunView().maints, 1, 'one maintenance a day');
+  // the next day's does count
+  f.store['maintEnded:a6'] = { day: '2099-01-01', at: Date.now() };
+  assert.strictEqual(f.holidayRunView().maints, 2, 'they add up');
+});
+
+t('a maintenance noted before the holiday was seen is applied once it is (the console did not know yet)', () => {
+  const f = fake({ holiday: null });
+  f.store['maintEnded:a6'] = { day: '2099-01-02', at: Date.now() };
+  assert.strictEqual(f.holidayRunView(), null, 'not on holiday as far as it knows');
+  f.game.holiday = HOL;                  // the login says holiday
+  assert.strictEqual(f.holidayRunView().maints, 1);
+});
+
+t('the count survives a console restart, and is dropped when the holiday ends', () => {
+  const store = {};
+  const one = fake({ holiday: HOL, store });
+  one.holidayRun();
+  one.noteMaintenanceEnded();
+  // a new console for the same account reads the same settings
+  const two = fake({ holiday: HOL, store });
+  assert.strictEqual(two.holidayRunView().maints, 1, 'a restart keeps the count');
+  const over = fake({ holiday: null, store });
+  assert.strictEqual(over.holidayRunView(), null, 'no holiday, nothing to show');
+  assert.strictEqual(store['holidayRun:a6'], null, 'and the count is dropped');
+});
+
+t('an offline console does not throw the count away — it just cannot see', () => {
+  const store = {};
+  fake({ holiday: HOL, store }).noteMaintenanceEnded();
+  const off = fake({ holiday: null, connected: false, store });
+  const v = off.holidayRunView();
+  assert.ok(v && v.maints === 1, 'still counted while offline');
+  assert.ok(store['holidayRun:a6'], 'nothing was cleared');
+});
+
+t('the FurloughBuff counts as holiday even before the login reply is in', () => {
+  const f = fake({ holiday: null });
+  f.game.player.buffs = [{ typeId: 'FurloughBuff', descName: '', endTime: Date.now() + 36e5 }];
+  const v = f.holidayRunView();
+  assert.ok(v && v.since > 0, 'the buff alone is enough to start counting');
 });
 
 t('ok=1 is a plain login', () => {

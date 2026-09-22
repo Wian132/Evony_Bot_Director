@@ -8,6 +8,8 @@
 //                                 script's  execute "sell " + res + " " + amount + " " + price)
 //   buy food 5m 22.5 | sell wood 1000 @0.55 | buy lumber 1.5m @6
 //                                 k/m/b amounts; OTTObot's @price and lumber (= wood) work too
+//   sell stone 99999999 140 x10   ten orders at once, all in flight together (x1-x20, or *10);
+//                                 $result is how many were placed (runMany)
 //     The price goes out the way the market's price box takes it (NewTradeWin: at most 5
 //     characters, at most 150): a buy is rounded down and a sell up, so an order never pays
 //     more or takes less than the price the line gives. One order is at most 99,999,999.
@@ -21,6 +23,12 @@
 //                                 food and 9,000 gold to 111,222 (DumpResource.txt) with as many
 //                                 transporters as the load needs; not yet -> $error says what is short
 //   holidaysnipe [dry] | holidaysnipe stop | holidaysnipe status     (holiday-snipe.js)
+//   waitslot 0.3 | waitslot 0.3 10   wait up to 0.3 s for one of this city's offers to go (a
+//                                 TradesUpdate push that shortens city.tradesArray), or with a
+//                                 second number until it holds fewer than that many; returns the
+//                                 moment it happens. $result 1 = a slot came free, 0 = time ran out
+//   tradepace 1                   wait until 1 s has passed since this run's last market write
+//                                 (buy, sell, canceltrade), and no longer; at once if there was none
 //
 // Globals (functions(ctx); script-objects.js hands the same functions out as
 // m_context.buyPrice/sellPrice/marketReady() and city.buyPrice/sellPrice):
@@ -46,8 +54,21 @@
 // book shows our own offers too, as the market window does. Reads happen in a
 // dry run as well: only orders, cancels and marches are held back.
 //
-// Market writes are paced: a run waits tradeGapMs (1.2 s) between them, and each
-// unanswered one in a row doubles that, up to a minute.
+// Market writes go out as fast as the server answers them: trading is a race, and
+// each order waits for its own reply anyway (opts.tradeGapMs, 0 by default, puts a
+// gap between them again). Each UNANSWERED write in a row doubles a gap of its own,
+// up to a minute, so a server that has stopped answering is not hammered; a line the
+// server refuses is paced by the run's own 200 ms (script.js) wherever a goto, loop
+// or repeat brings it round again.
+//
+// An order the server refuses never counts toward the 10-refusals-in-a-row stop
+// (refused: false): a full marketplace, or a city short of gold, is an everyday
+// answer to a script that places thousands of orders, not a runaway run.
+//
+// What the market says is kept short for the same reason: a live order speaks when
+// it is placed, and a refusal only the first time its reason comes up (again at most
+// once a minute, opts.marketQuietMs, so a long grind still shows it is alive). A dry
+// run explains every line, as it always did.
 const C = require('./constants');
 const W = require('./script-words');
 
@@ -58,6 +79,7 @@ const MAX_TRADE = 99999999;      // NewTradeWin.as:332 amountInput maxChars 8, o
 const MAX_PRICE = 150;           // NewTradeWin.as:605-613 onPriceChange caps the price box there
 const PRICE_CHARS = 5;           // NewTradeWin.as:382-383 priceInout: restrict "0-9.", maxChars 5
 const FRESH_MS = 15000;          // a book older than this is read again before a price is given
+const QUIET_MS = 60000;          // the same refusal, said again at most this often
 const RETRY_MS = 5000;           // after a failed read, that resource is not asked again for this long
 const NOT_READY_MS = 2000;       // marketReady() waits this long before it says false
 const SETTLE_MS = 2000;          // after a cancel, how long to wait for the server's TradesUpdate push
@@ -128,16 +150,28 @@ function tradePrice(tok, word) {
 }
 
 // buy|sell <resource> <amount> <price>, the price with or without an @.
+// `x10` (or `*10`) last on a buy/sell line: that many orders at once, all in
+// flight together (game.js pipe) — a lone order costs two round trips, ten sent
+// together land in about three. At most MAX_TIMES a line.
+const MAX_TIMES = 20;
 function parseTrade(word, tok) {
   const args = tok.slice(1).filter(Boolean);
-  const usage = `usage  ${word} <food|wood|stone|iron|0-3> <amount> <price>   e.g. ${word} food 10000 6`;
+  const usage = `usage  ${word} <food|wood|stone|iron|0-3> <amount> <price> [x<orders>]   e.g. ${word} food 10000 6  or  ${word} stone 99999999 140 x10`;
+  let times = 1;
+  const last = args.length ? /^[x*](\d+)$/i.exec(args[args.length - 1]) : null;
+  if (last) {
+    times = Number(last[1]);
+    if (!(times >= 1 && times <= MAX_TIMES)) throw new Error(`${word}: ${args[args.length - 1]} — between x1 and x${MAX_TIMES} orders at once`);
+    args.pop();
+  }
   if (args.length !== 3) {
     throw new Error(args.length === 2 && !args.some((t) => t.startsWith('@')) ? `${word}: say the price too — ${usage}` : `${word}: ${usage}`);
   }
   const at = args.findIndex((t) => t.startsWith('@'));
   const priceTok = at >= 0 ? args[at] : args[2];
   const rest = at >= 0 ? args.filter((_, i) => i !== at) : args.slice(0, 2);
-  return { cmd: word, resource: tradeRes(rest[0], word), amount: tradeAmount(rest[1], word), ...tradePrice(priceTok, word) };
+  return { cmd: word, resource: tradeRes(rest[0], word), amount: tradeAmount(rest[1], word), ...tradePrice(priceTok, word),
+    ...(times > 1 ? { times } : {}) };
 }
 
 // ------------------------------------------------------------------ the book
@@ -327,7 +361,10 @@ async function paced(env, send) {
   const st = env.state;                        // this run's pacing, kept across lines
   st.lastTradeAt = st.lastTradeAt || 0;
   st.tradeMisses = st.tradeMisses || 0;
-  const gapAfter = (misses) => Math.min(60000, Number(env.opts.tradeGapMs ?? 1200) * 2 ** misses);
+  // No gap of its own between answered writes: each one waits for its reply, which is
+  // as fast as the market can be taken. An unanswered one doubles a gap from 1.2 s.
+  const gapAfter = (misses) => (misses ? Math.min(60000, Number(env.opts.tradeGapMs ?? 1200) * 2 ** misses)
+    : Number(env.opts.tradeGapMs ?? 0));
   if (st.lastTradeAt) {
     const wait = gapAfter(st.tradeMisses) - (Date.now() - st.lastTradeAt);
     if (wait > 0) await env.pause(wait);
@@ -345,32 +382,111 @@ async function paced(env, send) {
   }
 }
 
+// The same thing, said over and over, says nothing: this logs `msg` the first time
+// `key` comes up and then at most once a minute while it keeps coming up. Orders
+// that go through in between do not open it again — a market that is full between
+// sales is the normal state of aggressive trading, and each sale already says how
+// many were refused before it.
+function quietly(env, key, msg) {
+  const st = env.state;
+  const ms = Number(env.opts.marketQuietMs ?? QUIET_MS);
+  if (!st.said || st.said.size > 50) st.said = new Map();
+  if (ms > 0 && Date.now() - (st.said.get(key) || 0) < ms) return false;
+  st.said.set(key, Date.now());
+  env.log(msg);
+  return true;
+}
+
 async function runTrade(a, env) {
-  const castle = env.castle;
+  const castle = env.castle, st = env.state;
   const price = Number(a.price);
   const fee = a.amount * price * FEE;
   // NewTradeWin.as:643-663 calcCommission: a buy needs price x amount + 0.5% in gold, a sell the 0.5%
   const money = a.cmd === 'buy' ? `${gold(a.amount * price + fee)} gold with the 0.5% fee`
-    : `a ${gold(fee)} gold fee (0.5%) when it is placed`;
-  env.log(`  ${a.cmd} ${amt(a.amount)} ${a.resource} @ ${a.price} from ${castle.name || env.cid} · ${money}`);
-  if (a.asked) {
-    env.log(`  ${a.asked} does not fit the market's 5-character price box: ${a.cmd === 'buy' ? 'bid at' : 'offered at'} ${a.price}, `
-      + `${a.cmd === 'buy' ? 'never over' : 'never under'} the price given`);
+    : `a ${gold(fee)} gold fee (0.5%)`;
+  const what = `${a.cmd} ${amt(a.amount)} ${a.resource} @ ${a.price} from ${castle.name || env.cid}`;
+  const priceNote = a.asked
+    ? `  ${a.asked} does not fit the market's 5-character price box: ${a.cmd === 'buy' ? 'bid at' : 'offered at'} ${a.price}, `
+      + `${a.cmd === 'buy' ? 'never over' : 'never under'} the price given`
+    : null;
+  const n = a.times || 1;
+  // NEAT's -maxtrade start-up parameter (the Director's, or CmdParms.txt): the most one order may be for
+  const cap = Number(env.opts && env.opts.config && env.opts.config.maxtrade);
+  if (cap >= 1 && a.amount > cap) {
+    env.log(`  ${what}: not sent — more than one order may be for (-maxtrade ${amt(cap)})`);
+    return { ok: false, error: `more than -maxtrade ${amt(cap)}` };
   }
-  if (env.dryRun) { env.log('  [dry run] not sent'); return {}; }
+  if (env.dryRun) {
+    env.log(`  ${n > 1 ? `${n} × ` : ''}${what} · ${money}${n > 1 ? ' each' : ''}${a.cmd === 'buy' ? '' : ' when it is placed'}`);
+    if (priceNote) env.log(priceNote);
+    env.log('  [dry run] not sent');
+    return {};
+  }
 
   // trade.newTrade {castleId, resType, tradeType, amount, price: String} (TradeCommands.as:44-58, game.newTrade)
-  const w = await paced(env, (g) => g.newTrade({ castleId: g.castleId(env.castle), resource: a.resource, type: a.cmd, amount: a.amount, price: a.price }));
-  if (w.stopped) { env.log('  stopped before it was sent'); return { ok: false, error: 'stopped', end: true }; }
+  const place = () => paced(env, (g) => g.newTrade({ castleId: g.castleId(env.castle), resource: a.resource, type: a.cmd, amount: a.amount, price: a.price }));
+  if (n > 1) return runMany(a, env, { n, place, what, money, priceNote });
+  const w = await place();
+  if (w.stopped) { env.log(`  ${what}: stopped before it was sent`); return { ok: false, error: 'stopped', end: true }; }
   if (w.error) {
-    env.log(`  -> ${w.error.message} — carrying on, the next order waits ${Math.round(w.nextWait / 1000)}s`);
-    return { ok: false, error: w.error.message };
+    // nothing came back: the connection, not the market — always worth a line
+    env.log(`  ${what} -> ${w.error.message} — carrying on, the next order waits ${Math.round(w.nextWait / 1000)}s`);
+    return { ok: false, error: w.error.message, refused: false };
   }
   const r = w.r;
   forgetBook(env.game, a.resource);
-  env.log('  -> ' + env.say(r));
-  if (r && r.ok === -38) env.log('  marketplace full (10 offers max) — this one is skipped, the script carries on');
-  return { done: 1 };
+  const v = env.say(r);
+  if (r && r.ok === 1) {
+    const missed = st.tradeRefused || 0;
+    st.tradeRefused = 0;
+    if (priceNote) env.log(priceNote);
+    env.log(`  ${what} · ${money} — placed${missed ? ` (${missed} refused since the last one)` : ''}`);
+    return { done: 1, result: v };
+  }
+  st.tradeRefused = (st.tradeRefused || 0) + 1;
+  quietly(env, `trade:${a.cmd}:${v}`, `  ${what} -> ${v}`
+    + (r && r.ok === -38 ? ' — marketplace full (10 offers max)' : '')
+    + `; the script carries on${st.tradeRefused > 1 ? ` (${st.tradeRefused} refused so far)` : ''}`);
+  return { done: 1, result: v, refused: false };
+}
+
+// `sell stone 99999999 140 x10`: all ten at once. $result is how many were
+// placed, and the line counts as done when at least one was — in a loop that
+// grinds a full market, most of a batch being refused is the everyday case.
+// With a gap asked for between market writes (opts.tradeGapMs), one after another.
+async function runMany(a, env, { n, place, what, money, priceNote }) {
+  const st = env.state;
+  let ws;
+  if (Number(env.opts.tradeGapMs ?? 0) > 0) {
+    ws = [];
+    for (let i = 0; i < n; i++) { const w = await place(); ws.push(w); if (w.stopped) break; }
+  } else {
+    ws = await Promise.all(Array.from({ length: n }, place));
+  }
+  if (ws.some((w) => w.stopped) && !ws.some((w) => w.r)) {
+    env.log(`  ${n} × ${what}: stopped before they were sent`);
+    return { ok: false, error: 'stopped', end: true };
+  }
+  forgetBook(env.game, a.resource);
+  const answered = ws.filter((w) => w.r);
+  const placed = answered.filter((w) => w.r.ok === 1).length;
+  const why = [...new Set(ws.filter((w) => !(w.r && w.r.ok === 1))
+    .map((w) => (w.r ? env.verdict(w.r) : w.error ? w.error.message : 'stopped before it was sent')))];
+  const full = answered.some((w) => w.r.ok === -38);
+  if (placed) {
+    const missed = st.tradeRefused || 0;
+    st.tradeRefused = 0;
+    if (priceNote) env.log(priceNote);
+    env.log(`  ${n} × ${what} · ${money} each — ${placed} of ${n} placed`
+      + (placed < n ? ` (${n - placed} refused: ${why.join('; ')}${full ? ' — marketplace full (10 offers max)' : ''})` : '')
+      + (missed ? ` · ${missed} refused since the last one placed` : ''));
+    return { ok: true, done: answered.length, result: placed };
+  }
+  st.tradeRefused = (st.tradeRefused || 0) + n;
+  quietly(env, `trade:${a.cmd}:${why.join('; ')}`, `  ${n} × ${what} -> none placed: ${why.join('; ')}`
+    + (full ? ' — marketplace full (10 offers max)' : '')
+    + `; the script carries on (${st.tradeRefused} refused so far)`);
+  return { ok: false, done: answered.length, result: 0, error: why[0] || 'none placed', refused: false };
 }
 
 // ------------------------------------------------------------------ cancels
@@ -440,39 +556,67 @@ async function runCancel(a, env) {
       picked.push({ c: here, t });
     }
     if (!picked.length) {
-      env.log(`  ${here.name} has no open ${a.type === 'buy' ? 'bids' : 'offers'}${a.resource ? ` for ${a.resource}` : ''} to cancel`);
+      // a cancel-and-relist loop reaches this every round: said once, then at most once a minute
+      quietly(env, `nothing:${a.type || 'all'}:${a.resource || 'all'}`,
+        `  ${here.name} has no open ${a.type === 'buy' ? 'bids' : 'offers'}${a.resource ? ` for ${a.resource}` : ''} to cancel`);
       return { ok: true, result: 0 };
     }
   }
   let fees = 0;
-  for (const { c, t } of picked) {
-    env.log(`  cancel ${offerText(t)} · id ${t.id}${c !== here ? ` · in ${c.name}` : ''}`);
-    fees += left(t) * num(t.price) * FEE;
+  for (const { t } of picked) fees += left(t) * num(t.price) * FEE;
+  if (env.dryRun) {
+    for (const { c, t } of picked) env.log(`  cancel ${offerText(t)} · id ${t.id}${c !== here ? ` · in ${c.name}` : ''}`);
+    env.log(`  a cancel gives back what did not fill, not the 0.5% fee paid when it was placed (about ${gold(fees)} gold here)`);
+    env.log('  [dry run] not sent');
+    return {};
   }
-  env.log(`  a cancel gives back what did not fill, not the 0.5% fee paid when it was placed (about ${gold(fees)} gold here)`);
-  if (env.dryRun) { env.log('  [dry run] not sent'); return {}; }
 
   let ok = 0, done = 0;
-  const gone = [];
-  for (const { c, t } of picked) {
-    // trade.cancelTrade {castleId, tradeId} (TradeCommands.as:60-71, game.cancelTrade)
-    const w = await paced(env, (g2) => g2.cancelTrade(g2.castleId(c), t.id));
-    if (w.stopped) {
-      env.log('  stopped before the rest were sent');
-      return { ok: false, error: 'stopped', end: true, done, result: ok };
+  const gone = [], refused = [];
+  // trade.cancelTrade {castleId, tradeId} (TradeCommands.as:60-71, game.cancelTrade)
+  const send = ({ c, t }) => paced(env, (g2) => g2.cancelTrade(g2.castleId(c), t.id));
+  // All at once: cancels are pipelined (game.js pipe), so ten cost about what one
+  // does — measured 5 in 728 ms against 2,655 ms one after another. With a gap
+  // asked for between market writes (opts.tradeGapMs), one after another as before.
+  let sent;
+  if (Number(env.opts.tradeGapMs ?? 0) > 0) {
+    sent = [];
+    for (const p of picked) {
+      const w = await send(p);
+      if (w.stopped) {
+        env.log(`  stopped before the rest were sent — ${sent.filter((x) => x.r && x.r.ok === 1).length} of ${picked.length} offer(s) cancelled`);
+        return { ok: false, error: 'stopped', end: true, done: sent.filter((x) => x.r).length, result: sent.filter((x) => x.r && x.r.ok === 1).length };
+      }
+      sent.push(w);
     }
-    if (w.error) { env.log(`  -> ${t.id}: ${w.error.message}`); continue; }
+  } else {
+    sent = await Promise.all(picked.map(send));
+  }
+  for (let i = 0; i < picked.length; i++) {
+    const { c, t } = picked[i], w = sent[i];
+    if (w.stopped) { refused.push('stopped before it was sent'); continue; }
+    if (w.error) { refused.push(w.error.message); continue; }
     done++;
-    env.log(`  -> ${t.id}: ${env.say(w.r)}`);
+    const v = env.say(w.r);
     if (w.r && w.r.ok === 1) {
       ok++;
       gone.push({ cid: g.castleId(c), id: Number(t.id) });
       forgetBook(env.game, RESOURCES[num(t.resType)]);
-    }
+    } else refused.push(v);
   }
   if (gone.length) await settle(env, gone);
+  const why = [...new Set(refused)].join('; ');
+  const where = [...new Set(picked.map(({ c }) => c.name || g.castleId(c)))].join(', ');
+  // one line for the round, not two per offer: what came off, and why the rest did not
+  if (ok) {
+    env.log(`  cancelled ${ok} of ${picked.length} offer(s) in ${where} · about ${gold(fees)} gold in fees stays paid`
+      + (refused.length ? ` — ${refused.length} refused: ${why}` : ''));
+  } else {
+    quietly(env, `cancel:${why}`, `  none of the ${picked.length} offer(s) in ${where} were cancelled: ${why}; the script carries on`);
+  }
   const all = ok === picked.length;
-  return { done, result: ok, ok: all, ...(all ? {} : { error: `${picked.length - ok} of ${picked.length} offer(s) not cancelled` }) };
+  return { done, result: ok, ok: all, refused: false,
+    ...(all ? {} : { error: `${picked.length - ok} of ${picked.length} offer(s) not cancelled` }) };
 }
 
 // ---------------------------------------------------------- dumpresource
@@ -546,16 +690,74 @@ async function runDump(a, env) {
   const line = `transport ${where} t:${need} ${resText}`;
   env.log(`  ${text(a.condition)} reached — sending ${text(a.resources)}: ${line}`);
   const action = D.parseMarch('transport', line, line.split(/\s+/));
-  const res = (await D.commands.transport.run({ ...action, line: a.line, raw: a.raw }, env)) || {};
+  // nowait: this command has already checked the resources and the transporters
+  // itself, and says "not yet" and returns rather than standing and waiting.
+  const res = (await D.commands.transport.run({ ...action, nowait: true, line: a.line, raw: a.raw }, env)) || {};
   const sent = !env.dryRun && !env.refused() && res.ok !== false;
   return { ...res, result: sent ? total : 0 };
 }
 
+// ------------------------------------------------------ waitslot, tradepace
+
+// Opt-in, for trading loops that today `sleep` a fixed time while a city is full and
+// again between batches (2026-09-22): the first wakes on the push that frees a slot
+// instead of after the sleep, the second counts the gap from the last order rather
+// than adding a whole one after the loop's own work. Neither sends anything.
+const SLOT_LOOK_MS = 100;        // waitslot looks again this often without a push (Stop, a reconnect)
+
+function parseSeconds(word, w, what) {
+  const v = Number(w);
+  if (w === undefined || !Number.isFinite(v) || v < 0) throw new Error(`${word}: ${what}`);
+  return v;
+}
+
+async function runWaitSlot(a, env) {
+  const scale = Number(env.opts.timeScale) > 0 ? Number(env.opts.timeScale) : 1;
+  const until = Date.now() + a.seconds * 1000 * scale;
+  const held = () => { const c = env.castle; return c ? (c.trades || []).length : 0; };
+  const start = held();
+  const free = () => (a.below !== null ? held() < a.below : held() < start);
+  let wake = null, conn = null;
+  const onCmd = (cmd) => { if (cmd === 'server.TradesUpdate' && wake) wake(); };
+  // the connection's push stream, followed across a reconnect (the session's handler,
+  // added first, has applied a push before this one hears it)
+  const listen = () => {
+    const g = env.game, c = g && g.c && typeof g.c.on === 'function' ? g.c : null;
+    if (c === conn) return;
+    if (conn) conn.off('cmd', onCmd);
+    conn = c;
+    if (conn) conn.on('cmd', onCmd);
+  };
+  try {
+    for (;;) {
+      if (free()) return { result: 1 };
+      const left = until - Date.now();
+      if (left <= 0 || env.stopped()) return { result: 0 };
+      listen();
+      let timer = null;
+      await new Promise((r) => { wake = r; timer = setTimeout(r, Math.min(left, SLOT_LOOK_MS)); });
+      clearTimeout(timer);
+      wake = null;
+    }
+  } finally { if (conn) conn.off('cmd', onCmd); }
+}
+
+async function runTradePace(a, env) {
+  const at = Number((env.state || {}).lastTradeAt) || 0;
+  if (!at) return { result: 0 };
+  const wait = a.seconds * 1000 - (Date.now() - at);
+  if (wait > 0) await env.pause(wait);
+  return { result: Math.max(0, Math.round(wait)) };
+}
+
 // ------------------------------------------------------------------ commands
 
+// quiet: the "line N: sell ..." header waits for a line the order has to say, so a
+// script grinding thousands of orders shows the ones that were placed, not each try.
 const trade = (word) => ({
   usage: `${word} <food|wood|stone|iron|0-3> <amount> <price>   (or @price)`,
   parse: (args, { tok }) => parseTrade(word, tok),
+  quiet: true,
   run: runTrade,
 });
 
@@ -566,6 +768,7 @@ const commands = {
   canceltrade: {
     usage: 'canceltrade [tradeId ... | buy | sell | food | wood | stone | iron]',
     parse: (args, { tok }) => parseCancel(tok),
+    quiet: true,
     run: runCancel,
   },
 
@@ -590,6 +793,30 @@ const commands = {
       }
       return bad ? { ok: false, error: `${bad} of ${a.resources.length} market read(s) failed` } : {};
     },
+  },
+
+  waitslot: {
+    usage: 'waitslot <seconds> [fewer than N offers]   e.g. waitslot 0.3 | waitslot 0.3 10',
+    parse(args, { tok }) {
+      const w = tok.slice(1).filter(Boolean);
+      if (w.length < 1 || w.length > 2) throw new Error('waitslot: how long at most, in seconds — waitslot 0.3 — and optionally the offer count to get under: waitslot 0.3 10');
+      const seconds = parseSeconds('waitslot', w[0], `${w[0]} is not a number of seconds — waitslot 0.3`);
+      const below = w.length > 1 ? parseSeconds('waitslot', w[1], `${w[1]} is not a count of offers — waitslot 0.3 10`) : null;
+      return { cmd: 'waitslot', seconds, below };
+    },
+    quiet: true,
+    run: runWaitSlot,
+  },
+
+  tradepace: {
+    usage: 'tradepace <seconds>   e.g. tradepace 1',
+    parse(args, { tok }) {
+      const w = tok.slice(1).filter(Boolean);
+      if (w.length !== 1) throw new Error('tradepace: the gap in seconds since the last market write — tradepace 1');
+      return { cmd: 'tradepace', seconds: parseSeconds('tradepace', w[0], `${w[0]} is not a number of seconds — tradepace 1`) };
+    },
+    quiet: true,
+    run: runTradePace,
   },
 
   dumpresource: {

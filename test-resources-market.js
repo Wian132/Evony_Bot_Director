@@ -88,6 +88,17 @@ function push(here, castles, src, { selfArmys = [], own = {}, warTownOf = null, 
   return { plan: T.plans.push(ctx, {}, game), game, ctx };
 }
 const res = (a, k) => (a && a.resources ? a.resources[k] : undefined);
+// What one carrier holds from `a` to `b` once the march's own food is on board
+// (NewArmyWin.as: load x (1 + loadSkill/100), less twice its upkeep for each
+// hour of the one-way march); the fake game reads no skills. `holds` is what
+// `units` of them carry, `unitsFor` how many an amount takes.
+const netHold = (a, b, kind = 'carriage', skill = 0) => {
+  const ms = C.marchTimeMs(C.fieldIdToCoords(a.fieldId), C.fieldIdToCoords(b.fieldId), [kind], 0);
+  return C.BY_KEY[kind].load * (1 + skill / 100) - C.BY_KEY[kind].food * 2 * ms / 3600000;
+};
+const holds = (units, a, b, kind, skill) => Math.floor(units * netHold(a, b, kind, skill));
+const unitsFor = (amount, a, b, kind, skill) => Math.ceil(amount / netHold(a, b, kind, skill));
+const shortK = (v) => `${+(v / 1e3).toFixed(2)}k`, shortM = (v) => `${+(v / 1e6).toFixed(2)}m`;
 // What comfort costs, as goal-upkeep works it out (comfortCost): a prayer is
 // prestige / 10 x castleCount x the city's usePACIFY_SUCCOUR_OR_PACIFY_PRAY
 // food — 2,000,000 / 10 x 5 x 1 = 1m here; population raising is the
@@ -331,7 +342,7 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const { plan: p } = push(f.five, Object.values(f), 'keepresources 8 f:2.95b');
     assert.strictEqual(p.actions.length, 1);
     const a = p.actions[0];
-    assert.deepStrictEqual([a.kind, a.from.name, a.to.name, res(a, 'food'), a.carriages], ['transport', '5', '8', 50e6, 10000]);
+    assert.deepStrictEqual([a.kind, a.from.name, a.to.name, res(a, 'food'), a.carriages], ['transport', '5', '8', 50e6, unitsFor(50e6, f.five, f.eight)]);
     assert.deepStrictEqual([a.rally.kind, a.rally.missionType, a.rally.targetFieldId, a.rally.pairLimit], ['r', C.MISSION.transport, f.eight.fieldId, 1]);
     has(p.note, 'keepresources: food 3b over 2.95b: 50m to 8');
   });
@@ -362,11 +373,11 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
   await t('as much as the transports carry, a quarter kept home; a minimum batch they cannot carry waits', () => {
     let f = fleet({ five: { troop: { carriage: 100 } } });
     let p = push(f.five, Object.values(f), 'keepresources 8 f:2.9b').plan;
-    assert.deepStrictEqual([res(p.actions[0], 'food'), p.actions[0].carriages], [75 * 5000, 75]);
+    assert.deepStrictEqual([res(p.actions[0], 'food'), p.actions[0].carriages], [holds(75, f.five, f.eight), 75]);
     f = fleet({ five: { troop: { carriage: 100 } } });
     p = push(f.five, Object.values(f), 'keepresources 8 f:2.9b 1m').plan;
     assert.deepStrictEqual(p.actions, []);
-    has(p.note, 'the spare transports carry 375k, under the 1m minimum batch');
+    has(p.note, `the spare transports carry ${shortK(holds(75, f.five, f.eight))}, under the 1m minimum batch`);
   });
 
   await t('every resource on the line rides in one march', () => {
@@ -374,15 +385,15 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const p = push(f.five, Object.values(f), 'keepresources 8 f:2.95b,i:290m,g:0 1m').plan;
     assert.strictEqual(p.actions.length, 1);
     assert.deepStrictEqual(p.actions[0].resources, { food: 50e6, iron: 10e6 });
-    assert.strictEqual(p.actions[0].carriages, 12000);
+    assert.strictEqual(p.actions[0].carriages, unitsFor(60e6, f.five, f.eight));
   });
 
   await t('another troop type carries it when the line names one', () => {
     const f = fleet({ five: { troop: { lightCavalry: 10000 } } });
     const p = push(f.five, Object.values(f), 'keepresources 8 w:4m 100k cavalry').plan;
     const a = p.actions[0];
-    // 10,000 cavalry, a quarter home but never more than 2,000: 8,000 x 100 = 800k
-    assert.deepStrictEqual([res(a, 'wood'), a.troops], [800e3, { lightCavalry: 8000 }]);
+    // 10,000 cavalry, a quarter home but never more than 2,000: 8,000 x 100, less their march food
+    assert.deepStrictEqual([res(a, 'wood'), a.troops], [holds(8000, f.five, f.eight, 'lightCavalry'), { lightCavalry: 8000 }]);
     has(a.label, '8,000 Cavalry');
   });
 
@@ -395,7 +406,7 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const r = await T.executors.transport(game, f.five, a);
     assert.strictEqual(r.ok, 1);
     assert.deepStrictEqual([game.sent[0].castleId, game.sent[0].bean.missionType, game.sent[0].bean.targetPoint, game.sent[0].bean.resource.food, game.sent[0].bean.troops.carriage],
-      [f.five.castleId, C.MISSION.transport, C.coordsToFieldId(300, 300), 50e6, 10000]);
+      [f.five.castleId, C.MISSION.transport, C.coordsToFieldId(300, 300), 50e6, unitsFor(50e6, f.five, { fieldId: C.coordsToFieldId(300, 300) })]);
     assert.strictEqual(game.sent[0].bean.heroId, undefined, 'no hero goes with it');
   });
 
@@ -420,13 +431,15 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const own = { 8: 'keepresources any f:3b', 5: 'keepresources any f:3.05b' };
     const p = push(f.nine, Object.values(f), 'keepresources any f:19.91b', { own }).plan;
     const to = p.actions.map((a) => [a.to.name, res(a, 'food')]);
-    assert.deepStrictEqual(to, [['5', 50e6], ['Fla', 40e6]], JSON.stringify(to));
+    // 18,000 transports: the rest after 5's 50m carry what they hold on the long trip to Fla
+    const left = 18000 - unitsFor(50e6, f.nine, f.five);
+    assert.deepStrictEqual(to, [['5', 50e6], ['Fla', Math.min(40e6, holds(left, f.nine, f.fla))]], JSON.stringify(to));
   });
 
   await t('a city named outright is filled as the line says, whatever its own keep line (hub chains work)', () => {
     const f = fleet();
     const p = push(f.nine, Object.values(f), 'keepresources 8 f:19.91b', { own: { 8: 'keepresources any f:3b' } }).plan;
-    assert.deepStrictEqual([p.actions[0].to.name, res(p.actions[0], 'food')], ['8', 90e6]);
+    assert.deepStrictEqual([p.actions[0].to.name, res(p.actions[0], 'food')], ['8', holds(18000, f.nine, f.eight)]);
   });
 
   await t('never below this city\'s own requestresources trigger for the same thing', () => {
@@ -486,10 +499,10 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     // (one batch number would be the MAXIMUM, so the minimum is written with a maximum)
     let p = push(f.nine, Object.values(f), 'sendresources Fla food 19b 1b 500m 1b').plan;
     assert.deepStrictEqual(p.actions, []);
-    has(p.note, 'the spare transports carry 90m, under the 500m minimum batch');
+    has(p.note, `the spare transports carry ${shortM(holds(18000, f.nine, f.fla))}, under the 500m minimum batch`);
     f = fleet({ fla: { food: 500e6 } });
     p = push(f.nine, Object.values(f), 'sendresources Fla food 19b 1b 500m 1b').plan;
-    assert.strictEqual(res(p.actions[0], 'food'), 90e6);
+    assert.strictEqual(res(p.actions[0], 'food'), holds(18000, f.nine, f.fla));
     has(p.note, 'critically low');
   });
 
@@ -657,15 +670,25 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
   console.log('\nkeeptroops / sendtroops\n');
 
   await t('keeptroops sends what is over each kept amount, in increments of at least the batch', async () => {
-    const f = fleet({ five: { troop: { archer: 500e3, scouter: 405e3, militia: 50e3 } } });
+    const f = fleet({ five: { troop: { archer: 450e3, scouter: 405e3, militia: 50e3 } } });
     const { plan: p, game } = push(f.five, Object.values(f), 'keeptroops 8 a:400k,s:400k,w:100k 10k');
     assert.strictEqual(p.actions.length, 1);
     const a = p.actions[0];
-    assert.deepStrictEqual([a.kind, a.to.name, a.troops], ['reinforceTroops', '8', { archer: 100e3 }]);
+    assert.deepStrictEqual([a.kind, a.to.name, a.troops], ['reinforceTroops', '8', { archer: 50e3 }]);
     has(p.note, 'Scout 405k over 400k: 8: only 5k is spare here, under the 10k minimum batch');
     await T.executors.reinforceTroops(game, f.five, a);
     assert.deepStrictEqual([game.sent[0].bean.missionType, game.sent[0].bean.targetPoint, game.sent[0].bean.troops.archer, game.sent[0].bean.heroId],
-      [C.MISSION.reinforce, f.eight.fieldId, 100e3, undefined]);
+      [C.MISSION.reinforce, f.eight.fieldId, 50e3, undefined]);
+  });
+
+  await t('a push march takes at most 10,000 troops per Rally Spot level of this city', () => {
+    let f = fleet({ five: { troop: { archer: 500e3, scouter: 405e3 }, rally: 10 } });
+    let p = push(f.five, Object.values(f), 'keeptroops 8 a:100k,s:100k').plan;
+    assert.deepStrictEqual(p.actions[0].troops, { archer: 100e3 });
+    has(p.note, '8: the march there is full (100,000 troops, this city\'s Rally Spot limit)');
+    f = fleet({ five: { food: 3e9, troop: { carriage: 250e3 }, rally: 4 } });
+    p = push(f.five, Object.values(f), 'keepresources 8 f:1b').plan;
+    assert.deepStrictEqual([p.actions[0].resources.food, p.actions[0].carriages], [holds(40e3, f.five, f.eight), 40e3]);
   });
 
   await t('keeptroops counts only troops at home: the city never dips under the kept amount while farming', () => {
@@ -711,9 +734,10 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
   await t('transports that carry this pass\'s resources are not also sent as troops', () => {
     const f = fleet();
     const p = push(f.five, Object.values(f), 'keepresources 8 f:2.95b\nkeeptroops 8 t:5000').plan;
-    // 20,000 transports: 10,000 carry the food, 10,000 are home, 5,000 over the keep go
+    // 20,000 transports: some carry the food (and their own march food), the
+    // rest are home, and what is over the 5,000 kept goes
     const tr = p.actions.find((a) => a.kind === 'reinforceTroops');
-    assert.deepStrictEqual(tr.troops, { carriage: 5000 });
+    assert.deepStrictEqual(tr.troops, { carriage: 20000 - unitsFor(50e6, f.five, f.eight) - 5000 });
   });
 
   // ================================================================ engine
@@ -734,7 +758,7 @@ async function run(g, c, a, state) { return TR.executors[a.kind](g, c, a, state)
     const { e, game } = engineFor([f.fla, f.five], { 5: 'keepresources Fla f:2.8b' });
     await e.tick();
     assert.strictEqual(game.sent.length, 1);
-    assert.deepStrictEqual([game.sent[0].castleId, game.sent[0].bean.targetPoint, game.sent[0].bean.resource.food], [f.five.castleId, f.fla.fieldId, 90e6]);
+    assert.deepStrictEqual([game.sent[0].castleId, game.sent[0].bean.targetPoint, game.sent[0].bean.resource.food], [f.five.castleId, f.fla.fieldId, holds(18000, f.five, f.fla)]);
     await e.tick();
     assert.strictEqual(game.sent.length, 1, 'sent again before the first was listed');
     has(e.lastReport[f.five.castleId].push.note, 'Fla: the last mission to it not back yet');

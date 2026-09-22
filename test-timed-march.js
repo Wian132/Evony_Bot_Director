@@ -24,7 +24,7 @@ const parseErr = (line) => { try { script.parseLine(line); } catch (e) { return 
 // Two cities; Home holds three flats and a lake.
 const PARAMS = { marchSkill: 55, driveSkill: 30, relief: 3 };
 function sim({ latency = 20, factor = 1, reliefApplies = true, reachWithCamp = true, wholeSeconds = false,
-  recallOk = true, push = true, reply = { ok: 1 }, title = 9, stampSeconds = false, skewMs = 0 } = {}) {
+  recallOk = true, push = true, reply = { ok: 1 }, title = 9, stampSeconds = false, skewMs = 0, lagSeq = null } = {}) {
   const g = new Game();
   g.serverOffset = 0;
   g.minRtt = latency * 2;
@@ -38,15 +38,18 @@ function sim({ latency = 20, factor = 1, reliefApplies = true, reachWithCamp = t
   const log = [];
   g.troopParams = async () => PARAMS;
   g.fieldOwner = async () => ({ userName: null, allianceName: null });
-  let nextId = 100;
+  let nextId = 100, sends = 0;
   g.newArmy = async (castleId, bean) => {
     log.push({ cmd: 'newArmy', castleId, bean });
     if (reply.ok !== 1) return reply;
     const castle = g.castles.find((c) => c.id === castleId);
-    const start = g.now() + latency;
+    // lagSeq: the server taking each send that much late (a lag spike) — its
+    // startTime and the landing both move, as they do live
+    const start = g.now() + latency + (lagSeq ? lagSeq[sends++] || 0 : 0);
     const keys = Object.keys(bean.troops).filter((k) => bean.troops[k] > 0);
-    const march = C.marchTimeMs(C.fieldIdToCoords(castle.fieldId), C.fieldIdToCoords(bean.targetPoint), keys,
-      { ...PARAMS, relief: reliefApplies ? PARAMS.relief : 0 }) * factor;
+    // whole seconds, rounded down, as the live server counts them (2026-09-22)
+    const march = Math.floor(C.marchTimeMs(C.fieldIdToCoords(castle.fieldId), C.fieldIdToCoords(bean.targetPoint), keys,
+      { ...PARAMS, relief: reliefApplies ? PARAMS.relief : 0 }) * factor / 1000) * 1000;
     let land = start + march + bean.restTime * 1000 + skewMs;
     if (wholeSeconds) land = Math.floor(land / 1000) * 1000;
     let reachTime = reachWithCamp ? land : land - bean.restTime * 1000;
@@ -68,12 +71,12 @@ function sim({ latency = 20, factor = 1, reliefApplies = true, reachWithCamp = t
 }
 
 // Send one timed build march from Home to a flat.
-async function land(s, { to = F(103, 104), aimMs, troops = { peasants: 500 }, castle = s.g.castles[0], construct = true } = {}) {
+async function land(s, { to = F(103, 104), aimMs, troops = { peasants: 500 }, castle = s.g.castles[0], construct = true, tolMs = null, tries = null } = {}) {
   const out = [];
   const target = C.fieldIdToCoords(to);
   const res = await TM.send({
     game: s.g, castle, construct, from: C.fieldIdToCoords(castle.fieldId), target, targetPoint: to,
-    troopKeys: Object.keys(troops), aimMs, log: (m) => out.push(m), checkMs: 1500,
+    troopKeys: Object.keys(troops), aimMs, log: (m) => out.push(m), checkMs: 1500, tolMs, tries,
     makeBean: (rest) => s.g.buildArmyBean({ missionType: C.MISSION.construct, heroId: 11, targetPoint: to, troops, restTimeSec: rest }),
   });
   return { res, out, text: out.join('\n') };
@@ -157,6 +160,30 @@ t('alliance, other, and the client\'s null == null', async () => {
 
 section('judging a landing');
 
+t('/within: a window either side of the aim, and only the aim counts', () => {
+  const aim = 1e12 + 500;
+  assert.ok(TM.judge(aim + 1000, aim, [], 1000).ok, 'the edge is in');
+  assert.ok(TM.judge(aim - 1000, aim, [], 1000).ok);
+  assert.ok(!TM.judge(aim + 1001, aim, [], 1000).ok);
+  assert.ok(!TM.judge(aim + 501, aim, [], 500).ok);
+  assert.ok(TM.judge(aim + 400, aim, [{ armyId: 1, landing: aim - 450 }], 500).ok, 'peers do not narrow it');
+});
+t('/within: a miss is split into lag and march time by the server startTime', () => {
+  const pl = { sendAt: 1e12, leadMs: 100, restTimeSec: 60, march: 300000 };
+  const sp = TM.splitMiss({ startTime: 1e12 + 100 + 1800 }, 1e12 + 100 + 1800 + 60000 + 300000, pl);
+  assert.deepStrictEqual(sp, { lag: 1800, dur: 0 });
+  assert.strictEqual(TM.splitMiss({ startTime: 0 }, 1, pl), null);
+});
+t('/within: a lag spike moves the lead at most 200 ms and rescales nothing', () => {
+  const s = sim();
+  const m = TM.model(s.g); m.leadMs = 20;
+  const pl = { sendAt: 0, leadMs: 20, restTimeSec: 60, march: 300000 };
+  assert.strictEqual(TM.learnSplit(s.g, 'k', pl, { lag: 2500, dur: 0 }), null);
+  assert.strictEqual(m.leadMs, 220);
+  assert.strictEqual(m.scale.size, 0);
+  assert.match(TM.learnSplit(s.g, 'k', pl, { lag: 0, dur: 3000 }), /march time is 101.00%/);
+});
+
 t('the first march is held against the aim, later ones against it', () => {
   const aim = 1e12 + 500;
   assert.ok(TM.judge(aim + 250, aim, []).ok);
@@ -188,6 +215,37 @@ t('reachTime is read as including the camp, unless only another reading fits', (
 
 // ---------------------------------------------------------------------------
 section('sending, checking, putting right');
+
+t('/within: a wave a lag spike put 1.8 s out is recalled and sent again, and the second lands in the window', async () => {
+  fresh();
+  const s = sim({ lagSeq: [1800, 0] });
+  const aim = aimIn(3600000);
+  const r = await land(s, { aimMs: aim, tolMs: 500 });
+  assert.ok(r.res.sent, r.text);
+  assert.ok(Math.abs(r.res.landing - aim) <= 500, 'off by ' + (r.res.landing - aim) + '\n' + r.text);
+  assert.strictEqual(s.log.filter((x) => x.cmd === 'recall').length, 1, r.text);
+  assert.match(r.text, /window: .* \(±500 ms\) — a landing outside it is recalled and sent again, up to 10 sends/);
+  assert.match(r.text, /MISSED: outside ±500 ms/);
+  assert.match(r.text, /server took it \+1,8\d\d ms from the aimed send, and its march time is [+-]\d+ ms from the formula/);
+  assert.doesNotMatch(r.text, /learned: the server's march time/, 'a lag spike is not a march-time lesson');
+  assert.match(r.text, /sending it again \(try 2 of 10\)/);
+});
+t('/within: every send lags, /tries=2 gives up after two', async () => {
+  fresh();
+  const s = sim({ lagSeq: [1800, 1800, 1800] });
+  const r = await land(s, { aimMs: aimIn(3600000), tolMs: 500, tries: 2 });
+  assert.ok(!r.res.sent, r.text);
+  assert.strictEqual(r.res.why, 'missed');
+  assert.match(r.text, /gave up after 2 tries/);
+});
+t('/within: a wave that lands in the window first time is kept', async () => {
+  fresh();
+  const s = sim();
+  const aim = aimIn(3600000);
+  const r = await land(s, { aimMs: aim, tolMs: 100 });
+  assert.ok(r.res.sent && Math.abs(r.res.landing - aim) <= 100, r.text);
+  assert.strictEqual(s.log.filter((x) => x.cmd === 'recall').length, 0, r.text);
+});
 
 t('a march lands on the aimed millisecond, give or take the network', async () => {
   fresh();
@@ -324,9 +382,11 @@ section('marchcheck');
 
 t('matches the server to the ms, and tells relief from none', async () => {
   const s = sim();
-  const start = 1.7e12, home = s.g.castles[0];
-  const plain = C.marchTimeMs({ x: 100, y: 100 }, { x: 130, y: 100 }, ['archer'], { marchSkill: 55, driveSkill: 30, now: start });
-  const relieved = C.marchTimeMs({ x: 100, y: 100 }, { x: 103, y: 104 }, ['peasants'], { ...PARAMS, now: start });
+  // sent half a second ago: a march with camp can only be read back while its camp is as sent
+  const start = Date.now() - 500, home = s.g.castles[0];
+  // the server's march times are whole seconds (the formula's, rounded down)
+  const plain = TM.serverMarchMs(C.marchTimeMs({ x: 100, y: 100 }, { x: 130, y: 100 }, ['archer'], { marchSkill: 55, driveSkill: 30, now: start }));
+  const relieved = TM.serverMarchMs(C.marchTimeMs({ x: 100, y: 100 }, { x: 103, y: 104 }, ['peasants'], { ...PARAMS, now: start }));
   s.g.player.selfArmys = [
     { armyId: 1, direction: 1, missionType: 5, startFieldId: home.fieldId, targetFieldId: F(130, 100), troop: { archer: 500 }, startTime: start, reachTime: start + plain, restTime: 0 },
     { armyId: 2, direction: 1, missionType: 4, startFieldId: home.fieldId, targetFieldId: F(103, 104), troop: { peasants: '500' }, startTime: start, reachTime: start + relieved + 60000, restTime: 60 },
@@ -402,6 +462,16 @@ t('deploy bu reads like the recipe', () => {
   assert.deepStrictEqual(a.troops, { peasants: 500 });
   assert.deepStrictEqual(a.resources, { food: 26000, wood: 26000, stone: 26000, iron: 12000, gold: 10000 });
   assert.deepStrictEqual(a.land, { h: 14, m: 30, s: 7, ms: 40 });
+});
+t('/within= and /tries= on a timed march', () => {
+  const a = script.parseLine('attack 1,2 any s:1 @:10:10:10.500 /within=1s');
+  assert.strictEqual(a.within, 1000);
+  assert.strictEqual(script.parseLine('attack 1,2 any s:1 @:10:10:10.500 /within=500ms /tries=4').tries, 4);
+  assert.strictEqual(script.parseLine('attack 1,2 any s:1 @:10:10:10.500 /within=1.5s').within, 1500);
+  assert.strictEqual(script.parseLine('attack 1,2 any s:1 @:10:10:10.500 /within=250').within, 250);
+  assert.match(parseErr('attack 1,2 any s:1 /within=1s'), /give the moment too/);
+  assert.match(parseErr('attack 1,2 any s:1 @:10:10:10 /within=soon'), /takes a length like 500ms/);
+  assert.match(parseErr('attack 1,2 any s:1 @:10:10:10 /tries=0'), /1 to 50/);
 });
 t('deploy\'s other march types, and a bad one', () => {
   assert.strictEqual(script.parseLine('deploy at 1,2 any a:10').cmd, 'attack');

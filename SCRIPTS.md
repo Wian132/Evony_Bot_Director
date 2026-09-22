@@ -347,7 +347,7 @@ was not heard).
 ### Deployment
 
 ```
-attack <x,y | city> <hero> <troops> [resources] [@:hh:mm:ss | camp] [/big] [/horde] [from <city>]
+attack <x,y | city> <hero> <troops> [resources] [@:hh:mm:ss | camp] [/within=1s] [/tries=n] [/big] [/horde] [from <city>]
 scout <x,y | city> <hero | none> <troops> [@:hh:mm:ss | camp] [/big] [from <city>]
 transport <x,y | city> [hero] <troops> <resources> [@:hh:mm:ss | camp] [/big] [from <city>]
 reinforce <x,y | city> [hero] [troops] [resources] [@:hh:mm:ss | camp] [/big] [from <city>]
@@ -390,6 +390,47 @@ The target is `x,y`, or one of your cities by name (`reinforce Fla`,
 - `@0:30:00`, `@30:00` or a bare `0:30:00` camps the march that long first. Plain
   `@hh:mm:ss` used to be a landing time here; like NEAT, it is camp time now.
   `@:hh:mm:ss[.fff]` lands it at that moment (below).
+- **A march waits for the city instead of being refused** — see below.
+
+**A march waits until the city can make it.** `transport 7 t:100k f:999m` with a
+`repeat 100` after it used to send, be refused, send again and be refused again at the
+speed of the server's no: a hundred tries in a second and not one transport gone. So
+before it sends, a march looks at what the city has, and if it is short it **waits**,
+says in red what it is waiting for, and sends the moment it can:
+
+```
+12:04:07.180 line 1: transport 7 t:100000 f:999000000 · not yet: 12,340 of 100,000 Transporter at home — waiting
+12:11:52.004 line 1: transport 7 t:100000 f:999000000 · ready after 7m 44s
+12:11:52.310 line 1: transport 7 t:100000 f:999000000 · transport -> Fla (120,100) ... -> ok
+```
+
+It waits on the four things that come right by themselves:
+
+- **troops at home** — `12,340 of 100,000 Transporter at home`
+- **the resources it carries** — `food 1,204,000 of 999,000,000`
+- **a free rally slot** — `rally spot L10: 10/10 busy`; a city may have as many marches
+  out as its Rally Spot level, going, camped or coming home
+- **the hero** — busy, out, or sent by this script less than a minute ago
+
+Every reason it is short of is said at once, and said again every minute while it holds,
+so a long wait leaves a trail without filling the Output tab. **Stop** ends a wait, and
+the rest of the script does not run. The counts come from the pushes the server sends by
+itself, so they are live; marches this run has sent that the server has not listed back
+yet count too, so two lines in a row cannot spend the same troops.
+
+What can **never** come right on its own is not waited for and fails at once, as before:
+a march over the Rally Spot's troop limit, a load bigger than the troops can carry,
+`/big` without a War Ensign, and a hero string no hero of the city matches at all
+(`waithero` is the line for waiting on one of those). A refusal from the server itself
+still fails the line, as it always did.
+
+- **`/nowait`** sends at once and lets the server refuse it — what every march did
+  before. It still says what the city is short of first.
+- **`/wait=<seconds | m:ss | h:mm:ss>`** waits that long and then fails
+  (`still not ready after 5m — 12,340 of 100,000 Transporter at home`). `/wait=0` is
+  `/nowait`. With neither, a march waits as long as it takes.
+- A dry run never waits. `dumpresource` never waits either — it checks the city itself
+  and says `not yet` on its own.
 
 **Recalls.** `recall x,y` brings back every army of yours on its way to, or staying at,
 x,y. `recallall` recalls every army that left this city and isn't already coming home.
@@ -421,6 +462,32 @@ across two seconds by a few ms of network jitter. **`marchcheck`** holds the for
 against the server's own start and arrival times for every march the account has out,
 with and without the Relief Station. It costs nothing in game, so it's worth running
 before a real attempt.
+
+The server counts a march in **whole seconds**: the formula's time rounded down
+(`marchcheck` on Lord02, 2026-09-22). Timed marches plan with that, since the fraction
+used to land them up to a second early.
+
+**Timed waves: `/within=`.** For attack waves that must all land together, give each line
+the same moment and a window:
+
+```
+attack 111,222 any c:50k @:10:10:10.500 /within=1s
+attack 111,222 any c:50k @:10:10:10.500 /within=1s
+attack 111,222 any s:1   @:10:10:10.500 /within=500ms /tries=4
+```
+
+A wave that lands within that much of the moment, either side (here 10:10:09.500 to
+10:10:11.500), is kept. One further out is recalled the moment the server's stamp shows it
+(it has been out a second or two, so it is home a second or two later) and sent again, with
+a little less camp. That repeats up to `/tries=` sends (10 by default), or until there is no
+longer time for the march. Each wave is planned on its own, so the waves sent later
+simply get less camp time: 2:00, 1:59, 1:58, and so on, however long the march is. The
+window takes `500ms`, `1s`, `1.5s` or a bare number of ms, from 1 ms to 60 s. The log splits
+every wave's miss using the server's own `startTime`: how late the server took the send
+(lag), and how far its march time was from the formula's. A lag spike moves the next
+wave's send lead by at most 200 ms and never rescales the march time, so one bad second
+of server lag doesn't throw every later wave the other way. Without `/within=`, a timed
+march keeps the stricter rule above: the same second as the marches already due.
 
 This is what the extra-cities trick needs. The server checks the city limit
 (`titleId + 1`: 10 cities for a Prinzessin) when a build is sent, not against the builds
@@ -537,6 +604,22 @@ holidaysnipe [dry] | holidaysnipe stop | holidaysnipe status
   (OTTObot's) the bids, offers or one resource's. A bare number is always a trade id.
   They are all sent at once, not one after another (ten: 493 ms instead of 5,479 ms).
 - **`marketupdate wood`** reads that book now (none or `all`: all four).
+- **`city.transitAmount(res)`** is how much of res is on its way to the city (the sum of
+  `transingTradesArray`'s amounts of that resType); **`city.restingAmount(res[, type])`** is
+  what the city's own offers of res still hold unfilled (`amount - dealedAmount`), bids only
+  with type 0 or `"buy"`, offers only with 1 or `"sell"`. res is 0-3 or a name. They give
+  the same numbers as a loop over the arrays, in one read: a buying city in the glitch has
+  hundreds to thousands of purchases in transit, and walking them line by line every pass
+  was ~90% of a trading console's CPU (profiled 2026-09-22).
+- **`waitslot 0.3`** waits at most 0.3 s for one of the city's offers to go — it returns
+  the moment the push that takes one off `city.tradesArray` arrives; **`waitslot 0.3 10`**
+  until the city holds fewer than 10 (at once if it already does). `$result` is 1 when a
+  slot came free, 0 when the time ran out. For a full city's wait in a trading loop, in place
+  of `sleep 0.3`. It sends nothing.
+- **`tradepace 1`** waits until 1 s has passed since this run's last market write (buy,
+  sell, canceltrade) and no longer — at once if there was none, or the gap is already over.
+  The account's pause between batches, counted from the order rather than added after the
+  loop's own work. It sends nothing.
 - **`dumpresource 111,222 f:11000,g:44000 f:3000,g:9000`** transports the second list to
   x,y once the city holds the first, with as many transporters as the load needs; not
   yet, and `$error` says what is short. (The wiki's DumpResource is this conditional
@@ -800,6 +883,12 @@ recover <hero> [to <city>]
   that picks several (`firehero any:level<50 all`, `releasehero any:level<100 all`) needs
   the closing `all`; `keepheroes` / `keepcapturedheroes` (or their defaults) still protect,
   and `$result` is how many went. `release` frees a prisoner you hold, for good.
+  A shared name is refused and takes an id instead (`fire 561410581`), because one city can
+  hold two heroes with the same name.
+  The goal engine now releases prisoners too, where a `keepcapturedheroes` line says to —
+  see the goal below. Neither route will release a hero of one of your OWN accounts: the
+  fleet register (`fleet_heroes`) remembers every hero the fleet has ever held, and
+  releasing one from the captor's side loses it (EVONY-RULES.md §5).
 - **`mayor <hero>`** (also `appoint`, `setmayorbyname`); **`setmayor att|pol|int`** the hero
   with the most of it (`none` or `remove`: no mayor); **`unmayor`**. The goal engine's
   mayor plan may swap the mayor back on its next tick, as NEAT's does: to make a script's
@@ -809,9 +898,20 @@ recover <hero> [to <city>]
   the medals it asks for. **`rewardheroes`** gives a gold reward (level x 100 each) to every
   hero under 100 loyalty; `$result` is how many.
 - **`levelup <hero|all>`**, **`addpoint <hero> <attribute> <n>`**; **`uplevelheroes`**
-  takes every hero here with the experience up one level, less `nolevelheroes`, points by
-  `heropoints`, else to its best attribute (it needs `config hero:1` or more when the
-  city's goals can be read).
+  takes every hero here with the experience up **one level**, less `nolevelheroes`, points
+  by `heropoints`, else to its best attribute (it needs `config hero:1` or more when the
+  city's goals can be read — a `config hero:1` the script sets itself counts, since
+  2026-09-22). A hero sitting on banked experience needs one call per level, so NEAT's
+  shape is a loop:
+
+  ```
+  config hero:1
+  uplevelheroes
+  repeat 70
+  ```
+
+  For one hero and no goals at all, **`levelup OTTO attack`** with `repeat` does the same
+  and needs no `config` line. Both count `repeat`/`loop` **in total**.
 - **`waithero ken`** / **`waithero any:attack>=200`** waits until one is in this city and
   free. **`waitherolost ken,henry`** waits until one of them is no longer yours.
   **`heroroute`** shows where the traininghero goes from each city.
@@ -832,7 +932,11 @@ recover <hero> [to <city>]
   intel hero. `/heropoints` takes what a `heropoints` goal takes: `/heropoints="att"` puts
   every point into attack, `/heropoints="pol:300,int:100 att"` brings politics to 300 and
   intel to 100 in proportion and the rest into attack, `/heropoints="pol:300 int:100 att"`
-  does them in turn, and `/heropoints=off` leaves the points unspent. A reset costs one Holy
+  does them in turn, and `/heropoints=off` leaves the points unspent. The switch is also
+  read as typed by hand — `/heropoints "pol"`, `/heropoints pol`, `heropoints pol` — and
+  `useheroitem Kush holywater /heropoints="pol"` passes it on. **Name a target** unless you
+  mean the highest stat: a hero whose points are all in its birth stat comes back exactly
+  as it was, and the Holy Water is gone. A reset costs one Holy
   Water per ten levels begun (`ceil(level / 10)`: 10 for a level 100 hero, 25 for level
   250), which is what the game's own button charges. Nothing is sent for a prisoner, a hero
   that is out (marching, returning, farming or defending), a name two heroes share, or when
@@ -944,8 +1048,10 @@ logout now <back> | logout <when> <back>   (@:hh:mm[:ss] clock times, or waits: 
   that one action and sends it again. The unlock lasts the session, as it does in the game.
   The code can also be typed into the Director's account editor. OTTObot never *sets*,
   changes or removes a security code in the game — that is the user's, like holiday.
-- **`completequests`** claims every finished quest (both tabs when nothing else is given,
-  the Routine tab otherwise); `$result` is the list claimed. `title` claims the title
+- **`completequests`** claims every finished quest on demand — the goal of the same name
+  (`config completequests`, README) already claims them on its own, in every city with
+  goals, and the two do not get in each other's way. The command claims both tabs when
+  nothing else is given, the Routine tab otherwise; `$result` is the list claimed. `title` claims the title
   promotions (Knight to Prinzessin), `rank` or `office` the military ones (Lieutenant to
   General). `/mode=routine|daily`, `/type=a,b`, `/name="a b",c` narrow it; `/query=available
   |finished|all` claims nothing and puts that list in `$result`.
@@ -954,11 +1060,14 @@ logout now <back> | logout <when> <back>   (@:hh:mm[:ss] clock times, or waits: 
   went. OTTObot's `cleanreports trade|army|other` deletes every report of that kind.
   **`cleannpcreports`** deletes the attack and return reports for Barbarian cities, and
   every transport report, from every city.
-  Both delete as they read, 50 at a time: read a page, delete what it picks, read it
-  again. A page the game doesn't answer is asked again (3 tries, 10 s apart); a progress
-  line comes every 30 s; Stop ends it between pages, and what went stays gone, so
-  running it again carries on. At two round trips per 50, 450k reports take about two
-  hours.
+  Both delete as they read: read a page, delete what it picks, read it again. The next
+  read is sent WITH the delete (the server works an account's commands in order), and the
+  page grows 50, 100, 200 … up to 1,000 while the server keeps answering in full; a page or
+  delete the server refuses or doesn't answer takes it back to the last size that worked.
+  A page the game doesn't answer is asked again (3 tries, 10 s apart, 30 s to answer); a
+  progress line with the rate comes every 30 s; Stop ends it between pages, and what went
+  stays gone, so running it again carries on. Live on Lord06 (2026-09-20): 700-900 a second,
+  where 50 at a time with a read and a delete one after the other was ~45.
 - **`logout`** (`logout.js`) takes the console off the game. NEAT's forms log out at the
   first time, back at the second, and the **script carries on** from the next line once
   the console is back: `logout 1:00 29:00` (off in a minute, back 29 minutes later),
@@ -1058,6 +1167,8 @@ who <name>
   opening mail or a report marks it read, so a dry run only lists them.
 - None of the alliance, friend, rank or furlough requests had been sent by OTTObot before;
   they are taken from the decompiled client and tested offline, not yet against the server.
+  **Exception, 2026-09-22 17:06:** `quitalliance confirm` and `apply <alliance>` were sent
+  live from 11 accounts (`scripts/join-we3kings.txt`) and all answered `ok`.
 
 ### Informational
 
@@ -1170,6 +1281,7 @@ city = m_city = m_city.cityManager         the run's city
   trainingHeroName TrainingHeroIsHere checkFeastingHallSpace
   enemyArmies friendlyArmies selfArmies myArmies hasEnemyArmies hasEnemyArmiesWithin(sec[, blind]) NumberOfRealAttacks
   fields tradesArray transingTradesArray buyPrice(res) sellPrice(res)
+  transitAmount(res) restingAmount(res[, tradeType])   the sums a loop over those two would make
   buffs hasBuff(t) buff(t) brokenGates
   PRFactor comfortingNeeds(1-4) getConfig(key) CityHasGoalErrors GateControl
   compareByDistanceToCastle(a, b) setCityTimer(key) cityTimingAllowed(key, sec[, test])
@@ -1393,7 +1505,10 @@ a Speaker a line, and a long line is refused rather than split.
 | `innrefresh` with no Hero Hunting | not sent: `buyitem` one first |
 
 **Runaway runs.** A line the server refused waits 200 ms before it is sent again, and its
-10th refusal in a row ends the run (market orders are paced the same way but never end it). Background attacks: one of each kind per target and
+10th refusal in a row ends the run (market orders are paced the same way but never end it).
+A march is not sent at all while the city is short of the troops, resources, rally slot or
+hero it needs — it waits and says so — so a `repeat` of marches no longer grinds against
+the server ([Deployment](#deployment)); `/nowait` gives the old behaviour back. Background attacks: one of each kind per target and
 city, 10 per console, and `capture` / `loyaltyattack` stop after 100 waves, 12 hours or 3
 unreadable reports in a row unless the line says `/waves=N` or `/hours=N`. Autorun is off
 until switched on, and skipped when the console restarts within 10 minutes. A dry run of
@@ -1453,6 +1568,11 @@ What a NEAT operator will notice:
 - **A line the server keeps refusing ends the run** on its 10th refusal in a row (each
   retry waits 200 ms); NEAT would go on. Market orders are the exception: they are paced
   the same way, but a refused `buy`, `sell` or `canceltrade` never ends the run.
+- **A march waits for the city rather than being refused.** NEAT sends it and lets the
+  server say no, so a `repeat` of transports grinds through its count in seconds with
+  nothing sent. Here the line waits for the troops, the resources, the rally slot or the
+  hero, says in red what it is short of, and sends when it can ([Deployment](#deployment)).
+  `/nowait` is NEAT's behaviour, `/wait=<time>` bounds it.
 - **The Town Hall and the Walls are never demolished**, by `demo`, `demosite` or
   `walldefense`, as the game's own client offers no Destruct for them.
 - **`exit` never closes the console**; it is `end`. `stop` pauses until Resume.

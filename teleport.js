@@ -29,7 +29,8 @@ const HINTS = {
   [-77]: 'armies from this city are still out — recall them first',
   [-78]: 'alliance troops are stationed in this city — they have to leave first',
   [-81]: 'that tile is not an empty flat',
-  [-84]: 'that tile is already yours',
+  // seen live 2026-09-22: a flat another player holds (not one of ours) answers -84
+  [-84]: 'someone holds that flat (a preoccupied valley) — capture it first or pick another tile',
   [-90]: 'this city is still on teleport cooldown',
 };
 

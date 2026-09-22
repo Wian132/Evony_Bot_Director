@@ -1,0 +1,385 @@
+---
+name: evony-glitch
+description: Runs the user's Evony market glitch — moving resources or gold between holiday-mode accounts and normal accounts through the market. Use when the user says "glitch gold", "glitch gold through stone/wood/food/iron", "glitch stone", "glitch wood", "glitch food", "glitch iron", "buy back the stone", or asks to start, tune, measure or stop such trading.
+---
+
+# The market glitch
+
+Accounts on **holiday** have their resources put back at every daily maintenance to what
+they held at the previous one. So whatever a holiday account gives away through the
+market comes back tomorrow: trading between holiday accounts and our normal accounts
+**duplicates** it. Speed is the whole game — other players' bots watch for big market
+moves and piggyback (under-cut our offers, over-bid our bids) within minutes.
+
+**Read `EVONY-RULES.md` first** (§0 checklist, §3 market, §4 glitch). This skill says how
+to run a play; that file says what must never happen.
+
+## What the user means
+
+| The user says | Holiday accounts | Normal accounts | Price |
+|---|---|---|---|
+| **"glitch gold, through stone"** (or through wood, food, iron) | **BUY** the resource | **SELL** it to them | high — 150 is the box's maximum, 15b gold per order |
+| **"glitch stone"** (or wood, food, iron) | **SELL** the resource | **BUY** it | low — the user uses 1–5 |
+| "buy back the stone" | SELL the stone they bought during a gold glitch | BUY it back | low (1, then 3) |
+
+"Glitch gold" moves **gold** from the holiday accounts into ours; the resource is only
+the carrier. "Glitch <resource>" moves the **resource** into ours. If a request could
+read either way, ask which direction before starting — getting it backwards gives our
+gold or resources away for real.
+
+Getting an account ready to go on holiday (goals off, queues and marches cleared) is the
+**evony-holiday-prep** skill.
+
+## The accounts (2026-09-20 — check the Director, this changes)
+
+**The roster flipped on 2026-09-20:** the banks on holiday are now **a4 Lord04, a5 Lord05,
+a8 Lord08, a9 Lord09** (holidayed with ~1,373t gold and 400-600b of each resource a town),
+and **a3 Lord03, a6 Lord06, a7 Lord07 come OUT of holiday** that day — they take no
+further part. The other side is **a10 Lord10, a11 Lord11, a12 Lord12, a13 Lord13,
+a14 Lord14, a15 Lord15**. The control file's `holi` list and the small-account list
+must be updated whenever this changes — they decide the safety lines.
+
+## The older roster, for reference
+
+- Holiday: **a3 Lord03, a6 Lord06 (in-game name `lord06`), a7 Lord07**. Lord03
+  keeps nearly everything in one city.
+- Normal, traded with: **a4 Lord04, a5 Lord05, a8 Lord08, a9 Lord09**.
+- Added 2026-09-19 as buyers (the user): **a10 Lord10, a11 Lord11, a12 Lord12,
+  a13 Lord13 (in-game `points`), a14 Lord14, a15 Lord15 (in-game `Lord15`)**. They are
+  short of gold, so the control file lets them keep buying down to **10m** gold (a
+  `keepGold` override by lord name) — they gather cheap resources to sell later. Cities at
+  the soft cap sit out and these carry on.
+- Not part of it: a1 Lord22 (the maintenance monitor), a2 Lord02.
+- A holiday account only works for this once it has been on holiday **across** a
+  maintenance — the Director's "Market glitch ready" column.
+- **Never glitch-trade with an account that is out of holiday.** Once it leaves holiday
+  nothing comes back at maintenance, so every cheap sale or overpriced buy is a real loss.
+  - Check each holiday-side account's status in the Director **before every start**.
+  - Stop the play (`end` in the control file) **before** the user takes any of them out.
+  - The scripts pick a side by lord name and do not check holiday status.
+- **Putting accounts on holiday and taking them off is the user's alone.** Never do either.
+- **The user's plan (told 2026-09-18) — this list goes stale by it:**
+  - Fri 2026-09-18 and Sat 2026-09-19: glitch in full, as now.
+  - **Sun 2026-09-20, before maintenance:** the user puts the four buyers (Lord04, Lord05,
+    Lord08, Lord09) on holiday. **After maintenance**, once resources are restored, the
+    user takes Lord06, Lord07, Lord03 and **Lord16** (not on this computer yet)
+    out. Stop every play on them before that.
+  - Then a day or two of trading while the resources are spread more evenly over those
+    four accounts' cities (the caps below), after which the user puts them on holiday
+    too — then eight holiday accounts sell for a week or two, to other accounts the user
+    brings in closer to the time.
+
+## The scripts
+
+All in `scripts/`. Each side runs one script in every city on console autorun; one
+**control file** is `call`ed by every city on every loop, so **everything in it applies
+live within a second — edit it, never restart to change a price or a limit.**
+
+- **Generic, both directions — prefer this:** `glitch-res-buy.txt` (the side that buys),
+  `glitch-res-sell.txt` (the side that sells), control `glitch-res-control.txt`
+  (`res` = food | wood | stone | iron, `price`, the limits).
+  - "glitch stone": holiday accounts run `glitch-res-sell.txt`, ours run `glitch-res-buy.txt`.
+  - "glitch gold through wood": holiday accounts run `glitch-res-buy.txt`, ours run
+    `glitch-res-sell.txt`; set `res = "wood"` and a high `price`.
+- **The first gold set, stone only:** `glitch-buy.txt` (holiday buys) / `glitch-sell.txt`
+  (ours sell), control `glitch-price.txt`. Buyers are recognised by lord name there.
+- Only one play at a time per control file: two plays at once would share one price.
+- A `call` sees an edit to the control file within a second (it is cached that long).
+  Before 2026-09-22 every `call` leaked memory and the trading consoles crashed out of
+  memory every few hours (EVONY-RULES.md §7) — a console started before that fix still
+  does, so restart it (with the user's OK) before a long play.
+
+Each city places only as many orders as it has free offer slots (10 per city), and
+re-lists our own offers of that resource at the current price when the price changes
+(other offers are never touched).
+
+**The put-back is random per town (2026-09-22 — this replaces "a town sold dry stays dry
+for good").** When a town's put-back works, it comes back EXACTLY to what it held at the
+previous maintenance. But any town, on any day, may fail, and sometimes just one resource
+of it fails; a failed town usually glitches again once restacked. See "Daily bank
+rotation" below. A town holding a sliver still has nothing worth selling. The Director's
+Resources tab flags such towns, and `scripts/glitch-skip.txt` (called by the control file,
+matched by COORDINATES — names repeat) makes a listed town sit the play out while its
+account is on holiday. **Emptied 2026-09-22 12:20 (the user).** It had listed Lord06
+700,120 and 709,112 and Lord07 704,109; those now sell like any other town. To trust one again: on holiday, sell ~10b from
+that town alone and see whether the next maintenance brings it back.
+
+**A seller needs gold for the fee** (0.5% of price x amount, paid when the order is
+placed): at 150 that is 75m gold an order. `glitch-res-sell.txt` sizes the amount to the
+city's gold so a poor city can bootstrap; don't remove that.
+
+## The hard limits (the user's — never loosen without being asked)
+
+- **Runway: every city keeps 10b.** A buying city stops before its gold would go below
+  10b after one more order; a selling city stops before the resource would go below 10b.
+  (`keepGold` / `keepRes`.)
+- **FOOD: never past 950b in a city.** At 1t food a city's food **resets to 0**. A city
+  buying food stops while its food plus a full batch plus every resting bid plus the food
+  still **in transit** to it (bought goods travel) stays under 950b (`foodCap`). This is the one limit whose breach destroys something instantly — if
+  you are unsure, leave food alone and ask.
+- **Room under the caps (the user, 2026-09-22 12:00).** A buying city works out its room
+  every loop: `cap − (held + in transit + its own resting bids)`. For food it also takes
+  `foodCap − …` and uses whichever room is smaller. It places at most `maxOrders =
+  floor(room / 100m)`, so 880b under a 900b cap = 200 more orders, then it stops exactly
+  at the cap. It's live in the control file. Buy scripts started before then don't know
+  `maxOrders`, so they sit out once less than a full batch (10 orders) fits.
+  `glitch-res-buy.txt` sets `batchAware = 1` and uses it from its next start. The user
+  asked for it after seeing 400b incoming on a city: incoming was already counted in the
+  sitout, but a full batch plus resting bids could overshoot the cap by up to ~2b.
+- **Caps — spreading the stock evenly (soft; the user's, 2026-09-18):** a city on OUR side
+  that already holds plenty sits a transfer out — no order, no end — and joins again by
+  itself when the cap goes up. `capRes` (400b): our buyers of the resource, counting what's
+  in transit. `capGold` (40t): our sellers in a gold play. `play = "auto"` tells the two
+  apart by price (50+ = a gold play); set `"res"`/`"gold"` by hand if a price is unusual.
+  0 = no cap. The holiday side is never capped. The user raises them (e.g. to 500b) when
+  everything nears the cap — the aim is 200–300b of each resource and 30–40t gold a city.
+  A city that sits out prints `SITOUT … sitting out` once, and `SITOUT over` when back.
+  The caps work in runs started after 2026-09-18 16:06 (older runs ignore them).
+- **Stale balances:** a busy account's cached figures lag the server. The control file
+  never trusts them past what the run itself has traded, and stops a city after 3
+  "Insufficient resources" refusals in a row. Keep both when editing.
+- **Pacing:** 1 s per loop for every account. The server rate-limits an account that
+  trades very hard: it ignores it, then drops it. **Never restart a rate-limited account.**
+  Lord06 had 3 s from 2026-09-18 after being ignored while trading hard. The user had that
+  removed on 2026-09-22 12:25, since the early trouble was likely a start-up fluke. If
+  Lord06 shows "no reply to trade.newTrade" in bulk again, tell the user; don't quietly
+  slow it.
+- **Runs never end by themselves any more (the user, 2026-09-22 13:17).** Every former
+  `end` in the control file is now a **HOLD**: no order that round, one `HOLD <side>
+  <res> — <why>` log line, `sleep 60`, then the file is read afresh. The reasons are: not
+  on the holi list for a cheap-sell or dear-buy side, 3 "Insufficient" refusals in a row,
+  and food within 2b of 950b. Out of a resource or under its runway, a city sits out
+  every loop as before. So switching resource (Apply in the Trading tab, or an edit here)
+  reaches every run live. Only `end` as the file's first line (the tab's Stop) still ends
+  runs. What still kills a run is a console restart or relog without its autorun, which
+  the tab's watchdog puts back.
+
+## Running a play
+
+1. §0 of EVONY-RULES.md: the accounts are switched on (switching one on is the user's
+   call), each has its own tested proxy, maintenance isn't due, no other session is
+   mid-restart. **Every holiday-side account shows holiday in the Director** and is
+   "Market glitch ready". If one isn't, don't start. Ask.
+2. Set `res`, `price` and check the limits in the control file.
+3. Snapshot first: `node glitch-run.js snap "before" --reset`.
+4. Start — the **buying side first**, so its bids are on the book before the selling:
+   `node glitch-run.js start --buy <ids> --buy-script <file> --sell <ids> --sell-script <file>`
+   This restarts those consoles (it kills whatever they were running) with the script on
+   autorun; every city starts it after login.
+5. Watch: the Director's **Trading** tab (the play, 10-minute returns, 5-minute bars, each
+   account's speed, sit-outs and connection — read off the console logs, refreshed every
+   15 s; trade-monitor.js), or `node glitch-run.js flow` (orders per account over the last two minutes), and
+   `node glitch-run.js snap "<label>"` every 10 minutes or so.
+6. **Switch resource mid-play** (e.g. stone → iron) in the control file: `res = "iron"` and
+   `prevRes = "stone"`. Every city then cancels our offers of the old resource (freeing
+   their slots), restarts its counting, and trades the new one — no restart. A city already
+   under the runway for the new resource just ends.
+   - **Make both edits in ONE write.** The control file is re-read before every batch, so
+     any gap between two edits is a gap the whole fleet acts on. On 2026-09-20 the resource
+     was changed while a stop rule keyed on the old one was still in the file, and six
+     accounts' runs ended inside a minute.
+   - **CLEAN THE REPORTS AT EVERY SWITCH** (the user, 2026-09-20). Every filled order
+     leaves a trade report, so a day of this runs them into the hundreds of thousands. So
+     the switch is: edit the control file, then restart each trading account onto
+     `clean-then-buy.txt` / `clean-then-sell.txt` — the account's FIRST city runs
+     `cleanreports` while its other nine keep trading, then joins them. The switch is the
+     cheapest moment for it: the books are being cancelled and re-listed anyway.
+     Trade reports clean fine beside the trading; ARMY reports silence the whole account
+     for a few minutes (EVONY-RULES.md §7), which is why this is not done mid-play.
+   - The restart is worth having in its own right at a switch: it revives runs that have
+     ended and clears order books that have stalled full. Mind the **autorun gate** —
+     an account restarted under 10 minutes ago runs nothing at all.
+     The Trading tab's **restart gate** (minutes, in the setup; 0 = at once — the user,
+     2026-09-22) replaces that wait for the tab's own starts: it dates the console's last
+     autorun start back past 10 minutes just before it restarts it. Starts by hand
+     (`glitch-run.js start`) still meet the console's 10 minutes.
+   The user's switch rules (2026-09-18): check every 30 min; switch when an interval's
+   return is under 25%, or once 6 or fewer holiday cities hold more than 10b of the
+   resource. Count that from the LIVE figures: relog the holiday accounts (restart with the
+   same script) — each city's first line is `FRESHSTART <side> food … wood … stone … iron …`
+   — never from the cached ones. Stock sits in a few cities per account.
+7. **Tune live** in the control file: the price, the limits. **Stop** every city of a play:
+   put `end` as the control file's first line — every run ends on its next loop — then
+   put the file back as it was.
+
+## A day's rotation (the user, 2026-09-19)
+
+Once the holiday gold runs out after maintenance: FOOD (0.01 → 0.1 → 1), then WOOD, IRON,
+STONE (start at 1) — each until its holiday sellers or our buyers run dry. Food is bought
+by every normal account incl. the small new ones; the rest only by the rich ones (the
+control file ends the small ones' runs on anything but food). Late at night the small
+accounts SELL their food to the holiday accounts at 150 so they have gold for the next
+day. Stop everything (`end`) before a maintenance after which the user changes holidays.
+The user's price ladder (14:20): every resource starts at **0.01**; a 10-minute reading
+under 40% → 0.1 → 0.5 → 1 (up only). On 2026-09-19 food went 0.01 (28–34%) → 0.1 (61–73%).
+Iron is what the fleet lacks most. To use Fleet Feet on the transports at the same time, restart the
+four buyers onto `fleetfeet-then-buy.txt` (two each on the next account, then the buy loop).
+A switch writes the control file first and then restarts buyers, then sellers, with
+`glitch-run.js start` (ended runs don't revive by themselves).
+
+## Running the day (the user, 2026-09-20)
+
+The aim is to **move as much off the holiday accounts as possible each day**. So:
+
+- **A side that stops right after a price step is not proof the resource is done** — relog
+  one account and read FRESHSTART (2026-09-22: Lord04 "finished" with 200b wood in 4 cities;
+  the tally bug is fixed in the control file, but verify).
+- **Keep the watchdog's lists to accounts that can trade this play.** An account out of
+  the resource, or whose console fails every login, gets restarted every 12 minutes for
+  nothing — drop it from `--buy`/`--sell` (2026-09-22: Lord15, Lord16).
+
+- **War Town 05:00–10:00 on every trading account** (the user, 2026-09-22: marches take a
+  lot of time). Each of a2–a16 carries an APPEND goal layer `config wartown:1` +
+  `wartownpolicy 05:00 10:00` (goals table, cityKey 'append'). Lord02 (a2) gets the War
+  Town window too (the user, 2026-09-22) — but it is NOT a trading account. In the window no NPC farming, valley runs or
+  transports leave, and marches heading out are recalled, so they are home for the 08:15
+  holiday prep, the 09:00 maintenance and the gold pass. A NEW trading account needs the
+  same append row. Check it took: `engine_state` shows `war.wartown.on: true`.
+- **Gold moves TWICE a day**: right after maintenance, and again before the next one. Their
+  gold refills through the day as we buy their resources up, so the second pass collects
+  what the first could not.
+- **Resource plays: buyers keep only 100m gold** (the user, 2026-09-22 10:00) — at 0.001–0.1
+  an order costs 0.1–10m gold, so a 10b runway only shut the poorer cities out. The six
+  small accounts keep 10m. Food starts at **0.001** that day (the user, expecting a lower
+  return, so the low-gold cities get some); food cap 600b throughout.
+- **Gold cap 50t a city** (the user, 2026-09-22 09:37). With six rich banks (~1,100t) the
+  25t cap parked our sellers within a minute of the gold pass; check SITOUT lines before
+  blaming the fleet when the return drops.
+- **Gold price: start at 150 and walk it DOWN** — 150 → 140 → 130 … when the return falls.
+  150 is the box's maximum and the most gold an order carries, but it is also the most
+  attractive bid on the market, so rival sellers pile into it. A lower bid is less worth
+  their while and keeps more of it for us. `res-ladder.js --mode gold` does this.
+- **Resources in between**, one at a time, each on its own ladder
+  (`res-ladder.js --res <name>`): over 80% capture step cheaper, under 60% step dearer.
+- **The Trading tab's ladder is the user's to configure** (2026-09-22):
+  - Setup → price ladder: resource rungs and gold rungs (cheap → dear; the default
+    resource rungs start at 0.001), the step-our-way / step-back shares, and the reading
+    interval.
+  - The on/off switch and every setting apply to a running play; no Stop/Start needed.
+  - It moves only a price that is one of its rungs, one rung at a time, never past either
+    end.
+  - It follows a live resource switch instead of standing down.
+  - The user's price is the user's: the ladder won't jump onto a rung from an off-ladder
+    price.
+- **Watch the volume every 30 minutes** (`play-manager.js`). A fall of **75% or more** is
+  the trigger to investigate — never to act.
+
+### When the volume falls: NEVER decide on a cached figure
+
+This is the mistake to design against. The Director's and the snapshots' figures for a
+holiday account are **cached and lag badly** on a busy account, and a dry resource and a
+dead fleet look identical from the outside. Twice on 2026-09-20 the wrong call was made
+from stale numbers. The order is:
+
+1. **Which accounts have gone quiet?** An account whose last log line is a `[conn]` line,
+   or that has placed nothing for 10 minutes, is dead — restart it. That alone explains
+   most falls. (2026-09-20: Lord05 dead 101 minutes; three banks idle after a refresh.)
+2. **Relog ONE holiday account** and read what it prints on login — `glitch-res-sell.txt`
+   echoes `FRESHSTART sell food … wood … stone … iron …` per city from a fresh session.
+   That is the only figure to judge on. One account is enough to tell whether the resource
+   is gone.
+3. **Then decide.** Under ~10b a city left (the runway) the resource really is finished —
+   move to the next one, with the switch procedure above (one write, then the
+   clean-then-* restart). Otherwise the stock is fine and the fall is the fleet.
+
+## Daily bank rotation (the user, 2026-09-22)
+
+**The put-back is random per town and even per resource** (EVONY-RULES.md §4). A normal
+day brings back 8–9 of a bank's 10 towns in full; after 09-20 it was 1, 2, 5–6 and 9 of
+10 on the four banks. A town that failed usually glitches again once restacked. So the
+banks are rotated, and choosing the rotation is part of every day:
+
+1. **Every morning after maintenance: measure each bank's put-back, per town, per
+   resource**, from a FRESH relog (FRESHSTART lines), against what it held going into
+   maintenance (the 08:30 morning record). Write the per-town result down — which towns
+   came back, which resources did not — in GLITCH-LEDGER.md. This is how we learn whether
+   failures follow any pattern.
+2. **Before the next maintenance, propose the rotation to the user:**
+   - **INTO holiday:** the normal accounts holding the MOST resources (restocked by the
+     day's buying) — those give the most to trade tomorrow. They must be on holiday
+     *before* maintenance to count tomorrow.
+   - **OUT of holiday** (after maintenance): the banks whose put-back failed worst — they
+     get restocked by trading as normal accounts, then go back in a day or two later.
+   - Holiday in/out is **the user's own click** — propose, never do it. Before an account
+     goes in: stop its play runs and run evony-holiday-prep (goals/queues/marches) **at
+     08:15** — the user: 08:30 is already too late for a 09:00 maintenance. Before
+     one comes out: `end` every play it is in.
+3. **Update the control file's `holi` list** (in-game lord names) the moment the user
+   changes a holiday — it guards the SAFETY lines — and swap the sides in glitch-run
+   starts, the watchdog, `res-ladder.js` and `play-manager.js` (their BANKS/OURS lists).
+4. Don't read a failed town as dead: `glitch-skip.txt` entries are a choice to revisit
+   after the town is restacked, not a permanent rule.
+
+The plan on 2026-09-22: **Lord06, Lord07, Lord03, Lord16 and Lord14 go INTO
+holiday before the 09:00 maintenance**; **after it Lord04, Lord08 and Lord09 come OUT**
+(put-backs on 09-21: 4/10, 2/10, 1/10 — a failed town sits drained at ~10b, and the
+put-back can only return it to that, so Lord04 would bank with just 4 towns; restack it
+instead). So from after TODAY's maintenance: 6 banks (Lord05 + those five) against Lord04,
+Lord08, Lord09, Lord10, Lord11, Lord12, Lord13, Lord15 — plus 3–5 more buyer
+accounts the user brings in during the day (port them to the hub). The rotation's balance counts from the maintenance they go in before, not the
+day after. Accounts going in stock up first: food cap 800b for them vs 600b for the rest.
+
+## Measuring
+
+- **Capture / return** = the share of the holiday side's trading that lands with our
+  accounts rather than other players'. **Count orders, not balances**: the holiday side's
+  placed orders (in `flow`) against ours, over the same window. Balances mislead both
+  ways: a busy holiday account's snapshot can be stale, and **goods bought on the market
+  travel to the city** — the gold leaves when the order fills, the goods land minutes
+  later — so a buying account's resource figure lags what it has really bought.
+  A buyer's GOLD drop (at a known price) is a good cross-check: 100.5m per filled
+  99,999,999 order at price 1.
+- Seen 2026-09-18: gold glitch at 150 — ~70% in its first minute, ~76% right after
+  maintenance (other bots still loading), ~30% once they're back, **0% once undercut**. When
+  our offers stop filling, the holiday side is only feeding other players: tell the user
+  and pause or reprice (they chose to reprice, 150 → 100).
+- The user's rule for buying back stone: start at 1, measure over 3 snapshots 10 minutes
+  apart, keep 1 if at least 50% returns, otherwise go to 3.
+- **Record every run in the ledger** — the user wants the pattern of how the other traders
+  react, over many days. After a run (or every half hour of a long one):
+  `node glitch-run.js ledger --holiday <ids> --ours <ids> --from <hh:mm> --to <hh:mm> --record "run N: …; the events that bend the numbers"`
+  appends 5-minute buckets to `glitch-ledger.csv`; then add the run's events and anything
+  new about the competition to `GLITCH-LEDGER.md` (its "What the data shows" and
+  "Questions" sections). Over 100% return means other players traded into our orders too.
+
+## After maintenance
+
+**Restart the play fresh right after maintenance** (the user, 2026-09-19: "right after maint
+do the gold xfer as soon as possible"). Runs that carried on through maintenance still count
+the pre-maintenance balances (`startGold`/`startRes`) and end early; a fresh
+`glitch-run.js start` counts the restored ones. Trigger: a holiday account's settings row
+`maintEnded:<id>` (written when it's back). The consoles come back on the announced end
+plus however long the port takes to answer — check the log for `port is open — login
+attempt N after maintenance`.
+
+The user's experience: other players' bots take 15–30 minutes to load after maintenance.
+On 2026-09-18 capture fell from ~80–90% to ~44% within 5 minutes — see the ledger. Either
+way the first minutes are the best of the day. Since 2026-09-20 **every account comes back
+on the clock**: stand down five minutes before the announced start, back at the announced
+end, then a free port check every 30 s until the game answers. The monitor/follower race
+is off (`OTTO_MAINT_RACE=1` brings it back) — it bought no speed and killed Lord22's
+proxy. Expect the fleet in within a minute of the server's real return, not instantly.
+Runs that had ended stay ended: they need a new start
+(`glitch-run.js start`) when the holiday accounts' gold or resources are back.
+
+### If the accounts don't come back after maintenance
+
+Check the **process and its listening port**, not the log's last line — a console waiting
+through a maintenance writes nothing (fixed 2026-09-20, but not live until it restarts):
+
+    Get-NetTCPConnection -State Listen | ? OwningProcess -in (Get-Process node).Id
+
+If the consoles are alive but out, read `maintOver:<server>` and `maintWindow:<server>` in
+the **org's** settings. If `maintOver` is older than the window's start it is a stale
+signal from a previous day and every follower is stuck on it — which is what happened on
+2026-09-19 and 2026-09-20. Set `maintOver:<server>` to `Date.now()` and they all log in
+within ~10 s, no restart. Only once another account is verifiably logged in.
+
+Then leave them alone: an account that has just logged back in and is restarted a few
+seconds later answers `no reply to server.LoginResponse` and drops onto the 60s/120s ladder.
+
+## Keep it true
+
+When a play teaches something new — a capture figure, a price that worked or didn't, a
+limit, a failure — add it to `EVONY-RULES.md` (dated, how observed) and, if it changes how
+to run a play, to this skill.

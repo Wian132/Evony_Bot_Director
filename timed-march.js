@@ -22,11 +22,16 @@
 //   * a march that misses is recalled at once, while it has only been out a few
 //     seconds. The miss is learned: a steady network lead, or a speed factor for
 //     that city and kind of target. Then it is sent again, up to MAX_RETRIES.
+//   * a line may name its own window instead (`/within=500ms`, the user's
+//     timed waves, 2026-09-22): a landing within that much of the aimed moment,
+//     either side, is good; anything further out is recalled and sent again,
+//     up to WITHIN_TRIES sends or until there is no time left to make it.
 const C = require('./constants');
 
 const TOL_FIRST_MS = 300;   // the first march for a moment, against the aimed time
 const TOL_MS = 200;         // every later one, against the marches already due
 const MAX_RETRIES = 2;
+const WITHIN_TRIES = 10;    // sends a /within= line may make before it gives up
 const SPIN_MS = 30;
 const SEND_MARGIN_MS = 50;  // time to get the send out after planning it
 
@@ -107,6 +112,8 @@ async function speedParams(game, castle) {
   }
 }
 
+const serverMarchMs = (ms) => Math.floor(ms / 1000) * 1000;
+
 // When to send, and with how much camp, so the march lands at aimMs.
 function plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key }) {
   const m = model(game);
@@ -119,7 +126,10 @@ function plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key }
   });
   if (base === null) throw new Error('cannot work out the march time for those troops');
   const scale = m.scale.get(key) || 1;
-  const march = base * scale;
+  // The server counts a march in WHOLE seconds, the formula's time rounded down:
+  // 21 of Lord02's marches read that way, 2026-09-22 (marchcheck). Planning
+  // with the fraction landed every timed march up to a second early.
+  const march = serverMarchMs(base * scale);
   const slack = aimMs - now - march - m.leadMs - SEND_MARGIN_MS;
   if (slack < 0) {
     throw new Error(`too late: the march takes ${dur(march)} but ${clock(aimMs)} is only ${dur(aimMs - now)} away`);
@@ -201,9 +211,16 @@ const spread = (list) => (list.length < 2 ? 0 : Math.max(...list.map((p) => p.la
 // the aimed time; every later one against the marches already accepted, since
 // being together is what counts. A server that stamps whole seconds only has
 // the second to go by.
-function judge(landing, aimMs, peers) {
+// With a window of its own (tolMs), only the aimed moment counts: that is what
+// the user times waves against. A whole-second stamp can only be told to the
+// second, so it passes when that second can hold the window.
+function judge(landing, aimMs, peers, tolMs = null) {
   const sec = (x) => Math.floor(x / 1000);
   const whole = landing % 1000 === 0;
+  if (tolMs !== null) {
+    const off = landing - aimMs;
+    return { ok: Math.abs(off) <= (whole ? Math.max(tolMs, 999) : tolMs), off, anchor: null, whole, tolMs };
+  }
   const anchor = peers.length
     ? peers.reduce((b, p) => (Math.abs(p.landing - aimMs) < Math.abs(b.landing - aimMs) ? p : b)).landing
     : null;
@@ -244,6 +261,38 @@ function learn(game, key, pl, err, whole, { relief = 0, cls = null } = {}) {
   return null;
 }
 
+// A timed wave's miss, split by the server's own startTime (when it took the
+// send) into the two things that make one: lag, the send reaching or being
+// handled late (or early); and dur, the server's march time against the
+// formula's. -> null when the stamp has no usable startTime.
+function splitMiss(army, landing, pl) {
+  let start = Number(army.startTime);
+  if (!Number.isFinite(start) || start <= 0) return null;
+  if (start < 1e11) start *= 1000;
+  const lag = start - (pl.sendAt + pl.leadMs);
+  const dur = landing - start - pl.restTimeSec * 1000 - pl.march;
+  // a reading that makes no sense (a whole-second stamp, a misread camp) teaches nothing
+  if (Math.abs(lag) > 60000 || Math.abs(dur) > pl.march) return null;
+  return { lag, dur };
+}
+
+// Learn from a split miss. The lead moves half way toward the lag but never more
+// than LEAD_STEP_MS a wave: a steady network delay is learned in a few waves,
+// and one of the server's lag spikes (1-3 s, the user, 2026-09-22) cannot throw
+// every later wave the other way. Only a march time the SERVER itself counts
+// differently rescales this city's marches.
+const LEAD_STEP_MS = 200;
+function learnSplit(game, key, pl, { lag, dur }) {
+  const m = model(game);
+  m.leadMs = Math.max(0, Math.min(2000, Math.round(m.leadMs + Math.max(-LEAD_STEP_MS, Math.min(LEAD_STEP_MS, lag / 2)))));
+  if (Math.abs(dur) > 1000) {
+    const s = (m.scale.get(key) || 1) * ((pl.march + dur) / pl.march);
+    m.scale.set(key, s);
+    return `learned: the server's march time is ${(s * 100).toFixed(2)}% of the client's formula for them — every march from this city to this kind of tile uses that now`;
+  }
+  return null;
+}
+
 async function waitHome(game, armyId, stopped, timeoutMs = 180000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -259,7 +308,8 @@ async function waitHome(game, armyId, stopped, timeoutMs = 180000) {
 //   { sent: true, r, bean, landing }   kept (landing null if it could not be checked)
 //   { sent: false, r?, why }           refused, recalled, stopped or given up
 async function send({ game, castle, construct = false, from, target, targetPoint, toCity = null,
-  troopKeys, aimMs, makeBean, log, stopped = () => false, dryRun = false, checkMs = 5000 }) {
+  troopKeys, aimMs, makeBean, log, stopped = () => false, dryRun = false, checkMs = 5000, tolMs = null, tries = null }) {
+  const sends = tries || (tolMs !== null ? WITHIN_TRIES : MAX_RETRIES + 1);
   const cid = game.castleId(castle);
   const params = await speedParams(game, castle);
   const cls = await targetClass(game, { targetPoint, toCity, construct });
@@ -281,8 +331,14 @@ async function send({ game, castle, construct = false, from, target, targetPoint
   log(`  ${kind}: ${relief} · march skill ${params.marchSkill}, drive skill ${params.driveSkill}`
     + (params.fallback ? ' (troop params unavailable — using the login values)' : ''));
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const pl = plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key });
+  if (tolMs !== null) log(`  window: ${clock(aimMs - tolMs)} to ${clock(aimMs + tolMs)} (±${tolMs} ms) — a landing outside it is recalled and sent again, up to ${sends} sends`);
+  for (let attempt = 0; attempt < sends; attempt++) {
+    let pl;
+    try { pl = plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key }); } catch (e) {
+      if (!attempt) throw e;
+      log(`  cannot send it again: ${e.message}`);
+      return { sent: false, why: 'too late' };
+    }
     log(`  march ${dur(pl.march)}${pl.scale !== 1 ? ` (x${pl.scale.toFixed(4)} learned)` : ''}, camp ${dur(pl.restTimeSec * 1000)},`
       + ` send in ${((pl.sendAt - game.now()) / 1000).toFixed(3)}s, ${pl.leadMs} ms ahead for the network`);
     const bean = makeBean(pl.restTimeSec);
@@ -312,8 +368,10 @@ async function send({ game, castle, construct = false, from, target, targetPoint
       return { sent: true, r, bean, landing: null, odd: true };
     }
     const peers = moment(game, aimMs).filter((p) => p.armyId !== army.armyId);
-    const j = judge(landing, aimMs, peers);
-    const lesson = learn(game, key, pl, err, j.whole, { relief: params.relief, cls });
+    const j = judge(landing, aimMs, peers, tolMs);
+    const split = tolMs !== null ? splitMiss(army, landing, pl) : null;
+    if (split) log(`  server took it ${signed(split.lag)} from the aimed send, and its march time is ${signed(split.dur)} from the formula`);
+    const lesson = split ? learnSplit(game, key, pl, split) : learn(game, key, pl, err, j.whole, { relief: params.relief, cls });
     if (j.ok) {
       record(aimMs, { armyId: army.armyId, landing, castleId: cid, fieldId: targetPoint });
       const all = moment(game, aimMs);
@@ -323,7 +381,7 @@ async function send({ game, castle, construct = false, from, target, targetPoint
     }
 
     log(`  server: lands ${clock(landing)} (${signed(landing - aimMs)}) — MISSED:`
-      + (j.anchor === null ? ' not on the aimed moment' : ` not with the ${peers.length} already due at ${clock(j.anchor)}`));
+      + (tolMs !== null ? ` outside ±${tolMs} ms` : j.anchor === null ? ' not on the aimed moment' : ` not with the ${peers.length} already due at ${clock(j.anchor)}`));
     if (lesson) log('  ' + lesson);
     let rr;
     try { rr = await game.recallArmy(cid, army.armyId); } catch (e) { rr = { ok: 0, errorMsg: e.message }; }
@@ -336,11 +394,11 @@ async function send({ game, castle, construct = false, from, target, targetPoint
       log(stopped() ? '  stopped — it is on its way home and is not sent again' : '  it is not home yet, so it is not sent again');
       return { sent: false, why: stopped() ? 'stopped' : 'recalled' };
     }
-    if (attempt === MAX_RETRIES) {
-      log(`  gave up after ${MAX_RETRIES + 1} tries — this line did not land`);
+    if (attempt === sends - 1) {
+      log(`  gave up after ${sends} tries — this line did not land`);
       return { sent: false, why: 'missed' };
     }
-    log(`  home — sending it again (try ${attempt + 2} of ${MAX_RETRIES + 1})`);
+    log(`  home — sending it again (try ${attempt + 2} of ${sends})`);
   }
   return { sent: false, why: 'missed' };
 }
@@ -356,8 +414,13 @@ async function check(game, log) {
   if (!out.length) { log('  no marches out to compare against — send one (a scout will do) and run this again'); return 0; }
   const ms = (v) => (Number(v) < 1e11 ? Number(v) * 1000 : Number(v));
   const MISSIONS = Object.fromEntries(Object.entries(C.MISSION).map(([k, v]) => [v, k]));
-  let exact = 0, near = 0, shown = 0;
+  let exact = 0, near = 0, shown = 0, camping = 0;
   for (const a of out) {
+    // A march's restTime counts down from the send (Lord02, 2026-09-22: 331 s sent,
+    // ~225 s read 108 s later), so once it has moved, reachTime − startTime − restTime is
+    // no march time at all. Only a camp still as sent can be taken off.
+    const elapsed = game.now() - ms(a.startTime);
+    if (Number(a.restTime) > 0 && elapsed > 3000) { camping++; continue; }
     const castle = (game.castles || []).find((c) => Number(c.fieldId) === Number(a.startFieldId));
     if (!castle) continue;
     const params = await speedParams(game, castle);
@@ -367,8 +430,8 @@ async function check(game, log) {
     const server = ms(a.reachTime) - start - (Number(a.restTime) || 0) * 1000;
     const from = C.fieldIdToCoords(Number(a.startFieldId)), to = C.fieldIdToCoords(Number(a.targetFieldId));
     const base = { marchSkill: params.marchSkill, driveSkill: params.driveSkill, castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now: start };
-    const plain = C.marchTimeMs(from, to, keys, base);
-    const relieved = Number(params.relief) > 1 ? C.marchTimeMs(from, to, keys, { ...base, relief: params.relief }) : null;
+    const plain = serverMarchMs(C.marchTimeMs(from, to, keys, base));
+    const relieved = Number(params.relief) > 1 ? serverMarchMs(C.marchTimeMs(from, to, keys, { ...base, relief: params.relief })) : null;
     const useRelief = relieved !== null && Math.abs(server - relieved) < Math.abs(server - plain);
     const formula = useRelief ? relieved : plain;
     const off = server - formula;
@@ -378,6 +441,7 @@ async function check(game, log) {
       + ` server ${dur(server)}  formula ${dur(formula)}${relieved !== null ? (useRelief ? ' with' : ' without') + ` relief x${params.relief}` : ''}`
       + `  ${signed(off)}`);
   }
+  if (camping) log(`  ${camping} march${camping === 1 ? '' : 'es'} with camp time left out: the server counts a march's camp down from the send, so its march time can't be read back`);
   if (!shown) { log('  none of the marches out came from a city of this account'); return 0; }
   log(`  ${exact} of ${shown} to the millisecond, ${near} within a second, ${shown - exact - near} further out`
     + (exact === shown ? ' — the formula is the server\'s' : ''));
@@ -385,6 +449,6 @@ async function check(game, log) {
 }
 
 module.exports = {
-  send, check, plan, judge, learn, landingOf, targetClass, moment, record, spread, model, clock, dur, signed, tz,
-  MOMENTS, RELIEF_CLASSES, TOL_MS, TOL_FIRST_MS, MAX_RETRIES,
+  send, check, plan, serverMarchMs, judge, learn, learnSplit, splitMiss, landingOf, targetClass, moment, record, spread, model, clock, dur, signed, tz,
+  MOMENTS, RELIEF_CLASSES, TOL_MS, TOL_FIRST_MS, MAX_RETRIES, WITHIN_TRIES,
 };

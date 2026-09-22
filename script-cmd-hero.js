@@ -136,6 +136,11 @@ function heroNamed(castle, name) {
   const heros = (castle && castle.heros) || [];
   const want = lc(name);
   if (!want) return null;
+  // a hero id picks exactly that hero — the safe way when names repeat
+  if (/^\d+$/.test(want)) {
+    const byId = heros.find((h) => String(h.id) === want);
+    if (byId) return byId;
+  }
   const hit = heros.find((h) => lc(h.name) === want);
   if (hit || !want.startsWith('!')) return hit || null;
   return heros.find((h) => lc(h.name) === want.slice(1)) || null;
@@ -226,14 +231,29 @@ function hireCheck(game, castle, h, posCount) {
 }
 
 // ------------------------------------------------------------------ the city's goals
-// As goals.js reads them, or null when this run has no goal store (tests, a
-// bare run). goals.js is loaded only here.
+// The goals AS THEY ARE RUNNING: the city's own text, the global prepend and
+// append, and the script's own goal layer on top — goallayers.runningGoals, the
+// same reading script-cmd-deploy makes. Reading only the saved text (what this
+// did until 2026-09-22) meant a script that set `config hero:1` itself was still
+// refused by uplevelheroes, because the line it had just written was in the
+// script layer and never in the saved goals. null only when this run has no
+// goal store at all (tests, a bare run). goals.js is loaded only here.
 function cityGoals(env, castle) {
   const s = env.session;
   const store = s && s.org && s.org.goals;
-  if (!store || typeof store.own !== 'function') return null;
+  if (!store) return null;
+  const acct = s.account && s.account.id;
   try {
-    const entry = store.own(s.account && s.account.id, env.game.castleId(castle), castle.name, 'goal');
+    if (typeof store.layers === 'function') {
+      const GL = require('./goallayers');
+      if (typeof GL.runningGoals === 'function') {
+        // no layer at all still means "goals readable, nothing set", as before
+        return GL.runningGoals(store, acct, env.game.castleId(castle), castle.name)
+          || { goals: [], config: {}, errors: [] };
+      }
+    }
+    if (typeof store.own !== 'function') return null;
+    const entry = store.own(acct, env.game.castleId(castle), castle.name, 'goal');
     if (!entry || !String(entry.src || '').trim()) return { goals: [], config: {}, errors: [] };
     return require('./goals').parseGoals(entry.src);
   } catch { return null; }
@@ -301,6 +321,15 @@ async function runDismiss(a, env) {
   if (!a.all) {
     const h = heroNamed(castle, a.name);
     if (!h) return miss(env, `no hero named "${a.name}" in ${castle.name}`);
+    // Never guess between heroes that share a name: a big hero can share its name
+    // with a fresh one (the user, 2026-09-18). Given by id, it is exactly that hero.
+    if (String(h.id) !== lc(a.name).replace(/^!/, '')) {
+      const same = ((castle && castle.heros) || []).filter((x) => lc(x.name) === lc(h.name));
+      if (same.length > 1) {
+        return miss(env, `not sent: ${same.length} heroes in ${castle.name} are named ${h.name} `
+          + `(${same.map((x) => `id ${x.id} L${x.level}`).join(', ')}) — ${a.cmd} one by its id`);
+      }
+    }
     const no = refusal(a.cmd, h) || busyWhy(env, h);
     if (no) return miss(env, `not sent: ${no}`);
     env.log(`  ${a.cmd} ${h.name} (id ${h.id}, L${h.level})`);
@@ -876,8 +905,13 @@ const commands = {
   useheroitem: {
     aliases: ['heroitem'],
     usage: 'useheroitem <hero> <item> [repeat <n>]',
-    parse(args, { tok }) {
+    parse(args, { line, tok }) {
       const HI = require('./heroitems');
+      // useheroitem <hero> holy water /heropoints="pol" — the switch is waterhero's
+      const WH = require('./water-hero');
+      const sw = line.match(WH.SWITCH);
+      const hp = tok.findIndex((t, i) => i > 1 && /^\/?heropoints\b/i.test(String(t)));
+      if (sw && hp !== -1) tok = tok.slice(0, hp);
       if (!tok[1] || !tok[2]) {
         throw new Error('useheroitem: usage  useheroitem <hero> <item> [repeat <n>]  |  items: '
           + Object.values(HI.ALL).map((d) => d.names[0]).join(', ') + ', or a medal: nation medal …');
@@ -896,10 +930,11 @@ const commands = {
       }
       if (times < 1 || times > 500) throw new Error('useheroitem: repeat must be between 1 and 500');
       // The client resets through hero.resetPoint, never hero.useItem.
-      if (itemId === require('./water-hero').ITEM_ID) {
+      if (itemId === WH.ITEM_ID) {
         if (times !== 1) throw new Error('useheroitem: Holy Water resets a hero once — a second one only costs more. Use  waterhero <hero>');
-        return { cmd: 'waterhero', ...require('./water-hero').parseArgs(tok[1]) };
+        return { cmd: 'waterhero', ...WH.parseArgs(sw && hp !== -1 ? `${tok[1]} ${line.slice(sw.index)}` : tok[1]) };
       }
+      if (sw && hp !== -1) throw new Error('useheroitem: /heropoints only goes with Holy Water');
       return { cmd: 'useheroitem', heroName: tok[1], itemId, times };
     },
     async run(a, env) {

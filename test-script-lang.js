@@ -535,6 +535,14 @@ t('call runs another script with the caller\'s true variables, not its %vars%', 
   const tv = await runSrc('who = "me"\ncall TrueVar', { loadScript });
   assert.deepStrictEqual(tv.echoed, ['me'], 'a true variable does reach %who%');
 });
+t('call: a loop calling one file every pass runs what the file says now', async () => {
+  // it is parsed once while it stays the same (it used to be re-parsed and kept
+  // every pass, which ran a trading console out of memory), and an edit lands
+  let n = 0;
+  const loadScript = async () => (++n > 2 ? 'echo "v2"' : 'echo "v1"');
+  const r = await runSrc('k = 0\nlabel top\ncall "ctl"\nk = k + 1\nif k < 4 goto top', { loadScript });
+  assert.deepStrictEqual(r.echoed, ['v1', 'v1', 'v2', 'v2']);
+});
 t('call: an unknown script and a missing hook are clear errors', async () => {
   const r = await runSrc('call "Nope"\necho $error', { loadScript: async () => null });
   assert.deepStrictEqual(r.echoed.slice(-1), ['there is no script "Nope" to call']);

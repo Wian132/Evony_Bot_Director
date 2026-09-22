@@ -179,15 +179,58 @@ t('AUTOSCRIPTS and RUNSCRIPT, else CmdParms.txt in NEAT\'s forms; OFF unless swi
   fs.writeFileSync(f, '-autologin 1\r\n-autoscripts 0\r\n/runscript:"My Items.txt"\r\n-minimize=1\r\n');
   const parms = SC.readCmdParms(f);
   assert.deepStrictEqual(parms, { autologin: '1', autoscripts: '0', runscript: 'My Items.txt', minimize: '1' });
-  assert.deepStrictEqual(SC.autorunSettings({}, parms), { on: false, runscript: 'My Items.txt' });
-  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: 'yes', RUNSCRIPT: 'a.txt' }, parms), { on: true, runscript: 'a.txt' });
-  assert.deepStrictEqual(SC.autorunSettings({}, {}), { on: false, runscript: null }, 'nothing said: off');
-  assert.deepStrictEqual(SC.autorunSettings({}, { autoscripts: '1' }), { on: true, runscript: null }, 'NEAT\'s -autoscripts 1');
-  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: '1' }, {}), { on: true, runscript: null });
-  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: '0' }, { autoscripts: '1' }), { on: false, runscript: null }, 'the environment wins');
+  assert.deepStrictEqual(SC.autorunSettings({}, parms), { on: false, runscript: 'My Items.txt', from: 'CmdParms.txt' });
+  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: 'yes', RUNSCRIPT: 'a.txt' }, parms), { on: true, runscript: 'a.txt', from: 'AUTOSCRIPTS' });
+  assert.deepStrictEqual(SC.autorunSettings({}, {}), { on: false, runscript: null, from: null }, 'nothing said: off');
+  assert.deepStrictEqual(SC.autorunSettings({}, { autoscripts: '1' }), { on: true, runscript: null, from: 'CmdParms.txt' }, 'NEAT\'s -autoscripts 1');
+  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: '1' }, {}), { on: true, runscript: null, from: 'AUTOSCRIPTS' });
+  assert.deepStrictEqual(SC.autorunSettings({ AUTOSCRIPTS: '0' }, { autoscripts: '1' }), { on: false, runscript: null, from: 'AUTOSCRIPTS' }, 'the environment wins');
   for (const v of ['1', 'on', 'TRUE', 'yes']) assert.ok(SC.switchOn(v), v);
   for (const v of ['0', 'off', 'no', '2', '']) assert.ok(!SC.switchOn(v), v);
   assert.deepStrictEqual(SC.readCmdParms(path.join(TMP, 'none.txt')), {});
+});
+t('start-up parameters: NEAT\'s every form, several to a line, comments skipped; the command line wins over CmdParms.txt', () => {
+  assert.deepStrictEqual(SC.parseCmdParms('-u neat@x.com -password abc -s 123 -title !NeatBotRox'),
+    { u: 'neat@x.com', password: 'abc', s: '123', title: '!NeatBotRox' }, 'a whole command line on one line');
+  assert.deepStrictEqual(SC.parseCmdParms('-a 1\n-b=2\n-c:3\n/d:4\n/e=5\n/f 6\n# -g 7\n// -h 8\n-runscript "My Script.txt"\n-flag'),
+    { a: '1', b: '2', c: '3', d: '4', e: '5', f: '6', runscript: 'My Script.txt', flag: '' });
+  assert.deepStrictEqual(SC.parseCmdParms('-proxy http://1.2.3.4:3128 -autoscripts 0 -AUTOSCRIPTS 1'),
+    { proxy: 'http://1.2.3.4:3128', autoscripts: '1' }, 'the last one wins');
+  assert.deepStrictEqual(SC.parseCmdParms(['-autoscripts', '1', '-runscript', 'My Items.txt']),
+    { autoscripts: '1', runscript: 'My Items.txt' }, 'argv, already split');
+  const stray = [];
+  SC.parseCmdParms('autoscripts 1 -runscript My Items.txt', stray);
+  assert.deepStrictEqual(stray, ['autoscripts', '1', 'Items.txt']);
+  const f = path.join(TMP, 'parms2.txt');
+  fs.writeFileSync(f, '-autoscripts 0\r\n-runscript FromFile.txt\r\n-teleport tuscany\r\n');
+  const args = SC.parseCmdParms(['-autoscripts', '1']);
+  const parms = SC.readCmdParms(f, args);
+  assert.deepStrictEqual(parms, { autoscripts: '1', runscript: 'FromFile.txt', teleport: 'tuscany' });
+  assert.deepStrictEqual(SC.autorunSettings({}, parms, args), { on: true, runscript: 'FromFile.txt', from: 'the Director\'s start-up parameters' });
+  assert.strictEqual(SC.autorunSettings({ AUTOSCRIPTS: '0' }, parms, args).on, false, 'AUTOSCRIPTS still wins (glitch-run.js sets it)');
+  assert.deepStrictEqual(SC.parmsToArgs({ autoscripts: '1', runscript: 'My Items.txt', flag: '' }), ['-autoscripts', '1', '-runscript', 'My Items.txt', '-flag']);
+  SC.setStartupArgs(['-maxtrade', '500']);
+  assert.deepStrictEqual(SC.readCmdParms(path.join(TMP, 'none.txt')), { maxtrade: '500' }, 'the console\'s own command line');
+  SC.setStartupArgs([]);
+  assert.deepStrictEqual(SC.readCmdParms(path.join(TMP, 'none.txt')), {});
+});
+t('the Director keeps what a console can use, refuses the login and says what OTTObot has no use for', () => {
+  const ok = SC.checkStartupParms('-autoscripts 1\n-runscript AutoRunScript.txt\n-autorun 0\n-maxtrade 5000\n-teleport tuscany');
+  assert.deepStrictEqual(ok.errors, []);
+  assert.deepStrictEqual(ok.notes, []);
+  assert.deepStrictEqual(ok.parms, { autoscripts: '1', runscript: 'AutoRunScript.txt', autorun: '0', maxtrade: '5000', teleport: 'tuscany' });
+  const bad = SC.checkStartupParms('-password abc -u me@x.com -proxy 1.2.3.4:80 -prependgoals x.txt');
+  assert.strictEqual(bad.errors.length, 4, bad.errors.join(' | '));
+  assert.match(bad.errors.join(' '), /Password field/);
+  assert.match(SC.checkStartupParms('-autoscripts maybe').errors[0], /1 \(on\) or 0/);
+  assert.match(SC.checkStartupParms('-maxtrade lots').errors[0], /whole number/);
+  assert.match(SC.checkStartupParms('-runscript ../x.txt').errors[0], /-runscript: /);
+  assert.match(SC.checkStartupParms('autoscripts 1').errors[0], /not a parameter/);
+  const noted = SC.checkStartupParms('-minimize 1\n-autologin 1\n-myflag 7');
+  assert.deepStrictEqual(noted.errors, []);
+  assert.strictEqual(noted.notes.length, 3);
+  assert.match(noted.notes[2], /Config\.myflag/);
+  assert.deepStrictEqual(SC.checkStartupParms('').parms, {});
 });
 t('autorun\'s last start per account is kept: a start within 10 minutes is skipped (a crash loop)', () => {
   const kept = new Map();
@@ -385,12 +428,32 @@ function call(method, url, body) {
 // each unless they name their own (runId: undefined sends none).
 let RUN_SEQ = 0;
 const post = async (u, b) => {
+  // ... and `wait`, so a test reads the finished log from the reply as it always
+  // has. The Script tab does NOT send it: there the reply comes as the run
+  // starts, and /api/script/runs carries the rest (one test below does it that way).
   if (u === '/api/script' && b && !b.parseOnly && b.dryRun !== true && !('runId' in b)) b = { ...b, runId: `test-run-${++RUN_SEQ}-${Date.now()}` };
+  if (u === '/api/script' && b && !b.parseOnly && b.dryRun !== true && !('wait' in b)) b = { ...b, wait: true };
   return (await call('POST', u, b)).json;
 };
 const get = async (u) => (await call('GET', u)).json;
 const runs = () => get('/api/script/runs');
 const saveLoad = (city, slot, src) => post('/api/loadouts', { city, slot, src });
+
+// A console holds the game socket, the engine and every running script for one
+// account. Node ends the process on an unhandled rejection, so one forgotten
+// catch took all of that down. server.js is required into THIS process, so if
+// the guard were missing this test would not fail — the suite itself would die.
+t('an unhandled rejection is logged and the console lives on', async () => {
+  const errs = [];
+  const realErr = console.error;
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    Promise.reject(new Error('a route forgot its catch'));
+    await new Promise((r) => setTimeout(r, 120));
+  } finally { console.error = realErr; }
+  assert.ok(errs.some((e) => /UNHANDLED REJECTION: a route forgot its catch/.test(e)), 'it was logged: ' + errs.join(' | '));
+  assert.strictEqual((await get('/api/script/runs')).runs.length >= 0, true, 'the console still answers');
+});
 
 t('/api/items carries the buffs the panel\'s third tab shows', async () => {
   const now = W.g.now();
@@ -409,6 +472,46 @@ t('/api/items carries the buffs the panel\'s third tab shows', async () => {
     assert.deepStrictEqual(other.buffs.filter((b) => b.scope === 'city'), [], "another city's tab shows only its own");
   } finally {
     W.g.player.buffs = []; W.g.castles[0].buffs = [];
+  }
+});
+
+t('Items Apply: /api/items says which have none, /api/items/use spends as useitem does', async () => {
+  const sent = [];
+  W.g.player.items = [{ id: 'player.attackinc.1.b', count: 2 }, { id: 'hero.loyalty.1', count: 1 },
+    { id: 'consume.2.a', count: 5 }, { id: 'player.heart.1.a', count: 1 }];
+  W.g.req = async (cmd, data) => { sent.push({ cmd, data }); return { ok: 1 }; };
+  try {
+    const r = await get('/api/items?city=102');
+    const why = Object.fromEntries(r.items.map((it) => [it.id, it.noApply]));
+    assert.strictEqual(why['player.attackinc.1.b'], null, 'an Ivory Horn has Apply');
+    assert.strictEqual(why['player.heart.1.a'], null);
+    assert.match(why['hero.loyalty.1'], /used on a hero/);
+    assert.match(why['consume.2.a'], /build or a research/);
+
+    const u = await post('/api/items/use', { city: '102', itemId: 'player.attackinc.1.b', count: 2 });
+    assert.strictEqual(u.ok, true, JSON.stringify(u));
+    assert.match(u.lines.join('\n'), /use 2 x Ivory Horn \(player\.attackinc\.1\.b\) in South/);
+    const c = await post('/api/items/use', { city: '101', itemId: 'player.heart.1.a', count: 1 });
+    assert.strictEqual(c.ok, true, JSON.stringify(c));
+    assert.deepStrictEqual(sent.map((x) => [x.cmd, x.data.castleId, x.data.itemId, x.data.num]), [
+      ['shop.useGoods', 102, 'player.attackinc.1.b', 2],
+      ['shop.useCastleGoods', 101, 'player.heart.1.a', undefined],
+    ]);
+    const notes = StubSession.last.notes;
+    assert.ok(notes.some((n) => n.m === 'manual: useitem 2 x Ivory Horn -> ok'), notes.slice(-2).map((n) => n.m).join(' | '));
+
+    // nothing goes for more than is held, a medal, a speed-up or an item not held
+    sent.length = 0;
+    const more = await post('/api/items/use', { city: '102', itemId: 'player.attackinc.1.b', count: 3 });
+    assert.strictEqual(more.ok, false);
+    assert.match(more.lines.join('\n'), /you hold 2 Ivory Horn, not 3/);
+    assert.match((await post('/api/items/use', { city: '102', itemId: 'hero.loyalty.1' })).error, /used on a hero/);
+    assert.match((await post('/api/items/use', { city: '102', itemId: 'consume.2.a' })).error, /build or a research/);
+    assert.match((await post('/api/items/use', { city: '102', itemId: 'player.box.1' })).error, /you hold no player\.box\.1/);
+    assert.deepStrictEqual(sent, []);
+  } finally {
+    W.g.player.items = undefined;
+    W.g.req = async (cmd) => { throw new Error('no network in this test: ' + cmd); };
   }
 });
 
@@ -465,6 +568,64 @@ t('stop pauses: /api/script/runs says where, Resume carries on from the next lin
   const done = await p;
   assert.match(done.log.join('\n'), /before[\s\S]*resumed[\s\S]*after/);
   assert.strictEqual((await post('/api/script/resume', { city: '101' })).ok, false, 'nothing is paused now');
+});
+t('every line a run keeps carries the time it happened, and an event is one line', async () => {
+  const r = await post('/api/script', { city: '103', src: 'echo "one"\necho "two"' });
+  const log = r.log;
+  assert.ok(log.every((l) => /^\d\d:\d\d:\d\d\.\d\d\d /.test(l)), 'every line is stamped:\n' + log.join('\n'));
+  const text = log.join('\n');
+  // the header and what the line said are ONE line, not a header and a line under it
+  assert.match(text, /^\d\d:\d\d:\d\d\.\d\d\d line 1: echo "one" · one$/m);
+  assert.match(text, /^\d\d:\d\d:\d\d\.\d\d\d line 2: echo "two" · two$/m);
+  assert.strictEqual(log.filter((l) => /line 1:/.test(l)).length, 1, 'line 1 is not split over two lines');
+  assert.ok(log.every((l) => !/\n/.test(l)), 'no line holds a line break');
+  const times = log.map((l) => l.slice(0, 12));
+  assert.deepStrictEqual(times.slice().sort(), times, 'the times run forwards');
+});
+t('a line that says nothing still gets its own stamped line, and a pause is not held back', async () => {
+  const p = post('/api/script', { city: '103', src: 'echo "before"\nstop\necho "after"', wait: false });
+  await until(async () => {
+    const x = await get('/api/script/runs?city=103');
+    return (x.lines || []).some((l) => /^\d\d:\d\d:\d\d\.\d\d\d line 2: stop — paused/.test(l));
+  }, 5000, 'the pause to be said while it is still paused');
+  assert.strictEqual((await post('/api/script/stop', { city: '103' })).ok, true);
+  await p;
+  await until(async () => !(await runs()).runs.some((y) => y.city === '103'), 5000, 'the run to end');
+});
+t('a live Run is answered as the run STARTS, not when it ends', async () => {
+  // Waiting for the end held one browser connection per running city; six is all
+  // a browser gives an origin, so the sixth city's Run and every other request
+  // queued behind five endless loops. The reply comes now; the poll carries the rest.
+  const r = await post('/api/script', { city: '101', src: 'echo "going"\nloop', wait: false });
+  assert.deepStrictEqual([r.ok, r.started, r.city], [true, true, '101']);
+  assert.match(r.log.join('\n'), /started — the Output tab follows it/);
+  const live = await until(async () => {
+    const x = await get('/api/script/runs?city=101');
+    return x.runs.some((y) => y.city === '101') && /going/.test((x.lines || []).join('\n')) && x;
+  }, 5000, 'the run to show in the poll');
+  assert.strictEqual(live.ended, null, 'it is still going');
+  assert.strictEqual((await post('/api/script/stop', { city: '101' })).ok, true);
+  await until(async () => !(await runs()).runs.some((y) => y.city === '101'), 5000, 'the stop');
+});
+t('every city answers its own Run at once, however many are running', async () => {
+  const cities = ['101', '102', '103'];
+  const at = Date.now();
+  const rs = await Promise.all(cities.map((c) => post('/api/script', { city: c, src: 'echo "hi ' + c + '"\nloop', wait: false })));
+  assert.ok(rs.every((r) => r.started === true), 'all three answered');
+  assert.ok(Date.now() - at < 4000, 'none of them waited for its run to end');
+  const list = await runs();
+  assert.deepStrictEqual(list.runs.map((r) => r.city).sort(), cities.slice().sort());
+  for (const c of cities) assert.strictEqual((await post('/api/script/stop', { city: c })).ok, true);
+  await until(async () => (await runs()).runs.length === 0, 5000, 'the stops');
+});
+t('a run that has ended is still in /api/script/runs?city=, with how it went', async () => {
+  const r = await post('/api/script', { city: '102', src: 'echo "one"\necho "two"', wait: false });
+  assert.strictEqual(r.started, true);
+  const over = await until(async () => { const x = await get('/api/script/runs?city=102'); return x.ended && x; }, 5000, 'the end');
+  assert.match(over.lines.join('\n'), /one[\s\S]*two/);
+  // n counts what the server was asked to do, and two echoes ask it nothing
+  assert.deepStrictEqual([over.ended.n, over.ended.stopped, over.ended.error], [0, false, null]);
+  assert.ok(!over.runs.some((y) => y.city === '102'), 'it is not running any more');
 });
 t('Stop ends a paused run', async () => {
   const p = post('/api/script', { city: '101', src: 'stop\necho "after"' });
@@ -639,7 +800,7 @@ t('autorun: after the first login each city runs the startup file, then its auto
   assert.deepStrictEqual(north.slice(0, 5), [
     'autorun: AutoRunScript.txt started in North', 'autorun: AutoRunScript.txt in North ended — 0 action(s)',
     'autorun: Load 3 started in North from label autorun',
-    'autorun: Load 3 in North ended — 0 action(s); 1 line(s) failed, the first: call: Load 9 is empty in this city',
+    'autorun: Load 3 in North ended — 0 action(s); 1 line(s) failed, the first: line 5: call load9 · FAILED: call: Load 9 is empty in this city',
     'autorun: Load 5 started in North from label autorun']);
   assert.ok(notes.includes('autorun: East already has a script running — AutoRunScript.txt (and 1 more autorun script(s) after it) not started'), notes.join('\n'));
   assert.ok(r.runs.find((y) => y.city === '103').source === 'console', 'East keeps the user\'s own run');
@@ -748,6 +909,74 @@ t('a loadout read that failed is asked again, not refused until the page is relo
   assert.doesNotMatch(String(broke.hint), /have not loaded/, broke.hint);
 });
 
+// A read that fails does not only leave the cache empty: loadEditor blanks the
+// editor and makes it read-only. Asking again on Save and then writing THAT
+// blank over the slot would lose the loadout, so the slot comes back into the
+// editor first and the save waits for a second press.
+t('a save after a failed read puts the loadout back instead of clearing it', async () => {
+  if (browserOff) return 'skipped';
+  await saveLoad(101, 1, '// keep me\necho "still here"');
+  await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);
+  await until(() => ev('!!loadOf()'), 8000, 'the loadouts');
+  const r = await ev(`(async () => {
+    const city = String(S.city);
+    LOAD.cities[city].slot = 1;
+    delete LOAD.cities[city];                     // the failed read
+    $('editor').value = ''; $('editor').readOnly = true;   // ...which is what it leaves behind
+    await saveLoadout();
+    const first = { editor: $('editor').value, hint: $('editHint').textContent || '' };
+    await saveLoadout();                           // the second press writes what is now on screen
+    return { first, saved: $('editor').value, hint2: $('editHint').textContent || '' };
+  })()`);
+  assert.match(r.first.editor, /keep me/, 'the saved loadout came back into the editor');
+  assert.match(r.first.hint, /press Save again/, r.first.hint);
+  const onDisk = await get('/api/loadouts?city=101');
+  const slot1 = (onDisk.slots || []).find((s) => s.slot === 1);
+  assert.ok(slot1 && /keep me/.test(slot1.src), 'the slot was never cleared: ' + JSON.stringify(slot1));
+});
+
+t('a run after a failed read puts the loadout back, then runs it on the next press', async () => {
+  if (browserOff) return 'skipped';
+  await saveLoad(101, 1, '// runnable\necho "ran it"');
+  await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);
+  await until(() => ev('!!loadOf()'), 8000, 'the loadouts');
+  const r = await ev(`(async () => {
+    const city = String(S.city);
+    LOAD.cities[city].slot = 1;
+    delete LOAD.cities[city];
+    $('editor').value = ''; $('editor').readOnly = true;
+    await $('runScript').onclick();               // used to say "Load 1 is empty — nothing to run"
+    return { editor: $('editor').value, hint: $('editHint').textContent || '', readOnly: $('editor').readOnly };
+  })()`);
+  assert.match(r.editor, /runnable/, 'the loadout is back in the editor, ready to run');
+  assert.match(r.hint, /press Run/, r.hint);
+  assert.strictEqual(r.readOnly, false, 'the editor is writable again');
+});
+
+t('the poll brings a missing city\'s loadouts back with no click at all', async () => {
+  if (browserOff) return 'skipped';
+  await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);
+  await until(() => ev('!!loadOf()'), 8000, 'the loadouts');
+  await ev(`(() => { delete LOAD.cities[String(S.city)]; LOAD.fail[String(S.city)] = { at: 0, why: 'the console did not answer' }; })()`);
+  await ev('loadoutsBack()');
+  assert.strictEqual(await ev('!!loadOf()'), true, 'the poll asked again by itself');
+  assert.match(String(await ev(`$('editHint').textContent`)), /loadouts are back/);
+});
+
+t('a console that stops answering is said so on the connection line, not left green', async () => {
+  if (browserOff) return 'skipped';
+  const r = await ev(`(async () => {
+    const real = window.fetch;
+    window.fetch = () => Promise.reject(new Error('down'));    // the console goes away
+    try { await refresh(); await refresh(); } finally { window.fetch = real; }
+    const gone = { text: $('conn').textContent, colour: $('conn').style.color };
+    await refresh();                                            // and comes back
+    return { gone, back: $('conn').textContent };
+  })()`);
+  assert.match(r.gone.text, /console not answering/, r.gone.text);
+  assert.doesNotMatch(r.back, /console not answering/, 'it cleared when the console answered again');
+});
+
 t('Script tab: the Run box sits beside Run; the loadout picker marks autorun loadouts', async () => {
   if (browserOff) return 'skipped';
   await ev(`document.querySelector('#editTabs .ib[data-k=script]').click()`);
@@ -789,6 +1018,57 @@ t('the Items panel\'s Buffs tab lists what the account and the city are under', 
   } finally {
     g.player.buffs = []; g.castles[0].buffs = [];
     await ev(`[...$('itemKind').children].find((b) => b.dataset.k === 'items').click()`);
+    await ev(`document.querySelector('#logTabs .t[data-k=${String(wasOn || 'activity')}]').click()`);
+  }
+});
+
+t('the Items tab lists by name, and Apply spends one or says why it cannot', async () => {
+  if (browserOff) return 'skipped';
+  const g = SESSION.game;
+  const sent = [];
+  g.player.items = [{ id: 'player.attackinc.1.b', count: 4 }, { id: 'consume.2.a', count: 5 },
+    { id: 'player.attackinc.1', count: 1 }, { id: 'player.box.gambling.10', count: 1 }, { id: 'player.box.gambling.2', count: 1 }];
+  g.req = async (cmd, data) => { sent.push({ cmd, data }); return { ok: 1 }; };
+  const wasOn = await ev(`S.logs`);
+  try {
+    await ev(`document.querySelector('#logTabs .t[data-k=items]').click()`);
+    await ev('renderItems(true)');
+    await until(() => ev(`$('logBody').textContent.includes('Ivory Horn')`), 8000, 'the items table');
+    const names = await ev(`[...$('logBody').querySelectorAll('tbody tr td:first-child')].map((td) => td.textContent)`);
+    const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    assert.deepStrictEqual(names, sorted, 'by name, whatever the type');
+    assert.strictEqual(names.length, 5, names.join(' | '));
+    if (process.env.SHOT_ITEMS) {    // SHOT_ITEMS=<file.png>: how the Items tab looks
+      await cdp('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
+      await sleep(400);
+      fs.writeFileSync(process.env.SHOT_ITEMS, Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    }
+
+    // a speed-up's Apply is greyed; a click says where it goes instead
+    await ev(`$('logBody').querySelector('button[data-act=apply][data-id="consume.2.a"]').click()`);
+    const said = await until(() => ev(`(document.querySelector('dialog.ask') || {}).textContent`), 5000, 'the reason');
+    assert.match(said, /goes on a build or a research/);
+    await ev(`document.querySelector('dialog.ask button[value=ok]').click()`);
+    await until(() => ev(`!document.querySelector('dialog.ask')`), 5000, 'the answer to close');
+    assert.strictEqual(await ev(`$('logBody').querySelector('button[data-act=apply][data-id="consume.2.a"]').getAttribute('aria-disabled')`), 'true');
+
+    // an Ivory Horn: the window, capped at the four held, then one shop.useGoods
+    await ev(`$('logBody').querySelector('button[data-act=apply][data-id="player.attackinc.1.b"]').click()`);
+    await until(() => ev(`$('iuDlg').open`), 5000, 'the Apply window');
+    assert.match(await ev(`$('iuInfo').textContent`), /4 held · used in North/);
+    await ev(`(() => { $('iuCount').value = '9'; $('iuCount').dispatchEvent(new Event('input')); })()`);
+    assert.strictEqual(await ev(`$('iuCount').value`), '4', 'typing more than is held stops at what is held');
+    await ev(`$('iuGo').click()`);
+    const done = await until(() => ev(`(document.querySelector('dialog.ask') || {}).textContent`), 8000, 'the answer');
+    assert.match(done, /use 4 x Ivory Horn/, done);
+    assert.match(done, /-> ok/);
+    await ev(`document.querySelector('dialog.ask button[value=ok]').click()`);
+    await until(() => ev(`!document.querySelector('dialog.ask')`), 5000, 'the answer to close');
+    assert.deepStrictEqual(sent.map((x) => [x.cmd, x.data.castleId, x.data.itemId, x.data.num]),
+      [['shop.useGoods', 101, 'player.attackinc.1.b', 4]]);
+  } finally {
+    g.player.items = undefined;
+    g.req = async (cmd) => { throw new Error('no network in this test: ' + cmd); };
     await ev(`document.querySelector('#logTabs .t[data-k=${String(wasOn || 'activity')}]').click()`);
   }
 });

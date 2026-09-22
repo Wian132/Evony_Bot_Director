@@ -49,6 +49,8 @@
 //   trainingHeroName TrainingHeroIsHere checkFeastingHallSpace
 //   enemyArmies friendlyArmies selfArmies myArmies hasEnemyArmies hasEnemyArmiesWithin(sec[, blind])
 //   NumberOfRealAttacks fields tradesArray transingTradesArray buyPrice(res) sellPrice(res)
+//   transitAmount(res) restingAmount(res[, tradeType])   sums over those two lists, for loops
+//                                       that would otherwise walk thousands of trades a pass
 //   buffs hasBuff(t) buff(t) brokenGates
 //   PRFactor comfortingNeeds(1-4) getConfig(key) cityHasGoalErrors CityHasGoalErrors GateControl
 //   compareByDistanceToCastle(a, b) setCityTimer(key) cityTimingAllowed(key, sec[, test])
@@ -477,17 +479,12 @@ function item(it, name) {
 
 // ------------------------------------------------------------------ heroes
 
-// Hero experience. INFERRED: a level costs level^2 x 100, which fits every row
-// of the wiki's ListAllHeroes sample (L193 needs 3,724,900). The bean's own
-// upgradeExp is used for the first step when it is there.
+// Hero experience — the one formula lives in game.js (Game.expToNext,
+// Game.heroLevelsReady), so the console's Heroes tab and these script objects
+// count the same levels.
 const heroExp = {
-  toNext: (level) => num(level) * num(level) * 100,
-  levelsFrom(level, exp, firstCost) {
-    let L = num(level), left = num(exp), n = 0;
-    let cost = num(firstCost) > 0 ? num(firstCost) : heroExp.toNext(L);
-    while (cost > 0 && left >= cost && n < 100000) { left -= cost; n++; L++; cost = heroExp.toNext(L); }
-    return n;
-  },
+  toNext: (level) => Game.expToNext(level),
+  levelsFrom: (level, exp, firstCost) => Game.heroLevelsReady({ level, experience: exp, upgradeExp: firstCost }),
   expBetween(end, start = 1, exp = 0) {
     let sum = 0;
     for (let L = Math.max(1, num(start) || 1); L < num(end) && L < 100000; L++) sum += heroExp.toNext(L);
@@ -989,8 +986,21 @@ class CityView {
 
   // ---- valleys, market, buffs ----
   get fields() { return this.#with((c) => (c.fields || []).map(field), []); }
-  get tradesArray() { return this.#with((c) => (c.trades || []).map(trade), []); }
-  get transingTradesArray() { return this.#with((c) => (c.transingTrades || []).map(transingTrade), []); }
+  get tradesArray() { return this.#with((c) => tradeBeans(c.trades, trade), []); }
+  get transingTradesArray() { return this.#with((c) => tradeBeans(c.transingTrades, transingTrade), []); }
+  // The glitch control file walked transingTradesArray (thousands of purchases in
+  // transit) every pass in every buying city: ~90% of a buying console's CPU
+  // (profiled 2026-09-22). These give the same sums in one read, kept per list.
+  // transitAmount(res): the amount of res on its way here. restingAmount(res[, type]):
+  // what our own offers of res still hold unfilled (amount - dealedAmount); bids
+  // (0 / "buy") or offers (1 / "sell") only when a type is given. res 0-3 or a name.
+  get transitAmount() {
+    return (res) => this.#with((c) => tradeSum(c.transingTrades, 'transit', tradeResArg(res, 'transitAmount'), null), 0);
+  }
+  get restingAmount() {
+    return (res, type) => this.#with((c) => tradeSum(c.trades, 'resting', tradeResArg(res, 'restingAmount'),
+      tradeTypeArg(type)), 0);
+  }
   // Market.txt city.buyPrice(2), References cityManager.sellPrice(food): script-cmd-market.js.
   get buyPrice() { return marketOf(this.#ctx).buyPrice; }
   get sellPrice() { return marketOf(this.#ctx).sellPrice; }
@@ -1096,6 +1106,63 @@ function tradeCopy(kind, t) {
 }
 const trade = (t) => tradeCopy('tradeBean', t);
 const transingTrade = (t) => tradeCopy('transingTradeBean', t);
+
+// A city's trade lists as beans, made once per list the server sent. A push
+// replaces the list (session.js applyUpdate), never edits it, so the list itself
+// is the key. A loop reading city.transingTradesArray[j] copied every trade on
+// every read — thousands of trades in transit made each pass quadratic. The
+// caller gets its own array (a script may sort it); the beans are shared.
+const BEANS = new WeakMap();       // source list -> Map(make -> beans)
+function tradeBeans(list, make) {
+  if (!Array.isArray(list)) return [];
+  let byMake = BEANS.get(list);
+  if (!byMake) BEANS.set(list, byMake = new Map());
+  let beans = byMake.get(make);
+  if (!beans) byMake.set(make, beans = list.map(make));
+  return beans.slice();
+}
+
+// The sums behind transitAmount / restingAmount, once per list and question: as with
+// BEANS, a push replaces the list, so the list itself is the key (and its length, in
+// case something ever adds to one in place). The numbers are the beans' (num()), so
+// they equal what a script adding up the arrays gets.
+const SUMS = new WeakMap();        // source list -> { n: its length then, byKey: Map(question -> sum) }
+function tradeSum(list, what, res, type) {
+  if (!Array.isArray(list)) return 0;
+  let kept = SUMS.get(list);
+  if (!kept || kept.n !== list.length) SUMS.set(list, kept = { n: list.length, byKey: new Map() });
+  const byKey = kept.byKey;
+  const key = `${what}:${res}:${type}`;
+  let sum = byKey.get(key);
+  if (sum === undefined) {
+    sum = 0;
+    for (const t of list) {
+      if (!t || typeof t !== 'object' || num(t.resType) !== res) continue;
+      if (what === 'transit') { sum += num(t.amount); continue; }
+      if (type !== null && num(t.tradeType) !== type) continue;
+      sum += num(t.amount) - num(t.dealedAmount);
+    }
+    byKey.set(key, sum);
+  }
+  return sum;
+}
+// res: 0-3 (TradeConstants) or a name (lumber = wood). type: 0/"buy", 1/"sell", none = both.
+function tradeResArg(res, fn) {
+  if (Number.isInteger(res) && res >= 0 && res <= 3) return res;
+  const s = lc(res);
+  if (/^[0-3]$/.test(s)) return Number(s);
+  const k = s === 'lumber' ? 'wood' : s;
+  if (Object.prototype.hasOwnProperty.call(C.TRADE_RES, k)) return C.TRADE_RES[k];
+  throw new Error(`${fn}: ${res} is not a resource — 0-3 or food, wood, stone, iron`);
+}
+function tradeTypeArg(type) {
+  if (type === undefined || type === null || type === '') return null;
+  if (type === 0 || type === 1) return type;
+  const s = lc(type);
+  if (s === '0' || s === 'buy' || s === 'bid') return 0;
+  if (s === '1' || s === 'sell' || s === 'offer') return 1;
+  throw new Error(`restingAmount: ${type} is not a trade type — 0 (buy) or 1 (sell)`);
+}
 
 const cityView = (castle, ctx) => (castle ? new CityView(ctx, idOf(gameOf(ctx), castle)) : null);
 

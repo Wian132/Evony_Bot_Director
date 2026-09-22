@@ -18,7 +18,7 @@ const S = require('./speedups');
 // goals.js; plans and executors are wired here. City upkeep (tax, healing,
 // production, warehouse) goes first: its rare, cheap actions come right after
 // defensepolicy's.
-const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports'].map((p) => {
+const MODULES = ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-quests'].map((p) => {
   try { return { name: p, mod: require(p) }; }
   catch (e) { console.error(`goal module ${p} not loaded: ${e.message}`); return null; }
 }).filter(Boolean);
@@ -70,6 +70,36 @@ function dur(sec) {
 }
 
 const TROOP_BY_TYPE = Object.fromEntries(C.TROOPS.map((t) => [t.typeId, t]));
+
+// OTTO_TROOP_TRACE=1: the troop goal's decisions go to the console's own output
+// (console-<id>.log) as well — each city's troop note and what its batches were
+// sized from, every batch and mayor change sent, and the traininghero's moves.
+// The Engine tab holds them in memory only, behind the login.
+const TROOP_TRACE = process.env.OTTO_TROOP_TRACE === '1';
+const TROOP_TRACE_LINE = /^(\[plan\] )?(train [\d,]|appoint |move \S+ to |traininghero |lower production|production back|cancel a slow batch)/;
+const stamp = () => new Date().toTimeString().slice(0, 8);
+function troopTrace(r) {
+  const t = r && r.troop;
+  if (!t) return;
+  const m = r.mayor && r.mayor.note ? ` | ${r.mayor.note}` : '';
+  console.log(`[troops ${stamp()}] [${r.city}] ${t.note || ''}${m}${t.diag ? ` | ${JSON.stringify(t.diag)}` : ''}`);
+}
+
+// Whether a troop type can be trained here: the game's own Enlist button is
+// enabled when every building, research and item its conditionBean lists is met
+// (SWTypeUI.onConditionTime -> UIUtil.isConditionMatch, successFlag on each),
+// and never looks at the bean's `permition`. The server sends permition false
+// for every type, Workers in a level-10 barracks included (seen live on
+// Lord02, 2026-09-19), and trusting it stopped all training on every account.
+// `lacks` names what is short, for the note.
+function troopAllowed(t) {
+  const cb = (t && t.conditionBean) || {};
+  const lacks = [];
+  for (const b of cb.buildings || []) if (!b.successFlag) lacks.push(`${(C.BUILDING_BY_ID[n(b.typeId)] || {}).name || `building ${b.typeId}`} ${n(b.level)}`);
+  for (const x of cb.techs || []) if (!x.successFlag) lacks.push(`${(C.TECH_BY_ID[n(x.id)] || {}).name || `research ${x.id}`} ${n(x.level)}`);
+  for (const x of cb.items || []) if (!x.successFlag) lacks.push(`item ${x.id}`);
+  return { allowed: !lacks.length, ...(lacks.length ? { lacks } : {}) };
+}
 
 // Population free to train: what is left once the fields and the construction
 // are staffed. The client's enlist screen caps its Max button at exactly this
@@ -236,12 +266,24 @@ async function orderFitted(send, num, castle, what, acted) {
 //   troopsusepopmax / usepopmax   how much of the whole population training may
 //                                 take, freeing workers from the fields for it
 //   reservedbarrack, troopdelbadque  config only
+// And one of ours, which NEAT has no equal of:
+//   trooptraineronly / traineronly  1 (the default): while the traininghero is
+//                                 away, only troops the hero here builds
+//                                 instantly are queued, so the barracks' slots
+//                                 are all free when the traininghero arrives.
+//                                 0 goes back to NEAT's troopidlequeuetime rule.
 // All of it is worked out by troopSettings below.
 //
 // Queue time: the Troop page says 30 minutes by default, the TroopQueueTime page
 // 15. The Troop page is the goal's own and 30 is what this bot has always used,
 // so 30 stays.
 const DEFAULT_SLOT_MIN = 30;
+// Training is instant once a troop takes under a second (EVONY-RULES.md §5, the
+// user's insta-hero levels). The server's per-unit time is a fraction then
+// (conditionBean.time is a Number), and batches of 30 minutes' worth would cap
+// an insta hero at ~2,000 troops a batch where it can take the whole population.
+const INSTANT_SEC = 1;
+const instant = (unit) => !!unit && Number.isFinite(Number(unit.time)) && Number(unit.time) < INSTANT_SEC;
 // wiki WallQueueTime: "If this is not set, the bot defaults to 15-minute queue times."
 const DEFAULT_WALL_MIN = 15;
 // wiki TroopsUseReserved, FortsUseReserved: "By default, the bot will attempt to
@@ -304,6 +346,9 @@ function troopSettings(stage, config = {}) {
     usePopMax: share(first(sw.usepopmax, cfg.troopsusepopmax) ?? 0),
     reservedBarrack: first(cfg.reservedbarrack) === 1,
     delBadQue: first(cfg.troopdelbadque) === 1,
+    // ours: with a traininghero named, only it fills the barracks, unless the
+    // hero here builds the type instantly (see paceOf). 0 gives NEAT's rule back.
+    trainerOnly: (first(sw.traineronly, cfg.trooptraineronly) ?? 1) === 1,
   };
 }
 
@@ -537,9 +582,23 @@ function troopPlan(ctx) {
   pool.food -= foodKept;
   const costEach = (t, k) => n(t.cost[k]) + (k === 'food' ? keepShare * FOOD_DAY_HOURS * n(t.food) : 0);
 
-  // wiki TroopIdleQueueTime: while the traininghero is set but away, a troop
-  // type the best hero here trains as fast as it does is trained in full ("it
-  // will do the full amount with the available hero rather than building small
+  // While the traininghero is set but away, who may fill the barracks.
+  //
+  // OURS (config trooptraineronly, /traineronly, ON by default). The barracks
+  // hold as many batches as the barracks' level, and a batch queued by another
+  // hero holds its slot for the whole queue time. So a city that fills nine
+  // slots with 30-minute batches has nothing free when the training hero comes
+  // round, and the one hero that could have put the whole city's population in
+  // at once trains nothing (the user, 2026-09-22). With a traininghero named,
+  // only it trains — EXCEPT a type the hero here builds INSTANTLY (under a
+  // second each), which finishes as it is placed and never holds a slot.
+  // A hero that has never been mayor here and is at least as strong as the
+  // traininghero is let through once, so its speed here is measured rather than
+  // guessed (items are not in `power`); after that its measured time decides.
+  //
+  // NEAT (trooptraineronly:0, wiki TroopIdleQueueTime): a troop type the best
+  // hero here trains as fast as the traininghero is trained in full ("it will
+  // do the full amount with the available hero rather than building small
   // amounts or waiting"). A type it trains slower goes in small batches, only
   // into idle barracks, each no more than troopidlequeuetime minutes longer than
   // the traininghero would take; with 0 (the default outside ratio mode) that
@@ -552,16 +611,31 @@ function troopPlan(ctx) {
   const mayor = atHome(ctx.castle).find((h) => n(h.status) === 1) || null;
   // the best hero's time: this read's when it is mayor, else as it last trained
   // here, else the mayor's own — an upper bound, as attack only shortens it
-  const bestTimes = best && !(mayor && mayor.id === best.id) ? heroTimesOf(mem, best.name) : null;
+  const bestIsMayor = !!(best && mayor && mayor.id === best.id);
+  const bestTimes = best && !bestIsMayor ? heroTimesOf(mem, best.name) : null;
+  // What the best hero here takes for one, as far as this city knows:
+  //   known  its own measured time (this read's while it is mayor), else null
+  //   upper  that, else the sitting mayor's — never under the best hero's own
+  const timesHere = (t, unit) => {
+    const read = unit && unit.time !== undefined && unit.time !== null ? n(unit.time) : null;
+    const own = bestTimes ? bestTimes.unit[t.typeId] : undefined;
+    const known = bestIsMayor ? read : (own !== undefined && own !== null ? n(own) : null);
+    return { known, upper: known !== null ? known : read };
+  };
   const paceOf = (t, unit) => {
     if (!away) return { mode: 'normal' };
+    if (s.trainerOnly) {
+      const { known, upper } = timesHere(t, unit);
+      if (upper !== null && upper < INSTANT_SEC) return { mode: 'normal' };
+      if (known === null && best && n(best.power) >= n(trainer.hero.power)) return { mode: 'normal' };
+      return { mode: 'wait', why: best ? `${best.name} does not build them instantly` : 'no hero here to build them instantly' };
+    }
     const tt = trainer.times ? trainer.times.unit[t.typeId] : undefined;
     if (tt === undefined || tt === null) {
       if (best && n(best.power) >= n(trainer.hero.power)) return { mode: 'normal' };
       return { mode: 'wait', why: `its speed here is not known yet` };
     }
-    const own = bestTimes ? bestTimes.unit[t.typeId] : undefined;
-    const bt = own !== undefined && own !== null ? n(own) : n(unit && unit.time);
+    const bt = n(timesHere(t, unit).upper);      // no read at all: 0, as before
     if (bt <= n(tt)) return { mode: 'normal' };
     if (s.idleMin <= 0) return { mode: 'wait', why: 'troopidlequeuetime 0' };
     const cap = Math.floor((s.idleMin * 60) / (bt - n(tt)));
@@ -593,8 +667,10 @@ function troopPlan(ctx) {
       const each = costEach(t, k);
       if (each > 0 && Math.floor(pool[k] / each) < byRes) { byRes = Math.floor(pool[k] / each); short = k; }
     }
-    // a troop slower than the whole slot still trains, one at a time
-    const byTime = unit && unit.time > 0 && slotSec > 0 ? Math.max(1, Math.floor(slotSec / unit.time)) : Infinity;
+    // a troop slower than the whole slot still trains, one at a time. An
+    // instant one (under a second each: the insta hero as mayor, EVONY-RULES §5)
+    // has no batch length to keep to: the whole population goes in one batch.
+    const byTime = unit && !instant(unit) && slotSec > 0 ? Math.max(1, Math.floor(slotSec / unit.time)) : Infinity;
     const num = Math.max(0, Math.min(want, byPop, byRes, byTime, pace.cap === undefined ? Infinity : pace.cap));
     if (num <= 0) {
       blocked[key] = true;
@@ -604,7 +680,11 @@ function troopPlan(ctx) {
     }
     orders.push({ troop: t, num, positionId: bar ? bar.positionId : undefined, secs: unit ? num * unit.time : null,
       ...(pace.mode === 'idle' ? { idle: true } : {}) });
-    if (bar) { bar.free--; bar.taken = true; }
+    // An instant batch is done the moment it is placed, so its slot is free
+    // again for the next. Counting it as taken left 6 of city 7's 10 slots
+    // empty after OTTO went on (Lord02, 2026-09-19: six instant types, then
+    // only four 30-minute batches of cataphracts).
+    if (bar && !instant(unit)) { bar.free--; bar.taken = true; }
     popLeft -= num * t.pop;
     for (const k of RES_KEYS) pool[k] -= num * costEach(t, k);
     left[key] -= num;
@@ -618,7 +698,7 @@ function troopPlan(ctx) {
     const t = C.BY_KEY[key];
     if (!t) continue;
     const unit = tr ? tr.unit[t.typeId] : null;
-    if (tr && !(unit && unit.allowed)) { cannot.push(t.name); continue; }
+    if (tr && !(unit && unit.allowed)) { cannot.push(unit && unit.lacks ? `${t.name} (needs ${unit.lacks.join(', ')})` : t.name); continue; }
     types.push(key);
   }
   const target = active.stage.troops;
@@ -723,7 +803,15 @@ function troopPlan(ctx) {
   if (popmax) note += `; frees ${fmt(workers)} workers from the fields for these (usepopmax ${s.usePopMax}), production put back straight after`;
   if (cancel) note += `; ${cancel.label}`;
   if (reserve && costText(reserve)) note += `; leaving ${costText(reserve)} in the bank for ${reserve.label || 'the next construction'}`;
-  return { ...base, orders, popBudget, slotMin: slotSec / 60, settings: s, cancel, popmax, note };
+  // what the batches were sized from, for the troop trace (OTTO_TROOP_TRACE)
+  const diag = {
+    idle, whole, popBudget, reservePop: n(reserve && reserve.population), foodKept: Math.round(foodKept),
+    pool: Object.fromEntries(Object.entries(pool).map(([k, v]) => [k, Math.round(v)])),
+    trainer: trainer ? { name: trainer.name, here: !!trainer.present, status: trainer.hero ? n(trainer.hero.status) : null, known: !!trainer.times, only: s.trainerOnly } : null,
+    mayor: mayor ? mayor.name : null, best: best ? `${best.name}:${n(best.power)}` : null,
+    bars: bars ? bars.map((b) => `${b.positionId}:${b.capacity - b.free}/${b.capacity}`).join(' ') : null,
+  };
+  return { ...base, orders, popBudget, slotMin: slotSec / 60, settings: s, cancel, popmax, note, diag };
 }
 
 // ------------------------------------------------------- fortification ladder
@@ -1654,11 +1742,46 @@ function incomingByCity(game, armies) {
 
 const countsOf = (incoming) => Object.fromEntries(Object.entries(incoming || {}).map(([k, v]) => [k, (v || []).length]));
 
+// Each defence item through its own game command (game.js useDefenceItem).
+// A use counts only once the server says ok.
+async function useDefenceItem(g, castle, a, cityState) {
+  const r = await g.useDefenceItem(g.castleId(castle), a.itemId);
+  if (r && r.ok === 1) {
+    const d = (cityState.defence = cityState.defence || {});
+    (d.used = d.used || {})[a.item] = Date.now();
+  }
+  return r;
+}
+
 // Hiding and the gate race a wave's arrival (Engine.urgentWar).
 const URGENT_PLANS = ['hiding', 'gate'];
 // The report's entries that run in blocks of their own in focus, not through
-// runPlanActions (hiding and the gate ran first, in urgentWar).
-const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'research', 'mayor', 'acted', 'city', ...URGENT_PLANS]);
+// runPlanActions (hiding, the gate and defensepolicy ran first, in urgentWar).
+const OWN_BLOCKS = new Set(['troop', 'fort', 'build', 'research', 'mayor', 'acted', 'city', 'defense', ...URGENT_PLANS]);
+// defensepolicy (Speech Text, the truce, the horns) runs in urgentWar too,
+// right after hiding and the gate: ahead of comfort and outside the slice's
+// action budget, and in every war pass (the user, 2026-09-18: Speech Text
+// first, then the truce, then comfort). A war pass is woken when a wave lands
+// or leaves the list, and when a city's loyalty falls to a defence line
+// (noteHostile, noteLoyalty), so a truce goes in the first gap in seconds.
+// The pass looks this long after a wave lands: the loyalty push that follows
+// a battle comes a moment after the army leaves the list.
+const DEFENCE_SETTLE_MS = 1500;
+// A city's defensepolicy loyalty lines: { top, junk } — the highest of
+// /usetruce and /usespeech, and the /junktroop size under which an attack is
+// junk (goalmods.js defensePlan) — or null with neither line.
+function defenceLines(goals) {
+  const g = (goals || []).find((x) => x.name === 'defensepolicy');
+  if (!g) return null;
+  const sw = g.switches || {};
+  const lines = ['usetruce', 'usespeech'].filter((k) => sw[k] !== undefined).map((k) => Number(sw[k]));
+  if (!lines.length) return null;
+  return { top: Math.max(...lines), junk: sw.junktroop !== undefined ? n(sw.junktroop) : 1000 };
+}
+// an inbound army that counts as an attack under those lines (size unknown counts)
+const realAttack = (a, lines) => a.troops === null || a.troops === undefined || n(a.troops) >= lines.junk;
+// server time as hh:mm:ss (UTC), for the wave log
+const clock = (ms) => new Date(ms).toISOString().slice(11, 19);
 
 // Something backed off is not tried, costs no action and writes no log line
 // every tick: the plan's note says what is held and until when.
@@ -1691,6 +1814,14 @@ class Engine {
     // them, and the server time its hiding and gate were last asked.
     this.goalsSeen = {};
     this.warCheckedAt = {};
+    // castleId -> server time a defence item may be due there (noteHostile,
+    // noteLoyalty): a war-clock moment like the others
+    this.defenceDue = {};
+    // castleId -> its hostile armies and loyalty as last seen, and the server
+    // time its last wave landed — for the wave log (noteHostile, noteLoyalty)
+    this.hostileLists = {};
+    this.loyaltySeen = {};
+    this.lastWaveAt = {};
     // Set by the console: a changed hostile army list may need a war pass
     // before the next tick.
     this.onHostile = null;
@@ -1724,8 +1855,9 @@ class Engine {
 
   // A city runs its own goals and no other city's (db.goals.own). The first
   // time a city is seen it takes a copy of the default it used to fall through to.
-  // Around them run the account's global goals, NEAT's PrependGoals before and
-  // AppendGoals after (goallayers.js), and last any goal lines a script ran here
+  // After them run the account's global goals, the Prepend goals and then the
+  // Append goals, each yielding to what came before (goallayers.js), and last
+  // any goal lines a script ran here
   // (the script goal layer, in memory); null only when nothing is left.
   goalsFor(id, name) {
     return runningGoals(D.goals, this.accountId, id, name);
@@ -1808,6 +1940,7 @@ class Engine {
     const incoming = this.incomingFor();
     const seen = (this._hostileSeen = this._hostileSeen || {});
     const now = g.now ? g.now() : Date.now();
+    let left = false;
     for (const c of g.castles) {
       const id = g.castleId(c);
       const list = incoming[id] || [];
@@ -1815,11 +1948,67 @@ class Engine {
       if ((seen[id] || '') === sig) continue;
       seen[id] = sig;
       delete this.warCheckedAt[id];
+      // Each wave that left the list: landed (its time was up) or turned back.
+      // Its landing time and the loyalty then go in the log; the loyalty the
+      // battle leaves follows in noteLoyalty's line.
+      const before = this.hostileLists[id] || [];
+      this.hostileLists[id] = list;
+      const still = new Set(list.map((a) => String(a.armyId)));
+      let gone = false;
+      for (const a of before) {
+        if (still.has(String(a.armyId))) continue;
+        left = gone = true;
+        const rt = n(a.reachTime);
+        const landed = rt > 0 && rt <= now + 2000;
+        if (landed) this.lastWaveAt[id] = rt;
+        this.line(`wave ${landed ? 'landed' : 'turned back'}: ${a.king || a.from || 'an army'}`
+          + `${a.troops !== null && a.troops !== undefined ? ` (${a.troops} troops)` : ''}`
+          + `${rt > 0 ? ` ${landed ? 'at' : 'was due'} ${clock(rt)}` : ''} · loyalty ${(c.resource || {}).support ?? '?'}`
+          + `${list.length ? ` · ${list.length} more inbound` : ''}`, { city: c.name || String(id), kind: 'sys' });
+      }
+      // a wave gone: Speech Text or the truce may be due once its loyalty is in
+      if (gone && defenceLines((this.goalsSeen[id] || {}).goals)) this.defenceDue[id] = now + DEFENCE_SETTLE_MS;
       if (!list.length) continue;
       const first = Math.min(...list.map((a) => n(a.reachTime) || Infinity));
       this.line(`incoming: ${list.length} hostile army(ies)${Number.isFinite(first) ? `, the first lands in ${dur((first - now) / 1000)}` : ''}`,
         { city: c.name || String(id), kind: 'sys' });
     }
+    // The account's last wave gone: a truce can go in now, from any city with
+    // defence lines, since the game refuses one while any army marches at us.
+    if (left && !Object.values(incoming).some((l) => (l || []).length)) {
+      for (const [cid, gs] of Object.entries(this.goalsSeen)) {
+        if (defenceLines(gs.goals)) { this.defenceDue[cid] = now + DEFENCE_SETTLE_MS; delete this.warCheckedAt[cid]; }
+      }
+    }
+  }
+
+  // A city's loyalty changed (the console's server.ResourceUpdate; prev = the
+  // loyalty before the push). While the city is at war — armies inbound, or a
+  // wave landed in the last 30 min — the change goes in the log beside the
+  // waves. A fall to or under a defensepolicy line makes a defence item due
+  // now, so Speech Text and the truce need not wait for the next tick. True
+  // when a war pass is wanted.
+  noteLoyalty(castle, prev) {
+    const g = this.game;
+    if (!g || !castle || typeof g.castleId !== 'function') return false;
+    const id = g.castleId(castle);
+    const num = (v) => (v === undefined || v === null || v === '' || !isFinite(Number(v)) ? null : Number(v));
+    const loy = num((castle.resource || {}).support);
+    const was = num(prev) ?? num(this.loyaltySeen[id]);
+    this.loyaltySeen[id] = loy;
+    if (loy === null || was === null || loy === was) return false;
+    const now = g.now ? g.now() : Date.now();
+    const wave = n(this.lastWaveAt[id]);
+    const inbound = (this.hostileLists[id] || []).length;
+    if (inbound || (wave && now - wave < 30 * 60000)) {
+      this.line(`loyalty ${was} -> ${loy}${wave ? ` · last wave landed ${clock(wave)}, ${Math.round((now - wave) / 1000)} s ago` : ''}`
+        + `${inbound ? ` · ${inbound} inbound` : ''}`, { city: castle.name || String(id), kind: 'sys' });
+    }
+    const lines = defenceLines((this.goalsSeen[id] || {}).goals);
+    if (!lines || loy > lines.top || loy > was) return false;
+    this.defenceDue[id] = now;
+    delete this.warCheckedAt[id];
+    return true;
   }
 
   // Hiding and the gate race a wave's arrival, so they are planned and sent
@@ -1832,9 +2021,8 @@ class Engine {
     const g = this.game;
     const out = { plans: {}, acted: [], hid: false };
     const W = MODULES.find((m) => m.name === './goal-war');
-    if (!W) return out;
     const at = g.now ? g.now() : Date.now();
-    for (const key of URGENT_PLANS) {
+    for (const key of W ? URGENT_PLANS : []) {
       const fn = W.mod.plans && W.mod.plans[key];
       if (!fn) continue;
       let p;
@@ -1863,10 +2051,37 @@ class Engine {
         } catch (e) { out.acted.push(`${a.label} -> ${e.message}`); }
       }
     }
+    await this.urgentDefence(ctx, castle, cityState, out);
     const cid = g.castleId(castle);
     this.warCheckedAt[cid] = at;
     this.goalsSeen[cid] = { goals: ctx.goals, config: ctx.config };
     return out;
+  }
+
+  // defensepolicy's items, planned and sent right after hiding and the gate,
+  // in every slice and every war pass: Speech Text first, then the truce, then
+  // the horns — ahead of comfort and outside the action budget (the user,
+  // 2026-09-18). Each use says how long after the city's last wave it went.
+  async urgentDefence(ctx, castle, cityState, out) {
+    const g = this.game;
+    let p;
+    try { p = M.defensePlan(ctx, cityState); } catch (e) {
+      out.plans.defense = null;
+      out.acted.push(`defensepolicy plan failed: ${e.message}`);
+      return;
+    }
+    out.plans.defense = p;
+    const cid = g.castleId(castle);
+    for (const a of (p && p.actions) || []) {
+      if (this.dryRun) { out.acted.push(`[plan] ${a.label}`); continue; }
+      const wave = n(this.lastWaveAt[cid]);
+      const serverNow = g.now ? g.now() : Date.now();
+      const after = wave ? ` · ${Math.round((serverNow - wave) / 1000)} s after the last wave landed (${clock(wave)})` : '';
+      try {
+        const r = (await useDefenceItem(g, castle, a, cityState)) || {};
+        out.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}${after}`);
+      } catch (e) { out.acted.push(`${a.label} -> ${e.message}${after}`); }
+    }
   }
 
   // The next moment (local Date.now() ms) any city's hiding or gate goal has
@@ -1898,12 +2113,20 @@ class Engine {
       for (const m of W.mod.warMoments(ctx, this.state[String(cid)] || {})) {
         if (m > since && (best === null || m < best)) best = m;
       }
+      // defensepolicy: a defence item due (noteHostile, noteLoyalty), and just
+      // after each wave lands, when its loyalty push is in
+      const lines = defenceLines(parsed.goals);
+      if (lines) {
+        const due = [n(this.defenceDue[cid]), ...ctx.incoming.filter((a) => realAttack(a, lines))
+          .map((a) => (n(a.reachTime) ? n(a.reachTime) + DEFENCE_SETTLE_MS : 0))];
+        for (const m of due) if (m > 0 && m > since && (best === null || m < best)) best = m;
+      }
     }
     if (best === null) return null;
     return Date.now() + Math.max(0, best + WAKE_SLACK_MS - serverNow);
   }
 
-  // Hiding and the gate alone, in every city with goals: the pass the console
+  // Hiding, the gate and defensepolicy alone, in every city with goals: the pass the console
   // runs between ticks at the moment nextWakeAt names. Nothing else is planned
   // or sent, and only what was sent (or would be, in a dry run) is logged.
   async warPass() {
@@ -1980,6 +2203,7 @@ class Engine {
   // act = something was sent). A plain (m) => … logger — goalsd, the tests —
   // takes one argument, so it gets the old "[City] text" line instead.
   line(text, meta) {
+    if (TROOP_TRACE && TROOP_TRACE_LINE.test(text)) console.log(`[troops ${stamp()}] ${meta && meta.city ? `[${meta.city}] ` : ''}${text}`);
     if (this.log.length >= 2) return this.log(text, meta);
     return this.log(meta && meta.city ? `[${meta.city}] ${text}` : text);
   }
@@ -2031,7 +2255,7 @@ class Engine {
           // no time given: assume the unmodified base, the slowest it can be
           unit[Number(t.typeId)] = {
             time: time == null ? n(def && def.buildTime) : n(time),
-            allowed: t.permition !== false,
+            ...troopAllowed(t),
           };
         }
         cached = this.unitTimes[cid] = { at: Date.now(), mayorId, unit };
@@ -2434,15 +2658,7 @@ class Engine {
       }
       try {
         let r = { ok: 1 };
-        if (a.kind === 'defenceItem') {
-          // Each defence item through its own game command (game.js
-          // useDefenceItem). A use counts only once the server says ok.
-          r = await g.useDefenceItem(g.castleId(castle), a.itemId);
-          if (r && r.ok === 1) {
-            const d = (cityState.defence = cityState.defence || {});
-            (d.used = d.used || {})[a.item] = Date.now();
-          }
-        }
+        if (a.kind === 'defenceItem') r = (await useDefenceItem(g, castle, a, cityState)) || {};
         else if (a.kind === 'note') { report.acted.push(a.label); return 'noted'; }
         else if (MODULE_EXECUTORS[a.kind]) {
           r = await MODULE_EXECUTORS[a.kind](g, castle, a, cityState);
@@ -2558,7 +2774,7 @@ class Engine {
         }
       }
     }
-    report.defense = M.defensePlan(ctx, cityState);
+    report.defense = urgent.plans.defense;      // sent at the top of the slice (urgentDefence)
     const W = MODULES.find((m) => m.name === './goal-war');
     for (const [k, fn] of Object.entries((W && W.mod.plans) || {})) {
       try {
@@ -2723,7 +2939,7 @@ class Engine {
       city: label,
       troop: troopPlan(ctx), fort, build,
       comfort: M.comfortPlan(ctx, cityState),
-      defense: M.defensePlan(ctx, cityState),
+      defense: urgent.plans.defense,        // sent at the top of the slice (urgentDefence)
       acted: urgent.acted,
     };
     if (research) report.research = research;
@@ -2958,6 +3174,7 @@ class Engine {
       for (const a of r.acted || []) {
         this.line(a, { city: r.city, kind: /^\[plan\]/.test(a) ? 'plan' : 'act' });
       }
+      if (TROOP_TRACE) troopTrace(r);
     }
 
     // traininghero is cross-city, so it runs once per tick over all cities
@@ -2996,6 +3213,15 @@ class Engine {
           if (!hero) { this.line(`${a.label} -> hero vanished`, { city, kind: 'act' }); continue; }
           // only a hero at home moves — idle, or the mayor — checked again here
           if (Number(hero.status) !== 0 && Number(hero.status) !== 1) { this.line(`${a.label} -> ${hero.name} is not at home (status ${hero.status}), not moving`, { city, kind: 'act' }); continue; }
+          // The march carries one scout. With none in the city it cannot go at
+          // all — and standing the mayor down for a march that then fails is
+          // how the training hero ends up flapping in and out of the office and
+          // never leaving (the user, 2026-09-22). So this is checked BEFORE the
+          // discharge, and the hero is left as it is until the city has a scout.
+          if (Number((a.from.troop && a.from.troop.scouter) || 0) < 1) {
+            this.line(`${a.label} — held: no scout in ${city} to carry the march, so ${hero.name} cannot leave`, { city, kind: 'plan' });
+            continue;
+          }
           // a mayor cannot march, so stand him down first
           const chiefed = (a.from.heros || []).some((h) => h.id === hero.id && Number(h.status) === 1);
           if (chiefed) await g.dischargeChief(g.castleId(a.from));

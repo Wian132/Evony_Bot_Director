@@ -616,6 +616,25 @@ class Game {
     return top - Number(h.level || 0) + Number(h.remainPoint || 0);
   }
 
+  // ---- banked experience ----
+  // A hero keeps earning experience past the level it has: the server only
+  // raises the level when hero.levelUp is sent, one level a time. So a hero can
+  // sit on enough experience for dozens of levels while its unspent points
+  // (remainPoint) read 0 — every point it has won so far is already spent.
+  // INFERRED: a level costs level^2 x 100, which fits every row of the wiki's
+  // ListAllHeroes sample (L193 needs 3,724,900) and the live roster (OTTO at
+  // L1146 wants 131,331,600 = 1146^2 x 100, 2026-09-22). The bean's own
+  // upgradeExp is used for the first step when it is there.
+  static expToNext(level) { return Number(level || 0) * Number(level || 0) * 100; }
+  // How many levels the experience a hero is already holding would buy.
+  static heroLevelsReady(h) {
+    if (!h) return 0;
+    let L = Number(h.level || 0), left = Number(h.experience || 0), n = 0;
+    let cost = Number(h.upgradeExp || 0) > 0 ? Number(h.upgradeExp) : Game.expToNext(L);
+    while (cost > 0 && left >= cost && n < 100000) { left -= cost; n++; L++; cost = Game.expToNext(L); }
+    return n;
+  }
+
   // What a hero costs, by the client's own sums: a hire takes level x 1000 gold
   // (HireHero.as:743, its gold row) besides a free slot and any item the offer
   // names; a gold reward takes level x 100 (AwardHero.as:647, 693); the salary is
@@ -1224,16 +1243,21 @@ class Game {
   // A report reply names its command and nothing else, and the console's
   // Reports window and the reportstokeep goal (goal-reports.js) both ask, so
   // each report command waits in its own lane, as the market's do.
+  // A list or a delete on an account with hundreds of thousands of reports is
+  // slow on the server's side, and behind a trading account's market orders it
+  // waits longer still: 12 s gave up on replies that were on their way
+  // (Lord06 2026-09-20), and a late reply is then taken for the next request's.
+  static REPORT_WAIT = 30000;
   async reportList(type = 'trade', pageNo = 1, pageSize = 50) {
     const reportType = C.REPORT_TYPE[type];
     if (reportType === undefined) throw new Error(`unknown report type "${type}" — trade, army or other`);
     return this.lane('report.receiveReportList',
-      () => this.req('report.receiveReportList', { pageNo, pageSize, reportType }));
+      () => this.req('report.receiveReportList', { pageNo, pageSize, reportType }, Game.REPORT_WAIT));
   }
 
   deleteReports(ids) {
     // ReportCommands.as: idStr
-    return this.lane('report.deleteReport', () => this.req('report.deleteReport', { idStr: ids.join(',') }));
+    return this.lane('report.deleteReport', () => this.req('report.deleteReport', { idStr: ids.join(',') }, Game.REPORT_WAIT));
   }
 
   async cleanReports(type = 'trade') {
@@ -1263,6 +1287,23 @@ class Game {
   }
   // The "mark as read" button: ids comma-joined (PublicReportCanvas.onMarkAsReadSelected).
   markReportsRead(ids) { return this.req('report.readOverReport', { reportIds: ids.join(',') }); }
+
+  // ---- quests ----
+  // QuestCommands.as, as the game's own Quests window asks (QuestWin.as): the
+  // tab's quest types (:1649-1650), one type's quests (:641), and the claim
+  // button (:1293). A quest reply names only its command -- not the tab, the
+  // type or the quest it answers -- so each waits in its own lane, as the
+  // market and report reads do. The completequests script command sends the
+  // same three (script-cmd-account.js).
+  questTypes(castleId, type) {
+    return this.lane('quest.getQuestType', () => this.req('quest.getQuestType', { castleId: Number(castleId), type: Number(type) }));
+  }
+  questList(castleId, typeId) {
+    return this.lane('quest.getQuestList', () => this.req('quest.getQuestList', { castleId: Number(castleId), typeId: Number(typeId) }));
+  }
+  questAward(castleId, questId) {
+    return this.lane('quest.award', () => this.req('quest.award', { castleId: Number(castleId), questId: Number(questId) }));
+  }
 
   // ---- mail ----
   // MailCommands.as. `type` is the box — MailConstants MAIL_RECEIVE 1 (inbox),

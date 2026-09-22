@@ -68,6 +68,11 @@ const num = (x) => Number(x || 0);
 
 // The console's goal store, for one city's goals.
 const session = (w, goals) => ({ account: { id: 'a1' }, org: { goals: { own: (acc, id, name) => (goals[name] === undefined ? null : { src: goals[name] }) } } });
+// The goals branch's store: layers(), so the script's own goal layer counts too.
+const layered = (goals) => ({ account: { id: 'a1' }, org: { goals: {
+  own: (acc, id, name) => (goals[name] === undefined ? null : { src: goals[name] }),
+  layers: (acc, id, name) => ({ city: goals[name] || null, prepend: null, append: null }),
+} } });
 
 // `see($error, $result)` in a script hands the two to the test as they are.
 async function runIn(w, src, opts = {}) {
@@ -210,6 +215,20 @@ t('a hero away from town, a prisoner, or one not here: nothing sent, and $error 
     assert.deepStrictEqual(w.sent, [], line);
     assert.match(tail(r)[0], why, line);
   }
+});
+t('two heroes share a name: fire <name> sends nothing and names both ids; fire <id> fires that one', async () => {
+  const w = world();
+  w.g.castles[0].heros.push({ id: 18, name: 'Ken', status: 0, level: 900, power: 1100, management: 30, stratagem: 20, loyalty: 100 });
+  let r = await runIn(w, 'fire Ken' + TAIL);
+  assert.deepStrictEqual(w.sent, [], 'nothing sent: the big Ken could be the one picked');
+  assert.match(tail(r)[0], /2 heroes in 9 are named Ken \(id 11 L40, id 18 L900\) — fire one by its id/);
+  r = await runIn(w, 'fire 11' + TAIL);
+  assert.deepStrictEqual(w.sent, [{ cmd: 'hero.fireHero', data: { castleId: 1, heroId: 11 } }], r.text);
+});
+t('fire <id> works for a hero whose name is unique too', async () => {
+  const w = world();
+  await runIn(w, 'fire 16');
+  assert.deepStrictEqual(w.sent, [{ cmd: 'hero.fireHero', data: { castleId: 1, heroId: 16 } }]);
 });
 t('the mayor may be fired (NEAT: idle, mayor)', async () => {
   const w = world();
@@ -547,6 +566,26 @@ t('uplevelheroes needs config hero:1 or more (NEAT)', async () => {
   const r2 = await runIn(off, 'uplevelheroes' + TAIL, { session: session(off, { 9: 'config hero:0' }) });
   assert.deepStrictEqual(off.sent, []);
   assert.match(tail(r2)[0], /hero management off/);
+});
+// The script's own `config hero:1` lands in the goal LAYER, not in the saved
+// text. Until 2026-09-22 uplevelheroes read only the saved goals and refused the
+// line the same script had just written.
+t('uplevelheroes sees config hero:1 set by the script itself', async () => {
+  const GL = require('./goallayers');
+  const w = world();
+  GL.clearScriptLayer('a1', 1);
+  try {
+    GL.addScriptLine('a1', 1, 'config hero:1');
+    const r = await runIn(w, 'uplevelheroes' + TAIL, { session: layered({ 9: 'keepheroes any:level>=100' }) });
+    assert.deepStrictEqual(w.sent.filter((s) => s.cmd === 'hero.levelUp').map((s) => s.data.heroId), [11, 12, 13, 16], r.text);
+  } finally { GL.clearScriptLayer('a1', 1); }
+});
+t('uplevelheroes still refused when no layer sets config hero', async () => {
+  const w = world();
+  require('./goallayers').clearScriptLayer('a1', 1);
+  const r = await runIn(w, 'uplevelheroes' + TAIL, { session: layered({ 9: 'keepheroes any:level>=100' }) });
+  assert.deepStrictEqual(w.sent, []);
+  assert.match(tail(r)[0], /uplevelheroes needs config hero:1 or more/);
 });
 t('uplevelheroes: nolevelheroes holds back, heropoints spends', async () => {
   const w = world();

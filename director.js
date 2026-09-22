@@ -19,12 +19,44 @@ const { buildSnapshot } = require('./snapshot');
 const D = require('./db');
 const AUTH = require('./auth');
 const BOTS = require('./botctl');
+// Prepend / Append goals kept in files, synced into each account (goalfiles.js)
+const GF = require('./goalfiles');
 AUTH.configure();
+// Naming and browsing files on this machine is only for its own user: offered
+// while the Director listens on the loopback address alone (goalfiles.js).
+const LOCAL_FILES = ['127.0.0.1', 'localhost', '::1'].includes(process.env.BIND || '127.0.0.1');
+const GOALFILE_SEEN = new Map();
+// NEAT's start-up parameters (Custom Parameters, CmdParms.txt): checked here,
+// kept per org, handed to each console on its command line by botctl.js
+const SC = require('./script-console');
+
+// Whether an account's console runs its autorun scripts, and who says so —
+// what its console will read at its next start (script-console autorunSettings:
+// the environment, then the command line, then CmdParms.txt).
+function autoscriptsOf(org, acc) {
+  const sp = BOTS.startupParms(org, acc.id);
+  const own = SC.parseCmdParms(sp.text.account).autoscripts;
+  const fleet = SC.parseCmdParms(sp.text.fleet).autoscripts;
+  const file = SC.readCmdParms(SC.CMDPARMS, {}).autoscripts;
+  const env = process.env.AUTOSCRIPTS;
+  const [v, from] = env !== undefined ? [env, 'AUTOSCRIPTS'] : own !== undefined ? [own, 'account']
+    : fleet !== undefined ? [fleet, 'fleet'] : file !== undefined ? [file, 'CmdParms.txt'] : [null, null];
+  // a console running on other parameters than these: they apply from its next
+  // start. What it says it was started with, else what botctl started it with.
+  const live = liveByAccount.get(acc.id), rec = BOTS.bots(org)[acc.id];
+  const now = live && live.state !== 'process down' && Date.now() - live.at < 5 * 60000 ? live.startupArgs || []
+    : rec && rec.pid ? rec.args || [] : null;
+  const pending = now !== null && JSON.stringify(now) !== JSON.stringify(sp.args);
+  return { on: v === null ? false : SC.switchOn(v), from, pending };
+}
 
 const PORT = Number(process.env.DIRECTOR_PORT || 8712);
 const GAP_MS = Number(process.env.POLL_GAP_MS || 25000);   // between accounts
 const CYCLE_MIN_MS = Number(process.env.POLL_CYCLE_MS || 10 * 60000);
 const UPTIME_MS = Number(process.env.UPTIME_MS || 60000);  // bot health sample
+// How long the first poll waits for consoles to come up and claim their
+// accounts. A test sets it far ahead to keep the game out of it entirely.
+const FIRST_POLL_MS = Number(process.env.POLL_FIRST_MS || 30000);
 
 const n = (x) => Number(x || 0);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -39,36 +71,117 @@ const note = (m) => { log.push({ t: Date.now(), m: String(m) }); if (log.length 
 // Evony tolerates roughly 10 accounts per IP, so accounts are spread across the
 // proxy list. An account may pin a specific proxy with `proxy: "<raw line>"`.
 const { parseList, parseProxy } = require('./proxy');
+// The Trading tab: the market play read off the consoles' logs (trade-monitor.js).
+const TRADE = require('./trade-monitor');
+// the console logs are where botctl writes them
+const TRADE_DIR = process.env.BOT_LOG_DIR || __dirname;
+const TRADE_MON = new TRADE.Monitor({ dir: TRADE_DIR });
+const TRADE_HOLIDAY = new Map();
+// The Trading tab's setup side: accounts dragged into Buying / Selling, the play, and the
+// Start process / Stop buttons that run it the way glitch-run.js is run by hand
+// (trading-setup.js). One runner per organization, ticked every few seconds; there is
+// one control file, so only one play runs at a time.
+const TS = require('./trading-setup');
+const TRADE_CONTROL = TS.controlFile(path.join(__dirname, 'scripts', 'glitch-res-control.txt'));
+const TRADE_RUNNERS = new Map();      // orgId -> Runner
+// accountId -> { at, holiday: bool, hours, lord } — the last holiday badge seen while the
+// console was logged in, for a console that is between samples (never older than 30 min)
+const HOLI_SEEN = new Map();
+function glitchRun(args) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [path.join(__dirname, 'glitch-run.js'), ...args],
+      { cwd: __dirname, timeout: 6 * 60000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || '') + String(stderr || ''), error: err ? err.message : null }));
+  });
+}
+// Each account as the setup sees it, from the consoles' live headers — the holiday badge
+// there is the truth (the snapshot's `furlough` field is NOT, EVONY-RULES §4).
+function tradingAccounts(org) {
+  const now = Date.now();
+  const rec = BOTS.bots(org);
+  return org.accounts.all().map((a) => {
+    const live = liveByAccount.get(a.id) || null;
+    const fresh = !!(live && now - live.at < TS.LIVE_FRESH && live.state !== 'process down');
+    const connected = !!(fresh && live.connected);
+    const seen = HOLI_SEEN.get(a.id);
+    let holiday = null, holidayText = null;
+    if (connected) { holiday = !!live.holiday; holidayText = live.holiday ? live.holiday.text || null : null; }
+    else if (seen && now - seen.at < 30 * 60000) {
+      // last seen on holiday with at least an hour of it left: still on it
+      holiday = seen.holiday ? (seen.hours >= 1 ? true : null) : false;
+      holidayText = seen.holiday ? `${seen.text || ''} (seen ${Math.round((now - seen.at) / 60000)} min ago)` : null;
+    }
+    return {
+      id: a.id, label: a.label, enabled: a.enabled !== false, holiday, holidayText,
+      holidayReady: !!(live && live.holidayRun && live.holidayRun.ready),
+      lord: (live && live.lord) || (seen && seen.lord) || null,
+      connected, fresh, at: live ? live.at : 0,
+      state: live ? live.state : null, reason: live ? live.reason : null,
+      processDown: !fresh, maintenance: !!(live && live.state === 'maintenance'),
+      hasConsole: !!(rec[a.id] && rec[a.id].port),
+    };
+  });
+}
+function tradingRunner(orgId) {
+  let r = TRADE_RUNNERS.get(orgId);
+  if (!r) {
+    const org = D.org(orgId);
+    r = new TS.Runner({
+      store: org.settings, control: TRADE_CONTROL, exec: glitchRun,
+      accounts: () => tradingAccounts(org), monitor: TRADE_MON,
+      lastLineAt: (id) => TS.lastScriptLineAt(TRADE_DIR, id), note,
+    });
+    TRADE_RUNNERS.set(orgId, r);
+  }
+  return r;
+}
+// The Resources tab: every city's food, wood, stone, iron and gold, recorded once an hour
+// on the hour (city-resources.js), from the snapshots the consoles publish.
+const CITY_RES = require('./city-resources');
+function recordCityResources(why) {
+  for (const o of D.orgs.all().filter((x) => !x.disabled)) {
+    try {
+      const r = CITY_RES.record({ orgId: o.id });
+      note(`resource record (${why}): ${r.rows} cities${r.skipped.length ? ` — skipped ${r.skipped.join('; ')}` : ''}`);
+    } catch (e) { note('resource record failed: ' + e.message); }
+  }
+}
+// Besides the hourly record, one every morning at 08:30 — just before the daily
+// maintenance window (EVONY-RULES §2), so it holds what each town was carrying into
+// it. Checked every minute rather than scheduled once, so a Director that was down at
+// 08:30 still takes the day's record at its next start (city-resources.js decides).
+function recordMorningResources() {
+  for (const o of D.orgs.all().filter((x) => !x.disabled)) {
+    try {
+      const r = CITY_RES.recordMorning({ orgId: o.id });
+      if (!r) continue;
+      note(r.taken
+        ? `08:30 record for ${r.day}: ${r.rows} cities${r.late ? ' (late — taken at the first chance after 08:30)' : ''}`
+          + `${r.skipped.length ? ` — skipped ${r.skipped.join('; ')}` : ''}`
+        : `08:30 record for ${r.day}: nothing to record yet — ${r.skipped.join('; ') || 'no snapshots'}`);
+    } catch (e) { note('08:30 resource record failed: ' + e.message); }
+  }
+}
+{
+  // on the hour, every hour; and at start-up when the last record is over 55 min old
+  const next = 3600000 - (Date.now() % 3600000);
+  setTimeout(() => { recordCityResources('hourly'); setInterval(() => recordCityResources('hourly'), 3600000); }, next);
+  setTimeout(() => {
+    for (const o of D.orgs.all()) if (Date.now() - CITY_RES.lastAt(o.id) > 55 * 60000) { recordCityResources('start-up'); break; }
+  }, 90000);
+  setTimeout(() => { recordMorningResources(); setInterval(recordMorningResources, 60000); }, 100000);
+}     // accountId -> last known holiday badge (a console restarting has none)
 const PROXY_FILE = path.join(__dirname, 'proxies.txt');
 const MAX_PER_PROXY = Number(process.env.MAX_PER_PROXY || 10);
 
 // Proxies belong to an organization: one tenant's IP budget is not another's.
-function proxyText(org) {
-  let t = org.settings.get('proxyText', null);
-  if (t === null && fs.existsSync(PROXY_FILE)) {
-    t = fs.readFileSync(PROXY_FILE, 'utf8');      // one-time import of the old file
-    org.settings.set('proxyText', t);
-  }
-  return t || '';
-}
-function loadProxies(org) { return parseList(proxyText(org)); }
-
-// Deterministic spread: account order decides the bucket, so assignments are
-// stable between restarts instead of shuffling every poll.
-function proxyAssignments(org) {
-  const list = loadProxies(org);
-  const out = new Map();
-  if (!list.length) return out;
-  const accts = org.accounts.all();
-  const spread = accts.filter((a) => !a.proxy);
-  spread.forEach((a, i) => out.set(a.id, list[Math.floor(i / MAX_PER_PROXY) % list.length]));
-  for (const a of accts.filter((x) => x.proxy)) {
-    const p = parseProxy(a.proxy);
-    if (p) out.set(a.id, p);
-  }
-  return out;
-}
-
+// Each account is direct, pinned to one line, or "random" — a free line picked for
+// it and kept (proxy-pick.js). The Director's own polls go the same way the
+// account's console does, so an account never shows the server two IPs.
+const PP = require('./proxy-pick');
+const proxyText = PP.proxyText;
+const loadProxies = PP.loadProxies;
+function proxyAssignments(org) { return PP.assignAll(org, { note }); }
 function proxyFor(org, acc) { return proxyAssignments(org).get(acc.id) || null; }
 
 // ---------------------------------------------------------------- snapshot
@@ -87,6 +200,19 @@ async function pollAccount(org, acc) {
     try { g.close(); } catch {}
     return { at: Date.now(), ok: false, error: e.message, tookMs: Date.now() - started, proxy: proxy ? proxy.label : null };
   }
+}
+
+// Every hero this account holds goes into the fleet register (db.fleetHeroes),
+// which is what stops any console releasing a prisoner that is one of OUR OWN
+// heroes: a captured hero leaves its owner's roster at once, so only a
+// remembered row can prove it was ours (EVONY-RULES.md section 5). A console
+// writes its own too (session.rememberOwnHeroes); this covers an account the
+// Director polls because no console is running it, so the register can still be
+// complete — and with it incomplete, nothing is released anywhere.
+function rememberHeroes(accountId, snap) {
+  if (!snap || !snap.ok || !Array.isArray(snap.heroIds) || !snap.heroIds.length) return;
+  try { D.fleetHeroes.seen(accountId, snap.heroIds); }
+  catch (e) { note(`fleet hero register for ${accountId}: ${e.message}`); }
 }
 
 // ------------------------------------------------------------ poll rotation
@@ -108,6 +234,26 @@ async function focusedAccountIds() {
   return held;
 }
 
+// Is a console holding THIS account, right now? Asked again immediately before the
+// poll's own login, because the set taken at the top of a cycle goes stale: a cycle
+// is one account every GAP_MS, so with 21 accounts it lasts nine minutes, and any
+// console that comes up during it is not in that set.
+// On 2026-09-22 that cost the whole fleet: after a reboot the cycle began at 22:29:14
+// with nothing running, the keep-on watchdog brought all 21 consoles up by 22:30:07,
+// and the poller then logged in to one account every 25 s — kicking its own consoles
+// one after another, each of which stood down for 30 minutes (server.ConnectionLost is
+// another user logging in, and the poller IS another user).
+// One request in the ordinary case: the probe registered for this very account.
+async function heldByConsole(acc) {
+  const probes = allProbes();
+  const mine = probes.filter((pr) => pr.accountId === acc.id);
+  for (const pr of (mine.length ? mine : probes)) {
+    const r = await getJson(pr.url.replace(/\/$/, '') + '/api/session', 1500);
+    if (r.ok && r.json && r.json.account && r.json.account.id === acc.id) return true;
+  }
+  return false;
+}
+
 // One process serves every organization, so the poller walks them in turn. The
 // gap between accounts is global on purpose: it exists to avoid hammering the
 // game server, which does not care whose account it is.
@@ -124,12 +270,22 @@ async function pollCycle() {
       if (!targets.length) continue;
       note(`poll cycle: ${o.name} — ${targets.length} account(s)`);
       for (const acc of targets) {
-        if (focused.has(acc.id)) {
+        // the set from the top of the cycle, and then a fresh look at this one
+        // account — a console that came up since must not be kicked by our own poll
+        if (focused.has(acc.id) || await heldByConsole(acc)) {
           note(`${acc.label}: open in a console — skipped (a second login would kick it)`);
+          continue;
+        }
+        // Somebody else logged in and kicked our console: the account is theirs
+        // until the hold runs out (Session.kickHold), and a poll would kick them.
+        const kick = org.settings.get('kickHold:' + acc.id, null);
+        if (kick && Number(kick.until) > Date.now()) {
+          note(`${acc.label}: kicked by another login — left alone until ${new Date(kick.until).toLocaleTimeString()}`);
           continue;
         }
         const snap = await pollAccount(org, acc);
         org.snapshots.add(acc.id, snap);
+        rememberHeroes(acc.id, snap);
         total++;
         note(snap.ok ? `${acc.label}: ok (${snap.cities} cities, ${snap.incoming} incoming)`
                      : `${acc.label}: ${snap.error}`);
@@ -199,13 +355,16 @@ function allProbes() {
 
 async function sampleUptime() {
   const at = Date.now();
+  // Which accounts answered this round, and the probes that did not: a probe
+  // that is dead while its account answered on another port is a leftover from a
+  // restart (see registerProbe in botctl.js), not the account being down.
+  const answered = new Set();
+  const dead = [];
   for (const pr of allProbes()) {
     const org = pr.orgId ? D.org(pr.orgId) : null;
     const r = await getJson(pr.url.replace(/\/$/, '') + '/api/session');
     if (!r.ok) {
-      D.uptime.add({ orgId: pr.orgId, at, probe: pr.probe, reachable: false, up: false,
-        state: 'down', reason: r.error === 'ECONNREFUSED' ? 'bot process not running' : r.error,
-        latencyMs: r.ms, activity: false });
+      dead.push({ pr, r });
       for (const [id, v] of liveByAccount) {
         if (v.probe === pr.probe) {
           liveByAccount.set(id, { ...v, at, connected: false, state: 'process down',
@@ -215,6 +374,7 @@ async function sampleUptime() {
       continue;
     }
     const h = r.json || {};
+    if (h.account && h.account.id) answered.add(pr.orgId + '|' + h.account.id);
     // A console-held account is never polled by pollCycle (a second login would
     // kick it), so without this its snapshot history would stay empty — exactly
     // for the accounts that are actually being run. The console publishes one
@@ -225,7 +385,10 @@ async function sampleUptime() {
         // Only file it if this org really owns the account the console names —
         // a console is a separate process and its claim is not proof.
         if (org && org.ownsAccount(h.account.id)
-            && (!last || h.snapshot.at > n(last.at))) org.snapshots.add(h.account.id, h.snapshot);
+            && (!last || h.snapshot.at > n(last.at))) {
+          org.snapshots.add(h.account.id, h.snapshot);
+          rememberHeroes(h.account.id, h.snapshot);
+        }
       } catch (e) { note(`snapshot from ${pr.probe}: ${e.message}`); }
     }
     // Traffic within the sample window, or the log/tick counters moved.
@@ -241,13 +404,35 @@ async function sampleUptime() {
         state: paused ? 'maintenance' : (h.state || null),
         reason: paused ? (h.maintenance.why || 'server maintenance') : (h.reason || null),
         engineMode: h.engineMode || null,
+        // the console's engine paused (it should never be: the user, 2026-09-18)
+        enginePaused: h.paused === true,
+        // { on, cities: [{ name, inbound, firstLandsAt, lastWaveAt, loyalty }] }
+        // (session.js underAttackView); none from a console older than it
+        underAttack: h.underAttack || null,
         // An account on holiday is logged in and fully usable — the holiday is a
         // badge on the row, not a fault (see Game.loginOutcome).
         holiday: h.holiday || null,
+        // { since, maints, ready }: how many maintenances it has been on holiday
+        // through, which is what makes it usable for the market play — the
+        // "Market glitch ready" column (session.js holidayRun).
+        holidayRun: h.holidayRun || null,
+        // the in-game name — what the control file's holi list names (trading-setup.js)
+        lord: h.lord || null,
         maintenance: h.maintenance || null,
+        // somebody else logged into this account: the hold running now, and the last
+        // time it happened at all (session.js — the game's server.ConnectionLost)
+        kick: h.kick || null,
+        lastKick: h.lastKick || null,
+        kickStep: h.kickStep || 0,
         retryInSec: h.retryInSec ?? null,
         proc: h.proc || null,
+        // its command line's start-up parameters; none on a console older than them
+        startupArgs: Array.isArray(h.startupArgs) ? h.startupArgs : [],
       });
+      if (h.connected) {
+        HOLI_SEEN.set(h.account.id, { at, holiday: !!h.holiday, hours: h.holiday ? Number(h.holiday.hours) || 0 : 0,
+          text: h.holiday ? h.holiday.text || null : null, lord: h.lord || null });
+      }
     }
     D.uptime.add({
       orgId: pr.orgId, at, probe: pr.probe,
@@ -262,19 +447,63 @@ async function sampleUptime() {
       rssMb: h.proc && h.proc.rssMb, heapMb: h.proc && h.proc.heapMb,
     });
   }
+
+  for (const { pr, r } of dead) {
+    // Whose was it? The entry says so when botctl wrote it, else whoever last
+    // answered under that probe name.
+    let acct = pr.accountId || null;
+    if (!acct) {
+      const last = D.one('SELECT accountId FROM uptime WHERE orgId = ? AND probe = ? AND accountId IS NOT NULL ORDER BY at DESC LIMIT 1',
+        pr.orgId || '', pr.probe);
+      acct = last && last.accountId || null;
+    }
+    const org = pr.orgId ? D.org(pr.orgId) : null;
+    if (acct && org && answered.has(pr.orgId + '|' + acct)) {
+      // The account is up on another port, so this line is a dead port left by a
+      // restart: drop it rather than sample it (and count it as downtime) forever.
+      const stored = BOTS.storedProbes(org);
+      const keep = stored.filter((p) => !(p.probe === pr.probe && p.url === pr.url));
+      if (keep.length !== stored.length) {
+        org.settings.set('probes', keep);
+        note(`uptime probe "${pr.probe}" (${pr.url}) dropped — its account is running on another port`);
+      }
+      continue;
+    }
+    D.uptime.add({ orgId: pr.orgId, at, probe: pr.probe, accountId: acct || undefined,
+      reachable: false, up: false,
+      state: 'down', reason: r.error === 'ECONNREFUSED' ? 'bot process not running' : r.error,
+      latencyMs: r.ms, activity: false });
+  }
 }
 
-// which NEAT bots are running on this machine (matches the old Director's view)
-function scanProcesses() {
-  return new Promise((resolve) => {
-    // NEAT only runs on Windows; elsewhere there is no bobby.exe and no tasklist.
-    if (process.platform !== 'win32') return resolve([]);
-    execFile('tasklist', ['/fi', 'imagename eq bobby.exe', '/fo', 'csv', '/nh'], (err, out) => {
-      if (err || !out || /No tasks/i.test(out)) return resolve([]);
-      const rows = out.trim().split(/\r?\n/).map((l) => l.split('","').map((s) => s.replace(/^"|"$/g, '')));
-      resolve(rows.filter((r) => r.length >= 5).map((r) => ({ name: r[0], pid: Number(r[1]), memory: r[4] })));
-    });
-  });
+// ------------------------------------------------------------ keep bot on
+// An account with "keep bot on" set is one that is meant to be playing: if its
+// console is not there — it crashed, the machine rebooted, somebody stopped it —
+// the Director starts it again. Switched off outranks it: off means off, which
+// is the whole point of the switch, so this never touches a switched-off
+// account. An account without credentials is skipped too; there is nothing to
+// log in with.
+const KEEP_MS = Number(process.env.KEEP_ON_MS || 60000);
+let keeping = false;
+async function keepBotsOn() {
+  if (keeping) return;
+  keeping = true;
+  try {
+    for (const o of D.orgs.all()) {
+      if (o.disabled) continue;
+      const org = D.org(o.id);
+      for (const acc of org.accounts.all()) {
+        if (!acc.keepOn || acc.enabled === false || !acc.email || !acc.password) continue;
+        // Being started, stopped or restarted by someone else right now: that
+        // is not "down", and a second start is the fight this is here to avoid.
+        if (BOTS.busy(acc.id)) continue;
+        if (await BOTS.running(org, acc)) continue;
+        note(`${acc.label}: keep bot on — no console is running it, starting one`);
+        const r = await BOTS.start(org, acc, { note });
+        if (!r.ok) note(`${acc.label}: could not start its console — ${r.error}`);
+      }
+    }
+  } catch (e) { note('keep bot on: ' + e.message); } finally { keeping = false; }
 }
 
 // ------------------------------------------------------------------- server
@@ -299,7 +528,6 @@ http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/accounts') {
-    const procs = await scanProcesses();
     const assign = proxyAssignments(ORG);
     const list = loadProxies(ORG);
     const counts = {};
@@ -308,15 +536,86 @@ http.createServer(async (req, res) => {
       accounts: ORG.accounts.withSnapshots().map((a) => ({
         ...a,
         proxyLabel: (assign.get(a.id) || {}).label || null,
+        // the line it actually logs in through (a random account's pick), for the
+        // page to say when two accounts share one
+        proxyRaw: (assign.get(a.id) || {}).raw || null,
+        // set when the account's OWN console moved it off its proxy because it could
+        // not get in (session.js rotateProxyIfStuck) — saving a proxy here ends it
+        proxyMoved: (() => {
+          const ov = ORG.settings.get(PP.overrideKey(a.id), null);
+          if (!ov || !ov.raw) return null;
+          return { label: (parseProxy(ov.raw) || {}).label || ov.raw, at: ov.at || null, why: ov.why || null,
+            was: ov.was ? ((parseProxy(ov.was) || {}).label || ov.was) : null };
+        })(),
+        // after maintenance: 'monitor' finds its end, 'follow' logs in right behind it (session.js maintRace)
+        maintRole: ORG.settings.get('maintRole:' + a.id, null),
+        // after another login kicks its console: stay out this many minutes (null = not set), and the hold running now
+        kickHoldMin: ORG.settings.get('kickHoldMin:' + a.id, null),
+        kickHoldUntil: (() => { const h = ORG.settings.get('kickHold:' + a.id, null); return h && Number(h.until) > Date.now() ? Number(h.until) : null; })(),
+        // how far up the ladder it is: 1 = the plain minutes, 2 = twice them, and so on
+        // (session.js holdForKick) — back to 0 as soon as a login holds
+        kickHoldStep: Number(ORG.settings.get('kickHoldStep:' + a.id, 0)) || 0,
+        // the files its Prepend / Append goals are kept in step with (goalfiles.js)
+        prependFile: GF.fileOf(ORG, a.id, 'prepend'),
+        appendFile: GF.fileOf(ORG, a.id, 'append'),
+        // its own start-up parameters, and whether its scripts autorun (and who says so)
+        startupParms: BOTS.startupParms(ORG, a.id).text.account,
+        autoscripts: autoscriptsOf(ORG, a),
         live: liveByAccount.get(a.id) || null,
         // Which console process is running this account. Consoles are pinned to
         // one account each, so this is how the UI knows where to send you.
         consoleUrl: (liveByAccount.get(a.id) || {}).url || null,
       })),
-      polling, gapMs: GAP_MS, processes: procs, log: log.slice(-120),
+      polling, gapMs: GAP_MS, log: log.slice(-120),
       proxies: list.map((p) => ({ label: p.label, accounts: counts[p.label] || 0 })),
+      // what an account's Proxy dropdown offers: each line, and how its last test went
+      proxyOptions: list.map((p) => ({ raw: p.raw, label: p.label, test: (ORG.settings.get('proxyTests', {}) || {})[p.raw] || null })),
       proxyText: proxyText(ORG), maxPerProxy: MAX_PER_PROXY, storage: D.stats(),
+      goalFiles: LOCAL_FILES,
+      // every account's start-up parameters (NEAT's Custom Parameters)
+      startupFleet: BOTS.startupParms(ORG, null).text.fleet,
     }));
+  }
+
+  // The fleet's start-up parameters: every console gets them at its next start,
+  // under the account's own (botctl.js startupParms).
+  if (url.pathname === '/api/startup' && req.method === 'POST') {
+    const b = await body(req);
+    const text = String(b.text == null ? '' : b.text).trim();
+    const chk = SC.checkStartupParms(text);
+    if (chk.errors.length) return send(200, 'application/json', JSON.stringify({ ok: false, error: chk.errors.join(' · '), notes: chk.notes }));
+    const was = BOTS.startupParms(ORG, null).text.fleet;
+    ORG.settings.set(BOTS.PARMS_KEY, text);
+    if (was !== text) note(`start-up parameters for every account: ${text ? SC.parmsToArgs(chk.parms).join(' ') : 'none'} — from each console's next start`);
+    return send(200, 'application/json', JSON.stringify({ ok: true, notes: chk.notes, accounts: ORG.accounts.withSnapshots() }));
+  }
+
+  // The Browse button beside a goal file: a folder's sub-folders and .txt files.
+  //   GET /api/browse?dir=<folder>   (the Director's own folder when empty)
+  if (url.pathname === '/api/browse') {
+    if (!LOCAL_FILES) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'goal files are only for a Director on this machine (BIND is set)' }));
+    return send(200, 'application/json', JSON.stringify(GF.browse(url.searchParams.get('dir'))));
+  }
+
+  // Test every proxy in the list against the game server (proxy.js testProxy:
+  // a tunnel and the policy request, never a login), and keep the results so each
+  // account's Proxy dropdown can say which ones work.
+  if (url.pathname === '/api/proxies/test' && req.method === 'POST') {
+    const list = loadProxies(ORG);
+    let host = null, port = 443;
+    try { ({ host, port } = await require('./evony').getServerConfig('ss71')); } catch (e) {
+      return send(200, 'application/json', JSON.stringify({ ok: false, error: 'could not find the game server: ' + e.message }));
+    }
+    const { testProxy } = require('./proxy');
+    const results = {};
+    await Promise.all(list.map(async (p) => {
+      const r = await testProxy(p, host, port);
+      results[p.raw] = { ...r, label: p.label, at: Date.now() };
+    }));
+    ORG.settings.set('proxyTests', results);
+    const good = Object.values(results).filter((r) => r.ok).length;
+    note(`proxy test: ${good} of ${list.length} reach the game server`);
+    return send(200, 'application/json', JSON.stringify({ ok: true, good, total: list.length, results }));
   }
 
   if (url.pathname === '/api/proxies' && req.method === 'POST') {
@@ -340,26 +639,129 @@ http.createServer(async (req, res) => {
       if (!acc) return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
       await BOTS.stop(ORG, acc, { note }).catch(() => {});
       ORG.accounts.remove(b.id);
+      ORG.settings.set(PP.pickKey(acc.id), null);     // its random proxy is free again
       return send(200, 'application/json', JSON.stringify({ ok: true, accounts: ORG.accounts.withSnapshots() }));
     }
     // A brand new account has no console behind it, and an account without a
     // console cannot be logged into at all — which is exactly how a new account
     // used to end up sitting in the fleet list doing nothing. Start its bot.
     const fresh = !b.id;
-    if (!fresh && !ORG.accounts.get(b.id)) {
+    const prev = fresh ? null : ORG.accounts.get(b.id);
+    if (!fresh && !prev) {
       return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
     }
+    // The goal files are checked before anything is saved, so a bad path saves nothing.
+    const files = {};
+    for (const which of GF.WHICH) {
+      const v = b[which + 'File'];
+      if (v === undefined) continue;
+      if (!LOCAL_FILES && String(v).trim()) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'goal files are only for a Director on this machine (BIND is set)' }));
+      try { files[which] = GF.checkPath(v); } catch (e) {
+        return send(200, 'application/json', JSON.stringify({ ok: false, error: `${which} goals file: ${e.message}` }));
+      }
+    }
+    // so are its start-up parameters
+    let startup = null;
+    if (b.startupParms !== undefined) {
+      startup = SC.checkStartupParms(String(b.startupParms == null ? '' : b.startupParms).trim());
+      if (startup.errors.length) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'start-up parameters: ' + startup.errors.join(' · ') }));
+    }
     const acc = ORG.accounts.upsert(b);
-    let bot = null;
+    // A proxy you choose outranks any move the account's console made for itself
+    // when it could not get in (proxy-pick.js rotate): saving one ends that move.
+    if (b.proxy !== undefined && (!prev || prev.proxy !== acc.proxy)) {
+      const had = PP.clearOverride(ORG, acc.id);
+      if (had) note(`${acc.label}: back on the proxy you chose — the move its console made to `
+        + `${(parseProxy(had.raw) || {}).label || had.raw} is dropped`);
+    }
+    if (startup) {
+      const text = String(b.startupParms == null ? '' : b.startupParms).trim();
+      const was = BOTS.startupParms(ORG, acc.id).text.account;
+      ORG.settings.set(`${BOTS.PARMS_KEY}:${acc.id}`, text || null);
+      if (was !== text) note(`${acc.label}: start-up parameters ${text ? SC.parmsToArgs(startup.parms).join(' ') : 'cleared'} — from its console's next start`);
+    }
+    let goalFiles = null;
+    if (Object.keys(files).length) {
+      for (const [which, v] of Object.entries(files)) {
+        const was = GF.fileOf(ORG, acc.id, which);
+        GF.setFile(ORG, acc.id, which, v);
+        if (was !== (v || null)) note(v ? `${acc.label}: ${which} goals now kept in step with ${v}` : `${acc.label}: ${which} goals no longer come from ${was} — the saved text stays`);
+      }
+      goalFiles = GF.syncAccount(ORG, acc, { note, seen: GOALFILE_SEEN });
+    }
+    // After a kick (another login — NEAT's, a person's): how long its console stays out.
+    // Kept in the org's settings, read by the console every few seconds (session.js
+    // kickHoldMin) — a change applies without a restart. Blank = not set, 0 = straight back.
+    if (b.kickHoldMin !== undefined) {
+      const raw = b.kickHoldMin === null ? '' : String(b.kickHoldMin).trim();
+      const n = raw === '' ? null : Number(raw);
+      if (n !== null && !(Number.isFinite(n) && n >= 0 && n <= 1440)) throw new Error('after a kick: minutes from 0 to 1440, or blank');
+      const was = ORG.settings.get('kickHoldMin:' + acc.id, null);
+      ORG.settings.set('kickHoldMin:' + acc.id, n);
+      // a new number starts the ladder again, or the next hold would jump straight to
+      // whatever step the old one had reached
+      if (was !== n) ORG.settings.set('kickHoldStep:' + acc.id, 0);
+      if (was !== n) note(`${acc.label}: after a kick ${n === null ? 'not set (straight back after a disconnect)' : n === 0 ? 'straight back in' : `stays out ${n} min, then ${n * 2}, ${n * 3} … while it goes on being refused`}`);
+    }
+    // After maintenance: kept in the org's settings, where the account's console
+    // reads it on every tick — a change applies without a restart.
+    if (b.maintRole !== undefined) {
+      const role = b.maintRole === 'monitor' || b.maintRole === 'follow' ? b.maintRole : null;
+      ORG.settings.set('maintRole:' + acc.id, role);
+      // one maintenance monitor per server is enough: the signal is shared
+      if (role === 'monitor') {
+        for (const other of ORG.accounts.all()) {
+          if (other.id !== acc.id && (other.server || 'ss71') === (acc.server || 'ss71') && ORG.settings.get('maintRole:' + other.id, null) === 'monitor') {
+            ORG.settings.set('maintRole:' + other.id, 'follow');
+            note(`${other.label}: maintenance monitor handed to ${acc.label} — ${other.label} now follows`);
+          }
+        }
+      }
+    }
+    let bot = null, restarted = false;
+    // "Keep bot on" turns the switch into a restart: the account is meant to be
+    // playing, so switching it off only takes its console down and brings it
+    // straight back. Clear the checkbox first if you want the account to stay
+    // off — that is the pair of settings the Director's page explains.
+    if (!fresh && b.enabled === false && acc.enabled === false && acc.keepOn) {
+      ORG.accounts.upsert({ id: acc.id, enabled: true });
+      restarted = true;
+      note(`${acc.label} is set to keep its bot on — restarting its console instead of switching it off`);
+      bot = await BOTS.restart(ORG, acc, { note, readyMs: 25000 });
+      if (!bot.ok) note(`${acc.label}: no console — ${bot.error}`);
+      return send(200, 'application/json', JSON.stringify({
+        ok: true, bot, restarted, accounts: ORG.accounts.withSnapshots() }));
+    }
     if (fresh) {
       note(`${acc.label} added — bringing up its console`);
       // Bounded on purpose: this is a browser waiting on a form. Once the
       // process is up the Uptime tab owns it, logged in or still trying.
       bot = await BOTS.start(ORG, acc, { note, readyMs: 25000 });
       if (!bot.ok) note(`${acc.label}: no console — ${bot.error}`);
+    } else if (b.enabled !== undefined && (acc.enabled !== false) !== (prev.enabled !== false)) {
+      // Switched off means switched off: the account stays in the fleet with all
+      // its history, but nothing plays it. The poller already skips it — the
+      // console is what actually logs in, so that has to come down too, or the
+      // bot carries on building and marching for a row marked "off".
+      if (acc.enabled === false) {
+        note(`${acc.label} switched off — taking its console down`);
+        bot = await BOTS.stop(ORG, acc, { note }).catch((e) => ({ ok: false, error: e.message }));
+        // A console this Director never started is not ours to kill, and it is
+        // still logged in and playing. Say so, rather than let the row read
+        // "off" while the bot carries on.
+        const live = liveByAccount.get(acc.id);
+        if (!bot.ok && live && live.url && Date.now() - live.at < 5 * 60000) {
+          bot.stillRunning = live.url;
+          note(`${acc.label}: the console on ${live.url} was not started by the Director — stop it there`);
+        }
+      } else {
+        note(`${acc.label} switched on — bringing its console back up`);
+        bot = await BOTS.start(ORG, acc, { note, readyMs: 25000 });
+        if (!bot.ok) note(`${acc.label}: no console — ${bot.error}`);
+      }
     }
     return send(200, 'application/json', JSON.stringify({
-      ok: true, bot, accounts: ORG.accounts.withSnapshots() }));
+      ok: true, bot, restarted, goalFiles, startupNotes: startup ? startup.notes : null, accounts: ORG.accounts.withSnapshots() }));
   }
 
   // Start or stop the console for one account, for the accounts that predate
@@ -368,9 +770,18 @@ http.createServer(async (req, res) => {
     const b = await body(req);
     const acc = ORG.accounts.get(b.id);
     if (!acc) return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
+    // A switched-off account has no business logging in, whichever button asked.
+    if (acc.enabled === false && b.action !== 'stop') {
+      return send(409, 'application/json', JSON.stringify({
+        ok: false, error: `${acc.label} is switched off — switch it on to start its console` }));
+    }
     const r = b.action === 'stop'
       ? await BOTS.stop(ORG, acc, { note })
       : await BOTS.start(ORG, acc, { note, paused: b.paused });
+    // Stopping a bot that is set to keep on is a restart, not an ending: the
+    // watchdog will have it back within the minute. Say so rather than let it
+    // look like the stop did not take.
+    if (b.action === 'stop' && acc.keepOn) r.keepOn = true;
     return send(200, 'application/json', JSON.stringify(r));
   }
 
@@ -385,19 +796,249 @@ http.createServer(async (req, res) => {
     return send(200, 'application/json', JSON.stringify({ ok: true, started: true }));
   }
 
+  // ---- resources: the hourly per-city record ----
+  if (url.pathname === '/api/resources' && req.method === 'GET') {
+    const hours = Math.min(24 * 90, Math.max(1, Number(url.searchParams.get('hours')) || 168));
+    const accounts = (url.searchParams.get('accounts') || '').split(',').map((x) => x.trim()).filter(Boolean);
+    try {
+      const out = CITY_RES.series({ orgId: req.org.id, hours, accounts, q: url.searchParams.get('q') || '' });
+      // each account's holiday state, for the holiday / not-holiday split: the live badge,
+      // else the last badge seen at any age (nobody logs in or out of a holiday while the
+      // consoles are down for maintenance), else unknown
+      const hol = new Map(tradingAccounts(ORG).map((a) => {
+        let h = a.holiday, seen = false;
+        if (h == null && HOLI_SEEN.has(a.id)) { h = HOLI_SEEN.get(a.id).holiday; seen = true; }
+        const live = liveByAccount.get(a.id);
+        if (h == null && live && live.holidayRun) { h = true; seen = true; }
+        return [a.id, { holiday: h, seen }];
+      }));
+      for (const a of out.accounts) Object.assign(a, hol.get(a.id) || { holiday: null, seen: false });
+      return send(200, 'application/json', JSON.stringify(out));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+  if (url.pathname === '/api/resources/record' && req.method === 'POST') {
+    try { return send(200, 'application/json', JSON.stringify({ ok: true, ...CITY_RES.record({ orgId: req.org.id }) })); }
+    catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
+  }
+  // the daily 08:30 records, town by town
+  if (url.pathname === '/api/resources/mornings' && req.method === 'GET') {
+    const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
+    const accounts = (url.searchParams.get('accounts') || '').split(',').map((x) => x.trim()).filter(Boolean);
+    try {
+      return send(200, 'application/json', JSON.stringify({
+        ...CITY_RES.mornings({ orgId: req.org.id, days, accounts, q: url.searchParams.get('q') || '' }),
+        due: CITY_RES.morningDue(req.org.id) }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+  // which towns the market glitch does not put back
+  if (url.pathname === '/api/resources/restore' && req.method === 'GET') {
+    try { return send(200, 'application/json', JSON.stringify(CITY_RES.restoreReport({ orgId: req.org.id }))); }
+    catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+
+  // ---- trading: the market play, read off the consoles' logs ----
+  // Holiday accounts are one side of the play and the rest the other; which is
+  // which comes from the consoles' own live headers (the holiday badge).
+  // ---- trading setup: Buying / Selling, the play, Start process / Stop (trading-setup.js) ----
+  //   GET  /api/trading/setup                  -> { setup, run, control, accounts, check }
+  //   POST /api/trading/setup   { sides?, play?, cleanBefore?, cleanAfter?, delaySec?, gateMin?, ladder?, watchdog? }
+  //        saves it (the DB) — never touches the control file
+  //   POST /api/trading/control { play?: {...}, holi?: [lords], version } -> the control file NOW (live)
+  //   POST /api/trading/start   {}              -> checks, one control-file write, then the sequence
+  //   POST /api/trading/stop    { clean? }      -> `end`, wait, restore, clean after
+  if (url.pathname.startsWith('/api/trading') && !req.org) {
+    return send(403, 'application/json', JSON.stringify({ ok: false, error: 'not in an organization' }));
+  }
+  if (url.pathname.startsWith('/api/trading/')) {
+    const TR = tradingRunner(req.org.id);
+    const reply = (extra = {}) => send(200, 'application/json', JSON.stringify({ ok: true, ...TR.view(), ...extra }));
+    const fail = (e) => send(200, 'application/json', JSON.stringify({ ok: false, error: e.message, check: e.check || null, conflict: !!e.conflict }));
+    const by = (req.user && (req.user.email || req.user.name)) || 'user';
+    try {
+      if (url.pathname === '/api/trading/setup' && req.method === 'GET') return reply();
+      if (url.pathname === '/api/trading/setup' && req.method === 'POST') {
+        const b = await body(req);
+        TR.saveSetup(b, by);
+        // While a play runs, the setup IS the play: its price, caps and runways go to the
+        // control file at once, which every running city re-reads before each batch — no
+        // Stop/Start (the user, 2026-09-22: "should I just change the setup and let it run,
+        // would it automatically adapt?"). The resource and the sides still need a Start: a
+        // resource switch cleans reports and restarts the consoles, and moving an account
+        // between Buying and Selling means restarting it on the other script.
+        let live = null;
+        const run = TR.run();
+        if (b.play && TR.active() && run.state === 'running') {
+          const cur = TS.parseControl(TRADE_CONTROL.read().text);
+          const ch = TS.partialChange({ ...b.play, res: undefined, prevRes: 'auto' }, cur);
+          delete ch.res; delete ch.prevRes;
+          if (ch.price !== undefined) {
+            const chk = TS.checkPlay({ sides: Object.fromEntries([...run.buy.map((i) => [i, 'buy']), ...run.sell.map((i) => [i, 'sell'])]),
+              accounts: tradingAccounts(ORG), price: ch.price });
+            const bad = chk.errors.filter((e) => /holiday/i.test(e));
+            if (bad.length) throw new Error(bad.join('\n'));
+          }
+          if (Object.keys(ch).length) {
+            live = TR.applyLive(ch).version;
+            note(`trading: setup saved during the play — written to the control file live (${by})`);
+          }
+        }
+        return reply(live ? { written: live } : {});
+      }
+      if (url.pathname === '/api/trading/control' && req.method === 'POST') {
+        const b = await body(req);
+        const cur = TS.parseControl(TRADE_CONTROL.read().text);
+        const ch = b.play ? TS.partialChange(b.play, cur) : {};
+        if (Array.isArray(b.holi)) {
+          // only lords of accounts the consoles say are ON HOLIDAY now may go in it: the
+          // holi list is what lets an account sell cheap or buy dear (EVONY-RULES §4)
+          const accts = tradingAccounts(ORG);
+          const bad = b.holi.filter((x) => !accts.some((a) => a.lord === x && a.holiday === true));
+          if (bad.length) throw new Error(`not on holiday (or not reporting), so not put in the holi list: ${bad.join(', ')}`);
+          ch.holi = b.holi;
+        }
+        // a live change to a play started from here still has to keep its banks the
+        // holiday side: a price across 50 would flip which side that is
+        const run = TR.run();
+        if (TR.active() && ch.price !== undefined) {
+          const chk = TS.checkPlay({ sides: Object.fromEntries([...run.buy.map((i) => [i, 'buy']), ...run.sell.map((i) => [i, 'sell'])]),
+            accounts: tradingAccounts(ORG), price: ch.price });
+          const bad = chk.errors.filter((e) => /holiday/i.test(e));
+          if (bad.length) throw new Error(bad.join('\n'));
+        }
+        if (!Object.keys(ch).length) throw new Error('nothing to change');
+        const r = TR.applyLive(ch, b.version);
+        note(`trading: control file written from the Trading tab (${by})`);
+        return reply({ written: r.version });
+      }
+      if (url.pathname === '/api/trading/start' && req.method === 'POST') {
+        const b = await body(req);
+        if (b.setup) TR.saveSetup(b.setup, by);
+        for (const [oid, other] of TRADE_RUNNERS) {
+          if (oid !== req.org.id && other.active()) throw new Error('another organization has a play running on this machine — one control file, one play');
+        }
+        TR.start({ by });
+        TR.tick();                       // the first step now, not in 5 s
+        return reply();
+      }
+      if (url.pathname === '/api/trading/stop' && req.method === 'POST') {
+        const b = await body(req);
+        TR.requestStop({ clean: b.clean === undefined ? undefined : !!b.clean, by });
+        TR.tick();
+        return reply();
+      }
+    } catch (e) { return fail(e); }
+    return send(404, 'application/json', JSON.stringify({ ok: false, error: 'no such trading route' }));
+  }
+
+  if (url.pathname === '/api/trading') {
+    const minutes = Math.min(720, Math.max(15, Number(url.searchParams.get('minutes')) || 60));
+    // A play started from the Trading tab says which accounts are in it and which side is
+    // the holiday (bank) side; without one, the holiday badges decide as before.
+    const run = tradingRunner(req.org.id).run();
+    const runOn = run && Array.isArray(run.banks) && (['starting', 'running', 'stopping'].includes(run.state)
+      || (run.stoppedAt && Date.now() - run.stoppedAt < minutes * 60000));
+    const inRun = runOn ? new Set([...(run.buy || []), ...(run.sell || [])]) : null;
+    const bankIds = runOn ? new Set(run.banks || (run.bankSide === 'buy' ? run.buy : run.sell) || []) : null;
+    const accounts = ORG.accounts.all()
+      .filter((a) => fs.existsSync(path.join(TRADE_DIR, `console-${a.id}.log`)))
+      .filter((a) => !inRun || inRun.has(a.id))
+      .map((a) => {
+        const live = liveByAccount.get(a.id) || {};
+        if (live.connected) TRADE_HOLIDAY.set(a.id, !!live.holiday);
+        const holiday = bankIds ? bankIds.has(a.id) : (TRADE_HOLIDAY.get(a.id) ?? !!live.holiday);
+        return { id: a.id, label: a.label, holiday, connected: live.connected ?? null };
+      });
+    try {
+      const rep = TRADE.report(TRADE_MON, accounts, { minutes, dir: __dirname });
+      if (runOn) {
+        rep.run = { state: run.state, createdAt: run.createdAt, runningAt: run.runningAt || null, stoppedAt: run.stoppedAt || null,
+          kind: run.kind, bankSide: run.bankSide, res: run.res, price: run.price,
+          buy: run.buy, sell: run.sell, labels: run.labels, cleanBefore: !!run.cleanBefore, cleanAfter: !!run.cleanAfter };
+      }
+      return send(200, 'application/json', JSON.stringify(rep));
+    } catch (e) {
+      return send(200, 'application/json', JSON.stringify({ error: e.message }));
+    }
+  }
+
   // ---- uptime ----
   if (url.pathname === '/api/uptime') {
     const hours = Math.min(720, Math.max(1, Number(url.searchParams.get('hours')) || 12));
     const since = Date.now() - hours * 3600000;
     const rows = ORG.uptime.series(since, url.searchParams.get('probe') || null);
 
+    // A trading console that runs out of memory (EVONY-RULES.md, 2026-09-20) gets
+    // restarted "plainly" on a new port every few hours, and each restart used to
+    // register a brand new probe without ever dropping the old one — so one
+    // account piled up several ghost rows, most of them dead (0% up) while only
+    // the newest carried real data. The account is the true identity here, not
+    // the probe name or port, so everything is folded into one series per
+    // account, under the probe name it answered under most recently. A probe
+    // that has never once answered with an account (a fresh entry nobody has
+    // started yet) keeps its own row.
+    const acctOfProbe = new Map();   // probe name -> whose it is (probeAccount below)
+    const nameOfAcct = new Map();    // accountId -> probe name that last ANSWERED as it
+    const lastNameOfAcct = new Map();// ...or, if nothing answered in the window, the last one tried
+    // A dead probe writes a row with no account in it (nothing answered to say
+    // whose it was), so a ghost keeps piling those up every minute. Whose it is
+    // comes from, in order: the "(a5)" registerProbe puts on a clashing name, the
+    // accountId the probe list gives it, the account whose label it is named
+    // after, and only then whatever answered under that name most often. Not the
+    // LAST answer: a port reused by another account for a minute ("Lord13 (a13)"
+    // answering as a1, 2026-09-22) would otherwise hand it the whole dead history.
+    // Without the label, a ghost that died before this window ("Lord05" beside
+    // "Lord05 (a5)") never resolved and got a red row of its own.
+    const owned = new Map(ORG.accounts.all().map((a) => [a.id, a]));
+    const byLabel = new Map([...owned.values()].map((a) => [String(a.label || '').trim().toLowerCase(), a.id]));
+    const cfgAcct = new Map(probeList(ORG).filter((p) => p.accountId).map((p) => [p.probe, p.accountId]));
+    const seen = new Map();          // probe name -> Map(accountId -> answers)
+    for (const r of rows) {
+      if (!r.accountId) continue;
+      const m = seen.get(r.probe) || new Map();
+      m.set(r.accountId, (m.get(r.accountId) || 0) + 1);
+      seen.set(r.probe, m);
+    }
+    const probeAccount = (name) => {
+      const suffix = /\(([^()]+)\)\s*$/.exec(name);
+      if (suffix && owned.has(suffix[1])) return suffix[1];
+      if (cfgAcct.has(name)) return cfgAcct.get(name);
+      const bare = String(name).replace(/\s*\([^()]*\)\s*$/, '').trim().toLowerCase();
+      if (byLabel.has(bare)) return byLabel.get(bare);
+      const m = seen.get(name);
+      return m ? [...m].sort((a, b) => b[1] - a[1])[0][0] : null;
+    };
+    for (const r of rows) if (!acctOfProbe.has(r.probe)) acctOfProbe.set(r.probe, probeAccount(r.probe));
+    // Rows are grouped under the name, so an account must never borrow a name
+    // that belongs to another one — the two would be drawn as one line.
+    for (const r of rows) {
+      if (!r.accountId || acctOfProbe.get(r.probe) !== r.accountId) continue;
+      lastNameOfAcct.set(r.accountId, r.probe);
+      if (r.reachable) nameOfAcct.set(r.accountId, r.probe);
+    }
+    const canonOf = (a) => nameOfAcct.get(a) || lastNameOfAcct.get(a)
+      || (owned.get(a) && owned.get(a).label) || a;
+    const acctOf = (r) => r.accountId || acctOfProbe.get(r.probe) || null;
+    const keyOf = (r) => { const a = acctOf(r); return a ? 'acct:' + a : 'probe:' + r.probe; };
+    const nameOf = (r) => { const a = acctOf(r); return a ? canonOf(a) : r.probe; };
+
+    // One sample per account per sampling instant. Every probe is asked at the
+    // same `at`, so when an account's console answers on one port the dead old
+    // ports asked in that same round are not the account being down — the live
+    // row wins, and only a round where NOTHING answered counts (once) as down.
+    const best = new Map();
+    for (const r of rows) {
+      const k = keyOf(r) + '|' + r.at;
+      const cur = best.get(k);
+      if (!cur || Number(r.up) > Number(cur.up) || (Number(r.up) === Number(cur.up) && Number(r.reachable) > Number(cur.reachable))) best.set(k, r);
+    }
+
     // Bucket into fixed slots so a gap (bot process dead, nothing written) shows
     // up as a real hole rather than the chart joining across it.
     const bucketMs = Math.max(UPTIME_MS, Math.round((hours * 3600000) / 720));
     const buckets = new Map();
-    for (const r of rows) {
-      const key = r.probe + '|' + Math.floor(r.at / bucketMs);
-      const cur = buckets.get(key) || { probe: r.probe, t: Math.floor(r.at / bucketMs) * bucketMs,
+    for (const r of best.values()) {
+      const key = keyOf(r) + '|' + Math.floor(r.at / bucketMs);
+      const cur = buckets.get(key) || { probe: nameOf(r), t: Math.floor(r.at / bucketMs) * bucketMs,
         n: 0, up: 0, reachable: 0, activity: 0, maintenance: 0, label: null, reason: null, state: null };
       cur.n++;
       cur.up += r.up; cur.reachable += r.reachable; cur.activity += r.activity;
@@ -446,13 +1087,25 @@ http.createServer(async (req, res) => {
       };
     });
 
+    // The configured list is what the Fleet's Probes editor last saved, port and
+    // all — it still has one line per restart until the console at an old port
+    // is deliberately dropped there. Fold it the same way: a configured probe
+    // that this window has already resolved to an account, under a name other
+    // than the one that account is using now, is a leftover from a dead port and
+    // is left out; one that has never answered at all (freshly added, or the
+    // account has not started yet) still gets its "no data" card.
+    const configured = probeList(ORG).filter((p) => {
+      const acctId = acctOfProbe.get(p.probe);
+      return !acctId || canonOf(acctId) === p.probe;
+    });
+
     // The very first sample ever recorded. Before it, an empty slot means the
     // Director was not watching yet — which is not the same as the bot being
     // down, and must not be painted as an outage.
     return send(200, 'application/json', JSON.stringify({
       hours, bucketMs, sampleMs: UPTIME_MS, slots, now: Date.now(),
       firstSample: firstEver,
-      probes, summary, configured: probeList(ORG),
+      probes, summary, configured,
     }));
   }
 
@@ -500,11 +1153,29 @@ http.createServer(async (req, res) => {
 
   // Give any console that is starting alongside the Director time to come up
   // and claim its account before the first poll goes looking for logins.
-  setTimeout(pollCycle, 30000);
+  setTimeout(pollCycle, FIRST_POLL_MS);
+  // The keep-on watchdog runs every KEEP_MS, starting one interval in — which
+  // also gives a console coming up alongside the Director time to answer, so it
+  // is not counted as missing and started a second time.
+  setTimeout(() => { keepBotsOn(); setInterval(keepBotsOn, KEEP_MS); }, KEEP_MS);
   const totalAccounts = D.orgs.all().reduce((t, o) => t + D.org(o.id).accounts.all().length, 0);
   setInterval(pollCycle, Math.max(CYCLE_MIN_MS, totalAccounts * GAP_MS + 60000));
   sampleUptime();
   setInterval(sampleUptime, UPTIME_MS);
+  // Prepend / Append goal files: a changed file reaches its accounts' goals
+  // within SYNC_MS, and the consoles read those every turn (goalfiles.js).
+  if (LOCAL_FILES) {
+    const syncFiles = () => GF.syncAll(D.orgs.all().filter((o) => !o.disabled).map((o) => D.org(o.id)), { note, seen: GOALFILE_SEEN });
+    syncFiles();
+    setInterval(syncFiles, GF.SYNC_MS);
+  }
+  // The Trading tab's plays: a run that was going when the Director stopped carries on
+  // (running, stopping); one that was mid-start is marked interrupted, not resumed.
+  for (const o of D.orgs.all()) {
+    if (o.disabled) continue;
+    try { if (D.org(o.id).settings.get(TS.RUN_KEY, null)) tradingRunner(o.id).resume(); } catch (e) { note('trading: ' + e.message); }
+  }
+  setInterval(() => { for (const r of TRADE_RUNNERS.values()) r.tick(); }, 5000);
   // Retention is by age and applies to every organization alike.
   setInterval(() => { D.uptime.prune(30); D.snapshots.prune(90); }, 6 * 3600000);
   // Keep the write-ahead log from growing all night.

@@ -134,4 +134,39 @@ function connectVia(proxy, destHost, destPort, timeout = 20000) {
     : socks5(proxy, destHost, destPort, timeout);
 }
 
-module.exports = { parseProxy, parseList, connectVia };
+// Does this proxy get us to the game server? A tunnel to host:port, then the
+// Flash policy request the real client makes first — no login, no game traffic,
+// so it can be run as often as wanted without costing an account anything. The
+// proxy's own type is tried first, then the other one (a bare host:port is
+// taken as socks5, but many providers only speak HTTP CONNECT).
+// -> { ok, type, tunnelMs, ms, why }
+async function testProxy(proxy, host, port, timeout = 10000) {
+  const tried = [];
+  for (const type of [proxy.type, proxy.type === 'http' ? 'socks5' : 'http']) {
+    const t0 = Date.now();
+    let s;
+    try { s = await connectVia({ ...proxy, type }, host, port, timeout); } catch (e) {
+      tried.push(`${type}: ${String(e.message).replace(/^(socks5|http proxy) [^:]+:\d+: /, '')}`);
+      continue;
+    }
+    const tunnelMs = Date.now() - t0;
+    const r = await new Promise((resolve) => {
+      const t1 = Date.now();
+      const done = (x) => { try { s.destroy(); } catch {} resolve(x); };
+      s.once('data', () => done({ ok: true, ms: Date.now() - t1 }));
+      s.once('error', (e) => done({ ok: false, why: e.message }));
+      setTimeout(() => done({ ok: false, why: 'the game server did not answer through it' }), timeout);
+      s.write(Buffer.from('<policy-file-request/>\0', 'binary'));
+    });
+    if (r.ok) return { ok: true, type, tunnelMs, ms: r.ms };
+    tried.push(`${type}: ${r.why}`);
+  }
+  // what the usual failures mean, said plainly
+  const why = tried.join(' · ');
+  const hint = /no acceptable auth|wants auth|402|407/.test(why)
+    ? ' — it wants a login: give the line as host:port:user:pass, or allow this PC\'s IP at the provider'
+    : /connection refused|ECONNREFUSED/.test(why) ? ' — refused (is the game server down for maintenance?)' : '';
+  return { ok: false, why: why + hint };
+}
+
+module.exports = { parseProxy, parseList, connectVia, testProxy };

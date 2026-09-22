@@ -7,6 +7,8 @@
 //   attack 111,222 any a:1000 s:100 @:18:20:20  land at 18:20:20 on this machine's clock
 //                                               (timed-march.js lands it to the ms, checks the
 //                                               server's stamp, and recalls and resends a miss)
+//   attack 111,222 any c:50k @:10:10:10.500 /within=1s    timed waves: kept if it lands 10:10:09.500 to
+//                                               11.500, else recalled and sent again (/tries=N, default 10)
 //   attack 111,222 any s:125k /big              /big spends a War Ensign (25% more troops) — one you
 //                                               hold: it is never bought for you
 //   attack 111,222 any s:1m /horde              /horde ticks the march window's Horde box; both: 12.5x
@@ -317,6 +319,7 @@ function parseMarch(word, line, tok) {
 
   // No hero sends no heroId at all; see Game.buildArmyBean.
   let from = null, land = null, camp = null, hero, troops = null, resources = null, horde = false;
+  let nowait = false, waitMs = null, within = null, tries = null;
   for (let i = 2; i < words.length; i++) {
     const t = words[i];
     const lt = t.toLowerCase();
@@ -327,7 +330,34 @@ function parseMarch(word, line, tok) {
     }
     if (lt === '/big') { big = true; continue; }
     if (lt === '/horde') { horde = true; continue; }
-    if (t.startsWith('/')) throw new Error(`${name}: "${t}" — the switches are /big (a War Ensign) and /horde`);
+    // A march waits for what the city is short of (waitReady). /nowait sends it
+    // at once and lets the server refuse it, as every march did before;
+    // /wait=<time> waits that long and then fails.
+    if (lt === '/nowait') { nowait = true; continue; }
+    // A timed march's window (the user's timed waves): /within=500ms, /within=1s,
+    // /within=1.5s or a bare /within=500 (ms). Landing further than that from the
+    // @: moment, either side, gets it recalled and sent again (timed-march.js).
+    if (lt.startsWith('/within=')) {
+      const m = /^(\d+(?:\.\d+)?)(ms|s)?$/.exec(lt.slice(8));
+      if (!m) throw new Error(`${name}: /within= takes a length like 500ms, 1s or 1.5s`);
+      within = Math.round(Number(m[1]) * (m[2] === 's' ? 1000 : 1));
+      if (!(within >= 1 && within <= 60000)) throw new Error(`${name}: /within= is 1ms to 60s`);
+      continue;
+    }
+    if (lt.startsWith('/tries=')) {
+      tries = Number(lt.slice(7));
+      if (!Number.isInteger(tries) || tries < 1 || tries > 50) throw new Error(`${name}: /tries= is how many sends, 1 to 50`);
+      continue;
+    }
+    if (lt.startsWith('/wait=')) {
+      const v = t.slice(6);
+      const secs = /^\d+$/.test(v) ? Number(v) : W.parseDuration(v, `${name}: /wait=`);
+      if (secs === 0) nowait = true; else waitMs = secs * 1000;
+      continue;
+    }
+    if (t.startsWith('/')) throw new Error(`${name}: "${t}" — the switches are /big (a War Ensign), /horde,`
+      + ' /nowait (send now and let the server refuse it), /wait=<seconds | m:ss | h:mm:ss>,'
+      + ' and with an @: landing time /within=<500ms | 1s> and /tries=<n>');
     if (isTime(t)) {
       if (land || camp !== null) throw new Error(`${name}: one time per march — @:hh:mm:ss to land then, or a camp time`);
       if (t.startsWith('@:')) land = W.parseLandTime(t); else camp = W.parseDuration(t);
@@ -367,6 +397,13 @@ function parseMarch(word, line, tok) {
   const out = { cmd: mission, target, targetCity, hero: hero || null, troops, troopsDefault, resources, land, camp, from };
   if (big) out.big = true;
   if (horde) out.horde = true;
+  if (nowait) out.nowait = true;
+  if (waitMs) out.waitMs = waitMs;
+  if ((within !== null || tries !== null) && !land) {
+    throw new Error(`${name}: /within= and /tries= time a landing — give the moment too, e.g. @:10:10:10.500`);
+  }
+  if (within !== null) out.within = within;
+  if (tries !== null) out.tries = tries;
   return out;
 }
 
@@ -390,6 +427,152 @@ async function paramsFor(game, castle) {
   } catch { /* fall through */ }
   const m = Number(game.marchSkillParam ?? 100);
   return { marchSkill: m, driveSkill: m, loadSkill: Number(game.loadSkillParam), relief: 0, known: false };
+}
+
+// ------------------------------------------------- waiting for a march to be possible
+//
+// A march the city cannot make YET — its troops are still out, the resources
+// are not in, every rally slot is busy, the hero has not come home — used to be
+// sent anyway and refused by the server. Inside a `repeat` or a `goto` that
+// became fail-iterate-fail at the speed of the server's no, and a hundred
+// transports ran through in a second without one of them going. So a march now
+// WAITS for what the city is short of, says in red what it is waiting for, and
+// sends when it can. Stop ends the wait. `/nowait` sends at once and fails as
+// before; `/wait=<time>` gives up after that long and fails.
+//
+// What it waits on is read from the pushes the server sends by itself —
+// server.TroopUpdate, server.ResourceUpdate and server.SelfArmysUpdate, all
+// applied in session.js — so the counts are live, not the login's snapshot.
+// Marches this run has already sent that the server has not listed back yet
+// count too (rally.js's pending book), so two sends in a row cannot both spend
+// the same troops.
+//
+// Only what is KNOWN is waited on: a castle bean with no troop list, no
+// resource bean or no building list is left to the server to judge, exactly as
+// before. What can never come right on its own is NOT waited on and fails at
+// once — a march over the Rally Spot's troop limit, a load bigger than the
+// troops can carry, /big without a War Ensign, a hero string no hero of the
+// city matches at all (that is what `waithero` is for).
+// defaultMs: how long a march with no /wait= of its own waits. null is forever
+// — the point of the whole thing — and the tests set it low so a wait that can
+// never end finishes the suite instead of hanging it.
+const WAIT = { pollMs: 5000, sayEveryMs: 60000, defaultMs: null };
+
+// TroopStrBean counts come through as strings; "?" and a missing field are
+// unknown, never 0 (goal-war.js count()).
+function troopCount(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim().replace(/[,\s]/g, '');
+  return /^\d+$/.test(s) ? parseInt(s, 10) : null;
+}
+
+// One rally book per run, holding what this run has sent and the server has not
+// listed back yet. Rebuilt on a reconnect (the book reads its Game through a
+// closure), keeping that pending list. Scripts get the Rally Spot's own limit
+// only: a rallypolicy holds back goals, never a line someone typed.
+function bookOf(env) {
+  const st = env.state;
+  if (!st.rallyBook || st.rallyGame !== env.game) {
+    st.rallyPending = st.rallyPending || [];
+    st.rallyBook = require('./rally').rallyBook({ game: env.game, pending: st.rallyPending });
+    st.rallyGame = env.game;
+  }
+  return st.rallyBook;
+}
+const missionKind = (cmd) => require('./rally').KIND_BY_MISSION[C.MISSION[cmd]] || 'other';
+
+// What the city cannot supply for this march yet — [] when it can go now.
+// Throws for anything waiting cannot fix.
+function marchShort(a, env, castle) {
+  const out = [];
+  const book = bookOf(env);
+  const owed = book.committed(castle);       // sent this run, not in the server's counts yet
+
+  // Rally slots: a city may have as many marches out as its Rally Spot level,
+  // going, camped or coming home (rally.js, EVONY-RULES.md).
+  const slots = book.room(castle, missionKind(a.cmd));
+  if (slots.capacity !== null && slots.room <= 0) out.push(slots.why || 'every rally slot is busy');
+
+  // Troops at home.
+  const have = castle.troop || {};
+  for (const [k, want] of Object.entries(a.troops || {})) {
+    if (!(Number(want) > 0)) continue;
+    const got = troopCount(have[k]);
+    if (got === null) continue;              // not listed: the server judges it
+    const free = got - Number((owed.troops || {})[k] || 0);
+    if (free < want) out.push(`${fmt(Math.max(0, free))} of ${fmt(want)} ${(C.BY_KEY[k] || {}).name || k} at home`);
+  }
+
+  // Resources in the store. Only what the march CARRIES is counted: whether the
+  // food a march eats on the way comes out of the city as well as out of the
+  // load is *unverified*, and waiting on food the game may not want would hang
+  // a transport that asks for everything the city has.
+  if (castle.resource) {
+    const bank = require('./game').Game.bankOf;
+    for (const [k, want] of Object.entries(a.resources || {})) {
+      if (!(Number(want) > 0)) continue;
+      const got = bank(castle.resource, k) - Number((owed.resources || {})[k] || 0);
+      if (got < want) out.push(`${k} ${fmt(Math.max(0, got))} of ${fmt(want)}`);
+    }
+  }
+
+  // The hero. Busy, out, or sent by this script a moment ago: it comes back, so
+  // the march waits. No hero of the city matching at all, or a hero string that
+  // cannot be read: waiting would never end, so it throws as it always did.
+  if (a.hero) {
+    try {
+      pickHero(castle, a.hero, { skip: recentSkip(env.game, env.sentHeroes), attackFirst: a.cmd === 'attack' });
+    } catch (e) {
+      if (!/^no idle hero/.test(e.message)) throw e;
+      out.push(e.message);
+    }
+  }
+  return out;
+}
+
+// Wait until the city can make this march. -> { waited } | { stopped }
+async function waitReady(a, env) {
+  const look = () => marchShort(a, env, env.game.castle(a.from ?? env.opts.castle));
+  if (a.nowait || env.dryRun) {
+    // Not waiting, but still worth saying why the server is about to say no.
+    const why = look();
+    if (why.length) env.log(`  not yet: ${why.join('; ')} — /nowait, so it goes anyway`);
+    return { waited: 0 };
+  }
+  const D = require('./timed-march').dur;
+  const started = Date.now();
+  const cap = a.waitMs ?? WAIT.defaultMs;
+  const until = cap ? started + cap : null;
+  let saidAt = 0, saidWhy = null;
+  for (;;) {
+    const why = look();
+    if (!why.length) {
+      if (saidWhy !== null) env.log(`  ready after ${D(Date.now() - started)}`);
+      return { waited: Date.now() - started };
+    }
+    const text = why.join('; ');
+    // Once for each new reason, and again every sayEveryMs while it holds, so a
+    // long wait leaves a trail without filling the Output tab.
+    if (text !== saidWhy || Date.now() - saidAt >= WAIT.sayEveryMs) {
+      env.log(`  not yet: ${text} — waiting${until ? ` up to ${D(Math.max(0, until - Date.now()))} more` : ''}`);
+      saidWhy = text; saidAt = Date.now();
+    }
+    if (until && Date.now() >= until) throw new Error(`still not ready after ${D(Date.now() - started)} — ${text}`);
+    if (env.stopped()) return { stopped: true };
+    await env.pause(Math.min(WAIT.pollMs, until ? Math.max(250, until - Date.now()) : WAIT.pollMs));
+    if (env.stopped()) return { stopped: true };
+  }
+}
+
+// A send the server took, remembered until it shows in the army list, so the
+// next line of the same run does not count its troops or resources twice.
+function recordSent(a, env, castle, targetPoint) {
+  try {
+    bookOf(env).record({
+      from: castle, targetFieldId: targetPoint, missionType: C.MISSION[a.cmd],
+      kind: missionKind(a.cmd), resources: a.resources || {}, troops: a.troops || {},
+    });
+  } catch { /* the book is a convenience, never a reason a march fails */ }
 }
 
 async function runMarch(a, env) {
@@ -445,6 +628,12 @@ async function runMarch(a, env) {
     }
   }
 
+  // Everything above is a reason the march can NEVER go as written. What is
+  // only missing for now — troops out, resources short, no rally slot, the hero
+  // away — is waited for instead of being sent and refused (marchShort above).
+  const held = await waitReady(a, env);
+  if (held.stopped) return { ok: false, error: 'stopped while waiting for the march', end: true };
+
   // Built for each send, so a march that is recalled and sent again can take
   // another idle hero (or the same one, home again). The live Game and city:
   // a timed march is built after its wait, which a reconnect may have crossed.
@@ -480,9 +669,11 @@ async function runMarch(a, env) {
     const res = await require('./timed-march').send({
       game: live, castle, construct, from, target, targetPoint, toCity, troopKeys,
       aimMs: W.nextOccurrence(a.land, game.now()), makeBean, log, stopped: env.stopped, dryRun,
+      tolMs: a.within ?? null, tries: a.tries ?? null,
     });
     if (res.sent && hero) markSent(env.game, hero.id, env.sentHeroes);
     if (res.sent && a.big) usedEnsign(env, env.game, ensigns);
+    if (res.sent) recordSent(a, env, castle, targetPoint);
     // a Stop during the wait ends the run where it is
     return { done: res.sent ? 1 : 0, ok: !!res.sent || dryRun, end: res.why === 'stopped' };
   }
@@ -502,6 +693,7 @@ async function runMarch(a, env) {
   log('  -> ' + env.say(r));
   if (r && r.ok === 1 && hero) markSent(gs, hero.id, env.sentHeroes);
   if (r && r.ok === 1 && a.big) usedEnsign(env, gs, ensigns);
+  if (r && r.ok === 1) recordSent(a, env, castle, targetPoint);
   return { done: 1 };
 }
 
@@ -1052,4 +1244,5 @@ module.exports = {
   pickHero, heroMatches, checkHeroString, rankHeroes, spamPool, spamRules, spamHero, spamHeroes, cityGoals, oursOf,
   markSent, recentSkip, capacityOf, foodPerHour, troopTextOf, paramsFor, parseForts,
   armiesOf, recallable, homeOf, armyText,
+  marchShort, waitReady, WAIT,
 };

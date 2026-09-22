@@ -29,14 +29,45 @@
 
     --row-good:#dff2cf; --row-bad:#ffd9d9; --row-warn:#fff3c4; --row-mine:#f6ef8e;
     --row-mayor:#fde8c8; --row-hover:#eef4ff; --row-defend:#d3e3fb;
+    --row-build:#e9dff8;    /* a build march's row */
 
     --blue:#1f4fbf; --link:#2233cc; --ok:#1c8a1c; --bad:#c42020; --amber:#b86e00;
     --magenta:#b000b0; --city:#c41e1e;
+    --ok-deep:#146b14;      /* green text that still reads on a green row */
+    --build:#7a4fc0;        /* a build march */
     --focus:#2a62d8;
     --tip-bg:#fffff0;
     --hero-top:#e6f8dc; --hero-bot:#bfe8a9; --hero-edge:#4f9a3c;   /* the traininghero's city tab */
 
     --t-edge:#d6d6d6;   /* map tiles themselves use NEAT's palette in both themes: MAP_CAT */
+
+    /* ── type and size scale ────────────────────────────────────────────
+       One scale for the whole console, so nothing is sized by hand twice.
+       Raise --fs-base and the rest follows: text, rows, buttons, icons.
+       (Widened 2026-09-20: the old 12px base was too small to read at a
+       glance. Everything below is roughly the old value x1.25.) */
+    --fs-xxs:11px;      /* chips, the tiniest labels */
+    --fs-xs:12.5px;     /* counts, legends, footnotes */
+    --fs-sm:13.5px;     /* hints, notes, tab labels */
+    --fs-base:15px;     /* body text */
+    --fs-lg:16.5px;     /* captions, dialog titles */
+    --fs-xl:22px;       /* the header's big counters */
+    --fs-btn:14px;      /* buttons, selects, inputs */
+    --fs-cell:14px;     /* table bodies */
+    --fs-th:15px;       /* table headers */
+    --fs-code:14px;     /* editor and log monospace */
+    --lh-code:20px;
+
+    --icon:21px;        /* glyph size inside an icon button */
+    --ib-w:42px;        /* toolbar icon button (14 of them must fit a 1366 pane) */
+    --ib-h:36px;
+    --orb:32px;         /* the round header buttons */
+    --row-h:26px;       /* table row height */
+
+    --pad:8px;          /* standard padding / gap */
+    --pad-sm:5px;
+    --gap:8px;
+    --gap-sm:4px;
   }
   :root[data-theme="dark"] {
     --win:#1c1e22; --panel:#24272c; --panel2:#2c3036; --line:#4a4f57; --grid:#383c43;
@@ -45,8 +76,9 @@
     --btn-on-top:#22252a; --btn-on-bot:#34383f; --btn-on-edge:#8a9099;
     --th-top:#4a4322; --th-bot:#3a3419; --th-edge:#6d6232; --th-ink:#f3e7b3;
     --row-good:#233d24; --row-bad:#4a2426; --row-warn:#4a4020; --row-mine:#4d4a17;
-    --row-mayor:#4a3a22; --row-hover:#2d3747; --row-defend:#203a5c;
+    --row-mayor:#4a3a22; --row-hover:#2d3747; --row-defend:#203a5c; --row-build:#37294e;
     --blue:#8db4ff; --link:#9fb0ff; --ok:#6fd66f; --bad:#ff7a7a; --amber:#f0b24a;
+    --ok-deep:#7fe07f; --build:#c4a2ff;
     --magenta:#f07af0; --city:#ff7070; --focus:#8db4ff; --tip-bg:#2e3238;
     --hero-top:#3a6b32; --hero-bot:#274a22; --hero-edge:#7fd070;
     --t-edge:#23262b;
@@ -56,7 +88,7 @@
   html,body { height:100%; }
   body {
     margin:0; background:var(--win); color:var(--ink);
-    font:12px/1.35 Tahoma, Verdana, "Segoe UI", sans-serif;
+    font:var(--fs-base)/1.4 Tahoma, Verdana, "Segoe UI", sans-serif;
     display:flex; flex-direction:column; overflow:hidden;
   }
   :focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
@@ -64,9 +96,9 @@
 
   /* ── NEAT buttons ─────────────────────────────────────────────────────── */
   button, select {
-    font:bold 11px Tahoma, Verdana, sans-serif; color:var(--ink);
+    font:bold var(--fs-btn) Tahoma, Verdana, sans-serif; color:var(--ink);
     background:linear-gradient(var(--btn-top), var(--btn-bot));
-    border:1px solid var(--btn-edge); border-radius:3px; padding:3px 10px; cursor:pointer;
+    border:1px solid var(--btn-edge); border-radius:3px; padding:4px 12px; cursor:pointer;
   }
   button:hover, select:hover { filter:brightness(1.04); }
   button:active, button.on {
@@ -75,19 +107,20 @@
   }
   button:disabled { opacity:.5; cursor:default; }
   button.danger { color:var(--bad); }
-  button.sm { padding:1px 7px; font-size:10.5px; }
+  button.sm { padding:2px 9px; font-size:var(--fs-xs); }
   button.sm[aria-disabled="true"] { opacity:.45; }
-  button.qx { padding:0 4px; margin-left:4px; font-size:9px; line-height:13px; vertical-align:middle; }
+  button.qx { padding:0 5px; margin-left:4px; font-size:var(--fs-xxs); line-height:16px; vertical-align:middle; }
   input[type=text], input[type=number], input:not([type]) {
-    font:11px Tahoma, Verdana, sans-serif; color:var(--ink); background:var(--panel);
-    border:1px solid var(--line); border-radius:2px; padding:2px 5px;
+    font:var(--fs-btn) Tahoma, Verdana, sans-serif; color:var(--ink); background:var(--panel);
+    border:1px solid var(--line); border-radius:2px; padding:3px 6px;
   }
+  input[type=checkbox], input[type=radio] { width:15px; height:15px; }
 
   /* ── header ───────────────────────────────────────────────────────────── */
-  .hdr { display:flex; align-items:center; gap:14px; padding:6px 10px; background:var(--win);
+  .hdr { display:flex; align-items:center; gap:14px; padding:7px 12px; background:var(--win);
          border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .hdr .left { display:flex; align-items:center; gap:6px; }
-  .orb { width:26px; height:26px; border-radius:50%; padding:0; font-size:13px; line-height:24px;
+  .hdr .left { display:flex; align-items:center; gap:var(--gap); }
+  .orb { width:var(--orb); height:var(--orb); border-radius:50%; padding:0; font-size:var(--fs-lg); line-height:1;
          display:inline-flex; align-items:center; justify-content:center; color:#fff;
          border:1px solid rgba(0,0,0,.35); box-shadow:inset 0 1px 1px rgba(255,255,255,.6), 0 1px 2px rgba(0,0,0,.25); }
   .orb.pause { background:radial-gradient(circle at 35% 30%, #9be27e, #2f8d1c 70%); }
@@ -97,39 +130,50 @@
   .orb.cog { background:radial-gradient(circle at 35% 30%, #e6d9f2, #6d5b8c 70%); }
   .setgrid { display:grid; grid-template-columns:max-content 1fr; gap:8px 10px; align-items:center; margin-top:4px; }
   .setgrid input { width:100%; }
-  .setnote { grid-column:1 / -1; color:var(--dim); font-size:12px; line-height:1.45; }
-  .protlist { grid-column:1 / -1; margin:2px 0 0; padding:0; list-style:none; font-size:12px; }
+  .setnote { grid-column:1 / -1; color:var(--dim); font-size:var(--fs-sm); line-height:1.5; }
+  .protlist { grid-column:1 / -1; margin:2px 0 0; padding:0; list-style:none; font-size:var(--fs-sm); }
   .protlist li { padding:1px 0; }
   .protlist .on { color:var(--ok); }
   .protlist .off { color:var(--dim); }
-  .connbox { display:flex; align-items:center; gap:5px; margin-left:6px; max-width:420px; }
-  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
+  .connbox { display:flex; align-items:center; gap:6px; margin-left:6px; max-width:420px; }
+  .dot { width:11px; height:11px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
   .dot.on { background:var(--ok); }
   #conn { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .eng { display:flex; align-items:center; gap:5px; margin-left:8px; font-weight:bold; }
-  .badge { font:bold 10px Tahoma, sans-serif; padding:2px 6px; border-radius:2px; color:#fff; letter-spacing:.3px; }
+  .eng { display:flex; align-items:center; gap:6px; margin-left:8px; font-weight:bold; }
+  .badge { font:bold var(--fs-xs) Tahoma, sans-serif; padding:3px 8px; border-radius:2px; color:#fff; letter-spacing:.3px; }
   .badge.live { background:#1c8a1c; } .badge.paused { background:#c0580a; }
   .hdr .right { margin-left:auto; display:flex; align-items:center; gap:10px; }
-  .who { line-height:1.35; font-size:12px; }
+  .who { line-height:1.4; font-size:var(--fs-sm); }
   .who b { font-weight:bold; }
-  .cbox { width:52px; height:40px; border:1px solid var(--line); border-radius:3px; text-align:center;
+  .cbox { width:64px; height:48px; border:1px solid var(--line); border-radius:3px; text-align:center;
           background:linear-gradient(var(--panel), var(--panel2)); cursor:default; }
-  .cbox .l { font:bold 9px Tahoma, sans-serif; color:var(--dim); padding-top:2px; }
-  .cbox .n { font:bold 18px/20px Tahoma, sans-serif; color:var(--blue); }
+  .cbox .l { font:bold var(--fs-xxs) Tahoma, sans-serif; color:var(--dim); padding-top:3px; }
+  .cbox .n { font:bold var(--fs-xl)/26px Tahoma, sans-serif; color:var(--blue); }
   .cbox .n.zero { color:var(--ok); }
   .stats { border-collapse:collapse; }
-  .stats th { font:bold 10px Tahoma, sans-serif; color:var(--ink); padding:0 9px 2px; border-bottom:2px solid var(--blue); text-align:center; white-space:nowrap; }
-  .stats td { font:bold 12px Tahoma, sans-serif; padding:3px 9px 0; text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .themeBtn { padding:2px 6px; }
+  .stats th { font:bold var(--fs-xs) Tahoma, sans-serif; color:var(--ink); padding:0 10px 3px; border-bottom:2px solid var(--blue); text-align:center; white-space:nowrap; }
+  .stats td { font:bold var(--fs-base) Tahoma, sans-serif; padding:4px 10px 0; text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .themeBtn { padding:4px 9px; font-size:var(--fs-lg); }
 
-  #maintBar { display:flex; align-items:center; gap:12px; padding:5px 12px; background:#1b2740;
+  #maintBar { display:flex; align-items:center; gap:12px; padding:6px 12px; background:#1b2740;
               border-bottom:1px solid #2b3c5c; color:#cfe0ff; }
   #maintBar b { color:#6ea8fe; }
-  #staleBar { padding:5px 12px; background:#8a1c1c; color:#fff; font-weight:bold; border-bottom:1px solid #5a0f0f; }
+  #staleBar { padding:6px 12px; background:#8a1c1c; color:#fff; font-weight:bold; border-bottom:1px solid #5a0f0f; }
+  /* Somebody else logged into this account. The game's own client opens a window for
+     this; on this page it is a bar you cannot miss, because it explains every other
+     odd thing on the page (the user, 2026-09-22). */
+  #kickBar { padding:6px 12px; background:#8a1c1c; color:#fff; font-weight:bold; border-bottom:1px solid #5a0f0f;
+             display:flex; gap:10px; align-items:center; }
+  #kickBar.over { background:#7a5a10; border-bottom-color:#4a3608; font-weight:normal; }
+  #kickBar button { background:#fff; color:#8a1c1c; border:0; border-radius:4px; padding:3px 10px; font-weight:bold; cursor:pointer; }
+  #kickBar .why { font-weight:normal; opacity:.9; }
 
   /* ── city tabs ────────────────────────────────────────────────────────── */
-  .cities { display:flex; gap:2px; padding:4px 8px 3px; overflow-x:auto; flex:0 0 auto; }
-  .ctab { font:11px Tahoma, sans-serif; padding:3px 12px; white-space:nowrap; }
+  /* an account can hold 10+ cities: the strip wraps onto a second line rather
+     than growing a horizontal scrollbar, and scrolls only if even that is too much */
+  .cities { display:flex; flex-wrap:wrap; gap:3px; row-gap:3px; padding:5px 8px 4px; flex:0 0 auto;
+            max-height:calc(2 * var(--ib-h) + 14px); overflow-y:auto; overflow-x:hidden; }
+  .ctab { font:var(--fs-sm) Tahoma, sans-serif; padding:4px 13px; white-space:nowrap; }
   .ctab.on { font-weight:bold; }
   .ctab.atk { color:var(--bad); font-weight:bold; }
   .ctab.low { color:var(--amber); }
@@ -145,36 +189,41 @@
   .cell { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
   .cell.left { flex:0 0 auto; }
   .cell.right { flex:1 1 auto; }
-  .vsplit { flex:0 0 7px; cursor:col-resize; position:relative; }
-  .hsplit { flex:0 0 7px; cursor:row-resize; position:relative; }
-  .vsplit::before { content:''; position:absolute; left:3px; top:45%; height:22px; border-left:1px dotted var(--faint); }
-  .hsplit::before { content:''; position:absolute; top:3px; left:45%; width:22px; border-top:1px dotted var(--faint); }
+  .vsplit { flex:0 0 9px; cursor:col-resize; position:relative; }
+  .hsplit { flex:0 0 9px; cursor:row-resize; position:relative; }
+  .vsplit::before { content:''; position:absolute; left:4px; top:45%; height:26px; border-left:1px dotted var(--faint); }
+  .hsplit::before { content:''; position:absolute; top:4px; left:45%; width:26px; border-top:1px dotted var(--faint); }
   .vsplit:hover, .hsplit:hover, .vsplit.drag, .hsplit.drag { background:rgba(42,98,216,.25); }
   body.resizing { user-select:none; }
 
   .well { flex:1; min-height:0; overflow:auto; background:var(--panel); border:1px solid var(--line); }
-  .bar { display:flex; align-items:center; gap:6px; padding:5px 0 0; flex:0 0 auto; }
-  .bar .hint { color:var(--dim); font-size:11px; margin-left:auto; text-align:right; }
+  .bar { display:flex; align-items:center; gap:var(--gap); padding:6px 0 0; flex:0 0 auto; }
+  .bar .hint { color:var(--dim); font-size:var(--fs-sm); margin-left:auto; text-align:right; }
   .bar .hint .neg { font-weight:bold; }
-  #loadSel { max-width:200px; }
-  #acctSel { max-width:190px; }
+  /* a narrow pane must wrap the bar, never shave a button: buttons keep their
+     size and the selects give way instead */
+  .bar button { flex:0 0 auto; }
+  .bar select { flex:0 1 auto; min-width:76px; }
+  #loadSel { max-width:220px; }
+  #acctSel { max-width:210px; }
   #clearScript { white-space:nowrap; flex:0 0 auto; }
-  .bar label.cbx { display:flex; align-items:center; gap:4px; white-space:nowrap; cursor:pointer;
-    color:var(--dim); font-size:11px; flex:0 0 auto; }
+  .bar label.cbx { display:flex; align-items:center; gap:5px; white-space:nowrap; cursor:pointer;
+    color:var(--dim); font-size:var(--fs-sm); flex:0 0 auto; }
   .bar label.cbx input { margin:0; }
 
-  /* the row above the editor: editor icons, Gate Control, War Town Mode */
-  .ctlrow { display:flex; align-items:flex-end; gap:14px; padding:2px 0 4px; flex:0 0 auto; }
-  .iconset { display:flex; gap:2px; }
-  .ib { width:34px; height:28px; padding:0; font-size:16px; line-height:26px; }
-  .ctl { display:flex; flex-direction:column; align-items:center; gap:1px; }
-  .ctl .cl { font:bold 10px Tahoma, sans-serif; }
+  /* the row above the editor: editor icons, Gate Control, War Town Mode.
+     It wraps rather than clip a control off the left pane's edge. */
+  .ctlrow { display:flex; align-items:flex-end; gap:14px; row-gap:5px; padding:3px 0 5px; flex:0 0 auto; flex-wrap:wrap; }
+  .iconset { display:flex; gap:3px; }
+  .ib { width:var(--ib-w); height:var(--ib-h); padding:0; font-size:var(--icon); line-height:1; }
+  .ctl { display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .ctl .cl { font:bold var(--fs-xs) Tahoma, sans-serif; }
   .seg { display:flex; }
-  .seg button { border-radius:0; padding:2px 11px; margin-left:-1px; }
+  .seg button { border-radius:0; padding:3px 12px; margin-left:-1px; }
   .seg button:first-child { border-radius:3px 0 0 3px; margin-left:0; }
   .seg button:last-child { border-radius:0 3px 3px 0; }
-  #warSel { min-width:140px; text-align:left; }
-  .gatestate { font-size:11px; padding-bottom:4px; }
+  #warSel { min-width:170px; text-align:left; }
+  .gatestate { font-size:var(--fs-sm); padding-bottom:4px; }
   .gatestate b.open { color:var(--amber); } .gatestate b.closed { color:var(--ok); }
 
   /* The editor is a textarea over a layer (#edHl) that repeats its text line for
@@ -184,8 +233,8 @@
      turns transparent only once the layer is painting (.hl-on). */
   .edbox { position:relative; height:100%; }
   textarea#editor, .edhl {
-    margin:0; border:0; padding:4px 6px;
-    font:11px/16px Consolas, "Lucida Console", "Courier New", monospace;
+    margin:0; border:0; padding:5px 7px;
+    font:var(--fs-code)/var(--lh-code) Consolas, "Lucida Console", "Courier New", monospace;
     font-variant-ligatures:none; letter-spacing:0; word-spacing:0; tab-size:8; text-align:left;
     white-space:pre-wrap; overflow-wrap:break-word; word-break:normal;
   }
@@ -198,39 +247,48 @@
   .edbox.hl-on textarea#editor::selection { color:transparent; background:rgba(42,98,216,.28); }
   :root[data-theme="dark"] .edbox.hl-on textarea#editor::selection { background:rgba(141,180,255,.32); }
   .edhl { position:absolute; top:0; left:0; overflow:hidden; pointer-events:none; color:var(--ink); }
-  .edhl::after { content:''; display:block; height:32px; }   /* never less to scroll than the textarea */
+  .edhl::after { content:''; display:block; height:calc(2 * var(--lh-code)); }   /* never less to scroll than the textarea */
   .edhl .gl:empty::before { content:'\200b'; }                /* an empty line still takes its height */
   .edhl .gl-ok { color:var(--blue); }
   .edhl .gl-idle, .edhl .gl-error { color:var(--bad); }
   .edhl .gl-error { text-decoration:underline wavy; text-decoration-skip-ink:none; text-underline-offset:2px; }
   .edhl .gl-comment { color:var(--faint); }
   /* under the editor: why the cursor's line is red, or how the lines stand */
-  .edline { flex:0 0 auto; padding:3px 1px 0; min-height:18px; font-size:11px; color:var(--dim);
+  .edline { flex:0 0 auto; padding:4px 1px 0; min-height:22px; font-size:var(--fs-sm); color:var(--dim);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .edline.bad { color:var(--bad); }
   .edline .c-ok { color:var(--blue); } .edline .c-bad { color:var(--bad); }
-  pre.out { margin:0; padding:5px 7px; font:11.5px/1.5 "Courier New", Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
+  pre.out { margin:0; padding:6px 8px; font:var(--fs-code)/1.55 "Courier New", Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
 
   /* monitor icon toolbar */
-  .itabs { display:flex; gap:2px; padding:2px 0 4px; flex:0 0 auto; align-items:center; overflow-x:auto; }
+  .itabs { display:flex; gap:3px; padding:3px 0 5px; flex:0 0 auto; align-items:center; overflow-x:auto; }
   .itabs .ib { flex:0 0 auto; }
-  .itabs .cap { margin-left:auto; padding-left:10px; color:var(--dim); font-size:11px; white-space:nowrap; }
+  /* the Incoming icon flashes red/white while any city has a hostile army inbound,
+     so an attack is noticed whichever panel is open */
+  @keyframes atkflash {
+    0%, 49%  { background:#d21c1c; box-shadow:0 0 0 2px #d21c1c; }
+    50%, 100% { background:#fff;   box-shadow:0 0 0 2px #d21c1c; }
+  }
+  .itabs .ib.atk { animation:atkflash 1s steps(1, end) infinite; border-color:#d21c1c; }
+  /* the caption gives way first, so the icon row never pushes past the pane */
+  .itabs .cap { margin-left:auto; padding-left:10px; color:var(--dim); font-size:var(--fs-sm); white-space:nowrap;
+                flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
 
   /* the Script tab's Run box (NEAT's: a line number or a label to start at); it goes wherever Run goes */
-  #runFrom { width:46px; flex:0 0 auto; }
+  #runFrom { width:58px; flex:0 0 auto; }
   #runScript[style*="none"] ~ #runFrom { display:none; }
   /* with Stop and Resume up too, a narrow pane wraps the bar rather than cut a button off */
   #cellEdit > .bar { flex-wrap:wrap; row-gap:4px; }
 
   /* ── NEAT tables ──────────────────────────────────────────────────────── */
-  table.nt { width:100%; border-collapse:collapse; font-size:11.5px; }
+  table.nt { width:100%; border-collapse:collapse; font-size:var(--fs-cell); }
   table.nt th {
-    font:bold 12px Georgia, "Times New Roman", serif; color:var(--th-ink);
+    font:bold var(--fs-th) Georgia, "Times New Roman", serif; color:var(--th-ink);
     background:linear-gradient(var(--th-top), var(--th-bot)); border:1px solid var(--th-edge);
-    padding:3px 6px; position:sticky; top:0; z-index:1; white-space:nowrap; text-align:center;
+    padding:4px 7px; position:sticky; top:0; z-index:1; white-space:nowrap; text-align:center;
   }
   table.nt th.sort { cursor:pointer; }
-  table.nt td { padding:2px 6px; height:21px; border-right:1px solid var(--grid); border-bottom:1px solid var(--grid);
+  table.nt td { padding:3px 7px; height:var(--row-h); border-right:1px solid var(--grid); border-bottom:1px solid var(--grid);
                 white-space:nowrap; font-variant-numeric:tabular-nums; }
   table.nt td.n { text-align:right; }
   table.nt td.c { text-align:center; }
@@ -242,25 +300,51 @@
   table.nt tr.mine td { background:var(--row-mine); }
   table.nt tr.mayor td { background:var(--row-mayor); }
   table.nt tr.defend td { background:var(--row-defend); }
+  table.nt tr.build td { background:var(--row-build); }
+  /* an inbound army aimed at the city you have open */
+  table.nt tr.here td:first-child { box-shadow:inset 4px 0 0 var(--city); }
   table.nt tr.total td { font-weight:bold; border-top:2px solid var(--th-edge); }
   table.kvt td.k { width:38%; }
-  .sub { padding:6px 6px 3px; font:bold 11px Georgia, serif; color:var(--th-ink); border-top:1px solid var(--grid); }
-  .tb { display:flex; align-items:center; gap:6px; padding:4px 5px; border-bottom:1px solid var(--grid); flex-wrap:wrap; }
-  .tb .note { color:var(--dim); font-size:11px; }
-  .empty { color:var(--dim); padding:18px; text-align:center; }
+  .sub { padding:7px 7px 4px; font:bold var(--fs-sm) Georgia, serif; color:var(--th-ink); border-top:1px solid var(--grid); }
+  .tb { display:flex; align-items:center; gap:var(--gap); padding:5px 6px; border-bottom:1px solid var(--grid); flex-wrap:wrap; row-gap:5px; }
+  .tb .note { color:var(--dim); font-size:var(--fs-sm); }
+  .empty { color:var(--dim); padding:22px; text-align:center; }
   .muted { color:var(--faint); }
   .pos { color:var(--ok); } .neg { color:var(--bad); } .warnc { color:var(--amber); }
   .buffed { color:var(--magenta); font-weight:bold; }
   .ico { display:inline-block; width:1.3em; text-align:center; margin-right:3px; }
-  .buffdot { color:#fff; background:var(--ok); border-radius:50%; display:inline-block; width:14px; height:14px;
-             line-height:14px; font-size:11px; text-align:center; font-weight:bold; }
-  button.sm.buffadd { padding:0 5px; font-size:12px; font-weight:bold; line-height:14px; }
+  .buffdot { color:#fff; background:var(--ok); border-radius:50%; display:inline-block; width:17px; height:17px;
+             line-height:17px; font-size:var(--fs-sm); text-align:center; font-weight:bold; }
+  button.sm.buffadd { padding:0 6px; font-size:var(--fs-base); font-weight:bold; line-height:17px; }
   button.sm.buffadd.has { color:var(--ok); }
   .soon { color:var(--bad); font-weight:bold; }
+  .lat { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lat .ms { color:var(--dim); }
+  .cd { font-variant-numeric:tabular-nums; }
   .mtag { font-weight:bold; }
   .m-attack { color:var(--bad); } .m-scout { color:var(--amber); } .m-transport { color:var(--blue); }
-  .m-reinforce { color:var(--ok); } .m-construct { color:#8a5cd8; }
-  .chip { display:inline-block; padding:0 5px; border-radius:2px; font-size:10px; font-weight:bold; color:#fff; }
+  .m-reinforce { color:var(--ok-deep); } .m-construct { color:var(--build); }
+
+  /* ── marches: the row says what it is, the bar says how far along ───────
+     NEAT paints a march row by its business — red going out to fight, green
+     going out to help, blue on the way home whatever it carried, violet a
+     build march, amber one parked at its target. The tint is a second signal
+     only: the Type cell still names the mission and stays readable on it.
+     The bar under the remaining time is a CSS animation started part-way
+     through (a negative delay set in startMarchBars), so it creeps on
+     smoothly between polls without a timer of its own. */
+  .mbar { display:block; width:100%; max-width:120px; height:5px; margin:3px auto 0;
+          background:rgba(0,0,0,.16); border-radius:3px; overflow:hidden; }
+  :root[data-theme="dark"] .mbar { background:rgba(255,255,255,.18); }
+  .mbar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--dim);
+              animation-name:mfill; animation-timing-function:linear; animation-fill-mode:forwards; }
+  @keyframes mfill { from { width:0; } to { width:100%; } }
+  table.nt tr.bad .mbar > i { background:var(--bad); }
+  table.nt tr.good .mbar > i { background:var(--ok); }
+  table.nt tr.defend .mbar > i { background:var(--blue); }
+  table.nt tr.build .mbar > i { background:var(--build); }
+  table.nt tr.warn .mbar > i { background:var(--amber); }
+  .chip { display:inline-block; padding:1px 6px; border-radius:2px; font-size:var(--fs-xxs); font-weight:bold; color:#fff; }
   .chip.bad { background:var(--bad); } .chip.ok { background:var(--ok); } .chip.warn { background:var(--amber); }
 
   /* map */
@@ -272,46 +356,86 @@
   .mt.sx { border-left:1px dashed var(--dim); }     /* the world edge: x 799 runs on into 0 */
   .mt.sy { border-top:1px dashed var(--dim); }
   .mpan { display:inline-flex; gap:1px; }
-  .mpan button { padding:1px 5px; }
-  .legend { margin-top:5px; font-size:10.5px; color:var(--dim); }
-  .legend i { display:inline-block; width:9px; height:9px; border:1px solid var(--t-edge); margin:0 3px 0 7px; vertical-align:-1px; }
+  .mpan button { padding:2px 7px; }
+  .legend { margin-top:6px; font-size:var(--fs-xs); color:var(--dim); }
+  .legend i { display:inline-block; width:11px; height:11px; border:1px solid var(--t-edge); margin:0 3px 0 7px; vertical-align:-1px; }
   .legend .lg { display:inline-block; white-space:nowrap; }
   /* the map's list: each row wears its tile's NEAT colour, as in NEAT */
   table.nt tr.mcat td { color:#000; }
   table.nt tr.mcat:hover td { background:rgba(0,0,0,.12); }
-  .mf { padding:1px 7px; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:10.5px; background:var(--panel); }
+  .mf { padding:2px 9px; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:var(--fs-xs); background:var(--panel); }
   .mf.on { background:var(--row-mine); font-weight:bold; }
   .cell.fullscreen { position:fixed; inset:0; z-index:120; background:var(--win); padding:6px; }
 
   /* ── log and chat ─────────────────────────────────────────────────────── */
   /* wraps to a second line on a narrow pane rather than pushing Clear off the edge */
-  .ttabs { display:flex; align-items:center; gap:2px; row-gap:3px; padding:2px 0 4px; flex:0 0 auto; flex-wrap:wrap; }
-  .ttabs .t { font:11px Tahoma, sans-serif; padding:3px 11px; white-space:nowrap; }
+  .ttabs { display:flex; align-items:center; gap:3px; row-gap:4px; padding:3px 0 5px; flex:0 0 auto; flex-wrap:wrap; }
+  .ttabs .t { font:var(--fs-sm) Tahoma, sans-serif; padding:4px 12px; white-space:nowrap; }
   .ttabs .t.on { font-weight:bold; }
   .ttabs .grow { flex:1; }
-  .ttabs input { flex:0 1 150px; min-width:80px; }
-  .ttabs select { font-weight:normal; padding:2px 3px; }
-  #logCount { color:var(--dim); font-size:10.5px; white-space:nowrap; }
+  .ttabs input { flex:0 1 170px; min-width:96px; }
+  .ttabs select { font-weight:normal; padding:3px 4px; }
+  #logCount { color:var(--dim); font-size:var(--fs-xs); white-space:nowrap; }
   /* the Items tab: a table in the log pane, the description cut to fit */
-  .logbody.items { font:12px/1.35 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
+  .logbody.items { font:var(--fs-base)/1.4 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
   table.nt.items td.desc { width:100%; max-width:0; overflow:hidden; text-overflow:ellipsis; color:var(--dim); }
   /* a narrow pane drops the description and wraps names, so Qty stays in view */
   #cellLog .well { container-type:inline-size; }
-  @container (max-width:560px) {
+  @container (max-width:680px) {
     table.nt.items th:last-child, table.nt.items td.desc { display:none; }
     table.nt.items td:first-child { white-space:normal; }
   }
   /* the Statistics tab: one table per list; a name searches for itself */
-  .logbody.stats { font:12px/1.35 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
-  .st-h { display:flex; align-items:baseline; gap:8px; padding:6px 6px 3px; border-bottom:1px solid var(--grid); }
-  .st-h b { font-size:12px; }
-  .st-h .note { color:var(--dim); font-size:11px; }
+  .logbody.stats { font:var(--fs-base)/1.4 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
+  .st-h { display:flex; align-items:baseline; gap:8px; padding:7px 7px 4px; border-bottom:1px solid var(--grid); }
+  .st-h b { font-size:var(--fs-base); }
+  .st-h .note { color:var(--dim); font-size:var(--fs-sm); }
   .st-h button { margin-left:auto; }
-  .st-foot { padding:5px 6px 8px; color:var(--dim); font-size:11px; }
+  .st-foot { padding:6px 7px 9px; color:var(--dim); font-size:var(--fs-sm); }
   .st-foot button { margin-left:6px; }
+  .st-pager { display:inline-flex; align-items:center; gap:6px; }
+  .st-pager input { width:5em; font:inherit; }
+  .st-h .note .warn { color:var(--bad); }
   table.nt.stats a.sq { color:inherit; cursor:pointer; text-decoration:underline dotted var(--faint); }
   table.nt.stats a.sq:hover { text-decoration-color:currentColor; }
-  .logbody { font:11.5px/1.55 "Courier New", Consolas, monospace; padding:2px 5px; }
+  /* the Alliance and Friends tabs: the game's windows, its tab colours too */
+  .logbody.al { font:var(--fs-base)/1.4 Tahoma, Verdana, "Segoe UI", sans-serif; padding:0; }
+  #alKind .al-t-members { background:#5ec46a; color:#000; }
+  #alKind .al-t-friendly { background:#1fd0f2; color:#000; }
+  #alKind .al-t-neutral { background:#e8b85a; color:#000; }
+  #alKind .al-t-hostile { background:#ee2020; color:#fff; }
+  #alKind button.on { box-shadow:inset 0 0 0 2px var(--ink); font-weight:bold; }
+  table.nt.al tr.al-friendly td { background:rgba(31,208,242,.16); }
+  table.nt.al tr.al-neutral td { background:rgba(232,184,90,.22); }
+  table.nt.al tr.al-hostile td { background:rgba(238,32,32,.16); }
+  table.nt.al tr.al-friendly:hover td, table.nt.al tr.al-neutral:hover td, table.nt.al tr.al-hostile:hover td { filter:brightness(.92); }
+  table.nt.al td button.sm { padding:0 7px; }
+  a.al-who { color:inherit; cursor:pointer; text-decoration:underline dotted var(--faint); }
+  a.al-who:hover { text-decoration-color:currentColor; }
+  table.nt.al td select { font-size:var(--fs-sm); }
+  .al-info { display:grid; grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr); gap:7px 12px; align-items:center;
+             padding:12px 12px 6px; max-width:680px; }
+  .al-info label, .al-box label { color:var(--dim); text-align:right; }
+  .al-info span { border:1px solid var(--line); background:var(--panel); padding:2px 8px; text-align:center; min-height:1.4em;
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .al-box { display:grid; grid-template-columns:auto minmax(0,1fr); gap:12px; padding:6px 12px; max-width:680px; }
+  .al-box label { min-width:62px; }
+  .al-text { border:1px solid var(--line); background:var(--panel); padding:6px 9px; min-height:4.2em;
+             white-space:pre-wrap; word-break:break-word; }
+  .al-bar { display:flex; flex-wrap:wrap; gap:7px; align-items:center; padding:7px; border-bottom:1px solid var(--grid); }
+  .al-bar input { width:190px; padding:3px 7px; }
+  .al-bar .note, .al-note { color:var(--dim); font-size:var(--fs-sm); }
+  .al-note { padding:6px 12px; }
+  .al-pager { display:flex; justify-content:center; align-items:center; gap:10px; }
+  dialog.ask.al-dlg { width:min(620px, 94vw); }     /* .ask (520px) comes later in this sheet */
+  dialog.al-dlg.wide { width:min(920px, 96vw); }
+  .al-cap { display:flex; align-items:center; gap:8px; }
+  .al-cap span { flex:1; }
+  .al-dbody { padding:12px 16px; max-height:74vh; overflow:auto; }
+  .al-dbody .al-info { padding:0 0 10px; }
+  .al-acts { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-top:10px; border-top:1px solid var(--grid); margin-top:6px; }
+  .al-acts .grow { flex:1; }
+  .logbody { font:var(--fs-code)/1.6 "Courier New", Consolas, monospace; padding:3px 6px; }
   .ll { white-space:pre-wrap; word-break:break-word; }
   .ll .lt { color:var(--ink); }
   .ll .lc { color:var(--city); }
@@ -319,37 +443,38 @@
   .k-sys { color:var(--blue); } .k-net { color:var(--faint); } .k-comfort { color:var(--amber); }
   .k-report { color:var(--magenta); }
   mark { background:#ffe45c; color:#000; }
-  .chatbody { font:12px/1.5 Arial, sans-serif; padding:2px 5px; }
+  .chatbody { font:var(--fs-base)/1.55 Arial, sans-serif; padding:3px 6px; }
   .cl-alliance { color:#1f33c8; } .cl-world { color:var(--ink); } .cl-private { color:#8a2be2; } .cl-system { color:var(--magenta); }
   :root[data-theme="dark"] .cl-alliance { color:#9fb0ff; }
   .chatbody .who { color:var(--link); text-decoration:underline; cursor:pointer; }
   .chatbody a { color:var(--link); }
-  .sendbar { display:flex; gap:6px; padding:5px 0 0; align-items:center; flex:0 0 auto; }
-  .sendbar input { flex:1; padding:3px 6px; font-size:12px; }
-  #pmTo { font-size:11px; color:#8a2be2; white-space:nowrap; }
+  .sendbar { display:flex; gap:var(--gap); padding:6px 0 0; align-items:center; flex:0 0 auto; }
+  .sendbar input { flex:1; padding:4px 7px; font-size:var(--fs-base); }
+  #pmTo { font-size:var(--fs-sm); color:#8a2be2; white-space:nowrap; }
 
   #tipcard { position:fixed; z-index:300; pointer-events:none; display:none; background:var(--tip-bg);
-    border:1px solid var(--line); padding:6px 8px; font-size:11.5px; line-height:1.5; max-width:320px;
+    border:1px solid var(--line); padding:7px 10px; font-size:var(--fs-sm); line-height:1.55; max-width:380px;
     box-shadow:2px 2px 4px rgba(0,0,0,.2); color:var(--ink); }
-  #tipcard .k { color:var(--dim); display:inline-block; min-width:70px; }
+  #tipcard .k { color:var(--dim); display:inline-block; min-width:86px; }
   #tipcard .sec { margin-top:4px; border-top:1px solid var(--line); padding-top:3px; }
   #tipcard table.ob { border-collapse:collapse; }
   #tipcard table.ob td { padding:0 10px 0 0; text-align:right; }
   #tipcard table.ob th { padding:0 10px 0 0; text-align:right; color:var(--dim); font-weight:normal; }
-  dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); padding:14px; min-width:280px; }
+  dialog { background:var(--panel); color:var(--ink); border:1px solid var(--line); padding:16px; min-width:320px;
+           font-size:var(--fs-base); }
 
   /* ask() / tell(): the console's own confirm and alert boxes */
-  dialog.ask { width:min(440px, 92vw); min-width:0; padding:0; background:var(--win);
+  dialog.ask { width:min(520px, 92vw); min-width:0; padding:0; background:var(--win);
                box-shadow:0 8px 28px rgba(0,0,0,.35); }
   dialog.ask::backdrop { background:rgba(0,0,0,.35); }
-  .ask-cap { padding:5px 10px; color:var(--th-ink); font:bold 13px Georgia, "Times New Roman", serif;
+  .ask-cap { padding:6px 12px; color:var(--th-ink); font:bold var(--fs-lg) Georgia, "Times New Roman", serif;
              background:linear-gradient(var(--th-top), var(--th-bot)); border-bottom:1px solid var(--th-edge); }
-  .ask-body { padding:14px 16px 4px; max-height:60vh; overflow:auto; font-size:12.5px; line-height:1.5;
+  .ask-body { padding:15px 18px 5px; max-height:60vh; overflow:auto; font-size:var(--fs-base); line-height:1.55;
               white-space:pre-wrap; word-break:break-word; }
   .ask-q:not(:last-child) { font-weight:bold; }   /* a question with detail under it */
-  .ask-more { color:var(--dim); margin-top:8px; font-size:12px; }
-  .ask-btns { display:flex; justify-content:flex-end; gap:8px; padding:12px 16px 14px; }
-  .ask-btns button { min-width:76px; padding:4px 12px; }
+  .ask-more { color:var(--dim); margin-top:9px; font-size:var(--fs-sm); }
+  .ask-btns { display:flex; justify-content:flex-end; gap:9px; padding:13px 18px 16px; }
+  .ask-btns button { min-width:90px; padding:5px 14px; }
 
   /* mail & reports */
   .cbox.mr-click { cursor:pointer; }
@@ -361,8 +486,8 @@
            background:var(--win); color:var(--ink); border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.35); }
   #mrDlg[open] { display:flex; flex-direction:column; }
   #mrDlg::backdrop { background:rgba(0,0,0,.35); }
-  .mr-cap { display:flex; align-items:center; gap:6px; padding:5px 8px; flex:0 0 auto; color:var(--th-ink);
-            font:bold 13px Georgia, "Times New Roman", serif;
+  .mr-cap { display:flex; align-items:center; gap:var(--gap); padding:6px 10px; flex:0 0 auto; color:var(--th-ink);
+            font:bold var(--fs-lg) Georgia, "Times New Roman", serif;
             background:linear-gradient(var(--th-top), var(--th-bot)); border-bottom:1px solid var(--th-edge); }
   .mr-cap .grow { flex:1; }
   .mr-tabs { padding:6px 8px 4px; }
@@ -371,7 +496,7 @@
   .mr-left { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; }
   .mr-left .well { flex:1; }
   .mr-read { flex:1 1 50%; min-width:0; }
-  #mrBar { background:var(--panel2); border:1px solid var(--line); border-bottom:0; min-height:31px; }
+  #mrBar { background:var(--panel2); border:1px solid var(--line); border-bottom:0; min-height:38px; }
   #mrBar .pg { margin-left:auto; display:flex; align-items:center; gap:3px; }
   #mrBar .pg .num { padding:0 5px; color:var(--dim); }
   table.nt.mr-list { table-layout:fixed; }
@@ -380,29 +505,43 @@
   table.nt.mr-list tr.mr-open td { background:var(--row-mine); }
   table.nt.mr-list input[type=checkbox] { margin:0; vertical-align:middle; cursor:pointer; }
   table.nt.mr-list td:nth-child(-n+2), table.nt.mr-list th:nth-child(-n+2) { padding:0; text-overflow:clip; }
-  .mr-dot { color:var(--blue); font-size:10px; }
-  .mr-pane { padding:6px 8px 10px; }
+  .mr-dot { color:var(--blue); font-size:var(--fs-xs); }
+  .mr-pane { padding:7px 10px 12px; }
   table.nt.mr-kv td { white-space:normal; word-break:break-word; height:auto; }
   table.nt.mr-kv td:first-child { color:var(--dim); }
-  .mr-text { white-space:pre-wrap; word-break:break-word; font:12.5px/1.55 Arial, sans-serif; padding:10px 4px 6px; }
+  .mr-text { white-space:pre-wrap; word-break:break-word; font:var(--fs-base)/1.6 Arial, sans-serif; padding:11px 5px 7px; }
   .mr-links { padding:3px 6px; word-break:break-all; }
   .mr-links a, .mr-acts a { color:var(--link); }
   .mr-acts { display:flex; gap:7px; align-items:center; flex-wrap:wrap; padding:10px 0 2px; }
   .mr-raw { margin-top:10px; }
-  .mr-raw summary { cursor:pointer; color:var(--dim); font-size:11px; }
-  .mr-raw pre { max-height:260px; overflow:auto; background:var(--panel2); border:1px solid var(--grid); }
-  .mr-compose { flex:1; min-height:0; display:flex; flex-direction:column; gap:7px; padding:4px 10px 6px; }
-  .mr-compose .mr-row { display:flex; align-items:center; gap:8px; }
-  .mr-compose label { width:62px; font-weight:bold; }
-  .mr-compose input { flex:1; max-width:440px; padding:3px 6px; font-size:12px; }
-  .mr-compose textarea { flex:1; min-height:150px; resize:none; font:12.5px/1.5 Arial, sans-serif; color:var(--ink);
-                         background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:6px 7px; }
+  .mr-raw summary { cursor:pointer; color:var(--dim); font-size:var(--fs-sm); }
+  .mr-raw pre { max-height:300px; overflow:auto; background:var(--panel2); border:1px solid var(--grid); }
+  .mr-compose { flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; padding:5px 12px 7px; }
+  .mr-compose .mr-row { display:flex; align-items:center; gap:9px; }
+  .mr-compose label { width:78px; font-weight:bold; }
+  .mr-compose input { flex:1; max-width:460px; padding:4px 7px; font-size:var(--fs-base); }
+  .mr-compose textarea { flex:1; min-height:170px; resize:none; font:var(--fs-base)/1.55 Arial, sans-serif; color:var(--ink);
+                         background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:7px 8px; }
   .mr-msg.bad { color:var(--bad); } .mr-msg.good { color:var(--ok); }
-  .mr-foot { flex:0 0 auto; padding:2px 10px 7px; color:var(--dim); font-size:10.5px; }
+  .mr-foot { flex:0 0 auto; padding:3px 12px 8px; color:var(--dim); font-size:var(--fs-xs); }
   .mr-err { color:var(--bad); }
-  @media (max-width:760px) { .mr-main { flex-direction:column; } .mr-left, .mr-read { flex:1 1 50%; } }
+  @media (max-width:900px) { .mr-main { flex-direction:column; } .mr-left, .mr-read { flex:1 1 50%; } }
 
-  @media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
+  /* the battle-report view comes from reportview.css, which is shared; pull it
+     onto the same type scale here rather than fork that file */
+  .rv { font-size:var(--fs-base); line-height:1.45; }
+  .rv-headline { font-size:var(--fs-lg); }
+  .rv-verdict, .rv-won, .rv-lost { font-size:var(--fs-sm); }
+  .rv-foot, .rv-whose, .rv-who { font-size:var(--fs-sm); }
+  .rv-sub, .rv-sh { font-size:var(--fs-base); }
+  table.rv-t { font-size:var(--fs-cell); }
+  table.rv-t th { font-size:var(--fs-th); }
+  .rv-text { font-size:var(--fs-base); }
+  pre.rv-raw { font-size:var(--fs-code); }
+
+  /* the bar still shows where the march stands, it just stops creeping */
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; } .mbar > i { animation:none !important; }
+    .itabs .ib.atk { animation:none !important; background:#d21c1c; box-shadow:0 0 0 2px #d21c1c; } }
 </style>
 </head>
 <script>
@@ -441,6 +580,11 @@
      up backend changes when it restarts; say so rather than show empty panels. -->
 <div id="staleBar" hidden>This page is newer than the console server behind it — restart the console
   (node server.js) to load the new backend. Until then several panels stay empty.</div>
+
+<!-- "Another user has logged into your account" — the game's own words. The server
+     sends server.ConnectionLost and the console stands down; this says so. -->
+<div id="kickBar" hidden><span id="kickBarText"></span>
+  <button id="kickBarTake" type="button" title="Log back in now and take the account back from whoever has it">Take it back now</button></div>
 
 <div id="maintBar" hidden>
   <b>SERVER MAINTENANCE</b>
@@ -521,8 +665,10 @@
         <button class="t" data-k="output" title="The last Apply / Save / Run">Output</button>
         <button class="t" data-k="reports">Reports</button>
         <button class="t" data-k="debug" title="Everything, the protocol trace included">Debug</button>
+        <button class="t" data-k="alliance" title="The game's Alliance window: its info, members, standings, war reports and events">Alliance</button>
         <button class="t" data-k="items" title="Everything this account holds">Items</button>
         <button class="t" data-k="stats" title="The game's Statistics: every player, alliance, hero and city on the server, ranked">Statistics</button>
+        <button class="t" data-k="friends" title="Your friends and your blocklist">Friends</button>
         <span class="grow"></span>
         <span class="seg" id="statKind" hidden>
           <button class="sm on" data-k="all" aria-pressed="true">All</button>
@@ -531,6 +677,20 @@
           <button class="sm" data-k="heroes" aria-pressed="false">Heroes</button>
           <button class="sm" data-k="cities" aria-pressed="false">Cities</button>
         </span>
+        <span class="seg" id="alKind" hidden>
+          <button class="sm on" data-k="info" aria-pressed="true">Info</button>
+          <button class="sm al-t-members" data-k="members" aria-pressed="false">Members</button>
+          <button class="sm al-t-friendly" data-k="friendly" aria-pressed="false" title="Alliances marked friendly (blue on the map)">Friendly</button>
+          <button class="sm al-t-neutral" data-k="neutral" aria-pressed="false" title="Alliances marked neutral (grey on the map)">Neutral</button>
+          <button class="sm al-t-hostile" data-k="hostile" aria-pressed="false" title="Alliances marked hostile — at war (red on the map)">Hostile</button>
+          <button class="sm" data-k="war" aria-pressed="false" title="Battles the alliance's members fought">War Reports</button>
+          <button class="sm" data-k="events" aria-pressed="false" title="Who joined, left, was expelled or promoted">Events</button>
+        </span>
+        <span class="seg" id="frKind" hidden>
+          <button class="sm on" data-k="blocked" aria-pressed="true">Blocklist</button>
+          <button class="sm" data-k="friends" aria-pressed="false">My Friends</button>
+        </span>
+        <button id="alGo" hidden title="Read this again from the game, through this account's connection">Refresh</button>
         <button id="statGo" hidden title="Read every list again from the game, through this account's connection">Refresh</button>
         <button id="statStop" class="danger" hidden title="Stop reading the lists">Stop</button>
         <span class="seg" id="itemKind" hidden>
@@ -571,14 +731,14 @@
 <dialog id="ptDlg">
   <form method="dialog" id="ptForm">
     <b>Add points to <span id="ptHero"></span></b>
-    <div id="ptInfo" style="color:var(--dim);font-size:11px;margin:5px 0 10px"></div>
+    <div id="ptInfo" style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 10px"></div>
     <div style="display:flex;gap:7px;align-items:center">
       <select id="ptAttr">
         <option value="attack">Attack</option>
         <option value="politics">Politics</option>
         <option value="intel">Intel</option>
       </select>
-      <input id="ptAmount" type="number" min="1" value="1" style="width:80px">
+      <input id="ptAmount" type="number" min="1" value="1" style="width:96px">
     </div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="add">Add</button>
@@ -591,9 +751,9 @@
 <dialog id="hwDlg" aria-labelledby="hwCap">
   <form method="dialog" id="hwForm">
     <b id="hwCap">Holy Water on <span id="hwHero"></span></b>
-    <div id="hwInfo" style="color:var(--dim);font-size:11px;margin:5px 0 4px"></div>
-    <div id="hwCost" style="font-size:11px;margin:0 0 10px;white-space:pre-line"></div>
-    <label for="hwRule" style="display:block;font-size:11px;color:var(--dim);margin-bottom:4px">Then spend the points</label>
+    <div id="hwInfo" style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 4px"></div>
+    <div id="hwCost" style="font-size:var(--fs-sm);margin:0 0 10px;white-space:pre-line"></div>
+    <label for="hwRule" style="display:block;font-size:var(--fs-sm);color:var(--dim);margin-bottom:4px">Then spend the points</label>
     <select id="hwRule">
       <option value="">on its highest stat (NEAT's default)</option>
       <option value="att">all into attack</option>
@@ -605,7 +765,7 @@
     <div id="hwCustomRow" hidden style="margin-top:6px">
       <input id="hwCustom" placeholder="pol:300,int:100 att" aria-label="heropoints rule" style="width:100%;box-sizing:border-box">
     </div>
-    <div id="hwNote" style="color:var(--dim);font-size:11px;margin-top:6px;max-width:300px">After a reset the highest stat is the one the hero was born with, so an intel-born hero built into attack comes back an intel hero.</div>
+    <div id="hwNote" style="color:var(--dim);font-size:var(--fs-sm);margin-top:6px;max-width:360px">After a reset the highest stat is the one the hero was born with, so an intel-born hero built into attack comes back an intel hero.</div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="water" id="hwGo">Use Holy Water</button>
       <button value="cancel">Cancel</button>
@@ -617,16 +777,16 @@
 <dialog id="hiDlg" aria-labelledby="hiCap">
   <form method="dialog" id="hiForm">
     <b id="hiCap">Hero item for <span id="hiHero"></span></b>
-    <div id="hiInfo" style="color:var(--dim);font-size:11px;margin:5px 0 4px"></div>
-    <div id="hiNow" style="font-size:11px;margin:0 0 8px;white-space:pre-line"></div>
+    <div id="hiInfo" style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 4px"></div>
+    <div id="hiNow" style="font-size:var(--fs-sm);margin:0 0 8px;white-space:pre-line"></div>
     <div id="hiList" role="group" aria-label="Hero items held"
-         style="max-height:210px;overflow:auto;border:1px solid var(--grid);padding:3px;min-width:320px"></div>
+         style="max-height:260px;overflow:auto;border:1px solid var(--grid);padding:4px;min-width:380px"></div>
     <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
-      <label for="hiTimes" style="font-size:11px;color:var(--dim)">Apply</label>
-      <input id="hiTimes" type="number" min="1" max="50" value="1" style="width:64px">
-      <span class="muted" style="font-size:11px" id="hiTimesNote">time(s)</span>
+      <label for="hiTimes" style="font-size:var(--fs-sm);color:var(--dim)">Apply</label>
+      <input id="hiTimes" type="number" min="1" max="50" value="1" style="width:78px">
+      <span class="muted" style="font-size:var(--fs-sm)" id="hiTimesNote">time(s)</span>
     </div>
-    <div style="color:var(--dim);font-size:11px;margin-top:6px;max-width:330px">An attribute item is a timed +25% buff, not a permanent gain: the base attribute never moves, and the hero drops back when the 7 days are up.</div>
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:6px;max-width:390px">An attribute item is a timed +25% buff, not a permanent gain: the base attribute never moves, and the hero drops back when the 7 days are up.</div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="use" id="hiGo">Apply</button>
       <button value="cancel">Cancel</button>
@@ -638,12 +798,12 @@
 <dialog id="iuDlg" aria-labelledby="iuCap">
   <form method="dialog" id="iuForm" novalidate>
     <b id="iuCap">Apply <span id="iuName"></span></b>
-    <div id="iuInfo" style="color:var(--dim);font-size:11px;margin:5px 0 4px"></div>
-    <div id="iuDesc" style="font-size:11px;margin:0 0 8px;max-width:330px"></div>
+    <div id="iuInfo" style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 4px"></div>
+    <div id="iuDesc" style="font-size:var(--fs-sm);margin:0 0 8px;max-width:390px"></div>
     <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
-      <label for="iuCount" style="font-size:11px;color:var(--dim)">Use</label>
-      <input id="iuCount" type="number" min="1" value="1" style="width:64px">
-      <span class="muted" style="font-size:11px" id="iuNote"></span>
+      <label for="iuCount" style="font-size:var(--fs-sm);color:var(--dim)">Use</label>
+      <input id="iuCount" type="number" min="1" value="1" style="width:78px">
+      <span class="muted" style="font-size:var(--fs-sm)" id="iuNote"></span>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="use" id="iuGo">Apply</button>
@@ -698,12 +858,13 @@ const saveLayout = () => store.set('evony_layout', LAYOUT);
 function applyLayout() {
   const main = document.querySelector('.main');
   const h = main ? main.clientHeight : 600;
-  const topH = Math.max(140, Math.min(h - 140, LAYOUT.topH || Math.round(h * 0.56)));
+  const topH = Math.max(170, Math.min(h - 170, LAYOUT.topH || Math.round(h * 0.56)));
   $('rowTop').style.height = topH + 'px';
   const wTop = $('rowTop').clientWidth || window.innerWidth;
   const wBot = $('rowBot').clientWidth || window.innerWidth;
-  $('cellEdit').style.width = Math.max(260, Math.min(wTop - 300, LAYOUT.topLeft || Math.round(wTop * 0.47))) + 'px';
-  $('cellLog').style.width = Math.max(220, Math.min(wBot - 240, LAYOUT.botLeft || Math.round(wBot * 0.45))) + 'px';
+  // the minimums grew with the type scale: below these a toolbar starts to clip
+  $('cellEdit').style.width = Math.max(320, Math.min(Math.max(320, wTop - 340), LAYOUT.topLeft || Math.round(wTop * 0.47))) + 'px';
+  $('cellLog').style.width = Math.max(280, Math.min(Math.max(280, wBot - 290), LAYOUT.botLeft || Math.round(wBot * 0.45))) + 'px';
 }
 
 function startDrag(handle, onMove) {
@@ -738,28 +899,37 @@ function initResizers() {
   document.querySelectorAll('.vsplit').forEach((h) => startDrag(h, (ev) => {
     const row = h.dataset.row === 'top' ? $('rowTop') : $('rowBot');
     const cell = h.dataset.row === 'top' ? $('cellEdit') : $('cellLog');
-    const w = Math.max(220, Math.min(row.clientWidth - 240, ev.clientX - row.getBoundingClientRect().left));
+    const w = Math.max(280, Math.min(Math.max(280, row.clientWidth - 290), ev.clientX - row.getBoundingClientRect().left));
     cell.style.width = w + 'px';
     if (h.dataset.row === 'top') LAYOUT.topLeft = w; else LAYOUT.botLeft = w;
   }));
   startDrag($('hsplit'), (ev) => {
     const main = document.querySelector('.main');
-    const top = Math.max(140, Math.min(main.clientHeight - 140, ev.clientY - main.getBoundingClientRect().top));
+    const top = Math.max(170, Math.min(Math.max(170, main.clientHeight - 170), ev.clientY - main.getBoundingClientRect().top));
     $('rowTop').style.height = top + 'px';
     LAYOUT.topH = top;
   });
   window.addEventListener('resize', () => { applyLayout(); if (S.mon === 'map') renderMon(true); });
 }
 
-// Chrome wipes window.name on cross-origin navigation, so re-claim it here.
-// That lets the Director target this tab again instead of opening a new one.
-window.name = 'evony_console';
+// Chrome wipes window.name on cross-origin navigation, so re-claim it here. It has to
+// be the name the Director TARGETS, which is one per account (director.html botTabName):
+// this page used to call every console tab 'evony_console', so the Director never found
+// the tab it had opened and every click on an account opened another one (the user,
+// 2026-09-22). The account is only known once the first header lands, so the name is
+// claimed there; until then the name the Director opened the tab under stands.
+const botTabName = (id) => 'otto_bot_' + id;
+function claimTabName(accountId) {
+  if (!accountId) return;
+  const want = botTabName(accountId);
+  if (window.name !== want) window.name = want;
+}
 
 function $(id) { return document.getElementById(id); }
 const S = {
   city: null, edit: 'goals', mon: store.get('evony_mon', 'general'), logs: 'activity', chat: 'alliance',
   cityData: null, cities: [], head: null, logFind: '', logCity: '', pmTo: '',
-  armiesAll: false,
+  armiesAll: false, incomingAll: false,
 };
 
 // ---------- formatting ----------
@@ -963,11 +1133,52 @@ function paintConn() {
 }
 setInterval(paintConn, 1000);
 
+// Somebody else logged into this account. While the console is standing down the bar is
+// red and says how long; for an hour afterwards it stays up in amber, because "the bot
+// did nothing for half an hour" needs its reason on the screen, not in the log.
+const KICK = { at: 0, until: 0, ip: null, step: 0, mins: null };
+function kickAgo(ms) {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m === 1 ? 'a minute ago' : m < 60 ? `${m} minutes ago` : `${Math.round(m / 60)}h ago`;
+}
+function paintKick(h) {
+  if (h) {
+    KICK.at = (h.kick && h.kick.at) || (h.lastKick && h.lastKick.at) || 0;
+    KICK.until = (h.kick && h.kick.until) || 0;
+    KICK.ip = (h.kick && h.kick.ip) || (h.lastKick && h.lastKick.ip) || null;
+    KICK.step = h.kickStep || 0;
+    KICK.mins = h.kick ? h.kick.minutes : null;
+  }
+  const bar = $('kickBar'), txt = $('kickBarText'), btn = $('kickBarTake');
+  const held = KICK.until > Date.now();
+  // gone quiet an hour after the last one: the account is plainly ours again
+  if (!KICK.at || (!held && Date.now() - KICK.at > 3600000)) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.classList.toggle('over', !held);
+  btn.hidden = !held;
+  const who = KICK.ip ? ` from ${KICK.ip}` : '';
+  const at = new Date(KICK.at).toLocaleTimeString();
+  if (held) {
+    const left = Math.max(0, Math.round((KICK.until - Date.now()) / 60000));
+    txt.innerHTML = `ANOTHER USER LOGGED INTO THIS ACCOUNT${who} at ${at}`
+      + ` — this console has stood down for ${KICK.mins ? KICK.mins + ' min' : 'a while'}, back in ${left || '<1'} min.`
+      + `<span class="why"> That is the game kicking us out, not a network fault. Again within half an hour means OUR OWN fleet, not NEAT — NEAT pauses 30 minutes when it is kicked.`
+      + `${KICK.step > 1 ? ` It has happened ${KICK.step} times in a row, so each wait is longer than the last.` : ''}</span>`;
+  } else {
+    txt.innerHTML = `Another user logged into this account${who} at ${at} (${kickAgo(KICK.at)})`
+      + `<span class="why"> — the console stood down and is back in. If this keeps happening, only one bot should be playing it.</span>`;
+  }
+}
+setInterval(() => paintKick(null), 10000);
+
 // ---------- header ----------
 function paintHeader(h) {
+  // one tab per account, and the Director can find it again (see claimTabName)
+  claimTabName(h.account && h.account.id);
   CONN.state = h.state; CONN.reason = h.reason; CONN.retryInSec = h.retryInSec; CONN.attempt = h.attempt;
   CONN.syncedAt = Date.now();
   paintConn();
+  paintKick(h);
   $('srv').textContent = h.server || '—';
   $('lord').textContent = (h.lord || '—') + (h.account && h.account.label && h.account.label !== h.lord ? ` (${h.account.label})` : '');
   $('coins').textContent = fmt(h.coins);
@@ -1034,6 +1245,13 @@ $('connect').onclick = async () => {
   await post('/api/connect');
   refresh();
 };
+// Connect is what ends a kick hold early (server.js /api/connect), so the bar's button
+// is the same call — worded as what it really does to whoever else is on the account.
+$('kickBarTake').onclick = async () => {
+  $('kickBarTake').disabled = true;
+  try { await post('/api/connect'); } finally { $('kickBarTake').disabled = false; }
+  refresh();
+};
 $('maintOverride').onchange = () => post('/api/maintenance', { override: $('maintOverride').checked });
 (function () {
   const btn = $('themeBtn');
@@ -1077,6 +1295,19 @@ function paintCities() {
       th.length ? 'th' : '', moving ? 'moving' : ''].join(' ');
     return `<button class="${cls}" data-id="${c.id}" title="${esc(tip)}">${esc(String(c.name).slice(0, 3))}(${c.x},${c.y})${manual ? '*' : ''}</button>`;
   }).join('') || '<span class="muted" style="padding:3px">no cities</span>';
+  paintIncomingAlert(list);
+}
+// The Incoming icon (top right) flashes red/white while any city of this
+// account has a hostile army inbound; its tooltip names the cities.
+function paintIncomingAlert(list) {
+  const ib = $('monTabs').querySelector('.ib[data-k="incoming"]');
+  if (!ib) return;
+  const hit = (list || []).filter((c) => c.incoming > 0 || c.underAttack);
+  ib.classList.toggle('atk', hit.length > 0);
+  const label = hit.length
+    ? 'Incoming — UNDER ATTACK: ' + hit.map((c) => `${c.name} (${c.incoming || '?'} hostile)`).join(', ')
+    : 'Incoming';
+  ib.title = label; ib.setAttribute('aria-label', label);
 }
 $('cities').addEventListener('click', (e) => {
   const t = e.target.closest('.ctab'); if (!t || !t.dataset.id) return;
@@ -2146,6 +2377,8 @@ function setBody(html) {
   body.innerHTML = html;
   body.scrollTop = top;
   lastMon = html;
+  startMarchBars(body);
+  tickMarchClocks(body);
 }
 
 // Rows are [cells] or { cells, cls, title, tip, style }; cols are { h, a: 'n'|'c'|'', w, sort }.
@@ -2272,7 +2505,7 @@ function renderValleys(d) {
     (v.buildable ? `<button class="sm" data-act="vbuild" data-id="${v.id}" data-xy="${v.x},${v.y}">Build city</button> ` : '')
       + `<button class="sm danger" data-act="vdrop" data-id="${v.id}" data-xy="${v.x},${v.y}">Abandon</button>`,
   ]);
-  return grid([{ h: '#', a: 'c', w: '34px' }, { h: 'Type' }, { h: 'Level', a: 'c' }, { h: 'Coords', a: 'c' },
+  return grid([{ h: '#', a: 'c', w: '42px' }, { h: 'Type' }, { h: 'Level', a: 'c' }, { h: 'Coords', a: 'c' },
     { h: 'Distance', a: 'n' }, { h: 'Action', a: 'c' }], rows)
     + `<div class="tb"><span class="note">${list.length} held · abandoning frees the troops on it and cannot be undone</span></div>`;
 }
@@ -2341,20 +2574,29 @@ function renderHeroes(d) {
       : away ? `<button class="sm" data-act="recallhero" data-hero="${esc(h.name)}" data-st="${st}">Recall</button>`
       : (mayor ? `<button class="sm" data-act="unmayor" data-hero="${esc(h.name)}">Demote</button>`
         : st === 0 ? `<button class="sm" data-act="mayor" data-hero="${esc(h.name)}">Promote</button>` : '')
+      // Banked experience: one press takes it up one level and spends the point.
+      + (!prisoner && !away && Number(h.levelsReady) > 0
+        ? ` <button class="sm" data-act="levelup" data-hero="${esc(h.name)}" title="${Number(h.levelsReady)} level(s) of experience are banked — level up and put the point on its best attribute">Level</button>` : '')
       + (h.unspent ? ` <button class="sm" data-act="points" data-hero="${esc(h.name)}">+Pts</button>` : '')
       // Holy Water only for a hero at home (idle or mayor), as waterhero allows
       + (st === 0 || st === 1 ? ` <button class="sm" data-act="water" data-hero="${esc(h.name)}" title="Holy Water: reset its points and spend them again">Reset</button>` : '')
       + (mayor ? '' : ` <button class="sm danger" data-act="fire" data-hero="${esc(h.name)}">Fire</button>`);
     return {
       // marching red, returning green, defending blue
-      cls: mayor ? 'mayor' : st === 3 ? 'bad' : st === 5 ? 'good' : st === 2 ? 'defend' : '', tip: 'hero:' + h.name,
+      cls: prisoner ? 'warn' : mayor ? 'mayor' : st === 3 ? 'bad' : st === 5 ? 'good' : st === 2 ? 'defend' : '', tip: 'hero:' + h.name,
       cells: [h.n, name, esc(h.statusName || ''), h.type || '',
         // The Buff column is the way in: + opens the hero-item window, and shows
         // what is already on the hero on hover. A prisoner takes no item, so it
         // keeps the plain dot.
         prisoner ? ((h.buffs || []).length ? `<span class="buffdot" title="${esc(buffTip)}">+</span>` : '')
           : `<button class="sm buffadd${(h.buffs || []).length ? ' has' : ''}" data-act="heroitem" data-hero="${esc(h.name)}" title="${esc(buffTip ? buffTip + '\n\nClick to apply another hero item.' : 'Apply a hero item: Excalibur, The Wealth of Nations, The Art of War')}">+</button>`,
-        h.level, h.base ?? '', h.unspent ? `<b class="warnc">${h.unspent}</b>` : '0',
+        // The level the server holds, and beside it the levels the hero's banked
+        // experience would buy — Pts is only the points not yet SPENT, so a hero
+        // that has spent every one reads 0 there however much experience it sits on.
+        Number(h.levelsReady) > 0
+          ? `<span>${h.level} <b class="warnc" title="${Number(h.levelsReady)} level(s) of experience banked">+${Number(h.levelsReady)}</b></span>`
+          : h.level,
+        h.base ?? '', h.unspent ? `<b class="warnc">${h.unspent}</b>` : '0',
         attr(h, 'politics'), attr(h, 'attack'), attr(h, 'intel'), h.loyalty, act],
     };
   });
@@ -2402,7 +2644,7 @@ function renderBuildings(d) {
       return { cls: b.qty ? 'good' : 'bad', cells: [`${esc(b.name)}${b.code ? ` (${b.code})` : ''}`, b.qty, (b.levels || []).join(', ') + work] };
     }),
   ];
-  return grid([{ h: 'Building', w: '26%' }, { h: 'Total', a: 'c', w: '60px' }, { h: 'Level(s)', a: 'wrap' }], rows);
+  return grid([{ h: 'Building', w: '26%' }, { h: 'Total', a: 'c', w: '72px' }, { h: 'Level(s)', a: 'wrap' }], rows);
 }
 
 // ---- Research --------------------------------------------------------------
@@ -2425,6 +2667,169 @@ const MISSION = {
   construct: { ico: '&#127959;', label: 'Build', cls: 'm-construct' },
 };
 const mtag = (m) => { const x = MISSION[m] || { ico: '?', label: m || '?', cls: '' }; return `<span class="mtag ${x.cls}">${x.ico} ${x.label}</span>`; };
+
+// What colour a march row wears, NEAT's way. Anything on its way home is blue
+// whatever it went out to do; on the way out, attack and scout are red and
+// reinforce and transport green. A build march is violet — it is ours, it is
+// peaceful, but it is not help arriving either, and it already reads violet in
+// the Type cell. A camped march is amber: it is not travelling, it is sitting
+// on its target. An inbound row carries no direction (incomingArmies() only
+// ever lists armies on their way somewhere), so it falls through to its
+// mission — with hostile as a backstop, so an enemy is never painted green.
+const OUT_HOSTILE = new Set(['attack', 'scout']);
+function marchCls(a) {
+  if (a.direction === 'back') return 'defend';
+  if (a.direction === 'camped') return 'warn';
+  if (a.mission === 'construct') return 'build';
+  if (OUT_HOSTILE.has(a.mission)) return 'bad';
+  return a.hostile ? 'bad' : 'good';
+}
+
+// Every march time on these two tabs runs off ONE clock: the server's, carried
+// forward by this PC's own clock from the moment the last /api/marches reply
+// was read (clockBase, the middle of that request). Using the reply's
+// serverNow as it stood froze every countdown between polls, which is why they
+// jumped three or four seconds at a time.
+function marchNow() {
+  const m = S.marches;
+  if (!m || !m.serverNow) return Date.now();
+  return m.clockBase ? m.serverNow + (Date.now() - m.clockBase) : m.serverNow;
+}
+const pad2 = (n) => String(n).padStart(2, '0');
+// A countdown with the seconds always showing, rounded UP: "1s" is the last
+// second before it lands and "now" is the landing itself.
+function cdText(left) {
+  if (!(left > 0)) return 'now';
+  const s = Math.ceil(left / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${pad2(s % 60)}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${pad2(Math.floor((s % 3600) / 60))}m ${pad2(s % 60)}s`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h ${pad2(Math.floor((s % 3600) / 60))}m`;
+}
+// The cell is written empty and filled by tickMarchClocks, so a render's
+// markup only changes when the march does — a poll never rebuilds the table
+// (or restarts the bars, or swaps a Recall button out from under a click).
+const cdCell = (ts) => (ts ? `<span class="cd" data-at="${Number(ts)}"></span>` : '—');
+function tickMarchClocks(root) {
+  const now = marchNow();
+  for (const el of root.querySelectorAll('.cd[data-at]')) {
+    const left = Number(el.dataset.at) - now;
+    const txt = cdText(left);
+    if (el.textContent !== txt) el.textContent = txt;
+    el.classList.toggle('soon', left < 120000);
+  }
+  for (const el of root.querySelectorAll('.sclk')) {
+    const txt = aimTime(now).slice(0, 8);
+    if (el.textContent !== txt) el.textContent = txt;
+  }
+}
+// A server-epoch time on the SERVER's wall clock (its timezone, as the header
+// clock and the game itself show it), to the millisecond.
+function srvTime(t, o = {}) {
+  const sc = S.head && S.head.serverClock;
+  const d = new Date(Number(t) + ((sc && sc.offsetMs) || 0));
+  const hms = `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+  const ms = o.ms === false ? '' : '.' + String(d.getUTCMilliseconds()).padStart(3, '0');
+  const date = o.date ? `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ` : '';
+  return date + hms + ms + (o.tz && sc ? ' ' + sc.tz : '');
+}
+// The "Lands at" cell: the time to the millisecond, with the date in front
+// only when it is not today on the server's clock.
+// It is written in the time zone a script's @: landing time is read in (this
+// PC's, SAST), NOT the server's: ss71 runs on UTC-5, seven hours off, and a
+// landing time is copied from here into @: lines to line waves up.
+function aimTime(t, o = {}) {
+  const d = new Date(Number(t));
+  const hms = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const date = o.date ? `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` : '';
+  return date + hms + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+const aimTz = () => { const off = -new Date().getTimezoneOffset() / 60; return `UTC${off >= 0 ? '+' : ''}${off}`; };
+function landsAt(ts, now) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts));
+  const day = d.toDateString() === new Date(Number(now)).toDateString() ? '' : `<span class="muted">${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}</span> `;
+  const t = aimTime(ts);
+  return `<span class="lat">${day}${t.slice(0, 8)}<span class="ms">${t.slice(8)}</span></span>`;
+}
+// fieldId = y * 800 + x (constants.js), and the map wraps at its edges.
+const fieldXY = (fid) => (Number.isFinite(Number(fid)) && Number(fid) >= 0 ? { x: Number(fid) % 800, y: Math.floor(Number(fid) / 800) } : null);
+const wrapDist = (p, q) => Math.hypot(Math.min(Math.abs(p.x - q.x), 800 - Math.abs(p.x - q.x)), Math.min(Math.abs(p.y - q.y), 800 - Math.abs(p.y - q.y)));
+const marchDur = (ms) => (ms > 0 ? cdText(ms) : '—');
+// Rows are sorted by what lands first, to the millisecond; a march with no
+// time goes last, and a tie keeps the order the server numbered them.
+const byLanding = (a, b) => ((Number(a.reachTime) || Infinity) - (Number(b.reachTime) || Infinity))
+  || (Number(a.armyId) || 0) - (Number(b.armyId) || 0);
+
+// The hover card of one march: everything the server's ArmyBean says about it.
+// Keyed by the army id where there is one, so a re-sort under the pointer
+// never swaps the card for another march's.
+const MARCH_TIP = new Map();
+const marchKey = (a, side) => side + ':' + (a.armyId !== undefined && a.armyId !== null && a.armyId !== ''
+  ? a.armyId : `${a.startFieldId}-${a.targetFieldId}-${a.reachTime}`);
+const DIR_TEXT = { out: 'on its way', back: 'coming home', camped: 'camped at its target' };
+function marchCard(a) {
+  if (!a) return null;
+  const now = marchNow();
+  const r = (k, v) => `<div><span class="k">${k}</span>${v}</div>`;
+  const x = MISSION[a.mission] || { ico: '?', label: a.mission || '?' };
+  const s = Number(a.startTime || 0), t = Number(a.reachTime || 0);
+  const place = (name, xy, fid) => `${esc(name || '—')}${xy ? ` (${xy.x},${xy.y})` : ''}${Number.isFinite(fid) ? ` <span class="muted">#${fid}</span>` : ''}`;
+  const origin = a.origin || fieldXY(a.startFieldId);
+  const dist = origin && a.target ? Math.round(wrapDist(origin, a.target) * 100) / 100 : null;
+  const side = a.side === 'in' ? (a.hostile ? '<b class="neg">hostile</b>' : a.own ? 'yours' : '<span class="pos">friendly</span>') : 'yours';
+  // A camped march's reachTime has not been seen live yet: whether it is the
+  // moment it arrived or the moment its camp ends is unverified.
+  const when = a.direction === 'back' ? 'Home at' : a.direction === 'camped' ? 'Server time' : 'Lands at';
+  let html = `<b>${x.ico} ${esc(x.label)}</b> <span class="muted">${esc(DIR_TEXT[a.direction] || (a.side === 'in' ? 'inbound' : ''))} · ${side}</span>`
+    + r(when, t ? `<b>${aimTime(t, { date: true })}</b> <span class="muted">${aimTz()}, as an @: time reads it</span>` : '—')
+    + (t ? r('', `<span class="muted">${srvTime(t, { date: true, tz: true })} on the server's own clock</span>`) : '')
+    + (t && a.direction === 'camped' ? r('', '<span class="muted">camped: what this time means for a camped march is not yet known</span>') : '')
+    + r('In', t ? `<b class="${t - now < 120000 ? 'soon' : ''}">${cdText(t - now)}</b>` : '—')
+    + (s ? r('Left at', aimTime(s, { date: new Date(s).toDateString() !== new Date(t || s).toDateString() })) : '')
+    + (s && t > s ? r('Travel', `${marchDur(t - s)} <span class="muted">· ${Math.min(100, Math.max(0, ((now - s) / (t - s)) * 100)).toFixed(1)}% done</span>`) : '')
+    + (a.restTime ? r('Camp', `${fmt(a.restTime)} <span class="muted">(the server's restTime)</span>`) : '')
+    + r('Hero', a.hero ? `${esc(a.hero)}${a.heroLevel ? ` <span class="muted">level ${a.heroLevel}</span>` : ''}` : '<span class="muted">none</span>')
+    + (a.king || a.alliance ? r('Player', `${esc(a.king || '—')}${a.alliance ? ` <span class="muted">· ${esc(a.alliance)}</span>` : ''}`) : '')
+    + r('From', place(a.from, origin, a.startFieldId))
+    + r('To', place(a.to || a.myCity, a.target, a.targetFieldId))
+    + (dist !== null ? r('Distance', String(dist)) : '')
+    + r('Army id', a.armyId !== undefined && a.armyId !== null && a.armyId !== '' ? esc(a.armyId) : '<span class="muted">not given</span>')
+    + r('Mission', `${esc(a.mission)} <span class="muted">(type ${esc(a.missionType)})</span>`);
+  const units = Object.entries(a.units || {});
+  html += '<div class="sec">Troops</div>'
+    + (units.length ? units.map(([k, v]) => r(esc(TROOP_NAME[k] || k), typeof v === 'number' ? fmt(v) : esc(v))).join('')
+      + (a.troopTotal ? r('Total', `<b>${fmt(a.troopTotal)}</b>${a.scouted === false ? ' <span class="muted">+ the ones not scouted</span>' : ''}`) : '')
+      : '<div class="muted">none reported</div>');
+  const carry = Object.entries(a.loot || a.resources || {});
+  if (carry.length) html += '<div class="sec">Carrying</div>' + carry.map(([k, v]) => r(esc(k), fmt(v))).join('');
+  return html;
+}
+
+// The bar itself carries only the march's own numbers, so a poll that changes
+// nothing leaves the DOM — and the animation running on it — alone. A march
+// with no usable start (an unscouted army the server gives no startTime for,
+// or one already at its target) gets no bar rather than one that lies.
+function marchBar(a) {
+  const s = Number(a.startTime || 0), r = Number(a.reachTime || 0);
+  if (!s || !r || r <= s || a.direction === 'camped') return '';
+  return `<span class="mbar" aria-hidden="true"><i data-start="${s}" data-total="${r - s}"></i></span>`;
+}
+
+// Timing goes on after the render, off the same clock the countdown uses: the
+// negative delay drops the animation in where the march actually is, and the
+// inline width is where it would sit if animations are off (reduced motion).
+function startMarchBars(root) {
+  const now = marchNow();
+  for (const i of root.querySelectorAll('.mbar > i')) {
+    const start = Number(i.dataset.start), total = Number(i.dataset.total);
+    if (!(total > 0)) continue;
+    const done = Math.min(Math.max(now - start, 0), total);
+    i.style.width = ((done / total) * 100).toFixed(1) + '%';
+    i.style.animationDuration = total + 'ms';
+    i.style.animationDelay = '-' + done + 'ms';
+  }
+}
 const troopTip = (units, loot) => {
   const t = Object.entries(units || {}).map(([k, v]) => `${TROOP_NAME[k] || k}: ${typeof v === 'number' ? fmt(v) : v}`);
   const l = Object.entries(loot || {}).map(([k, v]) => `${k}: ${fmt(v)}`);
@@ -2446,8 +2851,9 @@ const recallCell = (a) => {
 
 function renderArmies(d) {
   const m = S.marches;
+  MARCH_TIP.clear();
   if (!m) return '<div class="empty">reading the rally spot…</div>';
-  const now = m.serverNow || Date.now();
+  const now = marchNow();
   const all = m.outgoing || [];
   const mine = all.filter((a) => Number(a.startFieldId) === Number(d.fieldId));
   const list = S.armiesAll ? all : mine;
@@ -2458,42 +2864,67 @@ function renderArmies(d) {
   const used = slots ? `Rally Spot L${slots}: <b class="${mine.length >= slots ? 'neg' : ''}">${mine.length} of ${slots}</b> march slots in use`
     : `<span class="neg">no Rally Spot — this city cannot march</span>`;
   const tb = `<div class="tb"><label><input type="checkbox" data-act="armiesall" ${S.armiesAll ? 'checked' : ''}> every city</label>
-    <span class="note">${used} · ${all.length} march(es) across all your cities · hover a row for the troops</span></div>`;
+    <span class="note">${used} · ${all.length} march(es) across all your cities · now <b class="sclk"></b> <span title="the time zone @: landing times are written in">(@: time)</span> · hover a row for the whole march</span></div>`;
   if (!list.length) return tb + `<div class="empty">No armies out${S.armiesAll ? '' : ' from this city'}.</div>`;
-  const rows = list.slice().sort((a, b) => (a.reachTime || 0) - (b.reachTime || 0)).map((a) => {
+  const rows = list.slice().sort(byLanding).map((a) => {
     const dir = a.direction === 'back' ? '&#8617; back' : a.direction === 'camped' ? '&#9978; camped' : '&#8594; out';
     const dist = a.target ? Math.round(Math.hypot(a.target.x - d.x, a.target.y - d.y) * 100) / 100 : '';
+    const key = marchKey(a, 'out');
+    MARCH_TIP.set(key, { ...a, side: 'out', origin: fieldXY(a.startFieldId) });
     return {
-      title: troopTip(a.units, a.loot),
+      cls: marchCls(a),
+      tip: 'march:' + key,
       cells: [`${mtag(a.mission)} <span class="muted">${dir}</span> ${short(a.troopTotal)}`
           + (a.lootTotal ? ` <span class="pos">+${short(a.lootTotal)}</span>` : ''),
         esc(a.hero || '—') + (a.heroLevel ? ` <span class="muted">(${a.heroLevel})</span>` : ''),
         `${esc(a.to || '')} ${a.target ? `(${a.target.x},${a.target.y})` : ''}`
           + (S.armiesAll ? ` <span class="muted">from ${esc(a.from || '')}</span>` : ''),
-        dist, until(a.reachTime, now),
+        dist, landsAt(a.reachTime, now), cdCell(a.reachTime) + marchBar(a),
         recallCell(a)],
     };
   });
-  return tb + grid([{ h: 'Army' }, { h: 'Hero' }, { h: 'Target' }, { h: 'Distance', a: 'n' }, { h: 'Time left', a: 'c' }, { h: 'Action', a: 'c' }], rows);
+  return tb + grid([{ h: 'Army' }, { h: 'Hero' }, { h: 'Target' }, { h: 'Distance', a: 'n' },
+    { h: 'Lands at', a: 'c', t: 'when it lands (home, for a march coming back), to the millisecond, in the time zone @: landing times are written in' },
+    { h: 'Time left', a: 'c' }, { h: 'Action', a: 'c' }], rows);
 }
 
 function renderIncoming(d) {
   const m = S.marches;
+  MARCH_TIP.clear();
   if (!m) return '<div class="empty">reading inbound armies…</div>';
-  const now = m.serverNow || Date.now();
-  const list = (m.incoming || []).slice().sort((a, b) => (a.reachTime || 0) - (b.reachTime || 0));
-  if (!list.length) return '<div class="empty">Nothing inbound — nobody is marching at your cities.</div>';
-  const rows = list.map((a) => ({
-    cls: a.hostile ? (Number(a.targetFieldId) === Number(d.fieldId) ? 'bad' : '') : 'good',
-    title: troopTip(a.units, a.resources),
-    cells: [mtag(a.mission), esc(a.from || (a.origin ? `${a.origin.x},${a.origin.y}` : '—')),
-      `${esc(a.king || a.alliance || '—')} <span class="chip ${a.hostile ? 'bad' : 'ok'}">${a.hostile ? 'hostile' : a.own ? 'yours' : 'friendly'}</span>`,
-      esc(a.myCity || (a.target ? `${a.target.x},${a.target.y}` : '—')),
-      a.scouted === false ? '<span class="muted" title="not scouted — the server hides the numbers">unknown</span>' : short(a.troopTotal),
-      until(a.reachTime, now)],
-  }));
-  return grid([{ h: 'Type' }, { h: 'From' }, { h: 'Player' }, { h: 'Hitting' }, { h: 'Troops', a: 'n' }, { h: 'Lands in', a: 'c' }], rows)
-    + '<div class="tb"><span class="note">every city · red rows are hitting the city you have open</span></div>';
+  const now = marchNow();
+  // What will actually land comes first; an army of theirs already heading
+  // home, or camped, lands on nobody and goes underneath.
+  const later = (a) => (a.direction === 'back' || a.direction === 'camped' ? 1 : 0);
+  const all = m.incoming || [];
+  const mine = all.filter((a) => Number(a.targetFieldId) === Number(d.fieldId));
+  const list = (S.incomingAll ? all : mine).slice().sort((a, b) => later(a) - later(b) || byLanding(a, b));
+  const tb = `<div class="tb"><label><input type="checkbox" data-act="incomingall" ${S.incomingAll ? 'checked' : ''}> every city</label>
+    <span class="note">first to land on top · now <b class="sclk"></b> <span title="the time zone @: landing times are written in">(@: time)</span> · hover a row for the whole march</span></div>`;
+  if (!list.length) return tb + `<div class="empty">Nothing inbound${S.incomingAll ? '' : ' at this city'} — nobody is marching${S.incomingAll ? ' at your cities' : ' here'}.</div>`;
+  const rows = list.map((a) => {
+    // The row's colour now says what the march IS (red coming to fight, green
+    // coming to help), so which of your cities it lands on needs its own mark:
+    // the red edge and the bold city name, not the row tint it used to be.
+    const here = Number(a.targetFieldId) === Number(d.fieldId);
+    const where = esc(a.myCity || (a.target ? `${a.target.x},${a.target.y}` : '—'));
+    const key = marchKey(a, 'in');
+    MARCH_TIP.set(key, { ...a, side: 'in' });
+    return {
+      cls: marchCls(a) + (here ? ' here' : ''),
+      tip: 'march:' + key,
+      cells: [mtag(a.mission) + (a.direction === 'back' ? ' <span class="muted">&#8617; going home</span>' : a.direction === 'camped' ? ' <span class="muted">&#9978; camped</span>' : ''), esc(a.from || (a.origin ? `${a.origin.x},${a.origin.y}` : '—')),
+        `${esc(a.king || a.alliance || '—')} <span class="chip ${a.hostile ? 'bad' : 'ok'}">${a.hostile ? 'hostile' : a.own ? 'yours' : 'friendly'}</span>`,
+        esc(a.hero || '—') + (a.heroLevel ? ` <span class="muted">(${a.heroLevel})</span>` : ''),
+        here ? `<b>${where}</b>` : where,
+        a.scouted === false ? '<span class="muted">unknown</span>' : short(a.troopTotal),
+        landsAt(a.reachTime, now), cdCell(a.reachTime) + marchBar(a)],
+    };
+  });
+  return tb + grid([{ h: 'Type' }, { h: 'From' }, { h: 'Player' }, { h: 'Hero' }, { h: 'Hitting' }, { h: 'Troops', a: 'n', t: '"unknown" = not scouted, the server hides the numbers' },
+    { h: 'Lands at', a: 'c', t: 'when it lands, to the millisecond, in the time zone @: landing times are written in' }, { h: 'Lands in', a: 'c' }], rows)
+    + '<div class="tb"><span class="note">red rows are attacks and scouts, green reinforcements and transports'
+    + ' · a red edge and a bold city name mean it is landing on the city you have open</span></div>';
 }
 
 // ---- Troops ------------------------------------------------------------------
@@ -2663,6 +3094,7 @@ $('monBody').addEventListener('click', async (e) => {
     return renderMon(true);
   }
   if (act === 'armiesall') { S.armiesAll = el.checked; return renderMon(true); }
+  if (act === 'incomingall') { S.incomingAll = el.checked; return renderMon(true); }
   if (act === 'mktrefresh') { fetchMarket(true); return renderMarket(); }
   if (act === 'innload') return loadInn(false);
   // A refresh spends a Hero Hunting when one is held, and game coins when not
@@ -2678,6 +3110,22 @@ $('monBody').addEventListener('click', async (e) => {
           : 'The inventory has not loaded, so this cannot tell whether it spends a Hero Hunting or game coins.',
     })) return;
     return loadInn(true, !item);
+  }
+  // Banked experience, one hero.levelUp per level. The console asks first
+  // because it is that many sends in a row.
+  if (act === 'levelup') {
+    const h = ((S.cityData && S.cityData.heroes) || []).find((x) => x.name === hero) || {};
+    const n = Math.min(200, Number(h.levelsReady) || 1);
+    if (!await ask(`Take ${hero} up ${n} level${n === 1 ? '' : 's'}?`, {
+      title: 'Level up', ok: `Level up x${n}`,
+      detail: `${hero} is L${h.level} and holds the experience for ${h.levelsReady} more level(s).`
+        + ' The game moves one level per send, and each new point goes on the hero\'s best attribute.',
+    })) return;
+    el.disabled = true;
+    const r = await post('/api/hero', { city, action: 'levelup', heroName: hero, times: n });
+    if (!r.ok) tell(r.error || (r.lines || []).join('\n') || 'unknown', { title: 'Level up failed' });
+    else if (r.error) tell(`${r.done} level(s) taken, then it stopped: ${r.error}`, { title: `Level up — ${hero}` });
+    return refresh();
   }
   if (act === 'points') return openPoints(hero);
   if (act === 'water') return openWater(hero);
@@ -2840,7 +3288,7 @@ async function openHeroItem(name) {
   $('hiTimes').value = 1;
   $('hiTimes').max = 50;
   $('hiTimesNote').textContent = 'time(s)';
-  $('hiList').innerHTML = '<div class="muted" style="font-size:11px;padding:4px">Reading the inventory…</div>';
+  $('hiList').innerHTML = '<div class="muted" style="font-size:var(--fs-sm);padding:4px">Reading the inventory…</div>';
   $('hiGo').disabled = true;
   $('hiDlg').dataset.hero = name;
   $('hiDlg').showModal();
@@ -2848,7 +3296,7 @@ async function openHeroItem(name) {
   if ($('hiDlg').dataset.hero !== name || !$('hiDlg').open) return;
   HITEMS = (p && p.items) || [];
   if (!HITEMS.length) {
-    $('hiList').innerHTML = `<div class="muted" style="font-size:11px;padding:4px">${esc((p && p.error) || 'no hero items held')}</div>`;
+    $('hiList').innerHTML = `<div class="muted" style="font-size:var(--fs-sm);padding:4px">${esc((p && p.error) || 'no hero items held')}</div>`;
     return;
   }
   $('hiList').innerHTML = HITEMS.map((it) => `<label style="display:flex;gap:6px;align-items:baseline;padding:3px 2px${it.count ? '' : ';opacity:.5'}">
@@ -2984,13 +3432,13 @@ function renderMap() {
   const pan = [['&#9664;', -step, 0, 'left'], ['&#9650;', 0, -step, 'up'], ['&#9660;', 0, step, 'down'], ['&#9654;', step, 0, 'right']]
     .map(([ch, dx, dy, w]) => `<button class="sm" data-map="pan" data-dx="${dx}" data-dy="${dy}" title="Move ${step} tile(s) ${w}" aria-label="Move ${w}">${ch}</button>`).join('');
   const ctl = `<div class="tb" id="mapCtl">
-      <input id="mx" value="${MAP.x ?? ''}" style="width:46px" aria-label="x"><input id="my" value="${MAP.y ?? ''}" style="width:46px" aria-label="y">
-      <span class="note">radius</span><input id="mr" value="${MAP.r}" style="width:34px" aria-label="radius">
+      <input id="mx" value="${MAP.x ?? ''}" style="width:58px" aria-label="x"><input id="my" value="${MAP.y ?? ''}" style="width:58px" aria-label="y">
+      <span class="note">radius</span><input id="mr" value="${MAP.r}" style="width:46px" aria-label="radius">
       <button class="sm" data-map="show" title="Read everything in view again from the server">Show</button><button class="sm" data-map="reset" title="Back to the open city">Reset</button>
       <span class="mpan">${pan}</span>
       <button class="sm" data-map="full">${MAP.full ? 'Exit full screen' : 'Full screen'}</button>
       <span style="flex:1"></span>
-      <input id="mq" value="${esc(MAP.q)}" placeholder="find player…" style="width:120px" aria-label="Find player">
+      <input id="mq" value="${esc(MAP.q)}" placeholder="find player…" style="width:150px" aria-label="Find player">
     </div>`;
 
   let body;
@@ -3032,7 +3480,7 @@ function renderMap() {
     const filters = '<div class="tb"><span class="note">show</span>'
       + `<span class="mf ${filtering ? '' : 'on'}" data-mf="__all">all</span>`
       + MAP_KINDS.map((k) => `<span class="mf ${MAP.filter.has(k) ? 'on' : ''}" data-mf="${k}">${k}</span>`).join('')
-      + `<span class="note">min lvl</span><input id="mlvl" type="number" min="0" max="10" value="${MAP.minLevel}" style="width:40px"></div>`;
+      + `<span class="note">min lvl</span><input id="mlvl" type="number" min="0" max="10" value="${MAP.minLevel}" style="width:54px"></div>`;
     // nearest the centre of the view first
     listed.sort((a, b) => a.dist - b.dist);
     const rows = listed.slice(0, MAP.full ? 500 : 150).map(({ t, dist }) => {
@@ -3315,6 +3763,10 @@ function heroCard(d, name) {
     + tipRow('Status', esc(h.statusName || ''))
     + tipRow('Experience', need ? `${fmt(exp)} / ${fmt(need)} <span class="muted">(${(Math.min(1, exp / need) * 100).toFixed(1)}%)</span>` : fmt(exp))
     + (need > exp ? tipRow('To level ' + (lvl + 1), fmt(need - exp)) : '')
+    // Experience past the current level is banked, not lost: the level only
+    // moves when hero.levelUp is sent, one level at a time.
+    + (Number(h.levelsReady) > 0
+      ? tipRow('Banked', `<b class="warnc">${h.levelsReady} level(s) ready</b> <span class="muted">&rarr; L${lvl + Number(h.levelsReady)}</span>`) : '')
     + at('politics', 'Politics') + at('attack', 'Attack') + at('intel', 'Intelligence')
     + tipRow('Base', h.base ?? '—') + tipRow('Points', h.unspent ? `<b class="warnc">${h.unspent} unspent</b>` : '0')
     + tipRow('Loyalty', fmt(h.loyalty)) + tipRow('Salary', `${fmt(lvl * 20)} gold/hr`)
@@ -3355,6 +3807,7 @@ function tipFor(tip) {
   const d = S.cityData;
   if (!d || !tip) return null;
   const i = tip.indexOf(':'), kind = tip.slice(0, i), key = tip.slice(i + 1);
+  if (kind === 'march') return marchCard(MARCH_TIP.get(key));
   return kind === 'troop' ? troopCard(d, key) : kind === 'hero' ? heroCard(d, key) : kind === 'res' ? resCard(d, key) : null;
 }
 let tipAt = null;   // the last row card shown, so a late market read can redraw it
@@ -3402,8 +3855,9 @@ $('monBody').addEventListener('mouseleave', () => { tipAt = null; showTipHtml(nu
 function pickLogTab(k) {
   S.logs = k;
   [...$('logTabs').querySelectorAll('.t')].forEach((c) => c.classList.toggle('on', c.dataset.k === k));
-  $('logFind').value = k === 'items' ? ITEMS.find : k === 'stats' ? STATS.find : S.logFind;
-  $('logFind').placeholder = k === 'items' ? 'search items…' : k === 'stats' ? 'search players, alliances, heroes, cities…' : 'search…';
+  $('logFind').value = k === 'items' ? ITEMS.find : k === 'stats' ? STATS.find : k === 'alliance' ? AL.find : k === 'friends' ? FR.find : S.logFind;
+  $('logFind').placeholder = k === 'items' ? 'search items…' : k === 'stats' ? 'search players, alliances, heroes, cities…'
+    : k === 'alliance' ? 'search names…' : k === 'friends' ? 'search players…' : 'search…';
   $('logBody').dataset.sig = '';
 }
 $('logTabs').addEventListener('click', (e) => {
@@ -3438,6 +3892,14 @@ function lineClass(l) {
   if (l.kind === 'act') return !/->/.test(l.m) || /->\s*(ok|marching)\b/i.test(l.m) ? 'k-act' : 'k-fail';
   return /fail|error|refus|kicked|cannot|disconnect|closed the connection/i.test(l.m) ? 'k-fail' : 'k-sys';
 }
+// A run's own output is plain text, so its bad news is picked out of the words
+// the console writes: what the server refused, what the script threw, and what
+// a march is standing and waiting for ("not yet: 12 of 100,000 Transporter at
+// home", script-cmd-deploy.js waitReady). Red, as the same lines are in the Log
+// tab. A line's command text is folded into it after " · ", so the marker is
+// looked for anywhere in the line, not only at its start.
+const outClass = (l) => (/\bFAILED\b|\bERROR\b|(^|· )not yet:/.test(l) ? 'k-fail' : '');
+
 function markIn(text, needle) {
   if (!needle) return esc(text);
   const i = text.toLowerCase().indexOf(needle.toLowerCase());
@@ -3451,18 +3913,29 @@ async function renderLogs(force) {
   const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   const cityName = S.cityData ? S.cityData.name : '';
   const tab = S.logs;
-  $('logCity').hidden = tab === 'city' || tab === 'output' || tab === 'items' || tab === 'stats';
-  $('logClear').hidden = tab === 'items' || tab === 'stats';
+  const al = tab === 'alliance' || tab === 'friends';
+  $('logCity').hidden = tab === 'city' || tab === 'output' || tab === 'items' || tab === 'stats' || al;
+  $('logClear').hidden = tab === 'items' || tab === 'stats' || al;
   $('itemKind').hidden = tab !== 'items';
   $('statKind').hidden = tab !== 'stats';
+  $('alKind').hidden = tab !== 'alliance';
+  $('frKind').hidden = tab !== 'friends';
+  $('alGo').hidden = !al;
   if (tab !== 'stats') { $('statGo').hidden = true; $('statStop').hidden = true; }
   body.classList.toggle('items', tab === 'items');
   body.classList.toggle('stats', tab === 'stats');
+  body.classList.toggle('al', al);
   if (tab === 'items') return renderItems(force);
   if (tab === 'stats') return renderStats(force);
+  if (tab === 'alliance') return renderAlliance(force);
+  if (tab === 'friends') return renderFriends(force);
 
   if (S.logs === 'output') {
-    body.innerHTML = `<div class="ll">${markIn(OUT[String(S.city)] || `Apply, Save or Run to see the result for ${cityName || 'this city'} here.`, S.logFind)}</div>`;
+    const text = OUT[String(S.city)] || `Apply, Save or Run to see the result for ${cityName || 'this city'} here.`;
+    body.innerHTML = `<div class="ll">${text.split('\n').map((l) => {
+      const c = outClass(l);
+      return c ? `<span class="${c}">${markIn(l, S.logFind)}</span>` : markIn(l, S.logFind);
+    }).join('\n')}</div>`;
     $('logCount').textContent = '';
     return;
   }
@@ -3500,6 +3973,8 @@ async function renderLogs(force) {
 let logFindTimer = null;
 $('logFind').addEventListener('input', () => {
   if (S.logs === 'items') { ITEMS.find = $('logFind').value.trim(); return paintItems(true); }
+  if (S.logs === 'alliance') { AL.find = $('logFind').value.trim(); return paintAlliance(true); }
+  if (S.logs === 'friends') { FR.find = $('logFind').value.trim(); return paintFriends(true); }
   if (S.logs === 'stats') {
     STATS.find = $('logFind').value.trim();
     STATS.limit = STAT_PAGE;
@@ -3523,28 +3998,429 @@ $('logClear').onclick = async () => {
   renderLogs(true);
 };
 
+// ---------- alliance & friends ----------
+// The game's Alliance window (Info, Members, Friendly, Neutral, Hostile, War
+// Reports, Events) and its Friends window (Blocklist, My Friends), from
+// alliance.js through this account's live connection. A tab is read when it is
+// opened, a sub-tab clicked or Refresh pressed — the poll only repaints. The
+// orders (rank, expel, standing, friends, block) are the script commands', and
+// each one asks first.
+const AL_VIEW = { info: 'info', friendly: 'info', neutral: 'info', hostile: 'info', members: 'members', war: 'war', events: 'events' };
+const AL_LIST = { friendly: 'Friendly', neutral: 'Neutral', hostile: 'Hostile' };
+const AL = { kind: 'info', find: '', sort: null, data: {}, page: { war: 1, events: 1 }, seq: 0, busy: false };
+const FR = { kind: 'blocked', find: '', sort: null, data: undefined, busy: false };
+const AL_RANKS = [[5, 'Vicehost', 'vicehost'], [6, 'Presbyter', 'presbyter'], [7, 'Officer', 'officer'], [8, 'Member', 'member']];
+const AL_OLD = 'The console did not answer. If it was started before the Alliance tab existed, restart it.';
+
+const alTime = (t) => (t ? mrTime(t, true) : '—');
+const alShort = (t) => (t ? mrTime(t, true).slice(5, 19) : '—');   // the game's own "09-21 00:29:42"
+const alCmp = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b
+  : String(a == null ? '' : a).localeCompare(String(b == null ? '' : b), undefined, { sensitivity: 'base', numeric: true }));
+const alHas = (needle, ...vals) => !needle || vals.some((v) => String(v == null ? '' : v).toLowerCase().includes(needle));
+const alName = (n) => `<a class="al-who" data-al="who" data-n="${esc(n)}" title="View ${esc(n)}">${markIn(n, AL.find)}</a>`;
+
+// cols: {h, a, by: row -> sort key, show: row -> html}
+function alTable(cols, rows, sort, rowCls = '') {
+  const s = sort && cols[sort.i] && cols[sort.i].by ? sort : null;
+  const list = s ? rows.slice().sort((x, y) => s.dir * alCmp(cols[s.i].by(x), cols[s.i].by(y))) : rows;
+  return grid(cols.map((c) => ({ h: esc(c.h), a: c.a || '', sort: !!c.by, t: c.t })),
+    list.map((x) => ({ cls: rowCls, cells: cols.map((c) => c.show(x)) })), { cls: 'al', sort: s });
+}
+const alPager = (r) => `<div class="st-foot al-pager"><button class="sm" data-al="prev"${r.pageNo > 1 ? '' : ' disabled'}>Prev</button>`
+  + `<span>${fmt(r.pageNo)}/${fmt(r.totalPage)}</span><button class="sm" data-al="next"${r.pageNo < r.totalPage ? '' : ' disabled'}>Next</button></div>`;
+
+async function renderAlliance(force, fresh) {
+  if (!force) return paintAlliance(false);
+  const view = AL_VIEW[AL.kind];
+  const qs = new URLSearchParams({ view });
+  if (fresh) qs.set('fresh', '1');
+  if (AL.page[view]) qs.set('page', AL.page[view]);
+  const seq = ++AL.seq;
+  AL.busy = true;
+  paintAlliance(true);
+  const r = await getJSON('/api/alliance?' + qs);
+  if (seq !== AL.seq) return;                     // another sub-tab, or a newer read
+  AL.busy = false;
+  AL.data[view] = r || { ok: false, error: AL_OLD };
+  if (S.logs === 'alliance') paintAlliance(true);
+}
+
+// The standings' managers: host and vice host, or a rank not known yet (the server decides).
+const alManager = (me) => !me || !me.levelId || me.levelId <= 5;
+
+function paintAlliance(force) {
+  const body = $('logBody');
+  const view = AL_VIEW[AL.kind];
+  const r = AL.data[view];
+  const needle = AL.find.toLowerCase();
+  let html, count = '';
+  if (!r) html = `<div class="empty">${AL.busy ? 'reading…' : ''}</div>`;
+  else if (!r.ok) html = `<div class="empty">${esc(r.error || 'the server refused')}</div>`;
+  else if (r.none) html = '<div class="empty">This lord is in no alliance.</div>';
+  else if (AL.kind === 'info') {
+    const i = r.info;
+    const cell = (v) => `<span title="${esc(v)}">${esc(v)}</span>`;
+    html = '<div class="al-info">'
+      + `<label>Alliance</label>${cell(i.name)}<label>Founder</label>${cell(i.founder)}`
+      + `<label>Members</label>${cell(i.limit ? `${fmt(i.members)}/${fmt(i.limit)}` : fmt(i.members))}<label>Host</label>${cell(i.host)}`
+      + `<label>Ranking</label>${cell(fmt(i.ranking))}<label>Prestige</label>${cell(fmt(i.prestige))}</div>`
+      + `<div class="al-box"><label>Intro</label><div class="al-text">${esc(i.intro)}</div></div>`
+      + `<div class="al-box"><label>Notice</label><div class="al-text">${esc(i.notice)}</div></div>`
+      + `<div class="al-note">${fmt(r.friendly.length)} friendly, ${fmt(r.neutral.length)} neutral and ${fmt(r.hostile.length)} hostile alliances`
+      + ` · read ${esc(alTime(r.at))}${r.me && r.me.levelId ? ` · you are ${esc(({ 4: 'Host', 5: 'Vicehost', 6: 'Presbyter', 7: 'Officer', 8: 'Member' })[r.me.levelId] || '')}` : ''}</div>`;
+  } else if (AL_LIST[AL.kind]) {
+    const all = r[AL.kind] || [];
+    const rows = all.filter((a) => alHas(needle, a.name, a.host));
+    const mgr = alManager(r.me);
+    const cols = [
+      { h: 'Alliance Name', by: (a) => a.name, show: (a) => markIn(a.name, AL.find) },
+      { h: 'Ranking', a: 'n', by: (a) => a.rank, show: (a) => fmt(a.rank) },
+      { h: 'Members', a: 'n', by: (a) => a.members, show: (a) => fmt(a.members) },
+      { h: 'Host', by: (a) => a.host, show: (a) => (a.host ? alName(a.host) : '') },
+      { h: 'Prestige', a: 'n', by: (a) => a.prestige, show: (a) => fmt(a.prestige) },
+      { h: 'Honor', a: 'n', by: (a) => a.honor, show: (a) => fmt(a.honor) },
+    ];
+    if (mgr) {
+      cols.push({ h: 'Standing', a: 'c', t: 'Change what your alliance calls this one', show: (a) => `<select data-al="standing" data-n="${esc(a.name)}" aria-label="Change the standing of ${esc(a.name)}">`
+        + '<option value="">change…</option>'
+        + Object.entries(AL_LIST).filter(([k]) => k !== AL.kind).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')
+        + '<option value="none">no standing</option></select>' });
+    }
+    html = (mgr ? `<div class="al-bar"><input id="alStName" maxlength="40" spellcheck="false" autocomplete="off" placeholder="alliance name" aria-label="Alliance name">`
+      + `<button class="sm" data-al="stadd">Mark ${AL_LIST[AL.kind].toLowerCase()}</button>`
+      + '<span class="note">A standing can be changed once a day.</span></div>' : '')
+      + (rows.length ? alTable(cols, rows, AL.sort, 'al-' + AL.kind)
+        : `<div class="empty">${needle && all.length ? 'nothing matches' : `No ${AL_LIST[AL.kind].toLowerCase()} alliances.`}</div>`);
+    count = needle ? `${rows.length} of ${all.length}` : `${all.length} alliance${all.length === 1 ? '' : 's'}`;
+  } else if (AL.kind === 'members') {
+    const all = r.members || [];
+    const rows = all.filter((m) => alHas(needle, m.name, m.position));
+    const cols = [
+      { h: 'Rank', a: 'n', by: (m) => m.ranking || Infinity, show: (m) => fmt(m.ranking) },
+      { h: 'Name', by: (m) => m.name, show: (m) => alName(m.name) },
+      { h: 'Sex', a: 'c', by: (m) => m.sex, show: (m) => esc(m.sex) },
+      { h: 'Position', by: (m) => m.levelId || 99, show: (m) => esc(m.position) },
+      { h: 'Prestige', a: 'n', by: (m) => m.prestige, show: (m) => fmt(m.prestige) },
+      { h: 'Honor', a: 'n', by: (m) => m.honor, show: (m) => fmt(m.honor) },
+      { h: 'Last Login', by: (m) => m.lastLogin || 0, show: (m) => esc(alShort(m.lastLogin)) },
+      { h: 'Cities', a: 'n', by: (m) => m.cities, show: (m) => fmt(m.cities) },
+      { h: 'Pop', a: 'n', by: (m) => m.population, show: (m) => fmt(m.population) },
+      { h: 'View', a: 'c', show: (m) => `<button class="sm" data-al="who" data-n="${esc(m.name)}">View</button>` },
+    ];
+    html = rows.length ? alTable(cols, rows, AL.sort || { i: 3, dir: 1 }) : `<div class="empty">${needle ? 'nothing matches' : 'No members.'}</div>`;
+    count = needle ? `${rows.length} of ${all.length}` : `${all.length} member${all.length === 1 ? '' : 's'}`;
+  } else if (AL.kind === 'war') {
+    const all = r.situations || [];
+    const rows = all.filter((w) => alHas(needle, w.subject, w.alliance, w.from, w.to));
+    const cols = [
+      { h: 'Type', show: (w) => esc(w.type) },
+      { h: 'Subject', show: (w) => markIn(w.subject, AL.find) },
+      { h: 'Alliance', show: (w) => markIn(w.alliance, AL.find) },
+      { h: 'Time', show: (w) => esc(alTime(w.time)) },
+      { h: 'View', a: 'c', show: (w) => `<button class="sm" data-al="war" data-i="${w.i}">View</button>` },
+    ];
+    html = (rows.length ? alTable(cols, rows, null) : `<div class="empty">${needle && all.length ? 'nothing matches on this page' : 'No war reports.'}</div>`)
+      + (r.totalPage > 1 ? alPager(r) : '');
+  } else if (AL.kind === 'events') {
+    const all = r.events || [];
+    const rows = all.filter((e) => alHas(needle, e.text));
+    const cols = [{ h: 'Subject', show: (e) => markIn(e.text, AL.find) }, { h: 'Time', show: (e) => esc(alTime(e.time)) }];
+    html = (rows.length ? alTable(cols, rows, null) : `<div class="empty">${needle && all.length ? 'nothing matches on this page' : 'No events.'}</div>`)
+      + (r.totalPage > 1 ? alPager(r) : '');
+  }
+  if (r && r.ok && AL.busy) html += '<div class="al-note">reading…</div>';
+  if (force || body.dataset.sig !== html) {
+    const typed = $('alStName') ? $('alStName').value : '';
+    body.innerHTML = html; body.dataset.sig = html;
+    if (typed && $('alStName')) $('alStName').value = typed;
+  }
+  $('logCount').textContent = count;
+}
+
+$('alKind').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  AL.kind = b.dataset.k;
+  AL.sort = null;                         // each table has its own columns
+  for (const c of $('alKind').children) { c.classList.toggle('on', c === b); c.setAttribute('aria-pressed', String(c === b)); }
+  // Info and the three standings are one read: a switch between them shows what is held
+  const view = AL_VIEW[AL.kind];
+  if (view === 'info' && AL.data.info && AL.data.info.ok) return paintAlliance(true);
+  renderAlliance(true);
+});
+$('frKind').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  FR.kind = b.dataset.k;
+  for (const c of $('frKind').children) { c.classList.toggle('on', c === b); c.setAttribute('aria-pressed', String(c === b)); }
+  paintFriends(true);
+});
+$('alGo').onclick = () => (S.logs === 'friends' ? renderFriends(true) : renderAlliance(true, true));
+
+// An order through /api/alliance/act, asked first. Its lines go to the activity
+// log either way; a refusal is shown.
+async function alAct(b, confirm) {
+  if (confirm && !await ask(confirm.text, { title: confirm.title || 'Alliance', ok: confirm.ok || 'OK', danger: !!confirm.danger, detail: confirm.detail })) return false;
+  const r = await post('/api/alliance/act', b);
+  if (!r) { await tell(AL_OLD, { title: 'Alliance' }); return false; }
+  if (r.friends) FR.data = r;
+  if (!r.ok) {
+    await tell(r.error || 'the server refused', { title: 'Not done', detail: (r.lines || []).filter(Boolean).join('\n') });
+    return false;
+  }
+  return true;
+}
+// After an order, read the open tab again.
+function alAfter() {
+  if (S.logs === 'friends') return paintFriends(true);
+  if (S.logs === 'alliance') renderAlliance(true, true);
+}
+
+// Friends and blocklist, moving a name across when it is on the other list.
+async function frOrder(action, name) {
+  if (!FR.data || !FR.data.ok) await renderFriends(true);
+  const d = FR.data && FR.data.ok ? FR.data : { friends: [], blocked: [] };
+  const on = (list) => (list || []).some((x) => x.name.toLowerCase() === name.toLowerCase());
+  if (action === 'addfriend' && on(d.blocked)) {
+    if (!await ask(`${name} is on your blocklist. Unblock ${name} and add them to your friends?`, { title: 'Friends', ok: 'Unblock and add' })) return false;
+    if (!await alAct({ action: 'unblock', name })) return false;
+  } else if (action === 'block' && on(d.friends)) {
+    if (!await ask(`${name} is one of your friends. Take ${name} off your friends and block them?`, { title: 'Blocklist', ok: 'Block', danger: true })) return false;
+    if (!await alAct({ action: 'removefriend', name })) return false;
+  }
+  return alAct({ action, name });
+}
+
+async function renderFriends(force) {
+  if (!force) return paintFriends(false);
+  FR.busy = true;
+  const r = await getJSON('/api/friends');
+  FR.busy = false;
+  FR.data = r || { ok: false, error: AL_OLD };
+  if (S.logs === 'friends') paintFriends(true);
+}
+function paintFriends(force) {
+  const body = $('logBody');
+  const r = FR.data;
+  const blocked = FR.kind === 'blocked';
+  const label = blocked ? 'blocklist' : 'friends';
+  const needle = FR.find.toLowerCase();
+  let html, count = '';
+  if (r === undefined) html = '<div class="empty">reading…</div>';
+  else if (!r.ok) html = `<div class="empty">${esc(r.error === 'not connected' ? 'Connect to see your friends and blocklist.' : r.error || 'failed')}</div>`;
+  else {
+    const all = (blocked ? r.blocked : r.friends) || [];
+    const rows = all.filter((f) => alHas(needle, f.name, f.alliance));
+    const cols = [
+      { h: 'Player', by: (f) => f.name, show: (f) => `<a class="al-who" data-al="who" data-n="${esc(f.name)}" title="View ${esc(f.name)}">${markIn(f.name, FR.find)}</a>` },
+      { h: 'Alliance', by: (f) => f.alliance, show: (f) => markIn(f.alliance, FR.find) },
+      { h: 'View', a: 'c', show: (f) => `<button class="sm" data-al="who" data-n="${esc(f.name)}">View</button> `
+        + `<button class="sm danger" data-fr="del" data-n="${esc(f.name)}">Delete</button>` },
+    ];
+    html = `<div class="al-bar"><input id="frName" maxlength="40" spellcheck="false" autocomplete="off" placeholder="player name" aria-label="Player name">`
+      + `<button class="sm" data-fr="add">${blocked ? 'Block' : 'Add friend'}</button>`
+      + '</div>'
+      + (rows.length ? alTable(cols, rows, FR.sort) : `<div class="empty">${needle && all.length ? 'nothing matches' : `Your ${label} is empty.`}</div>`);
+    count = needle ? `${rows.length} of ${all.length}` : `${all.length} player${all.length === 1 ? '' : 's'}`;
+  }
+  if (force || body.dataset.sig !== html) {
+    const typed = $('frName') ? $('frName').value : '';
+    body.innerHTML = html; body.dataset.sig = html;
+    if (typed && $('frName')) $('frName').value = typed;
+  }
+  $('logCount').textContent = count;
+}
+
+// A window of the console's own, closed with its ✖ or Esc.
+function alDialog(title, html, wide) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'ask al-dlg' + (wide ? ' wide' : '');
+  dlg.innerHTML = `<div class="ask-cap al-cap"><span>${esc(title)}</span><button class="sm" data-x title="Close (Esc)" aria-label="Close">&#10006;</button></div>`
+    + `<div class="al-dbody">${html}</div>`;
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', (e) => { if (e.target.closest('[data-x]')) dlg.close(); });
+  document.body.appendChild(dlg);
+  dlg.showModal();
+  return dlg;
+}
+
+// A member (from the list) or any player (read by name): the game's member window.
+async function alWho(name) {
+  const mem = AL.data.members && AL.data.members.ok ? AL.data.members.members.find((m) => m.name.toLowerCase() === name.toLowerCase()) : null;
+  let p = mem;
+  if (!p) {
+    const r = await getJSON('/api/alliance/player?name=' + encodeURIComponent(name));
+    if (!r || !r.ok) return tell((r && r.error) || AL_OLD, { title: name });
+    p = r.player;
+  }
+  if (!FR.data || !FR.data.ok) { const f = await getJSON('/api/friends'); if (f) FR.data = f; }
+  const d = FR.data && FR.data.ok ? FR.data : { friends: [], blocked: [], me: {} };
+  const on = (list) => (list || []).some((x) => x.name.toLowerCase() === p.name.toLowerCase());
+  const isFriend = on(d.friends), isBlocked = on(d.blocked);
+  const me = (AL.data.members && AL.data.members.me) || d.me || {};
+  const self = me.name && me.name.toLowerCase() === p.name.toLowerCase();
+  const cell = (v) => `<span title="${esc(v)}">${esc(v)}</span>`;
+  const ranks = AL_RANKS.filter(([id]) => !me.levelId || id > me.levelId);
+  const position = p.canRank
+    ? `<select id="alRank" aria-label="Position">${ranks.map(([id, l, k]) => `<option value="${k}"${id === p.levelId ? ' selected' : ''}>${l}</option>`).join('')}</select>`
+    : cell(p.position || '—');
+  const html = '<div class="al-info">'
+    + `<label>Lord</label>${cell(p.name)}<label>Ranking</label>${cell(fmt(p.ranking))}`
+    + `<label>Position</label>${position}<label>Prestige</label>${cell(fmt(p.prestige))}`
+    + `<label>Population</label>${cell(fmt(p.population))}<label>Honor</label>${cell(fmt(p.honor))}`
+    + `<label>Cities</label>${cell(fmt(p.cities))}<label>Title</label>${cell(p.title || '—')}`
+    + `<label>Alliance</label>${cell(p.alliance || '—')}<label>Last login</label>${cell(p.lastLogin ? alTime(p.lastLogin) : '—')}</div>`
+    + '<div class="al-acts">'
+    + (self ? '' : `<button data-w="${isFriend ? 'removefriend' : 'addfriend'}">${isFriend ? 'Remove friend' : 'Friends List'}</button>`
+      + `<button data-w="${isBlocked ? 'unblock' : 'block'}"${isBlocked ? '' : ' class="danger"'}>${isBlocked ? 'Unblock' : 'Blocklist'}</button>`
+      + '<button data-w="mail">Mail</button>')
+    + '<span class="grow"></span>'
+    + (p.canRank ? '<button data-w="rank" title="Give this member the position chosen above">Promote</button>' : '')
+    + (p.canExpel ? '<button data-w="expel" class="danger">Expel</button>' : '')
+    + '</div>';
+  const dlg = alDialog(p.name, html);
+  dlg.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-w]'); if (!b) return;
+    const w = b.dataset.w;
+    if (w === 'mail') {
+      dlg.close();
+      MR.draft = { to: p.name, title: '', body: '' };
+      return openMR('mail', 'compose');
+    }
+    let ok = false;
+    if (w === 'addfriend') ok = await frOrder('addfriend', p.name);
+    else if (w === 'block') ok = await frOrder('block', p.name);
+    else if (w === 'removefriend') ok = await alAct({ action: w, name: p.name }, { text: `Take ${p.name} off your friends?`, title: 'Friends', ok: 'Remove' });
+    else if (w === 'unblock') ok = await alAct({ action: w, name: p.name }, { text: `Unblock ${p.name}?`, title: 'Blocklist', ok: 'Unblock' });
+    else if (w === 'rank') {
+      const k = $('alRank').value;
+      const [id, label] = AL_RANKS.find((x) => x[2] === k) || [];
+      if (id === p.levelId) return tell(`${p.name} is already ${label}.`, { title: 'Promote' });
+      ok = await alAct({ action: 'rank', name: p.name, rank: k }, {
+        text: `Make ${p.name} ${label} of the alliance?`, title: 'Promote', ok: `Make ${label}`, danger: id === 5,
+        detail: id === 5 ? 'A vice host can expel members and change their positions.' : '',
+      });
+    } else if (w === 'expel') {
+      ok = await alAct({ action: 'expel', name: p.name }, { text: `Expel ${p.name} from the alliance?`, title: 'Expel', ok: 'Expel', danger: true, detail: 'They are out at once.' });
+    }
+    if (ok) { dlg.close(); alAfter(); }
+  });
+}
+
+// A war report: the same view as the Reports window's.
+function alWar(s) {
+  const d = s.detail || {};
+  const view = d.log ? '/report?' + new URLSearchParams({ log: d.log.page, title: s.subject || '', when: alTime(s.time), from: s.from || '', to: s.to || '' }) : '';
+  let h = mrKv([['Subject', `<b>${esc(s.subject || '—')}</b>`], ['Type', esc(s.type)], ['Alliance', esc(s.alliance || '—')],
+    ['Time', esc(alTime(s.time))], ...(s.from ? [['From', esc(s.from)]] : []), ...(s.to ? [['To', esc(s.to)]] : [])]);
+  if (s.detail) h += ReportView.body(d);
+  else h += '<div class="empty">The server sent no report with this one.</div>';
+  if (view) h += `<div class="mr-acts"><a href="${esc(view)}" target="_blank" rel="noopener" title="The whole report on its own page — the game's battle log, without Flash">Open as a battle log</a> &#8599;</div>`;
+  if (s.content) h += `<details class="mr-raw"><summary>Raw report, as the server sent it</summary><pre class="out">${esc(s.content)}</pre></details>`;
+  alDialog(s.subject || 'War report', `<div class="mr-pane">${h}</div>`, true);
+}
+
+$('logBody').addEventListener('click', async (e) => {
+  if (S.logs !== 'alliance' && S.logs !== 'friends') return;
+  const th = e.target.closest('th[data-act="sort"]');
+  if (th) {
+    const i = Number(th.dataset.i);
+    const st = S.logs === 'friends' ? FR : AL;
+    const cur = st.sort || (S.logs === 'alliance' && AL.kind === 'members' ? { i: 3, dir: 1 } : null);
+    st.sort = cur && cur.i === i ? { i, dir: -cur.dir } : { i, dir: 1 };
+    return S.logs === 'friends' ? paintFriends(false) : paintAlliance(false);
+  }
+  const b = e.target.closest('[data-al],[data-fr]');
+  if (!b || b.tagName === 'SELECT') return;
+  const act = b.dataset.al || b.dataset.fr;
+  if (b.dataset.fr === 'add') {
+    const name = $('frName').value.trim();
+    if (!name) return $('frName').focus();
+    if (await frOrder(FR.kind === 'blocked' ? 'block' : 'addfriend', name)) { $('frName').value = ''; paintFriends(true); }
+    return;
+  }
+  if (b.dataset.fr === 'del') {
+    const name = b.dataset.n, blocked = FR.kind === 'blocked';
+    if (await alAct({ action: blocked ? 'unblock' : 'removefriend', name },
+      { text: blocked ? `Unblock ${name}?` : `Take ${name} off your friends?`, title: blocked ? 'Blocklist' : 'Friends', ok: blocked ? 'Unblock' : 'Remove' })) paintFriends(true);
+    return;
+  }
+  if (act === 'who') return alWho(b.dataset.n);
+  if (act === 'war') {
+    const r = AL.data.war;
+    const s = r && r.ok && r.situations.find((x) => String(x.i) === b.dataset.i);
+    return s ? alWar(s) : undefined;
+  }
+  if (act === 'prev' || act === 'next') {
+    const view = AL_VIEW[AL.kind];
+    AL.page[view] = Math.max(1, (AL.page[view] || 1) + (act === 'next' ? 1 : -1));
+    return renderAlliance(true);
+  }
+  if (act === 'stadd') {
+    const name = $('alStName').value.trim();
+    if (!name) return $('alStName').focus();
+    if (await alStanding(name, AL.kind)) $('alStName').value = '';
+  }
+});
+$('logBody').addEventListener('change', (e) => {
+  const sel = e.target.closest('select[data-al="standing"]');
+  if (!sel || S.logs !== 'alliance') return;
+  const to = sel.value;
+  sel.value = '';
+  if (to) alStanding(sel.dataset.n, to);
+});
+$('logBody').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  if (e.target.id === 'frName') { e.preventDefault(); $('logBody').querySelector('[data-fr="add"]').click(); }
+  if (e.target.id === 'alStName') { e.preventDefault(); $('logBody').querySelector('[data-al="stadd"]').click(); }
+});
+
+async function alStanding(name, to) {
+  const word = to === 'none' ? 'no standing' : AL_LIST[to].toLowerCase();
+  const war = to === 'hostile';
+  const ok = await alAct({ action: 'standing', name, standing: to }, {
+    text: to === 'none' ? `Drop your alliance's standing with ${name}?` : `Mark ${name} ${word}?`,
+    title: 'Diplomacy', ok: to === 'none' ? 'Drop it' : `Mark ${word}`, danger: war,
+    detail: (war ? 'Hostile is war (red on the map). ' : '') + 'A standing can be changed once a day.',
+  });
+  if (ok) alAfter();
+  return ok;
+}
+
 // ---------- statistics ----------
 // The game's Statistics window: every player, alliance, hero and city on the
-// server, ranked. Refresh reads the lists into the database through this
-// account's connection (statistics.js); searching runs there and never asks the
-// game. All shows the first few of every list; one list shows STAT_PAGE rows at
-// a time, sorted by a clicked heading. A name, lord or alliance searches for itself.
+// server, ranked (statistics.js). Browsing reads a list a page at a time from the
+// game through this account's connection, as the game's window does, and reads a
+// few pages ahead so Next is instant; All is page 1 of every list. Typing searches
+// what the database holds (what browsing and Refresh have read); Enter, or the
+// button, asks the server for the name itself. A clicked heading sorts what has
+// been read. A name, lord or alliance searches for itself.
 // data: undefined until the first answer, null if the console gave none.
 const STAT_PAGE = 200;
-const STATS = { kind: 'all', find: '', sort: null, limit: STAT_PAGE, data: undefined, seq: 0 };
+const STATS = { kind: 'all', find: '', sort: null, limit: STAT_PAGE, page: {}, data: undefined, seq: 0, look: null };
+// browsing the server's pages, not searching or sorting what the database holds
+const statLive = () => !STATS.find && !(STATS.kind !== 'all' && STATS.sort);
 
 async function renderStats(force) {
   if (STATS.data === undefined) paintStats(true);
-  const qs = new URLSearchParams({ kind: STATS.kind, q: STATS.find });
-  if (STATS.kind === 'all') qs.set('limit', STATS.find ? 25 : 10);
-  else {
-    qs.set('limit', STATS.limit);
-    if (STATS.sort) { qs.set('sort', STATS.sort.k); qs.set('dir', STATS.sort.dir > 0 ? 'asc' : 'desc'); }
+  const qs = new URLSearchParams({ kind: STATS.kind });
+  if (statLive()) {
+    qs.set('live', '1');
+    if (STATS.kind === 'all') qs.set('limit', 10);
+    else qs.set('page', STATS.page[STATS.kind] || 1);
+  } else {
+    qs.set('q', STATS.find);
+    if (STATS.kind === 'all') qs.set('limit', 25);
+    else {
+      qs.set('limit', STATS.limit);
+      if (STATS.sort) { qs.set('sort', STATS.sort.k); qs.set('dir', STATS.sort.dir > 0 ? 'asc' : 'desc'); }
+    }
   }
   const seq = ++STATS.seq;
+  if (force && STATS.data) { STATS.wait = true; paintStats(false); }
   const r = await getJSON('/api/stats?' + qs);
   if (S.logs !== 'stats' || seq !== STATS.seq) return;   // another tab, or a newer search
+  STATS.wait = false;
   if (r || STATS.data === undefined) STATS.data = r;     // a failed poll keeps the last answer
+  if (r && r.ok && r.lists && r.lists.length === 1 && r.lists[0].live && r.lists[0].pageNo) STATS.page[r.kind] = r.lists[0].pageNo;
   paintStats(force);
 }
 
@@ -3552,18 +4428,22 @@ function statAge(t) {
   const m = Math.floor((Date.now() - t) / 60000);
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
 }
-// One list's line in the bar: what is held, and a read that is going or went wrong.
+// How long a list is; ~ until its last page has been read.
+const statN = (L) => (L.exact === false ? '~' : '') + fmt(L.total);
+// One list's line in the bar: how long it is, and how much of it search can see.
 function statState(L) {
-  const n = `<b>${esc(L.label)}</b> ${fmt(L.rows)}`;
+  const n = `<b>${esc(L.label)}</b> ${L.total ? statN(L) : ''}`;
   if (L.state === 'running') {
     const of = L.totalPage ? ` of ${fmt(L.totalPage)}` : '';
-    return `${n} <span class="note">— reading page ${fmt(L.pageNo)}${of}${L.account ? ' through ' + esc(L.account) : ''}</span>`;
+    return `${n} <span class="note">— refreshing, page ${fmt(L.pageNo)}${of}${L.account ? ' through ' + esc(L.account) : ''}</span>`;
   }
-  if (L.state === 'queued') return `${n} <span class="note">— next</span>`;
+  if (L.state === 'queued') return `${n} <span class="note">— refresh next</span>`;
+  const part = L.rows && L.rows < L.total ? `${fmt(L.rows)} read for search` : '';
   if (L.state === 'failed' || L.state === 'stopped') {
-    return `${n} <span class="note" title="${esc(L.error || '')}">— ${L.state}${L.error && L.error !== 'stopped' ? ': ' + esc(L.error) : ''}</span>`;
+    return `${n} <span class="note" title="${esc(L.error || '')}">— refresh ${L.state}${L.error && L.error !== 'stopped' ? ': ' + esc(L.error) : ''}${part ? ', ' + part : ''}</span>`;
   }
-  return `${n} <span class="note">${L.at ? '— read ' + statAge(L.at) : L.rows ? '' : '— not read yet'}</span>`;
+  if (L.state === 'done' && L.at && !part) return `${n} <span class="note">— all read ${statAge(L.at)}</span>`;
+  return `${n} <span class="note">${part ? '— ' + part : L.total ? '' : '— not read yet'}</span>`;
 }
 
 function statCell(c, v) {
@@ -3572,10 +4452,39 @@ function statCell(c, v) {
   if (!s) return '';
   return c.q ? `<a class="sq" data-q="${esc(s)}" title="Search for ${esc(s)}">${markIn(s, STATS.find)}</a>` : esc(s);
 }
-function statTable(list, sortable) {
+function statTable(list, sortable, extra) {
   const s = sortable && STATS.sort ? { i: list.cols.findIndex((c) => c.k === STATS.sort.k), dir: STATS.sort.dir } : null;
   const cols = list.cols.map((c) => ({ h: esc(c.h), a: c.n ? 'n' : '', sort: sortable }));
-  return grid(cols, list.rows.map((row) => list.cols.map((c) => statCell(c, row[c.k]))), { cls: 'stats', sort: s && s.i >= 0 ? s : null });
+  if (extra) cols.push({ h: '' });
+  const rows = list.rows.map((row) => {
+    const cells = list.cols.map((c) => statCell(c, row[c.k]));
+    if (extra) cells.push(extra(row));
+    return cells;
+  });
+  return grid(cols, rows, { cls: 'stats', sort: s && s.i >= 0 ? s : null });
+}
+// Prev / page N of M / Next for a list read from the server.
+function statPager(list) {
+  const p = list.pageNo || 1, n = list.totalPage || 1;
+  const b = (to, label, off) => `<button class="sm" data-act="stat-pg" data-p="${to}"${off ? ' disabled' : ''}>${label}</button>`;
+  return `<span class="st-pager">${b(1, 'First', p <= 1)}${b(p - 1, 'Prev', p <= 1)}`
+    + `<span>page <input id="statPg" type="number" min="1" max="${n}" value="${p}"> of ${fmt(n)}</span>`
+    + `${b(p + 1, 'Next', p >= n)}${b(n, 'Last', p >= n)}</span>`;
+}
+const statWhen = (list) => (list.error ? `<span class="warn">${esc(list.error)}</span>`
+  : list.at ? `read from the game ${statAge(list.at)}` : '');
+
+// What the server answered for the name: its exact matches, each with the page it is on.
+function statLooked() {
+  const L = STATS.look;
+  if (!L || L.name !== STATS.find) return '';
+  if (L.busy) return `<div class="st-h"><b>On the server</b><span class="note">asking for “${esc(L.name)}”…</span></div>`;
+  const lists = (L.lists || []).filter((l) => l.rows.some((x) => x.exact));
+  const errs = (L.lists || []).filter((l) => l.error).map((l) => `${esc(l.label)}: ${esc(l.error)}`);
+  if (!lists.length) return `<div class="st-h"><b>On the server</b><span class="note">no “${esc(L.name)}”${errs.length ? ' — ' + errs.join(', ') : ''}</span></div>`;
+  return lists.map((l) => `<div class="st-h"><b>On the server — ${esc(l.label)}</b></div>`
+    + statTable({ ...l, rows: l.rows.filter((x) => x.exact) }, false,
+      (x) => `<button class="sm" data-act="stat-goto" data-k="${l.kind}" data-p="${x.page}">Page ${fmt(x.page)}</button>`)).join('');
 }
 
 function paintStats(force) {
@@ -3588,40 +4497,70 @@ function paintStats(force) {
   for (const b of $('statKind').children) {
     const L = st && st.lists[b.dataset.k];
     const name = b.dataset.k === 'all' ? 'All' : b.dataset.k[0].toUpperCase() + b.dataset.k.slice(1);
-    b.textContent = L && L.rows ? `${name} (${fmt(L.rows)})` : name;
+    b.textContent = L && L.total ? `${name} (${statN(L)})` : name;
   }
 
   let html;
-  if (r === undefined) html = '<div class="empty">loading…</div>';
+  if (r === undefined) html = '<div class="empty">reading from the game…</div>';
   else if (!r || !r.ok) html = '<div class="empty">The console did not answer. If it was started before the Statistics tab existed, restart it.</div>';
   else {
     const L = Object.values(st.lists);
-    html = `<div class="tb">${L.map(statState).join(' <span class="muted">·</span> ')}</div>`;
-    if (!L.some((x) => x.rows)) {
-      html += `<div class="empty">Nothing read yet. <b>Refresh</b> reads every player, alliance, hero and city on ${esc(r.server)} `
-        + 'from the game\'s Statistics, one page at a time through this account\'s connection. It takes a few minutes, '
-        + 'and the lists fill in as it goes. Every console on the server shares what is read.</div>';
-    } else if (STATS.kind === 'all') {
+    html = `<div class="tb">${L.map(statState).join(' <span class="muted">·</span> ')}${STATS.wait ? ' <span class="note">— reading…</span>' : ''}</div>`;
+    const live = r.lists.length && r.lists[0].live;
+    if (live && STATS.kind === 'all') {
       html += r.lists.map((list) => {
         const more = list.total > list.rows.length
-          ? `<button class="sm" data-act="stat-open" data-k="${list.kind}">All ${fmt(list.total)}</button>` : '';
-        const what = STATS.find ? `${fmt(list.total)} match${list.total === 1 ? '' : 'es'}` : `the top ${list.rows.length}`;
-        return `<div class="st-h"><b>${esc(list.label)}</b><span class="note">${list.total ? what : STATS.find ? 'nothing matches' : 'not read yet'}</span>${more}</div>`
+          ? `<button class="sm" data-act="stat-open" data-k="${list.kind}">All ${statN(list)}</button>` : '';
+        return `<div class="st-h"><b>${esc(list.label)}</b><span class="note">${list.rows.length ? 'the top ' + list.rows.length : ''} ${statWhen(list)}</span>${more}</div>`
           + (list.rows.length ? statTable(list, false) : '');
       }).join('');
-    } else {
+    } else if (live) {
       const list = r.lists[0];
+      html += `<div class="st-h">${statPager(list)}<span class="note">${statWhen(list)}</span></div>`;
       html += list.rows.length ? statTable(list, true)
-        : `<div class="empty">${STATS.find ? 'nothing matches' : `No ${esc(list.label.toLowerCase())} read yet — Refresh reads them.`}</div>`;
-      if (list.total > list.rows.length) {
-        html += `<div class="st-foot">${fmt(list.rows.length)} of ${fmt(list.total)} shown`
-          + `<button class="sm" data-act="stat-more">Show ${fmt(Math.min(STAT_PAGE, list.total - list.rows.length))} more</button></div>`;
+        : `<div class="empty">${list.error ? 'Nothing read of this list yet.' : 'This page is empty.'}</div>`;
+      if (list.totalPage > 1) html += `<div class="st-foot al-pager">${statPager(list).replace('id="statPg"', 'id="statPg2"')}</div>`;
+    } else {
+      // a search or a sort: over what the database holds
+      if (STATS.find) {
+        html += statLooked();
+        const asked = STATS.look && STATS.look.name === STATS.find;
+        const lists = STATS.kind === 'all' ? L : [st.lists[STATS.kind]];
+        const seen = lists.reduce((a, x) => a + x.rows, 0), all = lists.reduce((a, x) => a + x.total, 0);
+        const guess = lists.some((x) => x.exact === false) ? '~' : '';
+        html += `<div class="st-h"><span class="note">Searching the ${fmt(seen)}${all > seen ? ` of ${guess}${fmt(all)}` : ''} read so far`
+          + `${all > seen ? ' — Refresh reads the rest' : ''}</span>`
+          + (asked ? '' : `<button class="sm" data-act="stat-look" title="Ask the game for this exact name (Enter does the same)">Ask the server for “${esc(STATS.find)}”</button>`) + '</div>';
+      }
+      if (STATS.kind === 'all') {
+        html += r.lists.map((list) => {
+          const more = list.total > list.rows.length
+            ? `<button class="sm" data-act="stat-open" data-k="${list.kind}">All ${fmt(list.total)}</button>` : '';
+          const what = `${fmt(list.total)} match${list.total === 1 ? '' : 'es'}`;
+          return `<div class="st-h"><b>${esc(list.label)}</b><span class="note">${list.total ? what : 'nothing matches'}</span>${more}</div>`
+            + (list.rows.length ? statTable(list, false) : '');
+        }).join('');
+      } else {
+        const list = r.lists[0];
+        if (!STATS.find && STATS.sort) {
+          const S2 = st.lists[STATS.kind];
+          html += `<div class="st-h"><span class="note">Sorted among the ${fmt(S2.rows)}${S2.total > S2.rows ? ` of ${statN(S2)}` : ''} read so far`
+            + `${S2.total > S2.rows ? ' — Refresh reads the rest' : ''}. Click Rank to page through the game's list again.</span></div>`;
+        }
+        html += list.rows.length ? statTable(list, true)
+          : `<div class="empty">${STATS.find ? 'nothing matches' : `No ${esc(list.label.toLowerCase())} read yet.`}</div>`;
+        if (list.total > list.rows.length) {
+          html += `<div class="st-foot">${fmt(list.rows.length)} of ${fmt(list.total)} shown`
+            + `<button class="sm" data-act="stat-more">Show ${fmt(Math.min(STAT_PAGE, list.total - list.rows.length))} more</button></div>`;
+        }
       }
     }
   }
-  if (force || body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; }
+  // keep the page box being typed in
+  const typing = document.activeElement && /^statPg2?$/.test(document.activeElement.id);
+  if (force || (!typing && body.dataset.sig !== html)) { body.innerHTML = html; body.dataset.sig = html; }
   if (force) body.parentElement.scrollTop = 0;
-  const shown = r && r.ok ? r.lists.reduce((a, l) => a + l.total, 0) : 0;
+  const shown = r && r.ok && !statLive() ? r.lists.reduce((a, l) => a + (l.total || 0), 0) : 0;
   $('logCount').textContent = !r || !r.ok || !STATS.find ? '' : `${fmt(shown)} match${shown === 1 ? '' : 'es'}`;
 }
 
@@ -3629,13 +4568,39 @@ $('statKind').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   pickStatKind(b.dataset.k);
 });
-function pickStatKind(k) {
+function pickStatKind(k, pageNo) {
   STATS.kind = k;
   STATS.sort = null;                      // each list has its own columns
   STATS.limit = STAT_PAGE;
+  if (pageNo) STATS.page[k] = pageNo;
   for (const c of $('statKind').children) { c.classList.toggle('on', c.dataset.k === k); c.setAttribute('aria-pressed', String(c.dataset.k === k)); }
   renderStats(true);
 }
+function statGoPage(p) {
+  const list = STATS.data && STATS.data.lists && STATS.data.lists[0];
+  const n = Math.max(1, Math.min((list && list.totalPage) || 1, Math.floor(Number(p)) || 1));
+  STATS.page[STATS.kind] = n;
+  renderStats(true);
+}
+// Ask the server for the name in the search box, in the open list or all four.
+async function statLookup() {
+  const name = STATS.find;
+  if (!name) return;
+  STATS.look = { name, busy: true };
+  paintStats(false);
+  const r = await getJSON('/api/stats/lookup?' + new URLSearchParams({ kind: STATS.kind, name }));
+  if (!STATS.look || STATS.look.name !== name) return;
+  STATS.look = r && r.ok ? { name, lists: r.lists } : { name, lists: [{ label: 'Statistics', rows: [], error: 'the console did not answer' }] };
+  if (S.logs === 'stats') paintStats(false);
+}
+$('logFind').addEventListener('keydown', (e) => {
+  if (S.logs !== 'stats' || e.key !== 'Enter') return;
+  STATS.find = $('logFind').value.trim();
+  statLookup();
+});
+$('logBody').addEventListener('change', (e) => {
+  if (S.logs === 'stats' && /^statPg2?$/.test(e.target.id)) statGoPage(e.target.value);
+});
 $('logBody').addEventListener('click', (e) => {
   if (S.logs !== 'stats') return;
   const a = e.target.closest('a.sq');
@@ -3646,22 +4611,33 @@ $('logBody').addEventListener('click', (e) => {
   }
   const open = e.target.closest('button[data-act="stat-open"]');
   if (open) return pickStatKind(open.dataset.k);
+  const pg = e.target.closest('button[data-act="stat-pg"]');
+  if (pg) return statGoPage(pg.dataset.p);
+  const go = e.target.closest('button[data-act="stat-goto"]');
+  if (go) {                               // the page a name is on, as the game lists it
+    STATS.find = '';
+    $('logFind').value = '';
+    $('logCount').textContent = '';
+    return pickStatKind(go.dataset.k, Number(go.dataset.p));
+  }
+  if (e.target.closest('button[data-act="stat-look"]')) return statLookup();
   if (e.target.closest('button[data-act="stat-more"]')) { STATS.limit += STAT_PAGE; return renderStats(false); }
   const th = e.target.closest('th[data-act="sort"]');
   const list = STATS.data && STATS.data.lists && STATS.data.lists[0];
   if (!th || STATS.kind === 'all' || !list) return;
   const c = list.cols[Number(th.dataset.i)];
   if (!c) return;
-  // numbers start biggest-first, rank and names from the top
+  // numbers start biggest-first, rank and names from the top; Rank from the top is the game's own pages
   STATS.sort = STATS.sort && STATS.sort.k === c.k ? { k: c.k, dir: -STATS.sort.dir } : { k: c.k, dir: c.n && c.k !== 'rank' ? -1 : 1 };
+  if (STATS.sort.k === 'rank' && STATS.sort.dir > 0) STATS.sort = null;
   STATS.limit = STAT_PAGE;
   renderStats(true);
 });
 $('statGo').onclick = async () => {
   const who = (S.head && S.head.lord) || 'this account';
-  if (!await ask(`Read the game's Statistics again — every player, alliance, hero and city — through ${who}'s connection?`, { title: 'Refresh statistics', ok: 'Read them',
+  if (!await ask(`Read the game's Statistics whole — every player, alliance, hero and city — through ${who}'s connection, so search can find anyone?`, { title: 'Refresh statistics', ok: 'Read them',
     detail: 'It asks one page at a time with a pause between, and waits while this account\'s market orders are busy. '
-      + 'It takes a few minutes (heroes the longest). Searching keeps working meanwhile.' })) return;
+      + 'Alliances come first; a read that stopped carries on where it left off. It takes a few minutes. Browsing and searching keep working meanwhile.' })) return;
   const r = await post('/api/stats/refresh', {});
   if (!r || !r.ok) return tell((r && r.error) || 'the console did not answer', { title: 'Statistics' });
   renderStats(false);
@@ -4051,19 +5027,19 @@ function mrPaintList() {
   const when = (x) => `<span title="${esc(mrTime(x.time, true))}">${mrTime(x.time)}</span>`;
   const cls = (x) => [x.read ? '' : 'mr-unread', x.id === MR.open ? 'mr-open' : ''].join(' ').trim();
   const lead = [
-    { h: `<input type="checkbox" data-mr-all${all ? ' checked' : ''} aria-label="select all on this page">`, w: '28px', a: 'c' },
-    { h: '', w: '18px', a: 'c' },
+    { h: `<input type="checkbox" data-mr-all${all ? ' checked' : ''} aria-label="select all on this page">`, w: '34px', a: 'c' },
+    { h: '', w: '22px', a: 'c' },
   ];
   let cols, rows;
   if (MR.win === 'mail') {
     const sent = MR.tab === 'sent';
-    cols = [...lead, { h: sent ? 'To' : 'From', w: '27%' }, { h: 'Subject' }, { h: sent ? 'Sent' : 'Received', w: '88px', a: 'c' }];
+    cols = [...lead, { h: sent ? 'To' : 'From', w: '27%' }, { h: 'Subject' }, { h: sent ? 'Sent' : 'Received', w: '108px', a: 'c' }];
     rows = MR.rows.map((x) => ({ cls: cls(x), title: x.title,
       cells: [tick(x.id), dot(x), esc(sent ? x.to : x.from), esc(x.title || '(no subject)'), when(x)] }));
   } else {
     // PublicReportCanvas: army reports show where the march left from; the others only where it happened
     const army = MR.tab === 'army';
-    cols = [...lead, { h: 'Subject' }, ...(army ? [{ h: 'From', w: '24%' }] : []), { h: army ? 'To' : 'Where', w: '24%' }, { h: 'Time', w: '88px', a: 'c' }];
+    cols = [...lead, { h: 'Subject' }, ...(army ? [{ h: 'From', w: '24%' }] : []), { h: army ? 'To' : 'Where', w: '24%' }, { h: 'Time', w: '108px', a: 'c' }];
     rows = MR.rows.map((x) => ({ cls: cls(x), title: x.title,
       cells: [tick(x.id), dot(x), esc(x.title), ...(army ? [esc(x.from)] : []), esc(x.to), when(x)] }));
   }
@@ -4258,10 +5234,32 @@ let marchBusy = false;
 async function fetchMarches() {
   if (marchBusy) return;
   marchBusy = true;
+  const t0 = Date.now();
   const m = await getJSON('/api/marches');
   marchBusy = false;
-  if (m) { S.marches = m; if (S.mon === 'armies' || S.mon === 'incoming') renderMon(); }
+  if (m) {
+    m.clockBase = (t0 + Date.now()) / 2;      // the moment serverNow was read, as near as this PC can tell
+    S.marches = m;
+    if (S.mon === 'armies' || S.mon === 'incoming') renderMon();
+  }
 }
+// The march tabs tick every second, as NEAT's do. The lists come from the
+// console's memory (the game pushes every change to them), so reading them
+// each second costs the game nothing. The clocks are checked ten times a
+// second so each countdown flips on its own landing millisecond, not up to a
+// second late; the DOM is only touched when a figure changes.
+setInterval(() => {
+  if ((S.mon === 'armies' || S.mon === 'incoming') && !document.hidden) fetchMarches();
+}, 1000);
+let marchTipHtml = null;
+setInterval(() => {
+  if (S.mon !== 'armies' && S.mon !== 'incoming') return;
+  tickMarchClocks($('monBody'));
+  // an open march card counts down with the table
+  if (!tipAt || !tipAt.tip.startsWith('march:')) { marchTipHtml = null; return; }
+  const html = tipFor(tipAt.tip);
+  if (html !== marchTipHtml) { marchTipHtml = html; showTipHtml(tipAt.ev, html); }
+}, 100);
 
 let refreshing = false, refreshAgain = null;
 async function refresh(force) {

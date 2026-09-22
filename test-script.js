@@ -272,10 +272,34 @@ t('a full marketplace skips that order, and the repeat carries on', async () => 
   const r = await runIn(w, 'buy stone 99999999 @0.11\nrepeat 5\necho after', { tradeGapMs: 0 });
   assert.strictEqual(w.sent.length, 5, r.text);
   assert.deepStrictEqual([w.sent[0].resource, w.sent[0].type, w.sent[0].amount, w.sent[0].price], ['stone', 'buy', 99999999, '0.11']);
-  assert.strictEqual((r.text.match(/marketplace full \(10 offers max\) — this one is skipped/g) || []).length, 2);
+  // the same refusal, twice in a row, is worth saying once (marketQuietMs)
+  assert.strictEqual((r.text.match(/marketplace full \(10 offers max\); the script carries on/g) || []).length, 1);
   assert.match(r.text, /\(run 5 of 5\)/);
   assert.match(r.text, /\n {2}after$/);
   assert.strictEqual(r.done, 5, 'refusals count as replies');
+});
+t('a refused order is never one of the 10 refusals that end a run — trading is refused all day', async () => {
+  const w = world({ tradeReplies: Array.from({ length: 40 }, () => FULL) });
+  const r = await runIn(w, 'buy stone 99999999 @0.11\nrepeat 40\necho after', { tradeGapMs: 0 });
+  assert.strictEqual(w.sent.length, 40, r.text);
+  assert.doesNotMatch(r.text, /was refused 10 times in a row/);
+  assert.match(r.text, /\n {2}after$/);
+  assert.strictEqual(r.done, 40);
+});
+t('a refused order is still paced, however many times it is refused', async () => {
+  const w = world({ tradeReplies: Array.from({ length: 4 }, () => FULL) });
+  const t0 = Date.now();
+  await runIn(w, 'buy stone 1 @0.11\nrepeat 4', { tradeGapMs: 0, repeatGapMs: 30 });
+  assert.ok(Date.now() - t0 >= 85, 'the three rounds after the first each waited 30 ms');
+});
+t('what a grinding loop says: the orders placed, the refusals only as they change', async () => {
+  const w = world({ tradeReplies: [FULL, FULL, FULL, { ok: 1 }, { ok: 1 }] });
+  const r = await runIn(w, 'sell stone 99999999 150\nrepeat 5', { tradeGapMs: 0 });
+  const lines = r.text.split('\n');
+  // five orders, but only the round the refusal was first said in and the two placed
+  assert.strictEqual(lines.filter((l) => /^line /.test(l)).length, 3, r.text);
+  assert.strictEqual(lines.filter((l) => / — placed/.test(l)).length, 2, r.text);
+  assert.match(r.text, /— placed \(3 refused since the last one\)/);
 });
 t('an unanswered order does not end the run; each one in a row doubles the gap', async () => {
   const miss = () => new Error('no reply to trade.newTrade');
@@ -308,6 +332,34 @@ t('but never on another account the console switched to', async () => {
   const w = world();
   const r = await runIn(w, 'buy stone 5 @0.11\nrepeat 2', { tradeGapMs: 0, session: { connected: true, game: relogin(w, 'Lord22') } });
   assert.deepStrictEqual(w.sent.map((x) => x.cmd), ['trade', 'trade'], r.text);
+});
+
+// ---------------------------------------------------------------------------
+section('the event loop between lines (2026-09-22: a turn every 1 ms or 50 lines)');
+
+t('a loop of plain lines still lets timers and other runs in, and Stop ends it at once', async () => {
+  const w = world();
+  let ticks = 0;
+  const iv = setInterval(() => { ticks++; }, 5);
+  let stop = false;
+  const t0 = Date.now();
+  setTimeout(() => { stop = true; }, 150);
+  try {
+    await runIn(w, 'i = 0\nlabel top\ni = i + 1\ngoto top', { shouldStop: () => stop });
+  } finally { clearInterval(iv); }
+  const took = Date.now() - t0;
+  assert.ok(took < 400, `Stop took ${took} ms`);
+  assert.ok(ticks >= 10, `a 5 ms timer ran only ${ticks} times in ${took} ms`);
+});
+t('two runs of plain lines take turns rather than one finishing first', async () => {
+  const w = world();
+  const shared = [];
+  const src = (tag) => script.parse(`i = 0\nlabel top\ni = i + 1\nif i MOD 500 == 0 echo "${tag}"\nif i < 5000 goto top`);
+  const log = (m) => { const x = String(m).trim(); if (x === 'a' || x === 'b') shared.push(x); };
+  await Promise.all(['a', 'b'].map((tag) => script.run(w.g, src(tag), log, { castle: '9', repeatGapMs: 0 })));
+  assert.strictEqual(shared.length, 20, shared.join(''));
+  // interleaved: b has printed before a is done
+  assert.ok(shared.indexOf('b') < shared.lastIndexOf('a'), shared.join(''));
 });
 
 // ---------------------------------------------------------------------------

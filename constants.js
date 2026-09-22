@@ -11,21 +11,40 @@ const MISSION = {
   attack: 5,      // 攻击  ARMY_MISSION_OCCUPY  <- attack really is 5
 };
 
+// The most troops one march may take, every kind together: 10,000 per Rally
+// Spot level, so 100,000 at L10 (the user, 2026-09-18; rally.js
+// marchTroopLimit). More is refused: "Troops dispatch limit reached 100000"
+// (seen live 2026-09-18, a requestresources transport of 199,974 transports;
+// EVONY-RULES.md §5).
+const MARCH_TROOPS_PER_LEVEL = 10000;
+const MARCH_TROOP_MAX = 100000;
+// A War Ensign (bean.useFlag, /big) raises that limit 25% (its item text:
+// "increase personnel limit 25%"). Stygandr's Banner of the Horde (bean.useItem,
+// /horde) lets a march take 1,000,000 (the user, 2026-09-18; the NEAT wiki's
+// Attack page: "10 times as many ... 1 million", and 1.25 million with both).
+// Whether a Rally Spot under L10 gets 1m or 10x its own limit is unverified;
+// rally.js takes the flat 1m, the reading that never refuses a march the game
+// would take.
+const MARCH_ENSIGN_BONUS = 1.25;
+const MARCH_HORDE_MAX = 1000000;
+
 // com/evony/eum/TroopEumDefine + embedded <troopEum> XML.
 // `code` matches the NEAT bot's short codes; `key` is the protocol field.
+// life/attack/defence/range are the client's base stats (WarReport.swf XMLTroop,
+// EVONY-RULES.md §5b); food is upkeep per unit per hour, buildTime base seconds.
 const TROOPS = [
-  { code: 'wo',   key: 'peasants',      typeId: 2,  name: 'Worker',        speed: 180,  load: 200,  food: 2 , pop: 1, cost: { food: 50, wood: 150, stone: 0, iron: 10 }, buildTime: 50 },
-  { code: 'w',    key: 'militia',       typeId: 3,  name: 'Warrior',       speed: 200,  load: 20,   food: 3 , pop: 1, cost: { food: 80, wood: 100, stone: 0, iron: 50 }, buildTime: 25 },
-  { code: 's',    key: 'scouter',       typeId: 4,  name: 'Scout',         speed: 3000, load: 5,    food: 5 , pop: 1, cost: { food: 120, wood: 200, stone: 0, iron: 150 }, buildTime: 100 },
-  { code: 'p',    key: 'pikemen',       typeId: 5,  name: 'Pikeman',       speed: 300,  load: 40,   food: 6 , pop: 1, cost: { food: 150, wood: 500, stone: 0, iron: 100 }, buildTime: 150 },
-  { code: 'sw',   key: 'swordsmen',     typeId: 6,  name: 'Swordsman',     speed: 275,  load: 30,   food: 7 , pop: 1, cost: { food: 200, wood: 150, stone: 0, iron: 400 }, buildTime: 225 },
-  { code: 'a',    key: 'archer',        typeId: 7,  name: 'Archer',        speed: 250,  load: 25,   food: 9 , pop: 2, cost: { food: 300, wood: 350, stone: 0, iron: 300 }, buildTime: 350 },
-  { code: 't',    key: 'carriage',      typeId: 8,  name: 'Transporter',   speed: 150,  load: 5000, food: 10 , pop: 4, cost: { food: 600, wood: 1500, stone: 0, iron: 350 }, buildTime: 1000 },
-  { code: 'c',    key: 'lightCavalry',  typeId: 9,  name: 'Cavalry',       speed: 1000, load: 100,  food: 18 , pop: 3, cost: { food: 1000, wood: 600, stone: 0, iron: 500 }, buildTime: 500 },
-  { code: 'cata', key: 'heavyCavalry',  typeId: 10, name: 'Cataphract',    speed: 750,  load: 80,   food: 35 , pop: 6, cost: { food: 2000, wood: 500, stone: 0, iron: 2500 }, buildTime: 1500 },
-  { code: 'b',    key: 'ballista',      typeId: 11, name: 'Ballista',      speed: 100,  load: 35,   food: 50 , pop: 5, cost: { food: 2500, wood: 3000, stone: 0, iron: 1800 }, buildTime: 3000 },
-  { code: 'r',    key: 'batteringRam',  typeId: 12, name: 'Battering Ram', speed: 120,  load: 45,   food: 100 , pop: 10, cost: { food: 4000, wood: 6000, stone: 0, iron: 1500 }, buildTime: 4500 },
-  { code: 'cp',   key: 'catapult',      typeId: 13, name: 'Catapult',      speed: 80,   load: 75,   food: 250 , pop: 8, cost: { food: 5000, wood: 5000, stone: 8000, iron: 1200 }, buildTime: 6000 },
+  { code: 'wo',   key: 'peasants',      typeId: 2,  name: 'Worker',        life: 100, attack: 5, defence: 10, range: 10, speed: 180,  load: 200,  food: 2 , pop: 1, cost: { food: 50, wood: 150, stone: 0, iron: 10 }, buildTime: 50 },
+  { code: 'w',    key: 'militia',       typeId: 3,  name: 'Warrior',       life: 200, attack: 50, defence: 50, range: 20, speed: 200,  load: 20,   food: 3 , pop: 1, cost: { food: 80, wood: 100, stone: 0, iron: 50 }, buildTime: 25 },
+  { code: 's',    key: 'scouter',       typeId: 4,  name: 'Scout',         life: 100, attack: 20, defence: 20, range: 20, speed: 3000, load: 5,    food: 5 , pop: 1, cost: { food: 120, wood: 200, stone: 0, iron: 150 }, buildTime: 100 },
+  { code: 'p',    key: 'pikemen',       typeId: 5,  name: 'Pikeman',       life: 300, attack: 150, defence: 150, range: 50, speed: 300,  load: 40,   food: 6 , pop: 1, cost: { food: 150, wood: 500, stone: 0, iron: 100 }, buildTime: 150 },
+  { code: 'sw',   key: 'swordsmen',     typeId: 6,  name: 'Swordsman',     life: 350, attack: 100, defence: 250, range: 30, speed: 275,  load: 30,   food: 7 , pop: 1, cost: { food: 200, wood: 150, stone: 0, iron: 400 }, buildTime: 225 },
+  { code: 'a',    key: 'archer',        typeId: 7,  name: 'Archer',        life: 250, attack: 120, defence: 50, range: 1200, speed: 250,  load: 25,   food: 9 , pop: 2, cost: { food: 300, wood: 350, stone: 0, iron: 300 }, buildTime: 350 },
+  { code: 't',    key: 'carriage',      typeId: 8,  name: 'Transporter',   life: 700, attack: 10, defence: 60, range: 10, speed: 150,  load: 5000, food: 10 , pop: 4, cost: { food: 600, wood: 1500, stone: 0, iron: 350 }, buildTime: 1000 },
+  { code: 'c',    key: 'lightCavalry',  typeId: 9,  name: 'Cavalry',       life: 500, attack: 250, defence: 180, range: 100, speed: 1000, load: 100,  food: 18 , pop: 3, cost: { food: 1000, wood: 600, stone: 0, iron: 500 }, buildTime: 500 },
+  { code: 'cata', key: 'heavyCavalry',  typeId: 10, name: 'Cataphract',    life: 1000, attack: 350, defence: 350, range: 80, speed: 750,  load: 80,   food: 35 , pop: 6, cost: { food: 2000, wood: 500, stone: 0, iron: 2500 }, buildTime: 1500 },
+  { code: 'b',    key: 'ballista',      typeId: 11, name: 'Ballista',      life: 320, attack: 450, defence: 160, range: 1400, speed: 100,  load: 35,   food: 50 , pop: 5, cost: { food: 2500, wood: 3000, stone: 0, iron: 1800 }, buildTime: 3000 },
+  { code: 'r',    key: 'batteringRam',  typeId: 12, name: 'Battering Ram', life: 5000, attack: 250, defence: 160, range: 600, speed: 120,  load: 45,   food: 100 , pop: 10, cost: { food: 4000, wood: 6000, stone: 0, iron: 1500 }, buildTime: 4500 },
+  { code: 'cp',   key: 'catapult',      typeId: 13, name: 'Catapult',      life: 480, attack: 600, defence: 200, range: 1500, speed: 80,   load: 75,   food: 250 , pop: 8, cost: { food: 5000, wood: 5000, stone: 8000, iron: 1200 }, buildTime: 6000 },
 ];
 
 const BY_CODE = Object.fromEntries(TROOPS.map((t) => [t.code, t]));
@@ -266,6 +285,18 @@ const RES = { wood: 1, iron: 2, food: 3, stone: 4, gold: 5, all: 6, pearl: 7 };
 // ObjConstants.as
 const REPORT_TYPE = { trade: 0, army: 1, other: 2 };
 
+// ---- quests (QuestCommands.as, QuestWin.as) ----
+// The two tabs. quest.getQuestType's `type`, and the `mainId` the QuestTypeBeans
+// come back with: the Routine tab is 1, the Daily tab is 3 (QuestWin.as:942-946,
+// :1036-1046, :1765-1766). The free daily amulet is a Daily quest (NEAT wiki
+// CompleteQuests).
+const QUEST_MODES = { routine: 1, daily: 3 };
+// The Promotion quests, in the game's English: PlayerInfoTypeManager.getTitle
+// 1-9 and getOffice 1-5. A title is worth claiming on its own -- the city cap
+// is titleId + 1 (EVONY-RULES.md section 7).
+const QUEST_TITLES = ['Knight', 'Baronet', 'Baron', 'Viscount', 'Earl', 'Marquis', 'Duke', 'Furstin', 'Prinzessin'];
+const QUEST_RANKS = ['Lieutenant', 'Captain', 'Major', 'Colonel', 'General'];
+
 // FieldConstants.as — mapStr is 2 hex chars per tile: [type][level].
 // Bonus = base + rate * level (percent), per FieldImageMc.setFieldType.
 const FIELD_TYPES = {
@@ -412,12 +443,13 @@ const FREE_SPEED = {
 };
 
 module.exports = {
-  MISSION, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
+  MISSION, MARCH_TROOPS_PER_LEVEL, MARCH_TROOP_MAX, MARCH_ENSIGN_BONUS, MARCH_HORDE_MAX, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
   TROOP_WORDS, FORT_WORDS, RES_WORDS, troopByWord, fortByWord, resourceByWord,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
   SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
   TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS, DEFENSE_ITEM_USE, TRUCE_COOLDOWN_BUFFS,
+  QUEST_MODES, QUEST_TITLES, QUEST_RANKS,
   MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
   marchFood, marchFoodPerHour,
   ZONES, zoneOf,

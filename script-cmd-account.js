@@ -467,12 +467,12 @@ function parseReset(args) {
 
 // ------------------------------------------------------------------ quests
 
-// quest.getQuestType's `type`: the Routine tab (成长任务) asks with 1, the
-// Daily tab (日常任务) with 3 (QuestWin.as:942-946, 1765-1766).
-const QUEST_MODES = { routine: 1, daily: 3 };
-// PlayerInfoTypeManager.getTitle 1-9 and getOffice 1-5, in the game's English.
-const TITLES = ['Knight', 'Baronet', 'Baron', 'Viscount', 'Earl', 'Marquis', 'Duke', 'Furstin', 'Prinzessin'];
-const RANKS = ['Lieutenant', 'Captain', 'Major', 'Colonel', 'General'];
+// The tabs and the promotion names are constants.js QUEST_MODES / QUEST_TITLES
+// / QUEST_RANKS: the completequests GOAL (goal-quests.js) claims from the same
+// two tabs and must never read them differently.
+const QUEST_MODES = C.QUEST_MODES;
+const TITLES = C.QUEST_TITLES;
+const RANKS = C.QUEST_RANKS;
 const QUERIES = ['available', 'finished', 'all'];
 
 function parseQuests(args) {
@@ -630,7 +630,8 @@ async function runQuests(a, env) {
 // ------------------------------------------------------------------ reports
 
 const REPORT_KINDS = ['trade', 'army', 'other'];   // constants.js REPORT_TYPE 0 1 2 (ObjConstants.REPORT_TYPE_*)
-const PAGE = 50;
+const PAGE = 50;                 // a page the server has always answered (the game's own window asks for 10)
+const PAGE_MAX = 1000;           // the most a page grows to in one run
 const REPORT_TRIES = 3;          // a list or delete the game doesn't answer is asked again this often
 const REPORT_WAIT = 10000;       // ms before asking again
 const REPORT_PROGRESS = 30000;   // ms between progress lines
@@ -642,47 +643,135 @@ const REPORT_PROGRESS = 30000;   // ms between progress lines
 // took 12 minutes on 450k, then one page went unanswered and the line failed
 // having deleted nothing (2026-09-18). This way whatever is deleted stays
 // deleted, a Stop ends it between pages, and running it again carries on.
+//
+// Speed is what a big account needs. One page of 50 per read and per delete,
+// one after the other, was ~45 reports a second on Lord06 (2026-09-20): 650,000
+// reports is four hours. So:
+//   - the read of the page that follows is SENT WITH the delete, not after its
+//     reply: the server works an account's commands in the order they arrive,
+//     so it reads what is left (one round trip a page, not two);
+//   - the page grows while the server keeps answering in full — 50, 100, 200 …
+//     up to PAGE_MAX — and goes back to the last size that worked the first
+//     time a bigger one is refused or not answered. The game's own window asks
+//     for 10 a page; how much more the server takes is found out here, live.
+// A read that comes back holding an id just deleted was answered before the
+// delete was, and is read again the ordinary way.
 async function cleanWhere(env, kinds, pick) {
   const game = env.game;
-  let seen = 0, removed = 0, said = Date.now();
-  const wait = (env.opts && env.opts.reportWaitMs) ?? REPORT_WAIT;
-  const ask = async (what, fn) => {
+  const opts = env.opts || {};
+  let seen = 0, removed = 0, said = Date.now(), lastAt = Date.now(), lastN = 0;
+  const wait = opts.reportWaitMs ?? REPORT_WAIT;
+  const top = Math.max(PAGE, Number(opts.reportPageMax) || PAGE_MAX);
+  let size = PAGE, good = PAGE, ceiling = top;   // page now asked for / biggest that has been answered and deleted / the most to try
+  const num = (x) => x.toLocaleString('en-US');
+  // onFail runs before each new try: a read that goes unanswered is asked again SMALLER (see shrink)
+  const ask = async (what, fn, onFail) => {
     for (let n = 1; ; n++) {
       try { return await fn(); } catch (e) {
         if (n >= REPORT_TRIES || env.stopped()) throw new Error(`${e.message} (${removed} report(s) removed before it)`);
         env.log(`  ${what}: ${e.message} — asking again in ${wait / 1000} s`);
+        if (onFail) onFail();
         await env.pause(wait);
       }
     }
   };
+  const goodReply = (d) => !!d && (d.ok === undefined || d.ok === 1);
+  const backOff = (what) => {
+    ceiling = good; size = good;
+    env.log(`  ${what} — pages of ${good} from here`);
+  };
+  // A page the server stops answering — a big account behind a busy one's market orders, or
+  // army reports, which are heavier than trade ones (Lord05 2026-09-20: pages of 1,000
+  // went unanswered for 30 s, with the account's market orders) — is asked again at half the
+  // size, and no bigger page is tried again this run. Only on page 1: further along a smaller
+  // page would slip past reports.
+  const shrink = (page) => () => {
+    if (page !== 1 || size <= PAGE) return;
+    size = ceiling = Math.max(PAGE, size >> 1); good = Math.min(good, size);
+    env.log(`  no answer to a page of ${size * 2} — pages of ${size} from here`);
+  };
   for (const kind of kinds) {
-    let page = 1, carried = 0, tried = new Set();
-    while (!env.stopped()) {
-      // report.receiveReportList {pageNo, pageSize, reportType}: ReportCommands.as:39-48 (Game.reportList)
-      const d = await ask(`${kind} reports page ${page}`, () => game.reportList(kind, page, PAGE));
-      if (!d || (d.ok !== undefined && d.ok !== 1)) { env.log(`  ${kind} reports -> ${env.say(d)}`); break; }
-      const rows = Array.isArray(d.reports) ? d.reports : [];
-      if (!rows.length) break;
-      seen += Math.max(0, rows.length - carried);   // the rows kept from this page last time were counted then
-      const ids = rows.filter(pick).map((r) => r.id);
-      if (!ids.length) {
-        if (page >= (Number(d.totalPage) || 1)) break;
-        page++; carried = 0; tried = new Set();
-        continue;
+    let page = 1, carried = 0, tried = new Set(), ahead = null;
+    // ahead: { read, at, gone } — the read of `page` sent behind the last delete, at page size `at`,
+    // and the ids that delete named. Its reply is always waited for, so it is never taken for another request's.
+    try {
+      while (!env.stopped()) {
+        // report.receiveReportList {pageNo, pageSize, reportType}: ReportCommands.as:39-48 (Game.reportList)
+        let d = null, at = size;
+        if (ahead) {
+          const p = ahead; ahead = null; at = p.at;
+          let err = null;
+          try { d = await p.read; } catch (e) { err = e; }
+          if (goodReply(d)) {
+            if ((d.reports || []).some((r) => p.gone.has(r.id))) d = null;   // answered before the delete was: again
+          } else {
+            if (at > good) backOff(`a page of ${at} was ${err ? err.message : 'refused'}`);
+            else if (err) shrink(page)();   // silence at a size that had worked: smaller
+            d = null; at = size;
+          }
+        } else if (size > good) {
+          // a page bigger than any the server has answered yet: once, and on a refusal or silence go back
+          let err = null;
+          try { d = await game.reportList(kind, page, at); } catch (e) { err = e; }
+          if (!goodReply(d)) { backOff(`a page of ${at} was ${err ? err.message : 'refused'}`); d = null; at = size; }
+        }
+        if (!d) d = await ask(`${kind} reports page ${page}`, () => { at = size; return game.reportList(kind, page, at); }, shrink(page));
+        if (!d || (d.ok !== undefined && d.ok !== 1)) { env.log(`  ${kind} reports -> ${env.say(d)}`); break; }
+        const rows = Array.isArray(d.reports) ? d.reports : [];
+        if (!rows.length) break;
+        // asked for more than it gave while more pages follow: that is the most the server hands out
+        if (page === 1 && at > PAGE && rows.length < at && Number(d.totalPage) > 1) {
+          good = ceiling = size = Math.max(PAGE, rows.length);
+          env.log(`  the server gives ${rows.length} to a page — pages of ${size} from here`);
+        }
+        seen += Math.max(0, rows.length - carried);   // the rows kept from this page last time were counted then
+        const ids = rows.filter(pick).map((r) => r.id);
+        if (!ids.length) {
+          if (page >= (Number(d.totalPage) || 1)) break;
+          page++; carried = 0; tried = new Set();
+          continue;
+        }
+        // a delete the game said ok to but didn't do would read the same page for ever
+        if (ids.some((id) => tried.has(id))) { env.log(`  ${kind} reports: the game kept reports it said it deleted — stopped`); return { seen, removed }; }
+        // Only page 1 grows: on a later page the ones before it would slip past.
+        const next = page === 1 && rows.length >= at ? Math.min(ceiling, at * 2) : size;
+        // report.deleteReport {idStr}: ReportCommands.as:70-77, "delete selected" (Game.deleteReports)
+        const gone = new Set(ids);
+        const first = game.deleteReports(ids);
+        first.catch(() => {});
+        if (!env.stopped()) {
+          const read = game.reportList(kind, page, next);
+          read.catch(() => {});
+          ahead = { read, at: next, gone };
+        }
+        let r = null, why = '';
+        try { r = await first; } catch (e) { why = e.message; }
+        if (!goodReply(r) && ids.length > good) {
+          // more ids at once than this server has taken: the same ids in pieces of what it did
+          backOff(`${num(ids.length)} at once was ${why || 'refused'}`);
+          ahead = null;
+          r = { ok: 1 };
+          for (let i = 0; i < ids.length && goodReply(r); i += good) r = await ask('delete', () => game.deleteReports(ids.slice(i, i + good)));
+        } else if (!r) {
+          ahead = null;                                       // the read behind it is no use: the delete is asked again
+          r = await ask('delete', () => game.deleteReports(ids));
+        }
+        if (r && r.ok !== undefined && r.ok !== 1) { env.log('  delete -> ' + env.say(r)); return { seen, removed }; }
+        removed += ids.length;
+        if (at > good) good = Math.min(at, ceiling);        // that size was read and deleted whole
+        size = ahead ? Math.min(ahead.at, ceiling) : Math.min(size, ceiling);
+        tried = new Set(ids);
+        carried = rows.length - ids.length;
+        const now = Date.now();
+        if (now - said >= REPORT_PROGRESS) {
+          const rate = Math.round((removed - lastN) / Math.max(1, (now - lastAt) / 1000));
+          said = lastAt = now; lastN = removed;
+          env.log(`  … ${num(removed)} removed so far (${kind}) — ${num(rate)} a second, pages of ${size}`);
+        }
       }
-      // a delete the game said ok to but didn't do would read the same page for ever
-      if (ids.some((id) => tried.has(id))) { env.log(`  ${kind} reports: the game kept reports it said it deleted — stopped`); return { seen, removed }; }
-      // report.deleteReport {idStr}: ReportCommands.as:70-77, "delete selected" (Game.deleteReports)
-      const r = await ask('delete', () => game.deleteReports(ids));
-      if (r && r.ok !== undefined && r.ok !== 1) { env.log('  delete -> ' + env.say(r)); return { seen, removed }; }
-      removed += ids.length;
-      tried = new Set(ids);
-      carried = rows.length - ids.length;
-      if (Date.now() - said >= REPORT_PROGRESS) { said = Date.now(); env.log(`  … ${removed.toLocaleString('en-US')} removed so far (${kind})`); }
-      if (rows.length < PAGE) break;   // the last page: nothing can move up into it
-    }
+    } finally { if (ahead) await ahead.read.catch(() => {}); }
   }
-  if (env.stopped()) env.log(`  stopped — ${removed.toLocaleString('en-US')} removed; run it again to carry on`);
+  if (env.stopped()) env.log(`  stopped — ${num(removed)} removed; run it again to carry on`);
   return { seen, removed };
 }
 

@@ -6,6 +6,8 @@ process.env.EVONY_DB = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ev-maint
 const { Session } = require('./session');
 
 let pass = 0, fail = 0;
+const queue = [];
+const ta = (n, f) => { queue.push([n, f]); };
 const t = (n, f) => { try { f(); console.log('  ok    ' + n); pass++; }
   catch (e) { console.log('  FAIL  ' + n + '\n        ' + e.message); fail++; } };
 
@@ -97,6 +99,41 @@ t('a repeated announcement does not restart the clock', () => {
   assert.strictEqual(a.pauseAt, b.pauseAt, 'the stand-down time moved');
 });
 
-console.log(`\n${pass} passed, ${fail} failed\n`);
-try { fs.rmSync(path.dirname(process.env.EVONY_DB), { recursive: true, force: true }); } catch {}
-process.exit(fail ? 1 : 0);
+console.log('\nno login gets through a stand-down\n');
+
+// The churn of 2026-09-20: the console stood down, something else logged it straight
+// back in, the supervisor closed it two seconds later, and round they went for six
+// minutes until the proxy stopped answering. connect() refuses a stand-down itself
+// now, whoever asks — a page poll, a script, the engine, the Director.
+ta('connect() refuses while an announced stand-down is open', async () => {
+  const s = S();
+  s.noteAnnouncement('maintenance in 1 minute');       // pauseAt is already past
+  assert.strictEqual(s.planPhase(), 'standdown');
+  await assert.rejects(() => s.connect(), /standing down for maintenance/);
+});
+
+// Only refusals are tested here: anything that gets PAST the guard goes on to a real
+// login, and no offline test may do that. The override's own path is the supervisor
+// condition above, which the phase tests cover.
+ta("a script's logout is refused even with the override on", async () => {
+  const s = S();
+  s.logoutUntil(Date.now() + 10 * MIN);
+  s.maint.override = true;
+  await assert.rejects(() => s.connect(), /logged out by a script/);
+});
+
+ta('a stand-down that is over no longer refuses', () => {
+  const s = S();
+  s.planMaintenance(-20, 5);                           // began 20m ago, 5m long
+  assert.strictEqual(s.planPhase(), 'recovering');     // the guard only fires on 'standdown'
+});
+
+(async () => {
+  for (const [n, f] of queue) {
+    try { await f(); console.log('  ok    ' + n); pass++; }
+    catch (e) { console.log('  FAIL  ' + n + '\n        ' + e.message); fail++; }
+  }
+  console.log(`\n${pass} passed, ${fail} failed\n`);
+  try { fs.rmSync(path.dirname(process.env.EVONY_DB), { recursive: true, force: true }); } catch {}
+  process.exit(fail ? 1 : 0);
+})();

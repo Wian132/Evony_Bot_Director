@@ -171,6 +171,30 @@ t('the switch unquoted, in single quotes, in any case, and a name with spaces', 
   assert.ok(script.parseLine('waterhero X /heropoints=off').rule.stages[0].off);
 });
 
+t('the switch as typed by hand: no slash, no =, a space before the quote', () => {
+  // 2026-09-22: "waterhero kush heropoints pol" was read as a hero called "kush heropoints pol"
+  for (const l of ['waterhero kush heropoints pol', 'waterhero kush /heropoints "pol"', 'waterhero kush /heropoints pol',
+    'waterhero kush heropoints=pol', 'waterhero kush /heropoints:pol']) {
+    const a = script.parseLine(l);
+    assert.strictEqual(a.hero, 'kush', l);
+    assert.strictEqual(a.rule.raw, 'pol', l);
+  }
+  const b = script.parseLine('waterhero Sir Bob heropoints pol:300 att');
+  assert.strictEqual(b.hero, 'Sir Bob');
+  assert.strictEqual(b.rule.raw, 'pol:300 att');
+  assert.deepStrictEqual(script.parseLine('waterhero Heropoints'), { cmd: 'waterhero', hero: 'Heropoints', rule: null });
+});
+
+t('useheroitem <hero> holy water takes /heropoints too, and only for Holy Water', () => {
+  for (const l of ['useheroitem Kush holywater /heropoints="pol"', 'useheroitem Kush holy water heropoints pol']) {
+    const a = script.parseLine(l);
+    assert.strictEqual(a.cmd, 'waterhero', l);
+    assert.strictEqual(a.hero, 'Kush', l);
+    assert.strictEqual(a.rule.raw, 'pol', l);
+  }
+  assert.match(errs('useheroitem Kush excalibur /heropoints=pol')[0], /\/heropoints only goes with Holy Water/);
+});
+
 t('a bad waterhero line is refused before anything runs', () => {
   assert.match(errs('waterhero')[0], /usage {2}waterhero <hero name or id> \[\/heropoints="att"\]/);
   assert.match(errs('waterhero /heropoints=att')[0], /usage/);

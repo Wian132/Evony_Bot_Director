@@ -26,7 +26,8 @@
 //                                   (NEAT's count: `repeat 1` adds nothing) | until it fails or Stop
 //                                   A line the server refuses, reached again (goto, loop, repeat),
 //                                   waits repeatGapMs (200 ms) before it is sent again; the same
-//                                   line refused 10 times in a row ends the run
+//                                   line refused 10 times in a row ends the run (market orders,
+//                                   where a no is an everyday answer, are paced but never stop it)
 //   sleep 5 | sleep 1:30 | sleep 1:00:00 | sleep @:14:15 | sleep rnd:300 | sleep rnd:300:600
 //   end | exit                      the script ends here (exit never closes the console)
 //   stop                            pause here until resumed (without a resume, the script ends)
@@ -125,7 +126,12 @@
 //   error   $error when ok is false; default: the last refused verdict ($error is null when ok)
 //   end     true ends the run after this line (logout; Stop in the middle of a wait)
 //   refused true: count this failure as a refusal though nothing was sent (buyitem past
-//           the run's limit) — the same line refused 10 times in a row ends the run
+//           the run's limit) — the same line refused 10 times in a row ends the run.
+//           false: the server said no, but a no is an everyday answer for this command
+//           (a full marketplace), so the line is still paced and never counted
+// A spec may also say quiet: true — then the "line N: <line>" header waits until the
+// command logs its first line, and a command that says nothing leaves no trace (the
+// market's orders, thousands of them, only speak when one is placed).
 // A throw is logged as "  FAILED: <message>", sets $error and the script goes on
 // (unless opts.stopOnError). After every command the VM sets $error (null when
 // ok, else the message) and $result. A dry run logs what would go out and
@@ -149,7 +155,8 @@ const PROVIDERS = ['./script-functions', './script-objects'];
 // queues archers "4 times", and the tutorial's "attack it 8 times" is
 // `attack ... / repeat 8`. OTTObot's old meaning (N MORE runs) is false here.
 const REPEAT_COUNTS_TOTAL = true;
-// The same line refused this many times in a row ends the run (Run.countRefusal).
+// The same line refused this many times in a row ends the run (Run.countRefusal),
+// unless its command says the refusal does not count (refused: false).
 const MAX_REFUSALS = 10;
 
 const KEYWORDS = new Set(['label', 'goto', 'gosub', 'return', 'gosubreturn', 'if', 'ifgoto', 'ifgosub', 'loop',
@@ -734,6 +741,13 @@ const verdict = (r) => {
 };
 
 const tick = () => new Promise((r) => setImmediate(r));
+// A run gives the event loop a turn once YIELD_MS has passed or YIELD_EVERY lines
+// have run, not before every line: a setImmediate per line was a large share of a
+// trading console's CPU (profiled 2026-09-22, ~34,000 lines a second). A line that
+// waits (sleep, an order, a read) yields by itself anyway; this bounds how long a
+// run of plain lines holds up the socket, the other cities and Stop.
+const YIELD_MS = 1;
+const YIELD_EVERY = 50;
 
 // Thrown to end the run from anywhere inside it.
 class Halt { constructor(how) { this.how = how; } }
@@ -790,10 +804,15 @@ class Run {
     this.fnDepth = 0;
     this.last = null;           // the last line that did something: what `repeat` runs again
     this.stopLogged = false;
-    this.scopes = new Map();
+    // weak: a program no longer cached or running takes its Scope with it — a
+    // strong Map here kept every `call`'s program and grew until the heap ran out
+    this.scopes = new WeakMap();
+    this.called = new Map();    // `call`: source text -> its parsed view (see callScript)
     this.refusals = new Map();  // refusalKey -> refusals in a row (see paceRefused)
     this.progIds = new WeakMap();
     this.progSeq = 0;
+    this.sinceYield = 0;        // lines since the run last gave the event loop a turn
+    this.yieldedAt = 0;         // performance.now() then
     const R = this;
     // game and castle follow a reconnect on every read, so a command that waited
     // (for the builder, a landing time) sends on the session's live Game
@@ -921,7 +940,12 @@ class Run {
   async execRange(frame, pc, end) {
     while (pc < end) {
       if (this.stopped()) this.stopNow();
-      await tick();
+      if (++this.sinceYield >= YIELD_EVERY || performance.now() - this.yieldedAt >= YIELD_MS) {
+        await tick();
+        this.sinceYield = 0;
+        this.yieldedAt = performance.now();
+        if (this.stopped()) this.stopNow();
+      }
       this.follow();
       const r = await this.stepTop(frame.program.stmts[pc], frame, pc);
       if (r.ret) return r;
@@ -1191,7 +1215,8 @@ class Run {
       dryRun: R.dryRun,
       ctx: R.ctx,
       line: meta.line,
-      log: (m) => { captured.push(String(m).replace(/^ {2}/, '')); R.log(m); },
+      // a quiet command's header waits here, for the first line it has to say
+      log: (m) => { if (!meta.logged) R.header(meta); captured.push(String(m).replace(/^ {2}/, '')); R.log(m); },
       say: (r) => { const v = verdict(r); if (!r || r.ok !== 1) { flags.refused = true; flags.bad = v; } return v; },
       verdict,
       refused: () => flags.refused,
@@ -1283,7 +1308,10 @@ class Run {
     this.specials.set('$error', ok ? null : String(res.error || flags.bad || 'failed'));
     this.specials.set('$result', res.result !== undefined ? res.result : captured.join('\n'));
     this.remember(node, frame, meta, ok);
-    this.countRefusal(key, meta, !ok && (flags.refused || Number(res.done) > 0 || res.refused === true), ok);
+    // refused: false — a no from the server is an everyday answer here (a market that
+    // is full): the line is still paced, but it never brings the run down.
+    const counts = res.refused === false ? false : !ok && (flags.refused || Number(res.done) > 0 || res.refused === true);
+    this.countRefusal(key, meta, counts, ok);
     if (res.end) throw new Halt('end');
   }
 
@@ -1298,7 +1326,7 @@ class Run {
       if (!ent) throw unknownCommand(word, frame.program.reg);
       ({ action, runner } = parseCommand(ent, word, text, text.slice(word.length).trim(), frame.program.reg));
     }
-    this.header(meta);
+    if (!runner.spec.quiet) this.header(meta);
     const a = { ...action, line: meta.line, raw: meta.raw };
     await this.runModule(runner, a, node, frame, meta, (env) => runner.spec.run(a, env));
     return { next: pc + 1 };
@@ -1360,7 +1388,17 @@ class Run {
     if (this.depth >= 20) throw new Error('scripts calling scripts more than 20 deep');
     const text = await this.opts.loadScript(name);
     if (text === null || text === undefined) throw new Error(`there is no script "${name}" to call`);
-    const view = parse(String(text), { ...this.program.opts, knownVars: [...this.vars.keys()] });
+    // A loop that calls the same file every pass parses it once, not every pass.
+    // knownVars only matters to a %var% line, so only then is it part of the key.
+    const src = String(text);
+    const known = /%[A-Za-z_]/.test(src) ? [...this.vars.keys()] : null;
+    const ck = known ? `${[...known].sort().join(',')}\n${src}` : src;
+    let view = this.called.get(ck);
+    if (!view) {
+      view = parse(src, { ...this.program.opts, knownVars: known || [] });
+      if (this.called.size >= 20) this.called.delete(this.called.keys().next().value);
+      this.called.set(ck, view);
+    }
     const errs = view.filter((a) => a.cmd === 'error');
     if (errs.length) throw new Error(`${name} line ${errs[0].line}: ${errs[0].error}${errs.length > 1 ? ` (and ${errs.length - 1} more)` : ''}`);
     const prog = view.program;

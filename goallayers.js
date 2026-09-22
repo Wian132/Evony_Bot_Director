@@ -73,12 +73,16 @@ const NEW_CITY_GOALS = [
 const goalLines = (src) => String(src || '').split(/\r?\n/)
   .filter((l) => l.replace(/^\s*(\/\/|#).*$/, '').trim()).length;
 
-// NEAT's GlobalGoals order: PrependGoals, then the city's own goals, then
-// AppendGoals, each one "set" in turn. So a config key or a singleton goal
-// (comfortpolicy, defensepolicy ...) written again in a later layer overrides
-// the earlier one, exactly as a later line does within one text, and the goals
-// that stack (troop, build, fortification ...) stack in that order: the
-// prepend's troop stages come first.
+// The user's order, not NEAT's (the user, 2026-09-18): the city's own goals come
+// first, then the Prepend goals, then the Append goals. That is also the order
+// of priority. A config key or a singleton goal (comfortpolicy, defensepolicy
+// ...) that an earlier layer already set is KEPT, and the later layer's line
+// for it is passed over. So the city's own line beats the prepend's, and the
+// prepend's beats the append's. Within one text a later line still replaces an
+// earlier one (parseGoals). The goals that stack (troop, build, fortification
+// ...) stack in the same order: the city's own troop stages come first, then
+// the prepend's, then the append's. (NEAT reads PrependGoals, the city, then
+// AppendGoals, and there a later layer wins.)
 //
 // A global layer counts only when it has a goal line in it. The city's own
 // text counts as it always has (any saved text, comments included), so a city
@@ -90,28 +94,31 @@ const goalLines = (src) => String(src || '').split(/\r?\n/)
 // NEAT's `set name value` / %name% variables are not part of this: the goal
 // parser has no variables, so a line using them is reported where it stands.
 //
-// `script` is the city's script goal layer (getScriptLayer), run LAST, so a
-// script's config key or singleton wins over every saved text until the layer
-// is cleared. After a script's `loadgoals N` the loaded text stands in for the
+// `script` is the city's script goal layer (getScriptLayer), run LAST. It is
+// the one layer that overrides, so a script's config key or singleton wins
+// over every saved text until the layer is cleared. After a script's `loadgoals N` the loaded text stands in for the
 // saved and global goals, and after `resetgoals` nothing does: only the lines
 // the script set since then run (see the script goal layer below).
 function parseLayered({ prepend = null, city = null, append = null, script = null } = {}) {
   const base = script ? script.base : 'saved';
   const order = base === 'reset' ? [['script', script.src]]
     : base === 'loaded' ? [['loaded', script.loadedSrc], ['script', script.src]]
-    : [['prepend', prepend], ['city', city], ['append', append], ['script', script ? script.src : null]];
+    : [['city', city], ['prepend', prepend], ['append', append], ['script', script ? script.src : null]];
   const present = order.filter(([source, src]) => (source === 'city' ? !!src : goalLines(src) > 0));
   if (!present.length) return null;
   const out = { config: {}, goals: [], errors: [], layers: {} };
   const where = (source, n) => (source === 'city' ? `line ${n}` : source === 'loaded' ? `${script.loaded} line ${n}` : `${source} line ${n}`);
   for (const [source, src] of present) {
     const p = parseGoals(src);
-    Object.assign(out.config, p.config);
+    // only a script overrides; any other layer fills in what is not set yet
+    const wins = source === 'script';
+    for (const [k, v] of Object.entries(p.config)) if (wins || !(k in out.config)) out.config[k] = v;
     for (const g of p.goals) {
       // the same test parseGoals applies within one text
       const def = GOALS[g.name];
       if (def && !def.multi) {
         const prev = out.goals.findIndex((x) => x.name === g.name);
+        if (prev >= 0 && !wins) continue;
         if (prev >= 0) out.goals.splice(prev, 1);
       }
       out.goals.push({ ...g, source });
@@ -179,8 +186,8 @@ function saveText(goalsApi, accountId, { which, src, save } = {}) {
   if (save) goalsApi.set(accountId, t.cityKey, t.kind, text.trim() ? text : '');
   const what = {
     template: 'Cities that appear from now on start from it; a city that already has goals keeps its own.',
-    prepend: 'Every city runs these before its own goals from the engine\'s next tick.',
-    append: 'Every city runs these after its own goals from the engine\'s next tick.',
+    prepend: 'Every city runs these after its own goals from the engine\'s next tick; a city\'s own line wins over them.',
+    append: 'Every city runs these after its own goals and the prepend goals from the engine\'s next tick; both win over them.',
     script: 'It runs once in each city founded or captured while this console is connected.',
   }[which] || `A script's \`loadgoals ${which.slice(3)}\` runs it in place of a city's goals; a city that loaded it earlier keeps the copy it took.`;
   return { ok: true, which, label: t.label, errors, lines, described, saved: save ? which : null, note: save ? `Saved. ${what}` : null };

@@ -453,7 +453,10 @@ t('prisoners are never fired for room; the note names them and points at release
   readInn(game, b, 0);
   const p = H.makeRoom(ctxFor(game, b, 'config hero:10'), { hallReadAt: Date.now() }, { need: 1, reason: 'a hire' });
   eq(p.actions, []);
-  has(p.note, /every hero is protected or busy; 1 prisoner\(s\) hold slots \(Captive\) — never released automatically/);
+  has(p.note, /every hero is protected or busy/);
+  // with no keepcapturedheroes line the prisoner is still never touched, and
+  // the note says so and points at the line that would free the slot
+  has(p.note, /1 prisoner\(s\) hold slots \(Captive\) — no keepcapturedheroes line here/);
 });
 
 // ======================================================================
@@ -491,7 +494,7 @@ t('prisoners are recorded in state.capturedHeroes, and one persuaded later is ju
   const x = city('Jail', [hero({ name: 'M', status: 1, management: 99 }), pris, hero({ name: 'Own', level: 60, power: 75 })]);
   const state = {};
   const p = H.plans.captives({ castle: x, goals: [], config: {} }, state);
-  has(p.note, /prisoners: Taken L60 — held, never released automatically/);
+  has(p.note, /prisoners: Taken L60 — held: no keepcapturedheroes line here/);
   ok(state.capturedHeroes[pris.id], 'recorded');
   pris.status = 0;                                        // persuaded: ours now, same id
   const c = ctxFor(planGame([x]), x, 'config hero:10\nkeepheroes /always /max:5');
@@ -590,6 +593,22 @@ t('the npchits exit fires: after 2 hits it moves on before maxstay', () => {
   p = M.trainingHeroPlan(game, cityGoals, state)[0];
   eq(p.actions.map((x) => x.kind), ['moveHero']);
   eq(state.hero.otto.npcHits, 2);
+});
+
+t('a city with its own traininghero line AND the prepend one is listed once: the hero moves on (Lord02, 2026-09-19)', () => {
+  const otto = hero({ name: 'OTTO', status: 0, power: 900 });
+  const [a, b, c] = [city('A', [otto]), city('B', []), city('C', [])];
+  const game = { castles: [a, b, c], castleId: (x) => x.castleId };
+  // the city's own line first, then the prepend's, as goallayers orders them
+  const both = () => { const p = parseGoals('traininghero OTTO 30 60\ntraininghero OTTO'); return p; };
+  const cityGoals = [a, b, c].map((castle) => ({ castle, parsed: both() }));
+  eq(cityGoals[0].parsed.goals.filter((g) => g.name === 'traininghero').length, 2, 'both lines are kept by the parser');
+  const state = { hero: { otto: { since: Date.now() - 90e3, at: a.castleId } } };
+  const p = M.trainingHeroPlan(game, cityGoals, state)[0];
+  eq(p.actions && p.actions.map((x) => x.to.name), ['B'], p.note);
+  // the stay is the city's own line (30-60 s), not the prepend's 600 s
+  const early = M.trainingHeroPlan(game, cityGoals, { hero: { otto: { since: Date.now() - 20e3, at: a.castleId } } })[0];
+  has(early.note, /min 30s/);
 });
 
 t('hits from before its stay do not count', () => {
@@ -789,7 +808,9 @@ t('the Heroes tab offers a prisoner no Promote, Fire or +Pts, and Promote only t
   const render = heroesTab();
   const rows = render({ heroes: [0, 1, 2, 3, 4, 5, 8].map((st) => ({ name: 'S' + st, status: st, statusName: String(st), unspent: 3, attack: 1, politics: 1, intel: 1 })) });
   const acts = Object.fromEntries(rows.map((r) => [r.cells[1], [...r.cells[r.cells.length - 1].matchAll(/data-act="(\w+)"/g)].map((m) => m[1])]));
-  eq(acts.S4, [], 'prisoner');
+  // A prisoner we hold gets only the two the client offers it — Persuade and
+  // Release — and none of Promote, Fire or +Pts.
+  eq(acts.S4, ['persuade', 'release'], 'prisoner');
   ok(rows.find((r) => r.cells[1] === 'S4').cells[12].includes('prisoner'), 'says why');
   eq(acts.S0, ['mayor', 'points', 'water', 'fire']);
   eq(acts.S1, ['unmayor', 'points', 'water']);
@@ -797,6 +818,25 @@ t('the Heroes tab offers a prisoner no Promote, Fire or +Pts, and Promote only t
   eq(acts.S3, ['recallhero']);
   eq(acts.S5, ['points', 'fire'], 'returning: no Promote');
   eq(acts.S8, ['points', 'fire'], 'farming: no Promote');
+});
+
+// Experience past the current level is banked — the level only moves when
+// hero.levelUp is sent, once per level. OTTO sat on 66 levels while Pts read 0,
+// because every point he had won was already spent (2026-09-22).
+t('the Heroes tab shows banked levels beside the level, with a Level button', () => {
+  const render = heroesTab();
+  const rows = render({ heroes: [
+    { name: 'OTTO', status: 0, statusName: 'Idle', unspent: 0, levelsReady: 66, level: 1146, attack: 1211, politics: 39, intel: 42 },
+    { name: 'Flat', status: 0, statusName: 'Idle', unspent: 0, levelsReady: 0, level: 40, attack: 5, politics: 5, intel: 5 },
+    { name: 'Away', status: 3, statusName: 'Marching', unspent: 0, levelsReady: 12, level: 40, attack: 5, politics: 5, intel: 5 },
+  ] });
+  const by = Object.fromEntries(rows.map((r) => [r.cells[1].replace(/<[^>]*>/g, ''), r]));
+  ok(String(by.OTTO.cells[5]).includes('+66'), 'the banked levels sit beside the level');
+  ok(/data-act="levelup"/.test(by.OTTO.cells[12]), 'OTTO gets a Level button');
+  eq(String(by.Flat.cells[5]), '40', 'no banked levels: just the number');
+  ok(!/data-act="levelup"/.test(by.Flat.cells[12]), 'no button with nothing banked');
+  // a hero out marching is only recalled, as the Feasting Hall offers
+  ok(!/data-act="levelup"/.test(by.Away.cells[12]), 'no Level button for a hero away from town');
 });
 
 // ======================================================================

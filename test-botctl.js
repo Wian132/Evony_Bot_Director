@@ -39,7 +39,7 @@ const STUB = path.join(TMP, 'stub-console.js');
 fs.writeFileSync(STUB, `
 require('http').createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ account: { id: process.env.ACCOUNT_ID, label: 'stub' }, connected: true }));
+  res.end(JSON.stringify({ account: { id: process.env.ACCOUNT_ID, label: 'stub' }, connected: true, argv: process.argv.slice(2), paused: process.env.ENGINE_PAUSED === '1' }));
 }).listen(Number(process.env.CONSOLE_PORT), '127.0.0.1');
 `);
 // A console that cannot start: the real one exits(1) when another console
@@ -80,7 +80,7 @@ async function main() {
   await t('a started console is written down, or the Director cannot see it', () => {
     org.settings.set('probes', []);
     BOTS.registerProbe(org, acc, 'http://localhost:18811');
-    assert.deepStrictEqual(org.settings.get('probes'), [{ probe: 'Runner', url: 'http://localhost:18811' }]);
+    assert.deepStrictEqual(org.settings.get('probes'), [{ probe: 'Runner', url: 'http://localhost:18811', accountId: acc.id }]);
   })();
 
   await t('two accounts with the same label still get separate probes', () => {
@@ -95,6 +95,15 @@ async function main() {
     BOTS.registerProbe(org, acc, 'http://localhost:18811');
     BOTS.registerProbe(org, acc, 'http://localhost:18811');
     assert.strictEqual(org.settings.get('probes').length, 1);
+  })();
+
+  await t('one account holds one probe too: a crash that lands it on a new port drops the old one', () => {
+    org.settings.set('probes', []);
+    BOTS.registerProbe(org, acc, 'http://localhost:18811');
+    BOTS.registerProbe(org, acc, 'http://localhost:18899');
+    const list = org.settings.get('probes');
+    assert.strictEqual(list.length, 1, 'the dead port was left behind as a ghost probe');
+    assert.strictEqual(list[0].url, 'http://localhost:18899');
   })();
 
   await t('the defaults are never written to the database as probes', () => {
@@ -136,14 +145,14 @@ async function main() {
   })();
 
   await t('it is in the probe list under the account label', () => {
-    assert.deepStrictEqual(BOTS.storedProbes(org), [{ probe: 'Runner', url: 'http://localhost:18811' }]);
+    assert.deepStrictEqual(BOTS.storedProbes(org), [{ probe: 'Runner', url: 'http://localhost:18811', accountId: acc.id }]);
   })();
 
-  await t('a new account starts PAUSED: nothing acts before its goals are set', () => {
-    assert.strictEqual(BOTS.bots(org)[acc.id].paused, true);
+  await t('an account starts live even with no goals of its own (prepend goals may be all it has)', () => {
+    assert.strictEqual(BOTS.bots(org)[acc.id].paused, false);
   })();
 
-  await t('an account with goals of its own starts live', () => {
+  await t('hasGoals sees an account’s own default goals', () => {
     assert.strictEqual(BOTS.hasGoals(org, acc), false);
     org.goals.set(acc.id, 'default', 'goal', 'build f:10:10');
     assert.strictEqual(BOTS.hasGoals(org, acc), true);
@@ -183,6 +192,25 @@ async function main() {
     const r = await BOTS.stop(org, acc);
     assert.strictEqual(r.ok, false);
     assert.match(r.error, /no console on record/);
+  })();
+
+  section("start-up parameters (NEAT's Custom Parameters, and each account's own)");
+
+  await t("a console gets the fleet's and its account's on its command line, the account's winning", async () => {
+    org.settings.set('probes', []);
+    const other = org.accounts.upsert({ label: 'Parms', email: 'p@x.com', password: 'pw' });
+    org.goals.set(other.id, 'default', 'goal', 'build f:10:10');
+    org.settings.set(BOTS.PARMS_KEY, '-autoscripts 1 -runscript "Fleet Start.txt"');
+    org.settings.set(BOTS.PARMS_KEY + ':' + other.id, '-autoscripts 0\n-autorun 0');
+    assert.deepStrictEqual(BOTS.startupParms(org, other.id).args, ['-autoscripts', '0', '-runscript', 'Fleet Start.txt', '-autorun', '0']);
+    const r = await BOTS.start(org, other, { script: STUB });
+    if (r.pid) started.push(r.pid);
+    assert.strictEqual(r.ok, true, r.error);
+    const h = await new Promise((res) => http.get(r.url + '/api/session', (x) => { let d = ''; x.on('data', (c) => (d += c)); x.on('end', () => res(JSON.parse(d))); }));
+    assert.deepStrictEqual(h.argv, ['-autoscripts', '0', '-runscript', 'Fleet Start.txt', '-autorun', '0'], 'what the console was started with');
+    assert.strictEqual(h.paused, true, '-autorun 0 starts the engine paused, goals or not');
+    assert.deepStrictEqual(BOTS.bots(org)[other.id].args, h.argv, 'kept, so the Director can tell a console on old parameters');
+    await BOTS.stop(org, other);
   })();
 
   for (const pid of started) { try { process.kill(pid); } catch {} }

@@ -1,7 +1,7 @@
 # OTTObot
 
 Multi-tenant fleet control for Evony Age 1. A dependency-free Node client replacing
-NEAT/`bobby.exe` — Flash was never needed, the game speaks a plain socket protocol.
+NEAT — Flash was never needed, the game speaks a plain socket protocol.
 
 Sign up, get your own organization, and run your bots. Nobody else can see them.
 
@@ -65,8 +65,39 @@ switched-off account stay off. Off outranks keep on — an account that is off i
 started, even with the box ticked.
 
 **Sort order** (in ✎, and the Order column) is your own order for the fleet; the table
-starts sorted by it, lowest first. It is also the order accounts are spread across the
-proxy list, so moving one can move it onto another proxy.
+starts sorted by it, lowest first.
+
+**One tab per account.** Clicking an account's name (or its row) opens that console in a
+tab named after the account, and clicking it again brings *that* tab to the front instead
+of opening another one — without reloading it, so whatever you had open in the console is
+still there. Ctrl/⌘ or middle click still means "a new tab", as everywhere else. The
+console page claims the same name for itself (`botTabName`, in both pages), so a console
+tab you opened by hand is found too; it used to call every console tab `evony_console`,
+which is why duplicate tabs piled up. Test: `test-console-tabs.js` (the real pages, in
+headless Chrome).
+
+### The Accounts tab
+
+Every field of every account in one grid, for changing many accounts without opening
+each one's ✎: one row an account, one column a field — on/off, keep on, server, email,
+password, security code, notes, proxy, after maintenance, autorun scripts, start-up
+parameters, the prepend and append goals files, sort order, and the status from the
+Fleet tab. Click a cell, or move to it with the arrow keys and press Enter, and change
+it: the save is immediate, there is no Save button, and the footer says what the save
+did — a goals file is read at once, start-up parameters apply from the console's next
+start, a proxy from its next login. Enter saves and moves down, Tab saves and moves
+right, Esc cancels, Space flips a switch, typing starts an edit over the old value,
+Delete opens the cell empty. A dropdown stepped through with the keys is saved on Enter,
+not at every step.
+
+The shortcuts do the tedious part. **Apply to all** (Ctrl+Shift+A) takes the selected
+cell's value to every account listed — or, if any rows are ticked, to those only — after
+a confirm that names them; a name, an email or a sort order is each account's own and is
+refused. **Fill down** (Ctrl+D) copies the cell above. **Undo** (Ctrl+Z) puts the last
+change back on every account it touched. Alt+↑/↓ moves a row, **Renumber** makes the
+order 1, 2, 3… as shown, and 🗑 deletes an account after a confirm. Switching an account
+on or off here does what the Fleet tab's box does: its console comes up or goes down,
+one account at a time when applied to all.
 
 Under the table, every column that can be added up carries its **total** — coins,
 cities, prestige, troops, resources, items — for the rows on screen, so a filter or a
@@ -95,10 +126,44 @@ trip the server's rate limiter. Three guards enforce this, all learned the hard 
 `socks5://user:pass@host:port`, `http://host:port`). **Test all** tunnels to the game
 server through every line and asks for the policy file — never a login — and says which
 work, how fast, and why the rest do not (most often: it wants a username and password, or
-this PC's IP allowed at the provider). Each account's ✎ dialog has a **Proxy** dropdown:
-this PC's own IP, or one line of the list with its last test result beside it. The
-console of that account logs in through it from its next login on; picking one that
-failed its test is allowed, and warned about, since its console will not get in.
+this PC's IP allowed at the provider). Each account's ✎ dialog, and the Accounts tab, has
+a **Proxy** dropdown with three kinds of choice:
+
+- **Random**, the default for a new account: a line of the list that no other account
+  uses and that has not failed its test (one that passed first, else an untested one),
+  picked for this account and **kept** — the same IP on every login — until that line
+  fails a test, leaves the list, or another account is pinned to it. Then a new one is
+  picked and the Director's log says so. With the list empty it logs in direct.
+- **Direct**: this PC's own IP.
+- **One line** of the list, pinned, with its last test result beside it and the accounts
+  already on it. Sharing a line is allowed but warned about: one proxy per account.
+
+The console of that account logs in through it from its next login on, and the
+Director's own polls of the account go the same way (`proxy-pick.js`).
+
+**When somebody else logs into an account**, the game sends `server.ConnectionLost` — the
+same thing its own client shows as *"Another user has logged into your account"*. The
+console treats it as the kick it is: it stands down (30 minutes by default, as NEAT does),
+writes it in capitals in the log, and the console page shows a red bar naming the time and
+the IP with a **Take it back now** button; the Director's fleet list shows a *someone else
+logged in* pill near the top of the list. Only one bot should ever play an account.
+
+**A hold that climbs.** An account's *After a kick* minutes are one step of a ladder: the
+first drop holds its console out that long, the next twice as long, then three times … up
+to an hour, and any login that holds for two minutes puts it back to the first step
+(`session.js holdForKick`). Blank or 0 is the old behaviour — straight back in.
+
+**A console that cannot get in changes its own proxy.** Ten minutes of trying without a
+login that holds for two minutes — logins that fail, and logins the server drops again
+seconds later, which are the same thing — and it closes the socket, moves the account to
+another free line and starts again a minute later (`session.js rotateProxyIfStuck`; it rests
+first because rate limiting is per account, not per IP). Each further move
+in the same spell waits twice as long as the last (10, 20, 40 minutes, up to an hour), it
+never takes a line another account is on, and it stays put rather than share one. The
+Accounts grid shows such a line as "· moved by its console"; the account's own Proxy
+setting is untouched, and **choosing a proxy there puts it back**. Nothing is moved while
+the account is switched off, in a kick hold, or standing down for maintenance.
+`OTTO_PROXY_ROTATE_MIN` and `OTTO_SETTLED_SEC` change the two times.
 
 ### After maintenance: everyone follows the clock
 
@@ -149,6 +214,258 @@ ends. The column reads `—` off holiday, `not yet · 0 maintenances` before the
 and `ready · N maintenances` after. While a console is offline the count is left alone:
 it cannot see, which is not the same as the holiday being over.
 
+### The Resources tab
+
+Every city's food, wood, stone, iron and gold, recorded **once an hour on the hour** and
+again **every morning at 08:30** — just before the daily maintenance window, so that one
+holds what each town was carrying into it (`city-resources.js`; the morning records are
+marked in the `kind` column as `morning:<date>` and get their own table, so the hourly
+series is unchanged). A Director that was down at 08:30 catches the day's record up at
+its next start, marked late on the page; past 14:30 it gives the morning up rather than
+pass an afternoon reading off as one.
+
+The restore check behind `/api/resources/restore` (`city-resources.js`, which towns a
+holidayed account's maintenance does not put back) is still served, but the page no longer
+shows it (removed 2026-09-22 at the user's request).
+ulti-tenant fleet control for Evony Age 1. A dependency-free Node client replacing
+NEAT — Flash was never needed, the game speaks a plain socket protocol.
+
+Sign up, get your own organization, and run your bots. Nobody else can see them.
+
+Two apps and a goal engine:
+
+| | | |
+|---|---|---|
+| `server.js` | **console**, one per account | per-city goals and scripts, monitors, map, chat |
+| `director.js` | **fleet view** over every account | status, resources, items, proxies, uptime graph |
+| `goalsd.js` | headless goal daemon | an alternative to running a console |
+
+Everything is headless. The HTML pages are viewers that poll the process — close every
+tab and the bots keep running.
+
+## Running it
+
+```bash
+cp .env.example .env          # the default console's login
+node director.js              # fleet + uptime            -> :8712
+CONSOLE_PORT=8711 ACCOUNT_ID=a1 node server.js            -> :8711
+CONSOLE_PORT=8713 ACCOUNT_ID=a2 node server.js
+```
+
+**The console's engine is always live** — from the moment it connects it acts on every
+city's goals, once a minute. The pause button is how you stop it; a restart resumes it.
+Start it with `ENGINE_PAUSED=1` to come up paused instead — for a restart after a change
+to what the goals do, when you want the page, scripts and chat but not the engine until
+you have looked things over.
+
+Add an account:
+
+```bash
+EVONY_ACCOUNT_EMAIL=... EVONY_ACCOUNT_PASSWORD=... node add-account.js "Label"
+```
+
+Or add it in the Director with **Add account**, which then starts its console for you:
+a free port, the process, and its uptime probe (without which the Director cannot see
+it). An account with no console shows `no bot` and a **start** button on its row. By
+hand, the same thing:
+
+```bash
+node botctl.js start a3       # start, or adopt the console already running a3
+node botctl.js stop a3
+node botctl.js list           # which accounts have a console, and where
+```
+
+The checkbox in the first column **switches an account off**: it stays in the fleet with
+its history, goals and credentials, but nothing on this machine plays it any more, so a
+bot on another machine can have the login to itself. The Director stops polling it and
+takes its console down; a console that is still running for it anyway (one started by
+hand) logs out within seconds and refuses every login — Connect, a script, the engine,
+its own reconnects — until the account is switched back on. No console is started for a
+switched-off account, whoever asks. Switching it back on starts the console again. The
+row reads `off`, greyed, and the **Switched off** view lists them. Nothing is deleted;
+**Delete** in the row's ✎ dialog is still the only thing that removes an account.
+
+**Keep bot on** (a column, and a box in ✎) keeps an account's console running: the
+Director checks every minute and starts it again if it is down, and switching the
+account off only restarts it. Clear it to let a stopped bot stay stopped and a
+switched-off account stay off. Off outranks keep on — an account that is off is never
+started, even with the box ticked.
+
+**Sort order** (in ✎, and the Order column) is your own order for the fleet; the table
+starts sorted by it, lowest first.
+
+**One tab per account.** Clicking an account's name (or its row) opens that console in a
+tab named after the account, and clicking it again brings *that* tab to the front instead
+of opening another one — without reloading it, so whatever you had open in the console is
+still there. Ctrl/⌘ or middle click still means "a new tab", as everywhere else. The
+console page claims the same name for itself (`botTabName`, in both pages), so a console
+tab you opened by hand is found too; it used to call every console tab `evony_console`,
+which is why duplicate tabs piled up. Test: `test-console-tabs.js` (the real pages, in
+headless Chrome).
+
+### The Accounts tab
+
+Every field of every account in one grid, for changing many accounts without opening
+each one's ✎: one row an account, one column a field — on/off, keep on, server, email,
+password, security code, notes, proxy, after maintenance, autorun scripts, start-up
+parameters, the prepend and append goals files, sort order, and the status from the
+Fleet tab. Click a cell, or move to it with the arrow keys and press Enter, and change
+it: the save is immediate, there is no Save button, and the footer says what the save
+did — a goals file is read at once, start-up parameters apply from the console's next
+start, a proxy from its next login. Enter saves and moves down, Tab saves and moves
+right, Esc cancels, Space flips a switch, typing starts an edit over the old value,
+Delete opens the cell empty. A dropdown stepped through with the keys is saved on Enter,
+not at every step.
+
+The shortcuts do the tedious part. **Apply to all** (Ctrl+Shift+A) takes the selected
+cell's value to every account listed — or, if any rows are ticked, to those only — after
+a confirm that names them; a name, an email or a sort order is each account's own and is
+refused. **Fill down** (Ctrl+D) copies the cell above. **Undo** (Ctrl+Z) puts the last
+change back on every account it touched. Alt+↑/↓ moves a row, **Renumber** makes the
+order 1, 2, 3… as shown, and 🗑 deletes an account after a confirm. Switching an account
+on or off here does what the Fleet tab's box does: its console comes up or goes down,
+one account at a time when applied to all.
+
+Under the table, every column that can be added up carries its **total** — coins,
+cities, prestige, troops, resources, items — for the rows on screen, so a filter or a
+view narrows the figures with the rows.
+
+A console started this way comes up with its engine **live** — if the bot is on, its
+goals are on, the account's prepend and append goals included. Only `-autorun 0` in its
+start-up parameters starts it paused. `BOT_AUTOSTART=1 node
+director.js` brings up every account's console on startup, for a machine that has just
+rebooted; without it the Director only says which accounts have no bot.
+
+Requires Node 24+ for the built-in `node:sqlite`. No npm install, no dependencies.
+
+## One process per account
+
+A second login for the same account gets kicked, and the two supervisors then fight and
+trip the server's rate limiter. Three guards enforce this, all learned the hard way:
+
+- a console started with `ACCOUNT_ID` is **pinned** — `/?account=<other>` cannot switch it
+- a second console for an account already running **refuses to start**
+- the Director asks every console who it holds and skips those accounts
+
+### Proxies
+
+**Proxies** holds the list, one per line (`host:port`, `host:port:user:pass`,
+`socks5://user:pass@host:port`, `http://host:port`). **Test all** tunnels to the game
+server through every line and asks for the policy file — never a login — and says which
+work, how fast, and why the rest do not (most often: it wants a username and password, or
+this PC's IP allowed at the provider). Each account's ✎ dialog, and the Accounts tab, has
+a **Proxy** dropdown with three kinds of choice:
+
+- **Random**, the default for a new account: a line of the list that no other account
+  uses and that has not failed its test (one that passed first, else an untested one),
+  picked for this account and **kept** — the same IP on every login — until that line
+  fails a test, leaves the list, or another account is pinned to it. Then a new one is
+  picked and the Director's log says so. With the list empty it logs in direct.
+- **Direct**: this PC's own IP.
+- **One line** of the list, pinned, with its last test result beside it and the accounts
+  already on it. Sharing a line is allowed but warned about: one proxy per account.
+
+The console of that account logs in through it from its next login on, and the
+Director's own polls of the account go the same way (`proxy-pick.js`).
+
+**When somebody else logs into an account**, the game sends `server.ConnectionLost` — the
+same thing its own client shows as *"Another user has logged into your account"*. The
+console treats it as the kick it is: it stands down (30 minutes by default, as NEAT does),
+writes it in capitals in the log, and the console page shows a red bar naming the time and
+the IP with a **Take it back now** button; the Director's fleet list shows a *someone else
+logged in* pill near the top of the list. Only one bot should ever play an account.
+
+**A hold that climbs.** An account's *After a kick* minutes are one step of a ladder: the
+first drop holds its console out that long, the next twice as long, then three times … up
+to an hour, and any login that holds for two minutes puts it back to the first step
+(`session.js holdForKick`). Blank or 0 is the old behaviour — straight back in.
+
+**A console that cannot get in changes its own proxy.** Ten minutes of trying without a
+login that holds for two minutes — logins that fail, and logins the server drops again
+seconds later, which are the same thing — and it closes the socket, moves the account to
+another free line and starts again a minute later (`session.js rotateProxyIfStuck`; it rests
+first because rate limiting is per account, not per IP). Each further move
+in the same spell waits twice as long as the last (10, 20, 40 minutes, up to an hour), it
+never takes a line another account is on, and it stays put rather than share one. The
+Accounts grid shows such a line as "· moved by its console"; the account's own Proxy
+setting is untouched, and **choosing a proxy there puts it back**. Nothing is moved while
+the account is switched off, in a kick hold, or standing down for maintenance.
+`OTTO_PROXY_ROTATE_MIN` and `OTTO_SETTLED_SEC` change the two times.
+
+### After maintenance: everyone follows the clock
+
+Every console hears the announcement on the system channel, stands down five minutes
+before the announced start, and comes back at the announced end. From then on it checks
+the game port every 30 seconds — a TCP handshake through the account's proxy, which costs
+no login — and spends a login only once the port answers, after a stagger of up to 15
+seconds so the fleet does not arrive as one burst. No login of any kind is made while the
+stand-down is open, whoever asks for it: the supervisor, a page poll, a script, the engine
+or the Director all get the same refusal, because a login into a maintenance can hold an
+account back for half an hour. The page's **maintenance override** is the way through.
+
+#### The maintenance race (dormant)
+
+There is also a *maintenance race*, in which one account probes for the end of the window
+and the others log in behind it. It is **off** since 2026-09-20: it bought no real speed,
+and the monitor's repeated logins into a closed server ran its proxy into the ground. It
+runs only on a console started with `OTTO_MAINT_RACE=1`. What it does then: each account's
+✎ dialog has **After maintenance** (and a column of the same name):
+
+- **Maintenance monitor** — one per server. From two minutes into the window it probes
+  the game port every 15 s (through its proxy, if it has one) and tries a login every
+  30 s once it answers; the moment it is in, it writes `maintOver:<server>` to the
+  database. Making another account the monitor turns the old one into a follower.
+- **Follower** — spends no login at all through the window (not the supervisor, not a
+  page, not a script), and logs in the instant that signal is newer than the window's
+  start.
+- **Normal** — comes back on its own schedule, as before.
+
+The role is kept per account and read on every tick, so it survives any restart and a
+change applies at once; `OTTO_MAINT_MONITOR=1` / `OTTO_MAINT_FOLLOW=1` on a console's
+start override it. The window (`maintWindow:<server>`: the announced start, for 90
+minutes) is written by any console that hears the maintenance announcement, so it arms
+itself whenever maintenance comes. A follower started with `AUTOSCRIPTS=1
+RUNSCRIPT=<file>` then runs that script in every city the moment it is back.
+
+### Market glitch ready
+
+A **Market glitch ready** column says whether a holidayed account can be traded out of
+yet. A holidayed account's resources are put back at every maintenance to what they were
+at the one before, so an account that has only just gone on holiday has nothing to be put
+back to — it has to have been on holiday **across** a maintenance. Holiday mode reports
+only how much protection is LEFT, never when it began, so the console watches instead: it
+records when it first saw the holiday and counts the maintenances that end while the
+account is still on it (`holidayRun`, session.js). The count is kept in the account's own
+settings, so a console restart does not lose it, and it is dropped the moment the holiday
+ends. The column reads `—` off holiday, `not yet · 0 maintenances` before the first one,
+and `ready · N maintenances` after. While a console is offline the count is left alone:
+it cannot see, which is not the same as the holiday being over.
+
+### The Resources tab
+
+Every city's food, wood, stone, iron and gold, recorded **once an hour on the hour** and
+again **every morning at 08:30** — just before the daily maintenance window, so that one
+holds what each town was carrying into it (`city-resources.js`; the morning records are
+marked in the `kind` column as `morning:<date>` and get their own table, so the hourly
+series is unchanged). A Director that was down at 08:30 catches the day's record up at
+its next start, marked late on the page; past 14:30 it gives the morning up rather than
+pass an afternoon reading off as one.
+
+Underneath, **Towns the glitch does not put back**. A holidayed account's towns are put
+back at every maintenance to what they held at the one before, except that some towns
+never are — and selling one of those dry gives the resources away for real. For every
+maintenance (timed from `maintEnded:<account>` and `maintWindow:<server>` in the org's
+settings, falling back to the daily 08:30–09:30 window) each town's last reading before
+it is compared with its first reading after, against what that town was put back to at
+the maintenance before. A town is named either as **never put back** — drained, and still
+drained afterwards, at every maintenance we have records either side of — or as **empty
+beside the rest**, meaning its put-back amount is under a twentieth of its account's
+middle town on two of wood, stone and iron and has never moved, which is what a town sold
+dry before the record began looks like now. Food and gold never decide it (troops eat one
+and everything costs the other), only accounts the record has seen put back are judged at
+all, and the page says how many maintenances the verdict rests on — one is a suspicion,
+not a finding.
+
 ## The console
 
 Laid out like NEAT: header counters (packages, reports, mail, coins, prestige, honor,
@@ -196,14 +513,33 @@ by kind: **Log** is what the bot did, **Engine** its per-city thinking, **Debug*
 everything including the protocol trace.
 
 **Statistics**, beside Items, is the game's own Statistics window: every player, alliance,
-hero and city on the server, ranked. **Refresh** reads all four lists into the database
-through this console's connection (`statistics.js`; never a login): one page at a time
-with a pause between, and waiting while the account's market orders are busy. The search
-box then searches every list at once, locally: a lord's name finds the lord, their
-heroes and their cities; an alliance's name finds its members and cities. Click any name
-to search for it. **All** shows the first few of each list; a list on its own sorts by any
-heading. Every console on the same server shares what was read, and the bar says when
-each list was last read in full.
+hero and city on the server, ranked, read through this console's connection
+(`statistics.js`; never a login). **All** shows the top 10 of each list, and a list on its
+own pages through it as the game's window does (First, Prev, a page box, Next, Last),
+100 to a page, fetched from the server as you go; the next 5 pages are read in the
+background so Next is instant, and a page read in the last 10 minutes comes from the
+database. A list's length shows with a ~ until its last page has been read. Typing in
+the search box searches every list at once in the database, over what browsing and
+Refresh have read: a lord's name finds the lord, their heroes and their cities; an
+alliance's name finds its members and cities. **Enter** (or *Ask the server*) asks the
+game for that exact name, and a **Page** button opens the page it is on. Click any name
+to search for it; a heading sorts what has been read (Rank goes back to the game's
+pages). **Refresh** reads all four lists whole, for searching — alliances first, one page
+at a time with a pause between, waiting while the account's market orders are busy — and
+a read that stopped (a console restart) carries on from its last page. Every console on
+the same server shares what was read.
+
+**Alliance**, beside Reports, is the game's Alliance window: **Info** (founder, host,
+members, ranking, prestige, intro and notice), **Members** (sortable; **View** opens a
+member with Friends List, Blocklist, Mail, and, when your rank allows it as the game's
+window does, Promote and Expel), the **Friendly**, **Neutral** and **Hostile** alliances
+(a host or vice host can change a standing or mark a new alliance), **War Reports** (each
+opens as a battle report) and **Events**. **Friends**, after Statistics, is the Blocklist
+and My Friends: add a name, view or delete one; a name on the other list is moved across
+after asking. Both tabs read through this console's live connection when opened or on
+**Refresh**, never a login, and nothing polls (`alliance.js`). Every change asks first and
+runs the script command of the same name (`setofficer`, `expel`, `declare`, `addfriend`,
+`block`…), so it logs and refuses the same way.
 
 The header's **Reports** and **Mail** boxes open the game's own mailbox. A report is
 drawn the way the game's report screens drew it (`mailbox.js` decodes, `public/reportview.js`
@@ -388,8 +724,16 @@ next. A share like `0.01` or a number like `500` takes turns, and `1` keeps ever
 the same share of its target. `/usereserved` lets training spend part of the day of food
 kept for troop upkeep. `/usepopmax` (`config troopsusepopmax`) lets it take part of the
 whole population: production is set to 0 while the batches go in, then put back.
+**With a `traininghero` named, the barracks are kept for it** (`config trooptraineronly`,
+`/traineronly`, on by default). While it is away, another hero queues only troops it
+builds **instantly** — those finish as they are placed and leave the slot free. Anything
+slower waits, because a batch another hero queues holds its slot for the whole queue time,
+and a city that filled nine slots with 30-minute batches had nothing free when the training
+hero came round. A hero that has never been mayor here and has at least the training
+hero's attack is let through once, so its speed is measured rather than guessed. Set
+`config trooptraineronly:0` (or `/traineronly:0` on a line) for NEAT's rule instead, where
 `/idlequeuetime` lets another hero queue small batches in empty barracks while the
-`traininghero` is away; otherwise types it trains slower wait for the traininghero.
+`traininghero` is away and types it trains slower wait for it.
 `config reservedbarrack:1` keeps one barracks free for the first line under attack, and
 `config troopdelbadque:1` cancels a batch queued far too slowly (one a turn, only while
 the best attack hero is mayor).
@@ -554,19 +898,68 @@ while troops are being queued, promoted straight over the old one. It is left al
 any points no `heropoints` line covers go into their best stat. `heropoints <hero> att:500 int`
 spends them in stages, and `nolevelheroes` names heroes left unlevelled. Heroes are fired
 only when a slot is needed — for a hire, or for the training hero coming round — or with
-`keepheroes /always` (ours). `config hero:XY` keeps X good politics heroes and Y intel
+`keepheroes /always` (ours), or `keepheroes /firebelow:<n>` (ours) which lets an idle hero
+under level *n* go for a slot even under `config hero:1`.
+`config hero:XY` keeps X good politics heroes and Y intel
 heroes and the rest attack: the bot sets those aside, then fires the worst attack score.
 It never fires a hero `keepheroes` protects (with no `keepheroes` line, NEAT's default
 `any:level>=50|any:base>=69`), the mayor, a hero that is out, a prisoner or the training
 hero. `feastinghallspace` only says where hiring stops. The hall's free slots are read from
 the inn when needed.
 
-**Captured heroes.** Prisoners are never released automatically; `release <name>` works
-only on a prisoner. A prisoner you persuade is judged by `keepcapturedheroes` (with no
-line, NEAT's default `any:level>=200|any:base>69`), not `keepheroes`. `herofirelimit N` and
+**Captured heroes, and letting them go.** A prisoner sits in a Feasting Hall slot, so the
+level-2 hero a conquered valley drops into your cell quietly blocks the training hero's
+round until somebody notices. Write a `keepcapturedheroes` line and the bot **releases the
+prisoners it does not keep**:
+
+```
+keepcapturedheroes any:level>600|any:base>145
+```
+
+keeps a prisoner past level 600 or with a base over 145 and lets the rest go. With **no
+line the goal is off** and nothing is ever released, as before — the line is the opt-in.
+One release a pass, on a cooldown, never off a half-loaded roster, and always by hero id.
+
+**A hero of your own is never released.** Releasing a captured hero from the captor's side
+loses it (EVONY-RULES.md §5) — the owner uses a Stone of Finding (`lostheroes`, then
+`recover`). A captured hero leaves its owner's roster the moment it is taken, so a live
+roster cannot tell you it was yours. Every console therefore writes its own heroes into a
+**fleet register** (`fleet_heroes` in `evony.db`) that is kept forever, and before any
+release the bot refuses when the prisoner's **id** is on that register, when any hero of
+yours has ever carried its **name**, or while the register is **incomplete** — an account
+that has not reported its heroes in 24 hours could be this prisoner's owner. `release
+<name>` still works by hand, and `OTTO_NO_RELEASE=1` stops every release fleet-wide.
+
+A prisoner you persuade is judged by `keepcapturedheroes` (with no line, NEAT's default
+`any:level>=200|any:base>69`), not `keepheroes`. `herofirelimit N` and
 `capturedfirelimit N` are read as `keepheroes any:level>=N` and
-`keepcapturedheroes any:level>=N`. A hero of yours captured by another city comes home
-with a Stone of Finding (`recover`, above).
+`keepcapturedheroes any:level>=N`.
+
+The Director marks an account holding prisoners: a violet edge down its row, a **Prisoners**
+column, and a "Holding prisoners" view.
+
+**A city with no hero of its own** has no mayor, trains nothing, defends with nobody, and
+traps the training hero when it arrives — the trainer becomes the only hero, takes the
+mayor's office, and has to be stood down again to leave. So such a city fills itself,
+ahead of every other hero goal and without waiting for `config fasthero`: an **Ardee's
+Sigil of Recruitment** first, then a **Crystal of Attunement**, opened in that city so the
+hero lands there; failing that, the best offer the inn has that the city can pay for, with
+no base bar. A city whose whole roster is one visiting training hero, or one prisoner,
+counts as empty. `config hero:0` switches it off. Right after a login the inventory has not
+arrived, and no box is ruled out on that.
+
+**A city holding ten** has no slot for the training hero. It is freed in the order that
+costs least: a prisoner `keepcapturedheroes` does not keep goes first; failing that the
+weakest idle hero is **marched** to the nearest city of the account under 9 heroes with a
+free hall slot — nothing is lost, and it works under `config hero:1`; only then is anyone
+dismissed, and that needs `config hero:XY`, or `keepheroes /firebelow:<n>` to let an idle
+hero under level *n* go. The march carries one scout, so a city with none sends nobody and
+says so — and the training hero's own move is now held back for the same reason instead of
+standing the mayor down for a march that cannot go.
+
+**The training hero never holds the office alone.** While it is the only hero in a city it
+is passing through, it is stood down as mayor and not re-appointed until that city has a
+hero of its own.
 
 **Hiring and rewards.** With `config hero:10` or higher and `config fasthero:65`, each city
 hires from its inn by itself. It reads the inn at most every ten minutes and hires the
@@ -675,6 +1068,20 @@ ballista, and npc10 attacks losing under 3,800 or over 6,000 archers; a 0 keeps 
 report of that kind. Lost battles, captured heroes and anything that isn't an NPC or
 valley attack are never deleted. It runs from the first city that has the line.
 
+**Quests claim themselves, the free daily amulet with them.** The game's Quests window has
+a Routine tab and a Daily tab, and a finished quest waits there until someone presses
+Claim. Every city with goals looks at both tabs, claims what is finished, and looks again:
+half an hour after a quiet look, a minute after a claim (a claim can open the next quest in
+a chain), ten minutes after the server refuses. A tab whose quest types all say "nothing
+finished" costs exactly two requests, so a quiet account is almost free. **It is on without
+a goal line**, because a free amulet a day is not worth forgetting; `config
+completequests:0` turns it off in a city, `:1` claims everything but the Promotion quests,
+`:2` claims those in the game's own order and `:3` (the default) takes a title before a
+rank — a title is worth having on its own, since the city cap is titleId + 1. The key is
+ours; NEAT keeps the same four choices in its Global Settings. An account whose goals have
+been emptied for a holiday is never visited, so it claims nothing. The `completequests`
+script command is unchanged and claims on demand, whatever this key says.
+
 **Office hours and mission priorities.** `schedulepolicy 06:00 12:00 17:00 23:00` lets a
 city act only in those hours, on this machine's clock. Its defence never stops: hiding, the
 gate, emergency walls, defence items, the war town recall, warrules and the embassy still
@@ -720,7 +1127,7 @@ active the goal editor's hint and the engine's plan say so.
 
 **A NEAT goal file reads as it stands.** All 46 config keys the NEAT wiki documents are
 accepted, and each does what its page says (`monitorarmy` does nothing, as in NEAT).
-`troopslot`, `freespeedup` and `mapscan` are ours. A config key written on its own line
+`troopslot`, `freespeedup`, `completequests` and `mapscan` are ours. A config key written on its own line
 (`wartown 1`) is read as `config wartown:1`, with a note. NEAT's obsolete lines
 (`ballsused`, `npc10troops`, `npc10list`, `npc10limit`, `npc10heroes`, `npcexcludelist`,
 `npc10excludelist`, `noabandonflats`, `capturedfirelimit`) are read as the goals that
@@ -736,13 +1143,14 @@ the exceptions are under the table.
 |---|---|
 | `goal-upkeep.js` | comfort, comfortpolicy, taxpolicy, levies, production, warehousepolicy, healing |
 | `goal-war.js` | incoming attacks, hiding, gate and gatepolicy, war town, keepatthome, attackgap, defensecooldown, embassy, warrules |
-| `goal-heroes.js` | hero strings, keepheroes, heropoints, levelling, firing, hiring, rewards, spamheroes, keepherobuff |
+| `goal-heroes.js` | hero strings, keepheroes, keepcapturedheroes and releasing, heropoints, levelling, firing, hiring, rewards, spamheroes, keepherobuff, empty cities, freeing a full hall |
 | `goal-npc.js` | NPC farming — camps, cycles, research gate, troop sizing, the background map scan |
 | `goal-buildnpc.js` | turning flats into NPC camps (**off by default**, see below) |
 | `goal-valley.js` | valleys, valley farming, safe valley farming, hunting, flats, abandon |
 | `goal-transfer.js` | requestresources, requesttroops, keep and send lines — nearest sender, one march per sender |
 | `goal-trade.js` | config trade, tradepolicy, resourcelimits — the market |
 | `goal-reports.js` | reportstokeep |
+| `goal-quests.js` | completequests — the Routine and Daily quests, claimed on their own |
 | `goal-research.js` | research |
 | `goal-plan.js` | plan lines |
 | `processing.js` | schedulepolicy, processingpolicy |
@@ -804,10 +1212,13 @@ them.
   and open from the editor's selector. A city founded or captured gets its copy the moment
   it appears, and the log says so. Cities buildnpc builds to hand back get none. A template
   line like `s:0:0` takes down every sawmill in a captured city, so read it first.
-- **Also:** troop ladders fill the barracks faster (up to 20 batches a turn); troop types
-  that train slower without the traininghero wait for it while it is away
-  (`config troopidlequeuetime:30` allows small batches); comfort popraises only below the
-  population limit and prays or gives relief only when that helps; wounded troops are
+- **The barracks are the training hero's.** With a `traininghero` named, another hero
+  queues only what it builds instantly while the hero is away — instant batches leave
+  their slot free, a 30-minute one holds it, and nine of those meant the training hero
+  arrived to a full barracks and trained nothing. `config trooptraineronly:0` or
+  `/traineronly:0` goes back to NEAT's `troopidlequeuetime` rule.
+- **Also:** troop ladders fill the barracks faster (up to 20 batches a turn); comfort
+  popraises only below the population limit and prays or gives relief only when that helps; wounded troops are
   healed; construction no longer waits behind troops, and waits for resources instead of
   backing off for hours; early levels are finished for free; the engine's state moves from
   city names to castle ids, and the log says so once.
@@ -921,17 +1332,18 @@ for t in test-enginestate test-goals test-war test-npc test-heroes test-buildnpc
   test-newcity test-speedups test-hero-fixes test-neat-compat test-script-layer \
   test-prereq test-hiring test-upkeep test-npc-parity test-resources-market \
   test-misc-goals test-research test-troop-parity test-valleys test-plan-schedule \
+  test-captured-heroes test-goal-quests \
   test-script test-script-lang test-script-objects test-script-functions \
   test-script-regex test-script-net test-script-post test-script-deploy \
   test-script-city test-script-hero test-script-account test-script-market \
   test-script-info test-script-social test-script-goals test-script-console \
   test-script-compat test-script-safety test-botctl test-director-fleet \
-  test-holiday-login test-statistics test-armies-tab; do
+  test-director-accounts test-proxy-pick test-holiday-login test-statistics test-armies-tab; do
   EVONY_DB=/tmp/otto-$t.db node $t.js; rm -f /tmp/otto-$t.db*
 done
 ```
 
-2,864 tests in 62 suites, no network required. `test-holiday-snipe` has 10 known
+2,934 tests in 65 suites, no network required. `test-holiday-snipe` has 10 known
 failures, which it had before the goals and scripts build-outs.
 
 **Never run `test-*.js` as a glob.** `test-scope`, `test-login`, `test-raw`, `test-block`,

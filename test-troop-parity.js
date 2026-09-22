@@ -69,7 +69,7 @@ const orders = (plan) => plan.orders.map((o) => [o.troop.key, o.num, o.positionI
 // logged in `calls` as [cmd, ...args] in the order it was sent.
 function world({ heros = [], barracks = 1, level = 10, queues = {}, times = { [TY.archer]: 60, [TY.ballista]: 100 },
   pop = { cur: 20000, work: 15000 }, upkeep, rates = { 1: 80, 2: 70, 3: 60, 4: 50 }, refuse = {},
-  forts = {}, wallQueue = [], enemy = [], others = [] } = {}) {
+  forts = {}, wallQueue = [], enemy = [], others = [], permition = true, needs = {} } = {}) {
   const castle = {
     id: 1, name: 'Home', fieldId: HOME,
     resource: {
@@ -99,7 +99,10 @@ function world({ heros = [], barracks = 1, level = 10, queues = {}, times = { [T
         return { ok: 1, allProduceQueue: Array.from({ length: barracks }, (_, i) => ({ positionId: 4 + i, allProduceQueue: queues[4 + i] || [] })) };
       }
       if (cmd === 'troop.getTroopProduceList') {
-        return { ok: 1, troopList: Object.entries(times).map(([typeId, time]) => ({ typeId: Number(typeId), permition: true, conditionBean: { time } })) };
+        // the server's own shape: permition beside a conditionBean whose
+        // buildings say what is met (needs: typeId -> a Barracks level not met)
+        return { ok: 1, troopList: Object.entries(times).map(([typeId, time]) => ({ typeId: Number(typeId), permition,
+          conditionBean: { time, buildings: [{ typeId: 2, level: needs[typeId] || 1, successFlag: !needs[typeId] }] } })) };
       }
       if (cmd === 'fortifications.getProduceQueue') { calls.push([cmd]); return { ok: 1, allProduceQueue: [{ positionId: -2, allProduceQueue: wallQueue }] }; }
       if (cmd === 'fortifications.getFortificationsProduceList') {
@@ -151,7 +154,7 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
   await t('defaults (wiki Troop): 30-minute batches, idle queue 0, increment 0, usereserved 0, usepopmax 0', async () => {
     const s = troopSettings({ switches: {} }, {});
     assert.deepStrictEqual(s, { slotSec: 1800, slotFrom: null, increment: 0, ratio: false, idleMin: 0,
-      useReserved: 0, usePopMax: 0, reservedBarrack: false, delBadQue: false });
+      useReserved: 0, usePopMax: 0, reservedBarrack: false, delBadQue: false, trainerOnly: true });
   });
 
   await t('queue time: /queuetime (hours) > /slot (minutes) > config troopqueuetime (hours) > config troopslot (minutes)', async () => {
@@ -469,30 +472,33 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
   });
 
   // ============================================================ idle queue
-  console.log('\nTroopIdleQueueTime: while the traininghero is away\n');
+  console.log('\nTroopIdleQueueTime: while the traininghero is away, with config trooptraineronly:0\n');
 
   const bob = { id: 1, name: 'Bob', power: 100, status: 1 };
   const otto = { id: 9, name: 'OTTO', power: 500, status: 0 };
   // Bob, the mayor here, trains ballista in 300 s and warriors in 5 s; OTTO
   // trained them here in 250 s and 5 s
-  const away = ({ src = 'troop b:1000', config = {}, times = { 11: 250, 3: 5 }, bars = [bar(4, 10, [{ type: TY.archer, num: 1 }]), bar(5, 10), bar(6, 10)], heros = [bob], hero = otto } = {}) =>
-    troopPlan(city({ src: `traininghero OTTO\n${src}`, config, heros, bars, unit: { ...UNIT, 11: { time: 300, allowed: true } },
+  const away = ({ src = 'troop b:1000', config = {}, times = { 11: 250, 3: 5 }, bars = [bar(4, 10, [{ type: TY.archer, num: 1 }]), bar(5, 10), bar(6, 10)], heros = [bob], hero = otto,
+    unit = { ...UNIT, 11: { time: 300, allowed: true } } } = {}) =>
+    troopPlan(city({ src: `traininghero OTTO\n${src}`, config, heros, bars, unit,
       extra: { trainer: { name: 'OTTO', hero, present: false, times: times ? { at: Date.now(), unit: times } : null } } }));
+  // NEAT's rule (wiki TroopIdleQueueTime) is what config trooptraineronly:0 asks for
+  const neat = (o = {}) => away({ ...o, config: { trooptraineronly: 0, ...(o.config || {}) } });
 
   await t('with troopidlequeuetime 0 (the default) a type the hero here trains slower waits for the traininghero', async () => {
-    const plan = away({ src: 'troop b:1000,w:1000' });
+    const plan = neat({ src: 'troop b:1000,w:1000' });
     assert.ok(plan.orders.length && plan.orders.every((o) => o.troop.key === 'militia'), JSON.stringify(orders(plan)));
     has(plan.note, 'traininghero OTTO is away, waiting for it: Ballista (troopidlequeuetime 0)');
   });
 
   await t('a type the hero here trains as fast goes in full batches, anywhere', async () => {
-    const plan = away({ src: 'troop w:100k' });
+    const plan = neat({ src: 'troop w:100k' });
     assert.strictEqual(plan.orders.length, Math.min(9 + 10 + 10, TROOP_ORDERS));
     assert.ok(plan.orders.every((o) => !o.idle && o.num === 360));
   });
 
   await t('troopidlequeuetime:5: small batches, only in idle barracks, no more than 5 minutes over the traininghero', async () => {
-    const plan = away({ config: { troopidlequeuetime: 5 } });
+    const plan = neat({ config: { troopidlequeuetime: 5 } });
     // 300 s here, 250 s with OTTO: 6 ballista take 5 minutes longer
     assert.deepStrictEqual(orders(plan), [['ballista', 6, 5], ['ballista', 6, 6]]);
     assert.ok(plan.orders.every((o) => o.idle));
@@ -500,13 +506,13 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
   });
 
   await t('ratio mode queues idle batches of 1 minute over by default', async () => {
-    const plan = away({ config: { troopincrement: 1 } });
+    const plan = neat({ config: { troopincrement: 1 } });
     assert.deepStrictEqual(orders(plan), [['ballista', 1, 5], ['ballista', 1, 6]]);
   });
 
   await t('the traininghero\'s speed here not known yet: a hero with its attack trains, a weaker one waits', async () => {
-    has(away({ times: null }).note, 'waiting for it: Ballista (its speed here is not known yet)');
-    const strong = away({ times: null, heros: [{ ...bob, power: 600 }] });
+    has(neat({ times: null }).note, 'waiting for it: Ballista (its speed here is not known yet)');
+    const strong = neat({ times: null, heros: [{ ...bob, power: 600 }] });
     assert.ok(strong.orders.length && strong.orders.every((o) => !o.idle));
   });
 
@@ -515,6 +521,7 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
       extra: { trainer: { name: 'OTTO', hero: otto, present: true, times: null } } }));
     assert.ok(home.orders.length && home.orders.every((o) => !o.idle));
     assert.ok(away({ hero: null }).orders.length, 'a name that is nowhere cannot be waited for');
+    assert.ok(neat({ hero: null }).orders.length, 'the same under the NEAT rule');
   });
 
   await t('through the engine: the city remembers how fast each mayor trained, and the traininghero is known by it', async () => {
@@ -528,6 +535,63 @@ const trains = (calls) => calls.filter((c) => c[0] === 'train');
     w.castle.heros = [bob];
     const tr = trainerOf(w.game, w.castle, parseGoals('traininghero OTTO').goals, w.state());
     assert.deepStrictEqual([tr.present, tr.hero.name, tr.times.unit[TY.ballista]], [false, 'OTTO', 100]);
+  });
+
+  // =================================================== the barracks are the trainer's
+  console.log('\nOURS: with a traininghero named, only it fills the barracks (trooptraineronly)\n');
+
+  await t('a type the hero here does not build instantly waits for the traininghero, however fast it is', async () => {
+    // Bob trains warriors in 5 s, exactly as OTTO did here: NEAT would fill
+    // every slot with them, and OTTO would come round to a full barracks
+    const plan = away({ src: 'troop w:100k' });
+    assert.deepStrictEqual(plan.orders, [], JSON.stringify(orders(plan)));
+    has(plan.note, 'traininghero OTTO is away, waiting for it: Warrior (Bob does not build them instantly)');
+  });
+
+  await t('a type it DOES build instantly goes in, whole, and leaves the slot free', async () => {
+    const unit = { ...UNIT, 3: { time: 0.5, allowed: true }, 11: { time: 300, allowed: true } };
+    const plan = away({ src: 'troop w:100k', unit });
+    assert.deepStrictEqual(orders(plan), [['militia', 100000, 5]], 'one batch of the lot, in the barracks with the most room');
+  });
+
+  await t('instant types go in while the slow ones wait: the slots are left for the traininghero', async () => {
+    const unit = { ...UNIT, 3: { time: 0.5, allowed: true }, 11: { time: 300, allowed: true } };
+    const plan = away({ src: 'troop b:1000,w:1000', unit });
+    assert.deepStrictEqual(orders(plan), [['militia', 1000, 5]]);
+    has(plan.note, 'waiting for it: Ballista (Bob does not build them instantly)');
+  });
+
+  await t('troopidlequeuetime does not open the barracks any more; /traineronly:0 does', async () => {
+    assert.deepStrictEqual(away({ config: { troopidlequeuetime: 5 } }).orders, [], 'small idle batches are off');
+    assert.deepStrictEqual(away({ config: { troopincrement: 1 } }).orders, [], 'ratio mode too');
+    assert.ok(away({ src: 'troop /traineronly:0 b:1000' }).orders.length === 0, 'still slower than OTTO: waits');
+    assert.ok(away({ src: 'troop /traineronly:0 w:100k' }).orders.length, 'as fast as OTTO: NEAT trains in full');
+  });
+
+  await t('a hero never mayor here and as strong as the traininghero is let through once, to be measured', async () => {
+    const idleHero = (power) => [{ id: 1, name: 'Bob', power, status: 0 }];
+    assert.ok(away({ heros: idleHero(600) }).orders.length, 'as much attack as OTTO: trains, and the read measures it');
+    assert.deepStrictEqual(away({ heros: idleHero(100) }).orders, [], 'weaker: waits');
+    // once it has been mayor here, what it actually took decides
+    has(away({ heros: [{ id: 1, name: 'Bob', power: 600, status: 1 }] }).note, 'Bob does not build them instantly');
+  });
+
+  await t('no traininghero, or one at home: nothing changes', async () => {
+    const plain = troopPlan(city({ src: 'troop b:1000', heros: [bob], unit: { ...UNIT, 11: { time: 300, allowed: true } } }));
+    assert.ok(plain.orders.length, 'no traininghero line: any hero trains');
+    assert.ok(away({ hero: otto, src: 'troop b:1000' }).orders.length === 0);
+  });
+
+  await t('the switch reads, and a line switch beats the config', async () => {
+    assert.strictEqual(troopSettings({ switches: {} }, {}).trainerOnly, true, 'on by default');
+    assert.strictEqual(troopSettings({ switches: {} }, { trooptraineronly: 0 }).trainerOnly, false);
+    assert.strictEqual(troopSettings({ switches: { traineronly: 1 } }, { trooptraineronly: 0 }).trainerOnly, true);
+    assert.strictEqual(troopSettings({ switches: { traineronly: 0 } }, {}).trainerOnly, false);
+    const p = parseGoals('config trooptraineronly:0\ntroop /traineronly:1 a:1');
+    assert.deepStrictEqual(p.errors, []);
+    assert.deepStrictEqual([p.config.trooptraineronly, p.goals[0].switches], [0, { traineronly: 1 }]);
+    has(parseGoals('troop /traineronly:2 a:1').errors[0].error, '/traineronly is 0 (off) or 1 (on)');
+    has(parseGoals('config trooptraineronly:soon').errors[0].error, 'trooptraineronly is 0 (off) or 1 (on)');
   });
 
   // ============================================================ bad queues
@@ -797,7 +861,55 @@ fortification ab:5000
     assert.deepStrictEqual(plan.orders.map((o) => [o.wall.name, o.num]), [['Abatis', 15]]);
   });
 
-  fs.rmSync(TMP, { recursive: true, force: true });
+  // ============================================ found live, 2026-09-19
+  console.log('\nfound live on Lord02, 2026-09-19: nothing trained on any account\n');
+
+  await t('the server sends permition false for every type: the conditionBean decides, as the Enlist button does', async () => {
+    const w = world({ permition: false });
+    w.goals('config hero:0\ntroop a:1000');
+    const r = await w.e.focus(w.castle);
+    assert.ok(trains(w.calls).length > 0, r.troop.note);
+    assert.ok(!/not trainable/.test(r.troop.note), r.troop.note);
+  });
+
+  await t('a type whose conditionBean has a building not met waits, and the note names it', async () => {
+    const w = world({ permition: false, needs: { [TY.ballista]: 9 } });
+    w.goals('config hero:0\ntroop b:100,a:100');
+    const r = await w.e.focus(w.castle);
+    has(r.troop.note, 'not trainable here yet: Ballista (needs Barracks 9)');
+    assert.ok(trains(w.calls).length && trains(w.calls).every((c) => c[1] === TY.archer), JSON.stringify(trains(w.calls)));
+  });
+
+  await t('default 30-minute batches: an L10 barracks training one batch takes 9 more of 30 minutes each', async () => {
+    const plan = troopPlan(city({ src: 'troop a:100k', bars: [bar(4, 10, [{ type: TY.archer, num: 500 }])] }));
+    assert.deepStrictEqual(orders(plan), Array.from({ length: 9 }, () => ['archer', 30, 4]));
+    assert.ok(plan.orders.every((o) => o.secs === 1800));
+  });
+
+  await t('an insta hero (under a second a troop) takes the whole population in ONE batch, not 30 minutes of them', async () => {
+    const unit = { ...UNIT, [TY.archer]: { time: 0.62, allowed: true } };
+    const plan = troopPlan(city({ src: 'troop a:100k', unit, pop: { cur: 1e6 } }));
+    assert.deepStrictEqual(orders(plan), [['archer', 100000, 4]]);
+    // population is the limit then, not the clock
+    const small = troopPlan(city({ src: 'troop a:100k', unit, pop: { cur: 40000 } }));
+    assert.deepStrictEqual(orders(small), [['archer', 40000 / C.BY_KEY.archer.pop, 4]]);
+  });
+
+  await t('instant batches leave their slot free: the slow type after them still fills all 10', async () => {
+    const unit = { ...UNIT, [TY.archer]: { time: 0.5, allowed: true }, [TY.cav]: { time: 0.9, allowed: true } };
+    const plan = troopPlan(city({ src: 'troop a:8000,c:9000,cata:20000', unit }));
+    const o = orders(plan);
+    assert.deepStrictEqual(o.slice(0, 2), [['archer', 8000, 4], ['lightCavalry', 9000, 4]]);
+    assert.deepStrictEqual(o.slice(2), Array.from({ length: 10 }, () => ['heavyCavalry', 6, 4]), JSON.stringify(o));
+  });
+
+  await t('a troop at exactly 1 s is not instant: 1,800 a batch', async () => {
+    const unit = { ...UNIT, [TY.archer]: { time: 1, allowed: true } };
+    const plan = troopPlan(city({ src: 'troop a:5000', unit }));
+    assert.deepStrictEqual(orders(plan).map((o) => o[1]), [1800, 1800, 1400]);
+  });
+
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* Windows can hold the db file open */ }
   console.log(`\n${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);
 })();

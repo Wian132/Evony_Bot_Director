@@ -178,6 +178,21 @@ const samePrice = (a, b) => Math.abs(Number(a) - Number(b)) < 1e-9;
 // Send them all at once and collect the replies in the order they were sent.
 // A CommandResponse carries no id, so order is the only way to tell whose reply
 // is whose — the caller holds the command's lane, so nobody else's is mixed in.
+// A batch of market WRITES, one reply per request in the same order, null where
+// none came. They go through the game's pipe (game.js pipe) whenever it has one:
+// every trade.newTrade / trade.cancelTrade sender must, or a raw listener here and
+// the pipe would each take replies meant for the other. burst() below is the old
+// way, kept for a Game without a pipe.
+async function writeBatch(g, cmd, list) {
+  const t = 15000 + list.length * 200;
+  if (typeof g.pipeMany === 'function') {
+    const r = await g.pipeMany(cmd, list, t);
+    return r.map((x) => (x && x.ok === 'noreply' ? null : x));
+  }
+  const r = await g.lane(cmd, () => burst(g, cmd, list, t));
+  return list.map((_, i) => (i < r.length ? r[i] : null));
+}
+
 function burst(g, cmd, payloads, timeoutMs) {
   return new Promise((resolve) => {
     const replies = [];
@@ -665,12 +680,13 @@ class Sniper {
         owner.push(x);
       }
     }
-    const replies = await g.lane('trade.newTrade', () => burst(g, 'trade.newTrade', payloads, 15000 + payloads.length * 200));
+    const replies = await writeBatch(g, 'trade.newTrade', payloads);
     replies.forEach((r, i) => {
+      if (!r) return;                 // no answer: counted as unanswered below
       if (r.ok === 1) owner[i].ok++;
       else { owner[i].refused.push(r.errorMsg || `ok=${r.ok}`); this.learnCap(owner[i].cid, r.errorMsg); }
     });
-    const unanswered = payloads.length - replies.length;
+    const unanswered = replies.filter((r) => !r).length;
     for (const x of cities) this.estimate(g, x.c, { gold: x.gold - x.ok * x.cost });
     this.stats.rounds++;
     this.stats.orders += payloads.length;
@@ -713,9 +729,9 @@ class Sniper {
   // Cancel a batch of our offers; returns how many the server confirmed.
   async cancel(g, list) {
     if (!list.length) return 0;
-    const replies = await g.lane('trade.cancelTrade', () => burst(g, 'trade.cancelTrade', list, 15000 + list.length * 200));
+    const replies = await writeBatch(g, 'trade.cancelTrade', list);
     let ok = 0;
-    replies.forEach((r, i) => { if (r.ok === 1) { ok++; this.cancelled.add(`${list[i].castleId}:${list[i].tradeId}`); } });
+    replies.forEach((r, i) => { if (r && r.ok === 1) { ok++; this.cancelled.add(`${list[i].castleId}:${list[i].tradeId}`); } });
     return ok;
   }
 
@@ -847,9 +863,10 @@ class Sniper {
       return { placed: 0, sold: 0 };
     }
     const payloads = plan.map((p) => ({ castleId: p.x.cid, resType: C.TRADE_RES[res], tradeType: SELL, amount: p.amt, price: p.price }));
-    const replies = await g.lane('trade.newTrade', () => burst(g, 'trade.newTrade', payloads, 15000 + payloads.length * 200));
+    const replies = await writeBatch(g, 'trade.newTrade', payloads);
     for (const x of cities) Object.assign(x, { ok: 0, placed: 0, value: 0, fees: 0, refused: [] });
     replies.forEach((r, i) => {
+      if (!r) return;                 // no answer: counted as unanswered below
       const p = plan[i], x = p.x;
       if (r.ok === 1) {
         x.ok++; x.placed += p.amt; x.value += p.amt * Number(p.price); x.fees += p.amt * Number(p.price) * FEE;
@@ -859,7 +876,7 @@ class Sniper {
         this.learnCap(x.cid, r.errorMsg);
       }
     });
-    const unanswered = payloads.length - replies.length;
+    const unanswered = replies.filter((r) => !r).length;
     for (const x of cities) this.estimate(g, x.c, { gold: x.gold0 - x.fees, res: { [res]: x.res0 - x.placed } });
     this.stats.orders += payloads.length;
     this.stats.refused += cities.reduce((n, x) => n + x.refused.length, 0);
@@ -1080,4 +1097,6 @@ function claims(accountId, g) {
 }
 
 module.exports = { command, resume, claims, parseArgs, bidFor, sellPriceFor, listPriceFor, ordersFor, priceText, Sniper,
-  DEFAULTS, MAX_OFFERS, MAX_AMOUNT, USAGE };
+  DEFAULTS, MAX_OFFERS, MAX_AMOUNT, USAGE,
+  // the pipeline itself, so a timing probe measures exactly what the sniper does
+  burst };

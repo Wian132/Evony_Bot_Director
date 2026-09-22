@@ -33,6 +33,22 @@ const READY_MS = Number(process.env.BOT_READY_MS || 45000);
 // Where a console's stdout and stderr land. Beside the code, as console-a1.log
 // has always been; the test sends them somewhere temporary.
 const LOG_DIR = process.env.BOT_LOG_DIR || __dirname;
+// What a console IS. server.js in every real case; a test points it at a stub so
+// starting a console costs no login.
+const SCRIPT = process.env.BOT_SCRIPT || 'server.js';
+// A console's JS heap ceiling. Node's default on this machine is ~4 GB, so a leak
+// ran for hours before it crashed; an idle console's heap is 20-40 MB, a trading
+// one's well under this. 0 = Node's default.
+const HEAP_MB = Number(process.env.BOT_HEAP_MB ?? 512);
+// A console log over this size is moved to console-<id>.log.1 (replacing the old
+// one) when the console starts: a trading console writes hundreds of MB a day.
+const LOG_ROTATE_BYTES = Number(process.env.BOT_LOG_ROTATE_MB ?? 50) * 1048576;
+
+function rotateLog(file) {
+  try {
+    if (LOG_ROTATE_BYTES > 0 && fs.statSync(file).size > LOG_ROTATE_BYTES) fs.renameSync(file, file + '.1');
+  } catch { /* no log yet, or it is held open: keep appending */ }
+}
 
 const DEFAULT_PROBES = [{ probe: 'console', url: 'http://localhost:8711' }];
 
@@ -119,11 +135,18 @@ async function running(org, acc) {
 // The probe list is how the Director finds a console at all: the uptime sampler
 // walks it, and the Fleet tab learns which port an account is on from whoever
 // answers. An unregistered console is invisible, so this is not optional.
+//
+// A trading console that runs out of memory gets restarted on a new port every
+// few hours (EVONY-RULES.md, 2026-09-20), and used to leave its old probe entry
+// behind: dropping by port only removes the entry for the port being reused,
+// never the account's previous one, so a fleet running for days piled up a dead
+// probe per crash. Dropping by accountId too means an account only ever has one
+// entry, whatever port it lands on next.
 function registerProbe(org, acc, url) {
-  const list = storedProbes(org).filter((p) => portOf(p.url) !== portOf(url));
+  const list = storedProbes(org).filter((p) => portOf(p.url) !== portOf(url) && p.accountId !== acc.id);
   let name = String(acc.label || acc.id).trim() || acc.id;
   if (list.some((p) => p.probe === name)) name = `${name} (${acc.id})`;
-  list.push({ probe: name, url });
+  list.push({ probe: name, url, accountId: acc.id });
   org.settings.set('probes', list);
   return name;
 }
@@ -152,13 +175,59 @@ function hasGoals(org, acc) {
   } catch { return false; }
 }
 
+// NEAT's start-up parameters, kept by the Director: the fleet's (NEAT's Custom
+// Parameters, which every bot gets) and the account's own, which win. A console
+// gets them on its command line, as NEAT's Director hands them to a bot, and
+// reads them over CmdParms.txt (script-console.js). They apply from a console's
+// next start. -> { text: { fleet, account }, parms, args }
+const PARMS_KEY = 'startupParms';
+function startupParms(org, accId) {
+  const SC = require('./script-console');
+  const fleet = String(org.settings.get(PARMS_KEY, '') || '');
+  const account = accId ? String(org.settings.get(`${PARMS_KEY}:${accId}`, '') || '') : '';
+  const parms = { ...SC.parseCmdParms(fleet), ...SC.parseCmdParms(account) };
+  return { text: { fleet, account }, parms, args: SC.parmsToArgs(parms) };
+}
+
+// One thing at a time per account. The Director reaches start and stop from
+// several places at once — the on/off switch, a restart, the keep-on watchdog —
+// and two starts racing for one account is exactly the pair of consoles that
+// fight over a login. Each account's calls queue behind one another; different
+// accounts do not wait on each other.
+const chains = new Map();
+function serial(id, fn) {
+  const run = (chains.get(id) || Promise.resolve()).then(() => fn());
+  const tail = run.catch(() => {});
+  chains.set(id, tail);
+  tail.then(() => { if (chains.get(id) === tail) chains.delete(id); });
+  return run;
+}
+// Something is being started or stopped for this account right now.
+const busy = (id) => chains.has(id);
+
+const start = (org, acc, opts = {}) => serial(acc && acc.id, () => startNow(org, acc, opts));
+const stop = (org, acc, opts = {}) => serial(acc && acc.id, () => stopNow(org, acc, opts));
+// Stop then start as one turn, so nothing else can start the account in between
+// and leave the restart adopting somebody else's console.
+const restart = (org, acc, opts = {}) => serial(acc && acc.id, async () => {
+  await stopNow(org, acc, opts).catch(() => {});
+  return startNow(org, acc, opts);
+});
+
 // Start the console for one account, or adopt the one already running it.
 // Resolves to { ok, adopted, url, port, pid, probe, paused, ready, error }.
-async function start(org, acc, opts = {}) {
+async function startNow(org, acc, opts = {}) {
   const note = opts.note || (() => {});
   if (!acc || !acc.id) return { ok: false, error: 'no account' };
   if (!acc.email || !acc.password) {
     return { ok: false, error: `${acc.label || acc.id} has no email/password yet — a console cannot log in without them` };
+  }
+  // Read now, not from the copy the caller holds: a start queued a moment ago
+  // (the keep-on watchdog's, say) must not bring up a console for an account
+  // that has been switched off since. Off means nothing plays it.
+  const now = org.accounts.get(acc.id);
+  if (now && now.enabled === false) {
+    return { ok: false, off: true, error: `${acc.label || acc.id} is switched off — switch it on to start its console` };
   }
 
   const held = await running(org, acc);
@@ -173,10 +242,17 @@ async function start(org, acc, opts = {}) {
   const port = Number(opts.port) || await pickPort(org);
   if (!port) return { ok: false, error: `no free console port in ${BASE}..${BASE + SPAN * STEP}` };
   const url = `http://localhost:${port}`;
-  const paused = opts.paused !== undefined ? !!opts.paused : !hasGoals(org, acc);
+  const sp = startupParms(org, acc.id);
+  // A console starts with its engine live: if the bot is on, its goals are on
+  // (the user, 2026-09-18) — its own, the prepend and the append goals alike.
+  // Only an explicit -autorun 0 (NEAT's "no auto goals") starts it paused.
+  const goalsOff = sp.parms.autorun !== undefined && !require('./script-console').switchOn(sp.parms.autorun);
+  const paused = opts.paused !== undefined ? !!opts.paused : goalsOff;
 
-  const out = fs.openSync(path.join(LOG_DIR, `console-${acc.id}.log`), 'a');
-  const err = fs.openSync(path.join(LOG_DIR, `console-${acc.id}.err.log`), 'a');
+  const outFile = path.join(LOG_DIR, `console-${acc.id}.log`), errFile = path.join(LOG_DIR, `console-${acc.id}.err.log`);
+  rotateLog(outFile); rotateLog(errFile);
+  const out = fs.openSync(outFile, 'a');
+  const err = fs.openSync(errFile, 'a');
   const env = { ...process.env, CONSOLE_PORT: String(port), ACCOUNT_ID: acc.id };
   if (paused) env.ENGINE_PAUSED = '1'; else delete env.ENGINE_PAUSED;
   // Detached and unref'd on purpose: the console outlives the Director, exactly
@@ -184,7 +260,8 @@ async function start(org, acc, opts = {}) {
   // bots down with it.
   // server.js in every real case; the test points it at a stub that exits, to
   // prove a console that dies on startup is reported and rolled back.
-  const child = spawn(process.execPath, [opts.script || 'server.js'], {
+  const heap = HEAP_MB > 0 ? [`--max-old-space-size=${HEAP_MB}`] : [];
+  const child = spawn(process.execPath, [...heap, opts.script || SCRIPT, ...sp.args], {
     cwd: __dirname, env, detached: true, windowsHide: true, stdio: ['ignore', out, err],
   });
   child.unref();
@@ -193,8 +270,9 @@ async function start(org, acc, opts = {}) {
   child.on('error', (e) => { exited = e.message; });
 
   const probe = registerProbe(org, acc, url);
-  remember(org, acc.id, { pid: child.pid, port, url, probe, at: Date.now(), paused });
-  note(`${acc.label}: starting a console on ${url} (pid ${child.pid}${paused ? ', engine paused' : ''})`);
+  remember(org, acc.id, { pid: child.pid, port, url, probe, at: Date.now(), paused, args: sp.args });
+  note(`${acc.label}: starting a console on ${url} (pid ${child.pid}${paused ? ', engine paused' : ''}`
+    + `${sp.args.length ? `, start-up parameters ${sp.args.join(' ')}` : ''})`);
 
   // Wait for it to answer with this account. Until it does we cannot tell a
   // console that is logging in from one that died on startup.
@@ -223,12 +301,17 @@ async function start(org, acc, opts = {}) {
 
 // Stop the console this module started for an account. Only ever a console we
 // have on record: another session's manually started bot is not ours to kill.
-async function stop(org, acc, opts = {}) {
+async function stopNow(org, acc, opts = {}) {
   const note = opts.note || (() => {});
   const rec = bots(org)[acc.id];
   if (!rec) return { ok: false, error: `no console on record for ${acc.label || acc.id}` };
   if (rec.pid && alive(rec.pid)) {
     try { process.kill(rec.pid); } catch (e) { return { ok: false, error: e.message }; }
+    // Wait for the port to go quiet. A kill is not instant, and a start that
+    // follows one — the Director restarts a console this way — would otherwise
+    // find the dying console still answering and adopt it, leaving the bot
+    // un-restarted and its pid unknown.
+    for (let i = 0; i < 25 && (alive(rec.pid) || await ask(rec.url, 400)); i++) await sleep(200);
     note(`${acc.label || acc.id}: stopped the console on ${rec.url} (pid ${rec.pid})`);
   } else {
     note(`${acc.label || acc.id}: no console process was running on ${rec.url}`);
@@ -239,7 +322,7 @@ async function stop(org, acc, opts = {}) {
 }
 
 module.exports = {
-  start, stop, running, bots, pickPort, hasGoals,
+  start, stop, restart, busy, running, bots, pickPort, hasGoals, startupParms, PARMS_KEY,
   probeList, storedProbes, registerProbe, dropProbe, alive,
   BASE, STEP, DIRECTOR_PORT,
 };

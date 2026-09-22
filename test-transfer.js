@@ -76,8 +76,9 @@ requestresources any stone 50000000 10000000 * 5000000 /below:5000000
 requestresources any iron 500000000 100000000 * 20000000 /below:50000000
 requestresources any food 5000000000 1000000000 * 50000000 /below:500000000`;
 
-function plan(here, castles, src, { selfArmys = [], own = {}, book = null } = {}) {
+function plan(here, castles, src, { selfArmys = [], own = {}, book = null, skills = null } = {}) {
   const game = fakeGame(castles, selfArmys);
+  if (skills) Object.assign(game, skills);      // loadSkillParam / marchSkillParam, as read at login
   const parsed = parseGoals(src);
   assert.deepStrictEqual(parsed.errors, [], 'the goals should parse');
   const goalsOf = (c) => (own[c.name] !== undefined ? parseGoals(own[c.name]).goals : parsed.goals);
@@ -86,6 +87,14 @@ function plan(here, castles, src, { selfArmys = [], own = {}, book = null } = {}
   return { plan: T.plans.transfer(ctx, {}, game), game };
 }
 const food = (a) => a.resources.food;
+// What one carrier holds from `a` to `b` once the march's own food is on board
+// (NewArmyWin.as: load x (1 + loadSkill/100), less twice its upkeep for each
+// hour of the one-way march). The fake game reads no skills unless a test sets them.
+const netHold = (a, b, kind = 'carriage', skill = 0) => {
+  const ms = C.marchTimeMs(C.fieldIdToCoords(a.fieldId), C.fieldIdToCoords(b.fieldId), [kind], 0);
+  return C.BY_KEY[kind].load * (1 + skill / 100) - C.BY_KEY[kind].food * 2 * ms / 3600000;
+};
+const holds = (units, a, b, kind, skill) => Math.floor(units * netHold(a, b, kind, skill));
 
 (async () => {
   // ================================================================= parsing
@@ -104,7 +113,7 @@ const food = (a) => a.resources.food;
     const g = p.goals[0];
     assert.deepStrictEqual([g.target, g.local, g.remote, g.minBatch, g.maxBatch, g.carrier, g.below, g.slots],
       ['!HubCity|484,619', 1e9, 100e6, null, null, 'carriage', null, 3]);
-    has(describe(p).join('\n'), 'food from !HubCity|484,619, while under 1,000,000,000, never past it, senders keep 100,000,000, any batch size, 3 missions at a time');
+    has(describe(p).join('\n'), 'food from !HubCity|484,619, while under 1,000,000,000, never past it, senders keep 100,000,000, any batch size, up to what one march carries, 3 missions at a time');
   });
 
   await t('mistakes are reported, not guessed at', () => {
@@ -162,7 +171,8 @@ const food = (a) => a.resources.food;
     assert.strictEqual(p.actions.length, 1, p.actions.map((x) => x.label).join(' / '));
     const a = p.actions[0];
     assert.deepStrictEqual(a.resources, { wood: 500e3, stone: 5e6, food: 50e6 });
-    assert.strictEqual(a.carriages, Math.ceil(55.5e6 / 5000));
+    // enough transports for the load and the march's own food
+    assert.strictEqual(a.carriages, Math.ceil(55.5e6 / netHold(f.five, f.fla)));
     assert.deepStrictEqual([a.rally.kind, a.rally.pairLimit, a.rally.from.name], ['r', 1, '5']);
   });
 
@@ -235,7 +245,7 @@ const food = (a) => a.resources.food;
   await t('a quarter of the sender\'s transports stay home for farming', () => {
     const f = fleet({ five: { troop: { carriage: 100 } } });
     const p = plan(f.fla, Object.values(f), 'requestresources 5 food 5b 1b * 50m /below:500m').plan;
-    assert.strictEqual(food(p.actions[0]), 75 * 5000);
+    assert.strictEqual(food(p.actions[0]), holds(75, f.five, f.fla), '75 transports, less their own march food');
     assert.strictEqual(p.actions[0].carriages, 75);
   });
 
@@ -258,7 +268,7 @@ const food = (a) => a.resources.food;
       },
     }).plan;
     // 1.1b - 80m sent = 1.02b; over the 1b keep that is 20m. 4,000 carriages left, 3,000 usable.
-    assert.strictEqual(food(p.actions[0]), 15e6);
+    assert.strictEqual(food(p.actions[0]), holds(3000, f.five, f.fla), '3,000 transports, less their own march food');
   });
 
   // ============================================================ requesttroops
@@ -314,7 +324,10 @@ const food = (a) => a.resources.food;
     assert.strictEqual(game.sent.length, 1, `${game.sent.length} marches went`);
     assert.strictEqual(game.sent[0].castleId, f.five.castleId);
     assert.strictEqual(e.pendingMarches.length, 1, 'the send is held against 5 until the server lists it');
-    has(e.lastReport[other.castleId].transfer.note, 'no sender — 5 rallypolicy r:1 (1 resource transport out)');   // reports are keyed by castle id
+    // lowest first: X holds 10m to Fla's 100m, so the one march goes to X and Fla's
+    // plan says it left the food for X (reports are keyed by castle id)
+    has(e.lastReport[f.fla.castleId].transfer.note, 'no sender — 5 leaves its food for X, which holds less (10m)');
+    has(e.lastReport[other.castleId].transfer.note, 'from 5');
   });
 
   await t('the next tick does not send again while the first is still on its way', async () => {
@@ -353,12 +366,15 @@ const food = (a) => a.resources.food;
     T.plans.transfer = (ctx, st, g) => real({ ...ctx, rally: R.rallyBook({ game: g, armies: [] }) }, st, g);
     try { await e.tick(); } finally { T.plans.transfer = real; }
     assert.strictEqual(game.sent.length, 0, 'the transport went into a full rally spot');
-    has(e.lastReport[f.fla.castleId].transfer.note, 'held back: pull 50,000,000 food from 5 (2.2 tiles, 10,000 transports): rally spot L1: 1/1 busy');
+    has(e.lastReport[f.fla.castleId].transfer.note, `held back: pull ${holds(10000, f.five, f.fla).toLocaleString('en-US')} food from 5 (2.2 tiles, 10,000 transports): rally spot L1: 1/1 busy`);
   });
 
   await t('traininghero waits for a rally slot before standing the mayor down', async () => {
     const otto = { id: 9, name: 'Otto', status: 1, power: 50, management: 50 };
-    const a = city('A', 100, 100, { rally: 1, heros: [otto] });
+    // the move is a reinforce march carrying one scout, so the city needs one:
+    // with none the engine holds the hero rather than standing it down for a
+    // march that cannot go (engine.js, the user 2026-09-22)
+    const a = city('A', 100, 100, { rally: 1, heros: [otto], troop: { carriage: 20000, scouter: 10 } });
     const b = city('B', 110, 100);
     const elsewhere = { fieldId: C.coordsToFieldId(10, 10) };
     const { e, game } = engineFor([a, b], { A: 'traininghero otto 0', B: 'traininghero otto 0' }, [march(a, elsewhere, C.MISSION.attack)]);
@@ -368,6 +384,377 @@ const food = (a) => a.resources.food;
     await e.tick();
     assert.deepStrictEqual([game.discharged.length, game.sent.length], [1, 1]);
     assert.strictEqual(game.sent[0].bean.missionType, C.MISSION.reinforce);
+  });
+
+  // ============================================= troops a march may take
+  console.log('\na march takes at most 10,000 troops per Rally Spot level\n');
+
+  await t('the live case: a 1b request goes as 500m on 100,000 transports, not 199,974 (refused live)', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 } } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources any food 1b 2b 100m 1b t');
+    assert.strictEqual(p.actions.length, 1);
+    const a = p.actions[0];
+    assert.deepStrictEqual([a.from.name, food(a), a.carriages], ['5', holds(100e3, f.five, f.fla), 100e3]);
+  });
+
+  await t('a Rally Spot L3 sender sends at most 30,000 transports', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, rally: 3 } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources any food 1b 2b 100m 1b t');
+    assert.deepStrictEqual([food(p.actions[0]), p.actions[0].carriages], [holds(30e3, f.five, f.fla), 30e3]);
+  });
+
+  await t('lines one sender serves share its march limit, and the plan says the march is full', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, wood: 5e9 } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources 5 food 1b 2b 100m 1b t\nrequestresources 5 wood 1b 2b 100m 1b t');
+    assert.strictEqual(p.actions.length, 1);
+    assert.deepStrictEqual([food(p.actions[0]), p.actions[0].resources.wood || 0, p.actions[0].carriages], [holds(100e3, f.five, f.fla), 0, 100e3]);
+    has(p.note, "5's march here is full (100,000 troops, its Rally Spot's limit)");
+  });
+
+  await t('Logistics counts: at +100% load a 500m batch needs about half the transports', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 } } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources any food 1b 2b 100m 500m t', { skills: { loadSkillParam: 100 } });
+    const a = p.actions[0];
+    assert.strictEqual(food(a), 500e6);
+    assert.strictEqual(a.carriages, Math.ceil(500e6 / netHold(f.five, f.fla, 'carriage', 100)));
+    assert.ok(a.carriages > 50e3 && a.carriages < 51e3, `${a.carriages} transports`);
+  });
+
+  await t('cavalry at +100% carry 200 each, less their march food: 10m fits one L10 march', () => {
+    const f = fleet({ five: { troop: { lightCavalry: 200e3 } } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources 5 food 110m 20m c', { skills: { loadSkillParam: 100 }, own: { 5: '' } });
+    const a = p.actions[0];
+    assert.strictEqual(food(a), 10e6);
+    assert.deepStrictEqual(a.troops, { lightCavalry: Math.ceil(10e6 / netHold(f.five, f.fla, 'lightCavalry', 100)) });
+  });
+
+  await t('scouts on a long trip eat their whole hold: nothing is sent, and the plan says why', () => {
+    // 300 tiles: about 1.7 hours for scouts, and a scout eats 10 an hour of its 10 hold
+    const f = fleet({ five: { troop: { scouter: 100e3 } } });
+    const far = city('Far', 184, 619, { food: 3e9, troop: { scouter: 100e3 } });
+    const { plan: p } = plan(f.fla, [...Object.values(f), far], 'requestresources Far food 110m 2m * 500k s', { skills: { loadSkillParam: 100 }, own: { Far: '' } });
+    assert.ok(netHold(far, f.fla, 'scouter', 100) <= 0, 'the test needs a trip longer than a scout can feed itself on');
+    assert.strictEqual(p.actions.length, 0);
+    has(p.note, 'Far is too far for scouts to carry anything: they would eat it all on the way (300.0 tiles)');
+    // two tiles away they carry nearly the whole 10
+    const near = plan(f.fla, Object.values(f), 'requestresources 5 food 110m 2m * 500k s', { skills: { loadSkillParam: 100 }, own: { 5: '' } }).plan;
+    assert.strictEqual(food(near.actions[0]), 0.5e6);
+    assert.ok(netHold(f.five, f.fla, 'scouter', 100) > 9.8);
+  });
+
+  await t('requesttroops sends at most the limit in one march', () => {
+    const f = fleet({ five: { troop: { archer: 300e3 } } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requesttroops 5 archer 500k 0', { own: { 5: '' } });
+    assert.deepStrictEqual(p.actions[0].troops, { archer: 100e3 });
+  });
+
+  await t('Game.newArmy refuses a march over the city\'s limit without sending it', async () => {
+    const sent = [];
+    const g = {
+      castles: [city('Small', 10, 10, { rally: 2 }), city('NoList', 20, 20, { rally: null })],
+      castleId: (c) => c.castleId,
+      c: { send: (cmd, data) => sent.push(data), await: async () => ({ data: { ok: 1 } }) },
+    };
+    const [small, bare] = g.castles;
+    let r = await Game.prototype.newArmy.call(g, small.castleId, { troops: { archer: 15e3, scouter: 5001 } });
+    assert.strictEqual(r.ok, 0);
+    has(r.errorMsg, 'a march from Small takes at most 20,000 troops (10,000 per Rally Spot level), not 20,001');
+    assert.strictEqual(sent.length, 0);
+    r = await Game.prototype.newArmy.call(g, small.castleId, { troops: { archer: 15e3, scouter: 5000 } });
+    assert.deepStrictEqual([r.ok, sent.length], [1, 1]);
+    // no Rally Spot in the list: the server judges it
+    r = await Game.prototype.newArmy.call(g, bare.castleId, { troops: { archer: 500e3 } });
+    assert.deepStrictEqual([r.ok, sent.length], [1, 2]);
+    assert.strictEqual(R.marchTroopLimit(city('Top', 1, 1, { rally: 10 })), 100e3);
+    assert.strictEqual(R.marchTroopLimit({ name: 'x' }), null);
+  });
+
+  await t('bigattack, /horde and both: a War Ensign adds 25%, the Horde banner takes 1,000,000', async () => {
+    const sent = [];
+    const top = city('Top', 30, 30, { rally: 10 }), low = city('Low', 40, 40, { rally: 2 });
+    const g = { castles: [top, low], castleId: (c) => c.castleId,
+      c: { send: (cmd, data) => sent.push(data), await: async () => ({ data: { ok: 1 } }) } };
+    const go = (c, n, { big = false, horde = false } = {}) => Game.prototype.newArmy.call(g, c.castleId, { troops: { scouter: n }, useFlag: big, useItem: horde });
+    assert.strictEqual((await go(top, 125e3, { big: true })).ok, 1, 'bigattack s:125k at Rally Spot L10');
+    let r = await go(top, 125001, { big: true });
+    has(r.errorMsg, 'takes at most 125,000 troops (10,000 per Rally Spot level, +25% with a War Ensign)');
+    assert.strictEqual((await go(top, 1e6, { horde: true })).ok, 1, 'attack s:1m /horde');
+    assert.strictEqual((await go(low, 1e6, { horde: true })).ok, 1, 'the Horde banner is not held to the Rally Spot here');
+    assert.strictEqual((await go(top, 1.25e6, { big: true, horde: true })).ok, 1, 'bigscout s:1.25m /horde');
+    r = await go(top, 1.25e6 + 1, { big: true, horde: true });
+    has(r.errorMsg, 'takes at most 1,250,000 troops (with the Horde banner and a War Ensign)');
+    r = await go(top, 100001);
+    assert.strictEqual(r.ok, 0, 'no item, no more than 100,000');
+    assert.strictEqual(sent.length, 4);
+  });
+
+  // ============================================================ lowest first
+  console.log('\nlowest first\n');
+  const SPREAD = 'requestresources any gold 40000b 40000b 100m 1b t';
+  const spread = () => ({
+    rich: city('Rich', 300, 300, { gold: 60e12 }),
+    poor: city('Poor', 301, 300, { gold: 100 }),
+    mid: city('Mid', 302, 300, { gold: 20e12 }),
+  });
+
+  await t('a sender leaves its gold for the city that holds least', () => {
+    const c = spread();
+    const { plan: p } = plan(c.mid, [c.rich, c.poor, c.mid], SPREAD);
+    assert.strictEqual((p.actions || []).length, 0, 'Mid gets nothing while Poor has less');
+    has(p.note, 'Rich leaves its gold for Poor, which holds less (100)');
+  });
+
+  await t('the city that holds least is served', () => {
+    const c = spread();
+    const { plan: p } = plan(c.poor, [c.rich, c.poor, c.mid], SPREAD);
+    assert.strictEqual(p.actions.length, 1, p.note);
+    has(p.note, 'from Rich');
+  });
+
+  await t('a sender whose mission to the neediest is still out serves the next one', () => {
+    const c = spread();
+    const out = march(c.rich, c.poor, C.MISSION.transport);
+    const { plan: p } = plan(c.mid, [c.rich, c.poor, c.mid], SPREAD, { selfArmys: [out] });
+    assert.strictEqual(p.actions.length, 1, p.note);
+    has(p.note, 'from Rich');
+  });
+
+  // ======================================================= one full march
+  console.log('\nthe batch: as much as one march carries\n');
+  const L10 = { loadSkillParam: 100 };           // Logistics 10, as army.getTroopParam answers it
+
+  await t('* as maxBatch is one full march: 100,000 transports at Logistics 10 carry about 1b', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, gold: 50e12 } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources any gold 20000b 1b 100m * t', { skills: L10 });
+    assert.strictEqual(p.actions.length, 1, p.note);
+    const a = p.actions[0];
+    assert.deepStrictEqual([a.from.name, a.carriages, a.resources.gold], ['5', 100e3, holds(100e3, f.five, f.fla, 'carriage', 100)]);
+    assert.ok(a.resources.gold > 999e6 && a.resources.gold <= 1e9, `${a.resources.gold} gold`);
+    has(p.note, 'what one march carries');
+  });
+
+  await t('a maxBatch bigger than one march carries is one full march too', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, gold: 50e12 } });
+    const star = plan(f.fla, Object.values(f), 'requestresources any gold 20000b 1b 100m * t', { skills: L10 }).plan;
+    const big = plan(f.fla, Object.values(f), 'requestresources any gold 20000b 1b 100m 5b t', { skills: L10 }).plan;
+    assert.deepStrictEqual(big.actions[0].resources, star.actions[0].resources);
+    assert.strictEqual(big.actions[0].carriages, 100e3);
+  });
+
+  await t('the old 500m lines were a cap of their own: 500m on about 50,000 transports', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, gold: 50e12 } });
+    const { plan: p } = plan(f.fla, Object.values(f), 'requestresources any gold 20000b 1b 100m 500m t', { skills: L10 });
+    assert.strictEqual(p.actions[0].resources.gold, 500e6);
+    assert.ok(p.actions[0].carriages < 51e3);
+  });
+
+  await t('the Logistics figure the city\'s own army.getTroopParam gave wins; with none, base load and the plan says so', () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, gold: 50e12 } });
+    const line = 'requestresources any gold 20000b 1b 100m * t';
+    // nothing read: base load, 500m on 100,000 — what was seen live on 2026-09-19
+    let r = plan(f.fla, Object.values(f), line);
+    assert.deepStrictEqual([r.plan.actions[0].carriages, r.plan.actions[0].resources.gold], [100e3, holds(100e3, f.five, f.fla)]);
+    assert.ok(r.plan.actions[0].resources.gold < 500e6 + 1);
+    has(r.plan.note, "5: its Logistics bonus isn't read yet");
+    // the login read nothing (0), but Game.troopParams asked 5 with its castleId
+    const cache = new Map([[f.five.castleId, { at: Date.now(), p: { loadSkill: 100, marchSkill: 0 } }]]);
+    r = plan(f.fla, Object.values(f), line, { skills: { loadSkillParam: 0, _troopParams: cache } });
+    assert.strictEqual(r.plan.actions[0].resources.gold, holds(100e3, f.five, f.fla, 'carriage', 100));
+    assert.ok(!r.plan.note.includes("isn't read yet"), r.plan.note);
+  });
+
+  await t('a transport sent without the figure asks army.getTroopParam for the sending city, once', async () => {
+    const f = fleet({ five: { troop: { carriage: 250e3 }, gold: 50e12 } });
+    const { plan: p, game } = plan(f.fla, Object.values(f), 'requestresources any gold 20000b 1b 100m * t');
+    const asked = [];
+    game._troopParams = new Map();
+    game.troopParams = async (cid) => { asked.push(cid); game._troopParams.set(cid, { at: Date.now(), p: { loadSkill: 100 } }); return { loadSkill: 100 }; };
+    await T.executors.transport(game, f.five, p.actions[0]);
+    await T.executors.transport(game, f.five, p.actions[0]);
+    assert.deepStrictEqual(asked, [f.five.castleId], 'asked once, with the castleId');
+    assert.strictEqual(game.sent.length, 2, 'both marches went');
+    assert.strictEqual(T._internals.loadSkillOf(game, f.five), 100);
+    // and the next pass loads the full march
+    const ctx = { castle: f.fla, goals: parseGoals('requestresources any gold 20000b 1b 100m * t').goals, goalsOf: () => [] };
+    const again = T.plans.transfer(ctx, {}, game);
+    assert.strictEqual(again.actions[0].resources.gold, holds(100e3, f.five, f.fla, 'carriage', 100));
+  });
+
+  // ================================================================ /steps
+  console.log('\n/steps: even the account out, the poorest first\n');
+  const STEPS = 'requestresources any gold 20000b 20000b 100m * t /steps:1000b,10000b';
+  const T12 = 1e12;
+  // ten cities in a row, one tile apart; `gold` in trillions
+  const row = (golds) => golds.map((g, i) => city(`C${i}`, 100 + i, 200, { gold: g * T12, troop: { carriage: 250e3 } }));
+
+  await t('/steps parses, and says what it does', () => {
+    const p = parseGoals(STEPS);
+    assert.deepStrictEqual(p.errors, []);
+    assert.deepStrictEqual([p.goals[0].steps, p.goals[0].local, p.goals[0].remote], [[1e12, 10e12], 20e12, 20e12]);
+    const d = describe(p).join('\n');
+    has(d, 'in steps, the poorest city first: 1,000,000,000,000, then 10,000,000,000,000, then 20,000,000,000,000');
+    has(d, 'the richest free city sends');
+    assert.match(parseGoals('requestresources any gold 20000b 20000b 100m * t /steps:10000b,1000b').errors[0].error, /must go up/);
+    assert.match(parseGoals('requestresources any gold 20000b 20000b 100m * t /steps:1000b,20000b').errors[0].error, /under localAmount/);
+    assert.match(parseGoals('requestresources any gold * 20000b 100m * t /steps:1000b').errors[0].error, /needs a localAmount/);
+    assert.match(parseGoals('requestresources any gold 20000b 20000b /steps:1000b /below:5000b').errors[0].error, /use one of them/);
+    assert.match(parseGoals('requestresources any gold 20000b 20000b /steps:1t').errors[0].error, /\/steps needs amounts/);
+    assert.match(parseGoals('requesttroops any archer 20k 20k /steps:1k').errors[0].error, /unknown switch \/steps/);
+    // the proposed spread layer parses clean
+    const layer = ['requestresources any gold 20000b 20000b 100m * t /steps:1000b,10000b',
+      ...['food', 'wood', 'stone', 'iron'].map((r) => `requestresources any ${r} 400b 400b 100m * t /steps:10b,100b`)].join('\n');
+    assert.deepStrictEqual(parseGoals(layer).errors, []);
+  });
+
+  await t('the user\'s example: nine cities at 20-40t, one at 500m — only it receives, from the richest', () => {
+    const cs = row([20, 22.5, 25, 27.5, 30, 32.5, 35, 37.5, 40, 0.0005]);
+    const poor = cs[9];
+    let sends = 0;
+    for (const c of cs) {
+      const { plan: p } = plan(c, cs, STEPS, { skills: L10 });
+      if (c === poor) {
+        assert.strictEqual(p.actions.length, 1, p.note);
+        const a = p.actions[0];
+        assert.strictEqual(a.from.name, 'C8', `the richest (40t) sends, not ${a.from.name}`);
+        assert.ok(a.resources.gold > 999e6 && a.resources.gold <= 1e9, `a full march: ${a.resources.gold}`);
+        has(p.note, 'gold 500m < 1000b (step 1000b of 20000b)');
+      }
+      sends += p.actions.length;
+    }
+    assert.strictEqual(sends, 1, 'nothing moves between the rich cities');
+  });
+
+  await t('the richest out on a mission to it is not waited for: the next richest sends', () => {
+    const cs = row([20, 22.5, 25, 27.5, 30, 32.5, 35, 37.5, 40, 0.0005]);
+    const out = march(cs[8], cs[9], C.MISSION.transport, { resource: { gold: 1e9 } });
+    const { plan: p } = plan(cs[9], cs, STEPS, { skills: L10, selfArmys: [out] });
+    assert.strictEqual(p.actions[0].from.name, 'C7', p.note);
+    has(p.note, 'gold 500m + 1b coming < 1000b');
+  });
+
+  await t('a higher step waits while a city is still under a lower one', () => {
+    // A 500m, B 5t, C 15t, D 40t: the 1t step first — B (under 10t) waits
+    const cs = row([0.0005, 5, 15, 40]);
+    const [A, B] = cs;
+    const pb = plan(B, cs, STEPS, { skills: L10 }).plan;
+    assert.strictEqual(pb.actions.length, 0, pb.note);
+    has(pb.note, 'gold 5000b < 20000b: waiting — the 1000b step first (C0 holds 500m)');
+    const pa = plan(A, cs, STEPS, { skills: L10 }).plan;
+    assert.strictEqual(pa.actions[0].from.name, 'C3', 'from the richest');
+    // A is at 1t (less than a minimum batch short counts as there): the 10t step
+    cs[0].resource.gold = T12 - 50e6;
+    const pb2 = plan(B, cs, STEPS, { skills: L10 }).plan;
+    // B is under 10t now asking, but A holds less and D can serve A: lowest first
+    has(pb2.note, 'leaves its gold for C0, which holds less');
+    const pa2 = plan(A, cs, STEPS, { skills: L10 }).plan;
+    has(pa2.note, '(step 10000b of 20000b)');
+    assert.strictEqual(pa2.actions[0].from.name, 'C3');
+  });
+
+  await t('a sender is never taken below the step it gives at', () => {
+    // P 2t asks at the 10t step; Q holds 10t + 500m, the only city over 10t
+    const cs = row([2, 10.0005, 3]);
+    const { plan: p } = plan(cs[0], cs, STEPS, { skills: L10 });
+    assert.deepStrictEqual([p.actions[0].from.name, p.actions[0].resources.gold], ['C1', 500e6]);
+    has(p.note, 'all it can spare');
+    // with Q at exactly 10t there is nobody to give at 10t, and nothing above either
+    cs[1].resource.gold = 10 * T12;
+    const q = plan(cs[0], cs, STEPS, { skills: L10 }).plan;
+    assert.strictEqual(q.actions.length, 0);
+    has(q.note, 'nothing to even out — C0 holds 2000b, and no city holds over 10000b to give');
+  });
+
+  await t('at the top step, cities over 20t give only down to 20t, and nobody at 20t receives', () => {
+    const cs = row([19, 20, 20.3, 40]);
+    const p = plan(cs[0], cs, STEPS, { skills: L10 }).plan;
+    assert.strictEqual(p.actions[0].from.name, 'C3', p.note);
+    has(p.note, 'gold 19000b < 20000b:');
+    for (const c of cs.slice(1)) assert.strictEqual(plan(c, cs, STEPS, { skills: L10 }).plan.actions.length, 0, `${c.name} received`);
+    // only C2 is over 20t, by 300b: it gives at most that
+    const cs2 = row([19.9, 20, 20.0003]);
+    const p2 = plan(cs2[0], cs2, STEPS, { skills: L10 }).plan;
+    assert.deepStrictEqual([p2.actions[0].from.name, p2.actions[0].resources.gold], ['C2', 300e6]);
+  });
+
+  await t('every city at the top: nothing moves at all', () => {
+    const cs = row([20, 30, 40, 25]);
+    for (const c of cs) {
+      const { plan: p } = plan(c, cs, STEPS, { skills: L10 });
+      assert.strictEqual(p.actions.length, 0);
+      has(p.note, 'nothing short');
+    }
+  });
+
+  await t('the resource steps work the same way: 10b, 100b, 400b', () => {
+    const line = 'requestresources any wood 400b 400b 100m * t /steps:10b,100b';
+    const cs = [city('W0', 100, 200, { wood: 2e9, troop: { carriage: 250e3 } }), city('W1', 101, 200, { wood: 50e9, troop: { carriage: 250e3 } }),
+      city('W2', 102, 200, { wood: 900e9, troop: { carriage: 250e3 } })];
+    const p0 = plan(cs[0], cs, line, { skills: L10 }).plan;
+    assert.strictEqual(p0.actions[0].from.name, 'W2');
+    has(p0.note, '(step 10b of 400b)');
+    has(plan(cs[1], cs, line, { skills: L10 }).plan.note, 'waiting — the 10b step first (W0 holds 2b)');
+  });
+
+  await t('across resources the lowest step goes first: gold (listed first, in trillions) no longer starves iron', () => {
+    // Lord08's New city on 2026-09-19: 5.9t gold (under the 10t step), 1.5b iron
+    // (under the 10b step). One sender free, the other still out on a trip here.
+    const LAYER = 'requestresources any gold 20000b 20000b 100m * t /steps:1000b,10000b\n'
+      + 'requestresources any iron 400b 400b 100m * t /steps:10b,100b';
+    const mk = () => [city('New', 100, 200, { gold: 5.9 * T12, iron: 1.5e9, troop: { carriage: 250e3 } }),
+      city('D1', 101, 200, { gold: 30 * T12, iron: 700e9, troop: { carriage: 250e3 } }),
+      city('D2', 102, 200, { gold: 40 * T12, iron: 750e9, troop: { carriage: 250e3 } })];
+    let cs = mk();
+    const out = march(cs[2], cs[0], C.MISSION.transport, { resource: { gold: 1e9 } });
+    let p = plan(cs[0], cs, LAYER, { skills: L10, selfArmys: [out] }).plan;
+    assert.strictEqual(p.actions.length, 1, p.note);
+    assert.deepStrictEqual([p.actions[0].from.name, Object.keys(p.actions[0].resources)], ['D1', ['iron']], p.note);
+    // the iron at its 100b step and gold at its 10t step: the emptier goes first
+    cs = mk();
+    cs[0].resource.iron.amount = 90e9;               // 90% of 100b; gold 5.9t is 59% of 10t
+    p = plan(cs[0], cs, LAYER, { skills: L10, selfArmys: [march(cs[2], cs[0], C.MISSION.transport)] }).plan;
+    assert.deepStrictEqual(Object.keys(p.actions[0].resources), ['gold'], p.note);
+  });
+
+  // ============================================================== food cap
+  console.log('\nfood never past 950b in a city\n');
+
+  await t('a request never fills food past 950b, counting what is on its way', () => {
+    const f = fleet({ fla: { food: 949.5e9 }, five: { troop: { carriage: 250e3 }, food: 3000e9 } });
+    const line = 'requestresources 5 food 2000b 1b * * t';
+    let p = plan(f.fla, Object.values(f), line, { skills: L10, own: { 5: '', 8: '', 9: '' } }).plan;
+    assert.strictEqual(food(p.actions[0]), 500e6);
+    // 900b home and 50b on its way: no room at all
+    f.fla.resource.food.amount = 900e9;
+    const coming = march(f.eight, f.fla, C.MISSION.transport, { resource: { food: 50e9 } });
+    p = plan(f.fla, Object.values(f), line, { skills: L10, own: { 5: '', 8: '', 9: '' }, selfArmys: [coming] }).plan;
+    assert.strictEqual(p.actions.length, 0);
+    has(p.note, 'held — food never goes past 950b in a city (it resets to 0 at 1t)');
+  });
+
+  await t('the stepped food layer and the old 1b line together never pass 950b', () => {
+    const src = 'requestresources any food 1b 2b 100m 500m t\nrequestresources any food 400b 400b 100m * t /steps:10b,100b';
+    for (const have of [0, 5e9, 50e9, 399.9e9, 400e9, 949e9, 950e9, 1000e9]) {
+      const cs = [city('F0', 100, 200, { food: have, troop: { carriage: 250e3 } }), city('F1', 101, 200, { food: 5000e9, troop: { carriage: 250e3 } })];
+      const { plan: p } = plan(cs[0], cs, src, { skills: L10 });
+      const got = p.actions.reduce((t2, a) => t2 + (a.resources.food || 0), 0);
+      assert.ok(have + got <= Math.max(have, 950e9), `${have} + ${got} passes 950b`);
+      if (have >= 400e9) assert.strictEqual(got, 0, `${have}: nothing more`);
+      assert.ok(have + got <= Math.max(have, 400e9), `${have} + ${got} passes the 400b line`);
+    }
+  });
+
+  await t('a keep/send line never fills a city of ours past 950b food either', () => {
+    const here = city('H', 100, 200, { food: 1500e9, troop: { carriage: 250e3 } });
+    const near = city('N', 101, 200, { food: 949.9e9 });
+    const game = fakeGame([here, near]);
+    Object.assign(game, L10);
+    const parsed = parseGoals('keepresources any f:500b');
+    const p = T.plans.push({ castle: here, goals: parsed.goals, config: parsed.config, goalsOf: () => [], selfArmies: [] }, {}, game);
+    assert.strictEqual(p.actions.length, 1, p.note);
+    assert.strictEqual(food(p.actions[0]), 100e6);
+    near.resource.food.amount = 950e9;
+    const q = T.plans.push({ castle: here, goals: parsed.goals, config: parsed.config, goalsOf: () => [], selfArmies: [] }, {}, game);
+    assert.strictEqual(q.actions.length, 0, q.note);
   });
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

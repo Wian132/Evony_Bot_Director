@@ -150,6 +150,80 @@ t('a refusal stops the run there rather than repeating it', async () => {
   assert.match(r.error, /no/);
 });
 
+section('keepherobuff: Excalibur kept on the training hero');
+
+const GH = require('./goal-heroes');
+const { parseGoals } = require('./goals');
+const buffGoal = (text) => parseGoals(text).goals.filter((x) => x.name === 'keepherobuff');
+
+t('the goal line reads, and a bad one says what to write', () => {
+  const [g] = buffGoal('keepherobuff OTTO excalibur /below:1526');
+  assert.strictEqual(g.hero, 'OTTO');
+  assert.strictEqual(g.itemId, 'hero.power.1');
+  assert.strictEqual(g.below, 1526);
+  assert.strictEqual(buffGoal('keepherobuff OTTO wealth')[0].itemId, 'hero.management.1');
+  const bad = (s) => parseGoals(s).errors.map((e) => e.error).join(' | ');
+  assert.match(bad('keepherobuff OTTO'), /expected: keepherobuff/);
+  assert.match(bad('keepherobuff OTTO on war'), /not one of the timed hero items/);
+  assert.match(bad('keepherobuff OTTO excalibur /below:lots'), /\/below/);
+  assert.match(bad('keepherobuff OTTO excalibur /max:3'), /only \/below/);
+});
+
+const plan = (heros, items, goals = 'keepherobuff OTTO excalibur /below:1526', state = {}) => {
+  const g = world([{ name: 'Main', heros }], items);
+  return { p: GH.heroBuffPlan({ castle: g.castles[0], goals: buffGoal(goals) }, state, g), g, state };
+};
+
+t('the hero under 1526 with no Excalibur running gets one', () => {
+  const { p } = plan([hero(7, 'OTTO', { level: 1398, power: 1466 })], { 'hero.power.1': 3 });
+  assert.strictEqual(p.actions.length, 1);
+  assert.deepStrictEqual([p.actions[0].kind, p.actions[0].heroId, p.actions[0].itemId], ['heroBuff', 7, 'hero.power.1']);
+  assert.match(p.actions[0].label, /Excalibur on OTTO \(L1398, attack 1,466\), 3 held/);
+});
+
+t('none while one is running (by its end time, or by the percentage alone)', () => {
+  const later = Date.now() + 3 * 86400e3 + 2 * 3600e3 + 60e3;
+  let { p } = plan([hero(7, 'OTTO', { power: 1466, buffs: [{ typeId: 'HeroPowerBuff', descName: 'Excalibur', endTime: later }] })], { 'hero.power.1': 3 });
+  assert.strictEqual(p.actions.length, 0);
+  assert.match(p.note, /Excalibur on, 3d 2h left/);
+  ({ p } = plan([hero(7, 'OTTO', { power: 1466, powerBuffAdded: 25 })], { 'hero.power.1': 3 }));
+  assert.strictEqual(p.actions.length, 0);
+  ({ p } = plan([hero(7, 'OTTO', { power: 1466, buffs: [{ typeId: 'HeroPowerBuff', descName: 'Excalibur', endTime: Date.now() - 1000 }] })], { 'hero.power.1': 3 }));
+  assert.strictEqual(p.actions.length, 1, 'an expired one is replaced');
+});
+
+t('none for a hero at or over /below, a prisoner, another city\'s hero, or with none held', () => {
+  assert.match(plan([hero(7, 'OTTO', { power: 1590 })], { 'hero.power.1': 3 }).p.note, /at or over 1,526 without it — none used/);
+  assert.match(plan([hero(7, 'OTTO', { power: 1466, status: 4 })], { 'hero.power.1': 3 }).p.note, /a prisoner/);
+  assert.strictEqual(plan([hero(7, 'Bob', { power: 1466 })], { 'hero.power.1': 3 }).p, null, 'OTTO is in another city');
+  const none = plan([hero(7, 'OTTO', { power: 1466 })], {}).p;
+  assert.strictEqual(none.actions.length, 0);
+  assert.match(none.note, /no Excalibur left to use/);
+  assert.strictEqual(plan([hero(7, 'OTTO', { power: 900 })], { 'hero.power.1': 3 }, 'keepherobuff otto excal').p.actions.length, 1, 'no /below: always');
+});
+
+t('the executor uses one, on that hero in that city, and the plan then waits for it to show', async () => {
+  const state = {};
+  const { p, g } = plan([hero(7, 'OTTO', { power: 1466 })], { 'hero.power.1': 3 }, undefined, state);
+  const r = await GH.executors.heroBuff(g, g.castles[0], p.actions[0], state);
+  assert.strictEqual(r.ok, 1);
+  assert.deepStrictEqual(g.sent.map((s) => [s.cmd, s.data.castleId, s.data.heroId, s.data.itemId]), [['hero.useItem', 1000, 7, 'hero.power.1']]);
+  const again = GH.heroBuffPlan({ castle: g.castles[0], goals: buffGoal('keepherobuff OTTO excalibur /below:1526') }, state, g);
+  assert.strictEqual(again.actions.length, 0);
+  assert.match(again.note, /used \d+s ago, waiting for it to show/);
+});
+
+t('a refusal holds the hero, and a renamed hero is not touched', async () => {
+  const state = {};
+  const { p, g } = plan([hero(7, 'OTTO', { power: 1466 })], { 'hero.power.1': 3 }, undefined, state);
+  g.req = async () => ({ ok: -1, errorMsg: 'nope' });
+  const r = await GH.executors.heroBuff(g, g.castles[0], p.actions[0], state);
+  assert.strictEqual(r.ok, 0);
+  assert.match(GH.heroBuffPlan({ castle: g.castles[0], goals: buffGoal('keepherobuff OTTO excalibur') }, state, g).note, /refused .* \(nope\) — held for an hour/);
+  g.castles[0].heros[0].name = '1398Att1466';
+  await assert.rejects(GH.executors.heroBuff(g, g.castles[0], p.actions[0], {}), /is now "1398Att1466"/);
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, fn] of tests) {

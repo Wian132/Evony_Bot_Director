@@ -128,6 +128,7 @@ const CONFIG_KEYS = new Set([
   'troopsusepopmax', 'troopsusereserved', 'troopqueuetime', 'troopidlequeuetime',
   'warrules', 'wartown', 'keepatthome', 'reservedbarrack', 'feastinghallspace',
   'troopincrement', 'attackgap', 'embassy', 'farmingcycle', 'troopslot',
+  'trooptraineronly',
   // The rest of the 46 keys the NEAT wiki documents (CategoryConfigGoals and
   // each key's own page), so a pasted NEAT config line never reads as a typo.
   // The ones nothing acts on yet are in NOT_IMPLEMENTED.config below.
@@ -152,12 +153,15 @@ const TROOP_CONFIG = {
   troopqueuetime: 'hours', troopidlequeuetime: 'minutes', wallqueuetime: 'hours',
   troopsusereserved: 'share', troopsusepopmax: 'share', fortsusereserved: 'share',
   troopincrement: 'increment', reservedbarrack: 'flag', troopdelbadque: 'flag', fortification: 'flag',
+  // ours: 1 (the default) keeps the barracks for the traininghero (engine.js paceOf)
+  trooptraineronly: 'flag',
 };
 // The troop line's own switches override the config for that line (wiki
-// Troop). /slot is ours: minutes, as config troopslot.
+// Troop). /slot is ours: minutes, as config troopslot; so is /traineronly,
+// a flag, as config trooptraineronly.
 const TROOP_SWITCHES = {
   queuetime: 'hours', idlequeuetime: 'minutes', usereserved: 'share', usepopmax: 'share',
-  increment: 'increment', slot: 'minutes',
+  increment: 'increment', slot: 'minutes', traineronly: 'flag',
 };
 const PLAIN = /^(\d+(\.\d*)?|\.\d+)$/;
 // { value } or { error }
@@ -254,7 +258,7 @@ const GOALS = {
           const [k, v] = kv(tok.slice(1));
           const key = k.toLowerCase(), kind = TROOP_SWITCHES[key];
           if (!kind) { errs.push(`unknown switch "/${k}" (known: ${Object.keys(TROOP_SWITCHES).map((s) => '/' + s).join(' ')})`); continue; }
-          if (v === null || v === '') { errs.push(`/${key} needs a value, e.g. /${key}:${{ hours: '.5', minutes: '30', share: '0.5', increment: '0.1' }[kind]}`); continue; }
+          if (v === null || v === '') { errs.push(`/${key} needs a value, e.g. /${key}:${{ hours: '.5', minutes: '30', share: '0.5', increment: '0.1', flag: '1' }[kind]}`); continue; }
           const got = settingValue(kind, `/${key}`, v);
           if (got.error) { errs.push(got.error); continue; }
           switches[key] = got.value;
@@ -416,7 +420,7 @@ const GOALS = {
 
 // ---- goal modules (upkeep, war, heroes, npc, valleys, transfers, market, reports, research,
 // plan, schedule/processing) contribute their own parsers + config keys ----
-for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-research',
+for (const mod of ['./goal-upkeep', './goal-war', './goal-heroes', './goal-npc', './goal-buildnpc', './goal-valley', './goal-transfer', './goal-trade', './goal-reports', './goal-quests', './goal-research',
   './goal-plan', './processing']) {
   try {
     const m = require(mod);

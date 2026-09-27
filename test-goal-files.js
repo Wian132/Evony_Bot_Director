@@ -151,5 +151,30 @@ t('Browse lists folders and .txt files only, with the way up', () => {
   if (process.platform === 'win32') assert.strictEqual(GF.browse(TMP.slice(0, 2)).dir, TMP.slice(0, 2).toUpperCase() + '\\');
 });
 
+t("the fleet's own file: the org setting, else the file most accounts already name", () => {
+  const o = D.org(D.orgs.create("Fleet").id);
+  const mk = (label) => o.accounts.upsert({ label, email: label + "@x.com", password: "x" });
+  const a1 = mk("A1"), a2 = mk("A2"), a3 = mk("A3"), a4 = mk("A4");
+  const FILE_A = path.join(TMP, "fleet-a.txt"), FILE_B = path.join(TMP, "fleet-b.txt");
+  fs.writeFileSync(FILE_A, "build b:0:1"); fs.writeFileSync(FILE_B, "build b:0:2");
+  assert.strictEqual(GF.defaultFile(o, "prepend"), null, "no account names one yet");
+  GF.setFile(o, a1.id, "prepend", FILE_B);
+  GF.setFile(o, a2.id, "prepend", FILE_A);
+  GF.setFile(o, a3.id, "prepend", FILE_A);
+  assert.strictEqual(GF.defaultFile(o, "prepend"), path.normalize(FILE_A), "the one most of them name");
+  assert.strictEqual(GF.defaultFile(o, "append"), null, "append is counted on its own");
+  o.settings.set("goalFileDefault:prepend", FILE_B);
+  assert.strictEqual(GF.defaultFile(o, "prepend"), path.normalize(FILE_B), "the setting wins");
+  o.settings.set("goalFileDefault:prepend", "not-a-full-path.txt");
+  assert.strictEqual(GF.defaultFile(o, "prepend"), null, "a bad setting is refused, not guessed past");
+  o.settings.set("goalFileDefault:prepend", null);
+  // an account that names none can then be put on it and filled in one sync
+  GF.setFile(o, a4.id, "prepend", GF.defaultFile(o, "prepend"));
+  GF.syncAccount(o, a4, { note: () => {}, seen: new Map() });
+  assert.strictEqual(o.goals.exact(a4.id, "prepend", "goal").src, "build b:0:1");
+  assert.strictEqual(GF.defaultFile(null, "prepend"), null);
+  assert.strictEqual(GF.defaultFile(o, "template"), null, "only the two texts have files");
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

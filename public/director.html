@@ -278,6 +278,28 @@
   /* a table wider than its panel scrolls inside the panel, it does not stretch the page */
   .tr-scroll { overflow-x:auto; }
   @media (max-width: 1100px) { .tr-grid { grid-template-columns:minmax(0,1fr); } }
+  /* ---- trading: the glitch log ---- */
+  .gl-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .gl-date { display:flex; align-items:center; gap:5px; color:var(--dim); font-size:var(--fs-sm); }
+  .gl-cfg { display:flex; align-items:center; gap:18px; flex-wrap:wrap; padding:11px 14px; }
+  .gl-cfg label { display:flex; align-items:center; gap:7px; font-size:var(--fs-sm); flex-wrap:wrap; }
+  .gl-cfg .tr-muted { max-width:640px; }
+  .gl-day { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:11px; }
+  .gl-day.open { border-color:var(--blue); }
+  .gl-dayhead { display:flex; align-items:baseline; gap:11px; flex-wrap:wrap; cursor:pointer; }
+  .gl-dayhead h3 { margin:0; font-size:var(--fs-lg); }
+  .gl-when { color:var(--dim); font-size:var(--fs-sm); font-variant-numeric:tabular-nums; }
+  .gl-sums { display:flex; gap:9px; flex-wrap:wrap; margin-top:10px; }
+  .gl-sum { border:1px solid var(--line); border-radius:7px; padding:7px 11px; background:var(--sunken); min-width:104px; }
+  .gl-sum b { display:block; font-size:var(--fs-base); font-variant-numeric:tabular-nums; }
+  .gl-sum .k { font-size:var(--fs-xs); color:var(--dim); text-transform:uppercase; letter-spacing:.03em; }
+  .gl-sum .d { font-size:var(--fs-sm); font-variant-numeric:tabular-nums; }
+  .gl-up { color:var(--acc); } .gl-down { color:var(--bad); }
+  .gl-runs { margin-top:10px; display:flex; flex-direction:column; gap:5px; }
+  .gl-run { font-size:var(--fs-sm); display:flex; gap:9px; flex-wrap:wrap; align-items:baseline; }
+  .gl-tbl td.num, .gl-tbl th.num { text-align:right; }
+  .gl-tbl td.pair { white-space:nowrap; }
+  .gl-cached { color:var(--warn); font-size:var(--fs-xxs); }
   /* ---- trading: the setup view ---- */
   .tr-subtabs { margin-bottom:14px; }
   .tr-subtabs div { font-size:var(--fs-base); padding:7px 16px; }
@@ -319,6 +341,11 @@
   .ts-msg.bad { background:rgba(255,107,107,.13); color:var(--bad); }
   .ts-msg.warn { background:rgba(255,180,84,.13); color:var(--warn); }
   .ts-msg.ok { background:rgba(123,216,143,.13); color:var(--acc); }
+  details.ts-msg summary { cursor:pointer; list-style:none; }
+  details.ts-msg summary::-webkit-details-marker { display:none; }
+  details.ts-msg summary::before { content:'\25b8  '; }
+  details.ts-msg[open] summary::before { content:'\25be  '; }
+  details.ts-msg .ts-msg-body { margin-top:6px; }
   .ts-events { max-height:520px; overflow:auto; font-size:var(--fs-sm); line-height:1.55; }
   .ts-events div { padding:4px 0; border-bottom:1px solid var(--line-soft); }
   .ts-events .t { color:var(--faint); font-variant-numeric:tabular-nums; margin-right:8px; }
@@ -334,6 +361,52 @@
   .ask-more { color:var(--dim); margin-top:9px; font-size:var(--fs-sm); }
   .ask-btns { display:flex; justify-content:flex-end; gap:9px; padding:13px 18px 16px; }
   .ask-btns button { min-width:90px; }
+  /* ---- monitor ---- */
+  #pageMonitor { padding:var(--pad); overflow:auto; flex:1; }
+  .mon-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .mon-row label { display:flex; align-items:center; gap:6px; font-size:var(--fs-sm); color:var(--dim); }
+  .mon-cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(215px, 1fr)); gap:12px; margin-bottom:14px; }
+  .mon-card { border:1px solid var(--line); border-radius:8px; padding:11px 13px; background:var(--panel); }
+  .mon-card b { display:block; font-size:var(--fs-lg); margin-bottom:2px; }
+  .mon-card span { display:block; color:var(--dim); font-size:var(--fs-sm); line-height:1.5; }
+  .mon-card.warn { border-color:#8a5a1d; }
+  .mon-card.bad { border-color:#8a2f2f; }
+  .mon-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px 20px; }
+  .mon-grid label { display:grid; grid-template-columns:1fr auto; align-items:center; gap:4px 10px; font-size:var(--fs-sm); }
+  .mon-grid label i { grid-column:1 / -1; color:var(--dim); font-style:normal; font-size:var(--fs-sm); line-height:1.5; }
+  .mon-two { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:14px; }
+  .mon-filters { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .mon-filters label { display:flex; align-items:center; gap:5px; font-size:var(--fs-sm); color:var(--dim); }
+  .mon-filters input { width:130px; }
+  .mon-filters input[type=number] { width:86px; }
+  .mon-bar { display:flex; align-items:center; gap:10px; padding:9px 13px; border-radius:8px;
+             border:1px solid var(--line); background:var(--panel2); margin-bottom:13px; font-size:var(--fs-sm); }
+  .mon-bar.run { border-color:var(--blue); }
+  .mon-bar.bad { border-color:#8a2f2f; }
+  .mon-prog { flex:1; height:7px; border-radius:4px; background:var(--panel); overflow:hidden; min-width:110px; }
+  .mon-prog i { display:block; height:100%; background:var(--blue); }
+  .mon-pill { padding:1px 8px; border-radius:99px; font-size:var(--fs-sm); border:1px solid var(--line); white-space:nowrap; }
+  .mon-pill.holiday { color:#ffd479; border-color:#8a6a1d; }
+  .mon-pill.truce, .mon-pill.dreamtruce { color:#9ad1ff; border-color:#2f5e8a; }
+  .mon-pill.beginner { color:#b7b7c9; }
+  .mon-pill.peace { color:var(--dim); }
+  .mon-still { color:#ff9b7a; font-weight:600; }
+  .mon-moving { color:#7fd18a; }
+  .mon-who { cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
+  /* the alliance picker: a button that opens a searchable list of every alliance,
+     each one kept or hidden. Used by Cities, Lords and Changes. */
+  .ally { position:relative; }
+  .ally > button { max-width:330px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ally-pop { position:absolute; z-index:70; top:calc(100% + 5px); left:0; width:330px; padding:11px;
+              border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:var(--shadow); }
+  .ally-pop input { width:100%; margin-top:8px; }
+  .ally-list { max-height:270px; overflow:auto; margin-top:8px; }
+  .ally-list label { display:flex; align-items:center; gap:7px; padding:3px 5px; border-radius:5px;
+                     cursor:pointer; font-size:var(--fs-sm); color:var(--ink); }
+  .ally-list label:hover { background:var(--panel2); }
+  .ally-list label input { width:auto; margin:0; }
+  .ally-list label i { margin-left:auto; color:var(--dim); font-style:normal; white-space:nowrap; }
+  .ally-foot { display:flex; gap:7px; align-items:center; margin-top:10px; }
   /* ---- resources ---- */
   #pageResources { padding:var(--pad); overflow:auto; flex:1; }
   .rs-bar { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
@@ -393,12 +466,14 @@
     <div class="tab" data-p="trading">Trading</div>
     <div class="tab" data-p="resources">Resources</div>
     <div class="tab" data-p="accounts" title="Every field of every account in one grid">Accounts</div>
+    <div class="tab" data-p="monitor" title="One watcher over the whole server: the map, the rankings, and who has stopped moving">Monitor</div>
   </div>
   <input id="q" placeholder="filter…" style="width:170px">
   <button id="colsBtn">Columns</button>
   <button id="proxyBtn">Proxies</button>
   <button id="startupBtn" title="NEAT's start-up parameters for every account: autorun scripts, -runscript, …">Start-up</button>
   <button id="add">Add account</button>
+  <button id="dirOff" class="danger" title="Stop the Director. It is the only thing that keeps it down — anything else and director-keep.js brings it straight back.">Turn off</button>
   <button id="themeBtn" title="Switch between light and dark">Dark</button>
   <button id="pollAll" class="primary">Poll all</button>
 </header>
@@ -534,6 +609,7 @@
   <div class="range tr-subtabs" id="trSub" role="tablist">
     <div data-s="results" class="on" role="tab" tabindex="0">Trading results</div>
     <div data-s="setup" role="tab" tabindex="0">Trading</div>
+    <div data-s="glitch" role="tab" tabindex="0">Glitch log</div>
   </div>
   <div id="trResults">
   <div id="trRunBanner"></div>
@@ -548,8 +624,9 @@
   <div class="tr-grid">
     <div class="bandwrap">
       <h3>Orders every 5 minutes</h3>
-      <div class="tr-muted">What the holiday side placed against what our accounts placed, and the share that reached us above each pair.
-        Over 100% means other players traded into our orders too.</div>
+      <div class="tr-muted">What the holiday side sold against what our accounts actually took, and the share that reached us above each pair.
+        Our buying side cancels and re-places its bids to keep its slots turning over, so every cancelled bid is taken back off its count —
+        without that the return read 1072% on a day the banks had already run dry (2026-09-24). Over 100% still means other players traded into our orders too.</div>
       <div class="legend">
         <span class="k"><i style="background:var(--warn)"></i>holiday side</span>
         <span class="k"><i style="background:var(--blue)"></i>our accounts</span>
@@ -656,7 +733,276 @@
       </div>
     </div>
   </div>
+
+  <!-- ---- Glitch log: one record per maintenance, in and out, day by day ---- -->
+  <div id="trGlitch" hidden>
+    <div class="gl-bar">
+      <div class="range" id="glRange">
+        <div data-d="7">7d</div><div data-d="14" class="on">14d</div><div data-d="30">30d</div><div data-d="90">90d</div><div data-d="0">all</div>
+      </div>
+      <label class="gl-date">from <input type="date" id="glFrom"></label>
+      <label class="gl-date">to <input type="date" id="glTo"></label>
+      <select id="glAcc" title="account"><option value="">every account</option></select>
+      <input id="glQ" placeholder="search city, account or x,y" style="width:220px">
+      <span style="flex:1"></span>
+      <button id="glRecordBefore" title="File a &quot;before&quot; record from what the consoles hold right now">Record before now</button>
+      <button id="glRecordAfter" title="File an &quot;after&quot; record from what the consoles hold right now">Record after now</button>
+      <button id="glRelogNow" class="danger" title="Log every account in afresh, now. It spends a login each and ends every running script.">Relog the fleet now</button>
+    </div>
+    <div class="bandwrap gl-cfg">
+      <label><input type="checkbox" id="glOn"> keep the log <span class="tr-muted">(a record either side of every maintenance)</span></label>
+      <label><input type="checkbox" id="glRelog"> relog every account before the record
+        <span class="tr-muted">a console's cached figures go stale on a busy account and only a relog refreshes them &mdash; but a refresh <b>ends every city's running script</b>, and nothing puts it back</span></label>
+      <label>lead <input id="glLead" inputmode="numeric" style="width:48px"> minutes before the announced start
+        <span class="tr-muted">(the fleet stands down 5 minutes before it, so the relog has the rest of that to finish)</span></label>
+      <span class="tr-muted" id="glCfgSaved"></span>
+    </div>
+    <div class="tr-muted" id="glMeta" style="margin:10px 0">reading the log&hellip;</div>
+    <div id="glDays"></div>
+    <div class="bandwrap" id="glDetail" hidden></div>
+  </div>
 </div>
+
+<div id="pageMonitor" hidden>
+  <!-- The Monitor: one watcher over the whole server (monitor.js). It has no
+       login of its own - it reads through the chosen account's console. -->
+  <div class="range tr-subtabs" id="monSub" role="tablist">
+    <div data-s="setup" class="on" role="tab" tabindex="0">Setup</div>
+    <div data-s="stats" role="tab" tabindex="0">Statistics</div>
+    <div data-s="cities" role="tab" tabindex="0">Cities</div>
+    <div data-s="lords" role="tab" tabindex="0">Lords</div>
+    <div data-s="events" role="tab" tabindex="0">Changes</div>
+  </div>
+
+  <div id="monBanner"></div>
+
+  <!-- ------------------------------------------------------------ Setup -->
+  <div id="monSetup">
+    <div class="mon-cards" id="monCards"></div>
+
+    <div class="bandwrap">
+      <h3>Which account it reads through</h3>
+      <div class="tr-muted" style="margin-bottom:8px">
+        The Monitor never logs in &mdash; a second login would kick whatever holds the account.
+        It asks one running console to read the map and the rankings on the socket that console
+        already has, so the game still sees a single session. That account goes on playing its
+        own goals exactly as before.
+      </div>
+      <div class="mon-row">
+        <label>Account
+          <select id="monAcc" style="min-width:230px"><option value="">&mdash; choose &mdash;</option></select>
+        </label>
+        <button id="monSwitch" class="primary">Start</button>
+        <span class="tr-muted" id="monProc">&mdash;</span>
+      </div>
+    </div>
+
+    <div class="bandwrap">
+      <h3>How often, and how hard</h3>
+      <div class="mon-grid">
+        <label>Map sweep every
+          <span><input type="number" id="cfgMapMin" min="2" max="720" style="width:70px"> min</span>
+          <i>All 1,600 blocks of the world: every player city, its lord, its alliance and its state.</i></label>
+        <label>Rankings every
+          <span><input type="number" id="cfgStatsMin" min="5" max="720" style="width:70px"> min</span>
+          <i>The game recomputes the Statistics window about every 15 minutes, so reading it faster only costs pages.</i></label>
+        <label>Watch list every
+          <span><input type="number" id="cfgWatchMin" min="2" max="720" style="width:70px"> min</span>
+          <i>Each watched lord asked for by name &mdash; prestige, cities, rank and last login.</i></label>
+        <label>Watch the top
+          <span><input type="number" id="cfgWatchTop" min="0" max="1000" style="width:70px"> heroes</span>
+          <i>Their lords become the watch list. 0 watches only the names you add below.</i></label>
+        <label>Not moving after
+          <span><input type="number" id="cfgStallMin" min="5" max="1440" style="width:70px"> min</span>
+          <i>Prestige unchanged this long and a lord is called still. Lords on holiday are left out &mdash; they cannot move it.</i></label>
+        <label>Blocks per request
+          <span><input type="number" id="cfgBlocks" min="9" max="180" step="9" style="width:70px"></span>
+          <i>How much of the map is asked for at a time. The console sends them nine at a time whatever this says.</i></label>
+        <label>Pause between requests
+          <span><input type="number" id="cfgPause" min="0" max="5000" step="50" style="width:70px"> ms</span>
+          <i>Slower is kinder: rate limiting is per account, not per IP.</i></label>
+        <label>Keep a reading every
+          <span><input type="number" id="cfgReadEvery" min="0" max="1440" step="5" style="width:70px"> min</span>
+          <i>A prestige reading is always kept when it MOVED. This keeps one anyway, so a lord standing
+             still leaves a trail instead of a single row. 0 keeps only the moves.</i></label>
+        <label>Throw those away after
+          <span><input type="number" id="cfgReadKeep" min="1" max="365" style="width:70px"> days</span>
+          <i>Only the in-between readings — a reading that recorded a move is kept for ever.</i></label>
+      </div>
+      <div style="margin-top:12px">
+        <label style="display:block;margin-bottom:5px">Also watch these lords, whatever they rank
+          <i style="display:block;color:var(--dim);font-weight:400;font-size:var(--fs-sm)">One a line, or separated by commas.</i></label>
+        <textarea id="cfgNames" rows="3" style="width:100%;max-width:520px"></textarea>
+      </div>
+      <div class="mon-row" style="margin-top:12px">
+        <button id="monSave" class="primary">Save</button>
+        <span class="sp"></span>
+        <button id="runMap">Map sweep now</button>
+        <button id="runStats">Rankings now</button>
+        <button id="runWatch">Watch now</button>
+      </div>
+    </div>
+
+    <div class="mon-two">
+      <div class="bandwrap">
+        <h3>The watch list as it stands</h3>
+        <div class="tr-muted" style="margin-bottom:6px">Who the next watch pass will ask about. It is only as good as the last rankings read.</div>
+        <div class="tr-scroll" style="max-height:320px"><table class="tr-tbl" id="monWatchTbl"></table></div>
+      </div>
+      <div class="bandwrap">
+        <h3>Recent sweeps</h3>
+        <div class="tr-muted" style="margin-bottom:6px">Every pass the Monitor has run, newest first.</div>
+        <div class="tr-scroll" style="max-height:320px"><table class="tr-tbl" id="monSweepTbl"></table></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------- Statistics -->
+  <div id="monStats" hidden>
+    <div class="mon-row">
+      <div class="range" id="msKind">
+        <div data-k="players" class="on">Players</div>
+        <div data-k="alliances">Alliances</div>
+        <div data-k="heroes">Heroes</div>
+        <div data-k="cities">Cities</div>
+      </div>
+      <input id="msQ" placeholder="anything - a lord, an alliance, a hero..." style="width:280px">
+      <span class="sp"></span>
+      <span class="tr-muted" id="msMeta">&mdash;</span>
+    </div>
+    <div class="mon-filters" id="msFilters"></div>
+    <div class="bandwrap" style="margin-top:12px">
+      <div class="tr-scroll" style="max-height:62vh"><table class="tr-tbl" id="msTbl"></table></div>
+      <div class="mon-row" style="margin-top:8px">
+        <button id="msPrev">&larr; previous</button><button id="msNext">next &rarr;</button>
+        <span class="tr-muted" id="msPage">&mdash;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ----------------------------------------------------------- Cities -->
+  <div id="monCities" hidden>
+    <div class="mon-row">
+      <input id="mcQ" placeholder="city or lord..." style="width:200px">
+      <div class="ally" id="mcAlly"></div>
+      <input id="mcLord" placeholder="lord..." style="width:170px">
+      <label>level <input id="mcLevel" type="number" min="1" max="15" style="width:62px"></label>
+      <label>prestige &ge; <input id="mcPrestige" type="number" style="width:100px"></label>
+      <select id="mcState">
+        <option value="">any state</option>
+        <option value="1">peace</option><option value="2">truce</option>
+        <option value="3">beginner</option><option value="5">holiday</option>
+        <option value="6">dream truce</option>
+      </select>
+      <span class="sp"></span>
+      <span class="tr-muted" id="mcMeta">&mdash;</span>
+      <button id="mcExport" title="Every city matching these filters, in this order, as an Excel sheet">Export to Excel</button>
+    </div>
+    <div class="bandwrap" style="margin-top:12px">
+      <div class="tr-muted" style="margin-bottom:6px">
+        Every player city the last map sweeps found &mdash; not only the ranked ones. The state is
+        the lord's, read straight off the map, which is the only honest read of who is on holiday.
+      </div>
+      <div class="tr-scroll" style="max-height:62vh"><table class="tr-tbl" id="mcTbl"></table></div>
+      <div class="mon-row" style="margin-top:8px">
+        <button id="mcPrev">&larr; previous</button><button id="mcNext">next &rarr;</button>
+        <span class="tr-muted" id="mcPage">&mdash;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------ Lords -->
+  <div id="monLords" hidden>
+    <div class="mon-row">
+      <input id="mlQ" placeholder="lord..." style="width:200px">
+      <div class="ally" id="mlAlly"></div>
+      <select id="mlState">
+        <option value="">any state</option>
+        <option value="1">peace</option><option value="2">truce</option>
+        <option value="3">beginner</option><option value="5">holiday</option>
+        <option value="6">dream truce</option>
+      </select>
+      <div class="range" id="mlMoving">
+        <div data-m="" class="on">everyone</div>
+        <div data-m="still">not moving</div>
+        <div data-m="moving">moving</div>
+      </div>
+      <label><input type="checkbox" id="mlWatch" style="width:auto"> watched only</label>
+      <span class="sp"></span>
+      <span class="tr-muted" id="mlMeta">&mdash;</span>
+    </div>
+    <div class="bandwrap" style="margin-top:12px">
+      <div class="tr-muted" style="margin-bottom:6px">
+        One row a lord. <b>Still for</b> is how long their prestige has not changed &mdash; a bot
+        that is farming moves it constantly, one that has stopped does not. A lord on holiday
+        cannot move it at all, so a holiday is never called still.
+      </div>
+      <div class="tr-scroll" style="max-height:62vh"><table class="tr-tbl" id="mlTbl"></table></div>
+      <div class="mon-row" style="margin-top:8px">
+        <button id="mlPrev">&larr; previous</button><button id="mlNext">next &rarr;</button>
+        <span class="tr-muted" id="mlPage">&mdash;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- Changes -->
+  <div id="monEvents" hidden>
+    <div class="mon-row">
+      <div class="range" id="meKind">
+        <div data-k="" class="on">everything</div>
+        <div data-k="left-holiday">came off holiday</div>
+        <div data-k="went-holiday">went on holiday</div>
+        <div data-k="stalled">stopped moving</div>
+        <div data-k="moving">moving again</div>
+        <div data-k="alliance">changed alliance</div>
+        <div data-k="cities">gained / lost a city</div>
+        <div data-k="state">other state change</div>
+      </div>
+      <input id="meQ" placeholder="lord or detail..." style="width:200px">
+      <label title="Only lords whose prestige has not moved for at least this many hours, as of now (holiday lords left out). Empty = no limit.">no change for &ge;
+        <input id="meStill" type="text" inputmode="decimal" maxlength="5" placeholder="any" list="meStillList" style="width:100px"> h</label>
+      <datalist id="meStillList"><option value="3"><option value="10"><option value="24"><option value="48"><option value="72"></datalist>
+      <div class="ally" id="meAlly"></div>
+      <label><input type="checkbox" id="meWatch" style="width:auto"> watched only</label>
+      <span class="sp"></span>
+      <span class="tr-muted" id="meMeta">&mdash;</span>
+    </div>
+    <div class="bandwrap" style="margin-top:12px">
+      <div class="tr-scroll" style="max-height:66vh"><table class="tr-tbl" id="meTbl"></table></div>
+      <div class="mon-row" style="margin-top:8px">
+        <button id="mePrev">&larr; previous</button><button id="meNext">next &rarr;</button>
+        <span class="tr-muted" id="mePage">&mdash;</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- One lord, opened from the Best hero column in Changes: their ten best heroes,
+     and every city of theirs as a ready-to-paste scouting script. -->
+<dialog id="lordDlg" style="max-width:min(1180px,94vw)">
+  <b id="ldName">&mdash;</b>
+  <div id="ldHead" style="color:var(--dim);font-size:var(--fs-sm);margin:6px 0 12px"></div>
+  <div style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">
+    <div style="flex:1 1 380px;min-width:340px">
+      <div style="font-size:var(--fs-sm);margin-bottom:6px">Best heroes <span class="tr-muted">(by level, from the rankings sweep)</span></div>
+      <div class="tr-scroll" style="max-height:300px"><table class="tr-tbl" id="ldHeroes"></table></div>
+    </div>
+    <div style="flex:1 1 300px;min-width:280px">
+      <div style="font-size:var(--fs-sm);margin-bottom:6px">Prestige readings <span class="tr-muted">(newest first; a marked row is one that moved)</span></div>
+      <div class="tr-scroll" style="max-height:300px"><table class="tr-tbl" id="ldReadings"></table></div>
+    </div>
+    <div style="flex:1 1 380px;min-width:340px">
+      <div style="font-size:var(--fs-sm);margin-bottom:6px">Every city, as a scouting script <span class="tr-muted" id="ldCount"></span></div>
+      <textarea id="ldScript" readonly spellcheck="false" style="width:100%;height:300px;background:var(--sunken);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:9px;font-family:Consolas,monospace;font-size:var(--fs-sm);line-height:1.6;resize:vertical"></textarea>
+    </div>
+  </div>
+  <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:10px;line-height:1.6" id="ldNote"></div>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button id="ldCopy" class="primary">Copy the script</button>
+    <button id="ldCopyArray">Copy just the array</button>
+    <button id="ldClose">Close</button>
+  </div>
+</dialog>
 
 <dialog id="probeDlg">
   <b>Uptime probes</b>
@@ -1058,24 +1404,6 @@ function warText(w) {
     + `, loyalty ${c.loyalty ?? '?'}`).join(' · ');
 }
 
-// The prisoner pill, and the one for cities the training hero cannot use.
-function capPill(a) {
-  const caps = capsOf(a);
-  const t = cityHeroTrouble(a);
-  const cap = caps.length
-    ? ` <span class="pill cap" title="${escq('holding ' + caps.length + ' prisoner(s) — each one sits in a Feasting Hall slot. ' + capText(caps))}">`
-      + `${caps.length} prisoner${caps.length === 1 ? '' : 's'}</span>`
-    : '';
-  const bad = [];
-  if (t.empty.length) bad.push(`${t.empty.length} empty (${t.empty.join(', ')})`);
-  if (t.full.length) bad.push(`${t.full.length} full (${t.full.join(', ')})`);
-  const cities = bad.length
-    ? ` <span class="pill warn" title="${escq('a city with no heroes has no mayor and trains nothing; a city holding ten has no slot for the training hero. ' + bad.join('; '))}">`
-      + `${bad.join(', ')}</span>`
-    : '';
-  return cap + cities;
-}
-
 // The console process this account runs in. One process may carry several
 // accounts, so the figure is labelled per-process, not per-account.
 function memOf(a) {
@@ -1123,10 +1451,10 @@ function glitchCell(a) {
   return `<span class="pill ok" title="on holiday since ${esc(since)}, through ${n} — its resources are put back to the previous maintenance's amounts">ready · ${n}</span>`;
 }
 
-// The prisoner and empty/full-city pills ride on EVERY status, not only on
-// "online": an account whose console is down still holds whatever it held at its
-// last snapshot, and that is exactly when nobody is watching it.
-function statusPill(a) { return statusPillFor(a) + capPill(a); }
+// The prisoner and empty/full-city info has its own columns (Prisoners,
+// Empty / full cities) further along the row, so Status itself stays just
+// the connection/attack/holiday state.
+function statusPill(a) { return statusPillFor(a); }
 
 function statusPillFor(a) {
   const sn = s(a);
@@ -1151,8 +1479,29 @@ function statusPillFor(a) {
       const mode = L.engineMode && L.engineMode !== 'off' ? ` · ${esc(L.engineMode)}` : '';
       // Holiday mode: logged in and playable, under attack protection for a
       // while yet. Worth seeing on the row, so it is not a surprise later.
-      const hol = L.holiday
-        ? ` <span class="pill maint" title="attack protection, ${esc(L.holiday.text)} left — the bot plays as usual">holiday ${esc(L.holiday.text)}</span>`
+      // Protection: holiday, dream truce, truce or peace. The console's
+      // protection watch reads it off the buffs every couple of minutes
+      // (session.js checkProtection), so it appears within that of the holiday
+      // or truce starting. `L.holiday` is the old login-only source — kept as a
+      // fallback for a console that has not been restarted onto the watch yet.
+      const P = L.protection || (L.holiday
+        ? { kind: 'holiday', label: 'Holiday mode', left: L.holiday.text }
+        : null);
+      // A holiday the game will NOT renew by itself is the one worth catching
+      // before it lapses — an account that drops out of holiday stops having its
+      // resources put back and loses its attack protection. `auto` is null for a
+      // truce or peace, which do not autoextend at all, and for a console still
+      // on the old login-only source.
+      const lapsing = P && P.kind === 'holiday' && P.auto === false;
+      const renew = P && P.kind === 'holiday' && P.auto !== null && P.auto !== undefined
+        ? (P.auto ? `; renewing itself until the coins run out${P.days ? ` (${P.days}-day)` : ''}`
+                  : '; NOT set to renew — it will lapse when it runs out')
+        : '';
+      const hol = P
+        ? ` <span class="pill ${lapsing ? 'warn' : 'maint'}" title="${escq(P.label + ' — attack protection'
+            + (P.left && P.left !== 'no end' ? `, ${P.left} left` : '') + '; the bot plays as usual' + renew)}">`
+          + `${esc(P.kind === 'holiday' ? 'holiday' : P.label.toLowerCase())}${P.left && P.left !== 'no end' ? ` ${esc(P.left)}` : ''}`
+          + `${lapsing ? ' · not renewing' : ''}</span>`
         : '';
       const w = warOf(a);
       const war = w.on ? ` <span class="pill err" title="${esc(warText(w))}">under attack${w.cities.length ? ` · ${w.cities.length} cit${w.cities.length === 1 ? 'y' : 'ies'}` : ''}</span>` : '';
@@ -1425,9 +1774,15 @@ function openBotTab(url, name) {
   let w = null;
   try { w = window.open('', name); } catch { w = null; }
   if (!w) return false;
-  let blank = false;
-  try { blank = !w.location.href || w.location.href === 'about:blank'; } catch { blank = false; }
-  if (blank) w.location.href = url;
+  // ALWAYS point the tab at the console's CURRENT url. It used to navigate only when it
+  // could read the tab's location and found it blank — but a console is on another PORT,
+  // so reading its location throws (cross-origin), `blank` stayed false and the tab was
+  // never re-pointed. Once a bot tab existed it was stuck on whatever port it first got,
+  // and after a console restart moved the port, clicking the account just focused a dead
+  // tab and looked like "it doesn't open" (the user, 2026-09-26, Lord19 on a port
+  // that had been ended). WRITING another window's location is allowed cross-origin, so
+  // set it unconditionally; if it is already there the browser treats it as a reload.
+  try { w.location.href = url; } catch { /* the tab is gone; focus below does nothing */ }
   try { w.focus(); } catch {}
   return true;
 }
@@ -1736,6 +2091,29 @@ colsList.addEventListener('drop', (e) => {
   paintCols(); render();
 });
 colsList.addEventListener('dragend', () => { dragKey = null; clearDrop(colsList); });
+// TURNING THE DIRECTOR OFF (the user, 2026-09-24: "only allow me to manually turn it off
+// with a confirmation popup"). director-keep.js relaunches the Director whenever it stops,
+// so this is the only way it stays down: the server writes the stop file the supervisor
+// watches, then exits. The confirmation is the page's own dialog, never the browser box.
+$('#dirOff').onclick = async () => {
+  const ok = await ask('Turn the Director off?', {
+    title: 'Turn off the Director', ok: 'Turn it off', cancel: 'Leave it running', danger: true,
+    detail: 'The fleet keeps playing — every console runs its own account and handles maintenance by itself. What stops is the Director: live status, the goal files syncing to the accounts, the Trading and Resources tabs, and the fleet-wide maintenance signal.'
+      + ' It will NOT come back by itself. To start it again, delete director-stop.flag in the OTTObot folder (director-keep.js picks that up within a few seconds), or run node director-keep.js.',
+  });
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/director/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    if (j && j.ok) await tell('The Director is stopping. This page will stop updating.',
+      { title: 'Director off', detail: 'Delete director-stop.flag to bring it back.' });
+    else await tell(`It did not stop — ${(j && j.error) || 'no answer'}`, { title: 'Director off' });
+  } catch (e) {
+    // the process going away mid-answer is what success looks like from here
+    await tell('The Director is stopping. This page will stop updating.',
+      { title: 'Director off', detail: 'Delete director-stop.flag to bring it back.' });
+  }
+};
 $('#colsBtn').onclick = () => { paintCols(); $('#colsDlg').showModal(); };
 $('#colsClose').onclick = () => $('#colsDlg').close();
 $('#colsAll').onclick = () => { COLS.forEach((c) => { if (!c.fixed) VISIBLE.add(c.key); }); saveCols(); paintCols(); render(); };
@@ -1825,10 +2203,12 @@ document.querySelectorAll('.tab').forEach((t) => {
     $('#pageTrading').hidden = PAGE !== 'trading';
     $('#pageResources').hidden = PAGE !== 'resources';
     $('#pageAccounts').hidden = PAGE !== 'accounts';
+    $('#pageMonitor').hidden = PAGE !== 'monitor';
     if (PAGE === 'accounts') { amRepaint(); $('#amWrap').focus({ preventScroll: true }); }
+    if (PAGE === 'monitor') showMonSub(MON_SUB);
     if (PAGE === 'resources') loadResources();
     if (PAGE === 'uptime') loadUptime();
-    if (PAGE === 'trading') (TR_SUB === 'setup' ? loadSetup() : loadTrading());
+    if (PAGE === 'trading') loadTrSub();
   };
 });
 
@@ -1837,14 +2217,22 @@ document.querySelectorAll('.tab').forEach((t) => {
 // ======================================================================
 let TR = null, TR_MIN = 60;
 // Trading's two views: "Trading results" (what the play is doing) and "Trading" (the setup).
-let TR_SUB = (() => { try { return localStorage.getItem('dir_trsub') === 'setup' ? 'setup' : 'results'; } catch { return 'results'; } })();
+const TR_SUBS = ['results', 'setup', 'glitch'];
+let TR_SUB = (() => { try { const v = localStorage.getItem('dir_trsub'); return TR_SUBS.includes(v) ? v : 'results'; } catch { return 'results'; } })();
 function showTrSub(v) {
-  TR_SUB = v;
-  try { localStorage.setItem('dir_trsub', v); } catch { /* private window */ }
-  document.querySelectorAll('#trSub [data-s]').forEach((x) => x.classList.toggle('on', x.dataset.s === v));
-  $('#trResults').hidden = v !== 'results';
-  $('#trSetup').hidden = v !== 'setup';
-  if (PAGE === 'trading') (v === 'setup' ? loadSetup() : loadTrading());
+  TR_SUB = TR_SUBS.includes(v) ? v : 'results';
+  try { localStorage.setItem('dir_trsub', TR_SUB); } catch { /* private window */ }
+  document.querySelectorAll('#trSub [data-s]').forEach((x) => x.classList.toggle('on', x.dataset.s === TR_SUB));
+  $('#trResults').hidden = TR_SUB !== 'results';
+  $('#trSetup').hidden = TR_SUB !== 'setup';
+  $('#trGlitch').hidden = TR_SUB !== 'glitch';
+  if (PAGE === 'trading') loadTrSub();
+}
+// each view loads its own thing; the tab is opened on whichever was last used
+function loadTrSub() {
+  if (TR_SUB === 'setup') return loadSetup();
+  if (TR_SUB === 'glitch') return loadGlitch();
+  return loadTrading();
 }
 $('#trSub').onclick = (e) => { const d = e.target.closest('[data-s]'); if (d) showTrSub(d.dataset.s); };
 $('#trSub').onkeydown = (e) => { const d = e.target.closest('[data-s]'); if (d && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showTrSub(d.dataset.s); } };
@@ -1975,18 +2363,19 @@ function paintTrading() {
     if (k.running) return `<span style="color:var(--warn)">cleaning since ${trClock(k.startAt)}</span>`;
     return `<b>${(k.removed || 0).toLocaleString()}</b> <span class="tr-muted">at ${trClock(k.doneAt)}${k.startAt ? ` (${Math.max(1, Math.round((k.doneAt - k.startAt) / 60000))} min)` : ''}</span>`;
   };
-  $('#trAccounts').innerHTML = '<tr><th>account</th><th>side</th><th>orders /min</th><th>refused</th><th>cities trading</th><th>sitting out</th><th>stock at last login</th><th>reports cleaned</th><th>connection</th></tr>'
+  $('#trAccounts').innerHTML = '<tr><th>account</th><th>side</th><th>orders /min</th><th>taken back</th><th>refused</th><th>cities trading</th><th>sitting out</th><th>stock at last login</th><th>reports cleaned</th><th>connection</th></tr>'
     + inPlay.map((a) => `<tr>
       <td><b>${esc(a.label)}</b>${a.connected === false ? ' <span class="tr-tag" style="color:var(--bad);border-color:var(--bad)">offline</span>' : ''}</td>
       <td><span class="tr-tag ${a.holiday ? 'hol' : 'ours'}">${a.holiday ? 'holiday' : 'ours'}</span> <span class="tr-muted">${a.side ? (a.side === 'sell' ? 'sells' : 'buys') : ''}</span></td>
       <td>${(a.placed2 / 2).toFixed(0)}</td>
+      <td title="Bids this account cancelled to keep its slots turning over. They were never filled, so they come off what it traded.">${a.cancelled2 ? `<span class="tr-muted">${(a.cancelled2 / 2).toFixed(0)}</span>` : '<span class="tr-muted">—</span>'}</td>
       <td style="color:${a.refused2 ? 'var(--warn)' : 'var(--dim)'}">${a.refused2}</td>
       <td>${a.active}</td>
       <td>${a.sitting.length ? a.sitting.map((x) => esc(x.city)).join(', ') + ` <span class="tr-muted">(${esc(a.sitting[0].res)})</span>` : '<span class="tr-muted">—</span>'}</td>
       <td>${stock(a)}</td>
       <td>${cleanCell(a)}</td>
       <td>${lastConn(a)}</td></tr>`).join('')
-    + (idle.length ? `<tr><td colspan="9" class="tr-muted">not trading in this window: ${idle.map((a) => esc(a.label)).join(', ')}</td></tr>` : '');
+    + (idle.length ? `<tr><td colspan="10" class="tr-muted">not trading in this window: ${idle.map((a) => esc(a.label)).join(', ')}</td></tr>` : '');
 }
 
 // ---------- ask / tell ----------
@@ -2115,8 +2504,8 @@ function paintSetup() {
       return `<div class="ts-msg warn"><b>Stopping — ${esc(ss.text)}.</b>\nStart comes back at about <b>${new Date(ss.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>`
         + ` (${left ? 'in ~' + left + ' min' : 'any moment'}). Changes to the setup can be saved meanwhile.</div>`;
     })() : '')
-    + (check.errors.length ? `<div class="ts-msg bad"><b>Start is refused until these are fixed:</b>\n${check.errors.map((e) => '• ' + esc(e)).join('\n')}</div>` : '<div class="ts-msg ok">Every check for a start passes.</div>')
-    + (check.warnings.length ? `<div class="ts-msg warn">${check.warnings.map((e) => '• ' + esc(e)).join('\n')}</div>` : '');
+    + (check.errors.length ? `<details class="ts-msg bad"><summary><b>Start is refused — ${check.errors.length} issue${check.errors.length > 1 ? 's' : ''} to fix</b></summary><div class="ts-msg-body">${check.errors.map((e) => '• ' + esc(e)).join('\n')}</div></details>` : '<div class="ts-msg ok">Every check for a start passes.</div>')
+    + (check.warnings.length ? `<details class="ts-msg warn"><summary><b>${check.warnings.length} note${check.warnings.length > 1 ? 's' : ''}</b></summary><div class="ts-msg-body">${check.warnings.map((e) => '• ' + esc(e)).join('\n')}</div></details>` : '');
 
   // ---- the three lists
   const now = TS.now;
@@ -2329,6 +2718,248 @@ $('#tsHoli').onclick = async () => {
   const keep = TS_DIRTY; TS = r; TS_DIRTY = keep; paintSetup();
 };
 
+
+// ======================================================================
+//  Glitch log — one record per maintenance (/api/glitch, glitch-log.js)
+// ======================================================================
+//
+// What every town of every account was holding going INTO a maintenance and what it
+// was holding coming out, day by day, with the runs of that day beside it. The
+// put-back is random town by town (EVONY-RULES §4), so the pairs are the whole point
+// — one day says nothing, a fortnight says which towns are never restored.
+const GL_RES = ['food', 'wood', 'stone', 'iron', 'gold'];
+let GLOG = null, GL_DAYS = 14, GL_FROM = '', GL_TO = '', GL_OPEN = null, GL_DETAIL = null, GL_ACC = '', GL_Q = '';
+const glDayName = (d) => new Date(d + 'T00:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+const glClock = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—');
+const glSigned = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + rsAmt(Math.abs(n));
+const glCls = (n) => (n > 0 ? 'gl-up' : n < 0 ? 'gl-down' : 'tr-muted');
+// today, and N days back, as the date inputs want them (local dates, like the record)
+const glISO = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+$('#glRange').onclick = (e) => {
+  const d = e.target.closest('[data-d]');
+  if (!d) return;
+  document.querySelectorAll('#glRange div').forEach((x) => x.classList.toggle('on', x === d));
+  GL_DAYS = Number(d.dataset.d);
+  // the quick ranges drive the date boxes, so the two never disagree
+  GL_TO = ''; GL_FROM = GL_DAYS ? glISO(Date.now() - (GL_DAYS - 1) * 86400000) : '';
+  $('#glFrom').value = GL_FROM; $('#glTo').value = '';
+  loadGlitch();
+};
+$('#glFrom').onchange = () => { GL_FROM = $('#glFrom').value; glClearRange(); loadGlitch(); };
+$('#glTo').onchange = () => { GL_TO = $('#glTo').value; glClearRange(); loadGlitch(); };
+function glClearRange() { document.querySelectorAll('#glRange div').forEach((x) => x.classList.remove('on')); }
+$('#glAcc').onchange = () => { GL_ACC = $('#glAcc').value; if (GL_OPEN) loadGlitchDay(GL_OPEN); };
+let glQTimer = null;
+$('#glQ').oninput = () => { clearTimeout(glQTimer); glQTimer = setTimeout(() => { GL_Q = $('#glQ').value; if (GL_OPEN) loadGlitchDay(GL_OPEN); }, 300); };
+
+// Changing the two date boxes one after the other puts two reads in flight, and the
+// older one can come back last: without this the page paints the range you just left.
+// Each read takes a ticket and only the newest one is allowed to paint.
+let GL_SEQ = 0;
+async function loadGlitch() {
+  // first look: the quick range the markup starts on, written into the date boxes so
+  // the two always say the same thing
+  if (!GL_FROM && !GL_TO && GL_DAYS) { GL_FROM = glISO(Date.now() - (GL_DAYS - 1) * 86400000); $('#glFrom').value = GL_FROM; }
+  const qs = new URLSearchParams();
+  if (GL_FROM) qs.set('from', GL_FROM);
+  if (GL_TO) qs.set('to', GL_TO);
+  const mine = ++GL_SEQ;
+  const got = await fetch('/api/glitch?' + qs).then((r) => r.json()).catch(() => null);
+  if (mine !== GL_SEQ) return;                 // a newer range is already on its way
+  if (got) GLOG = got;
+  if (!GLOG || GLOG.error) { $('#glMeta').textContent = 'could not read the glitch log' + (GLOG && GLOG.error ? ': ' + GLOG.error : ''); return; }
+  paintGlitchCfg();
+  paintGlitch();
+}
+// a record lands either side of one maintenance a day: looking every 2 minutes is plenty
+setInterval(() => { if (PAGE === 'trading' && TR_SUB === 'glitch' && !document.hidden) loadGlitch(); }, 120000);
+
+function paintGlitchCfg() {
+  const c = (GLOG && GLOG.config) || { on: true, relog: true, leadMin: 10 };
+  $('#glOn').checked = !!c.on;
+  $('#glRelog').checked = !!c.relog;
+  if (document.activeElement !== $('#glLead')) $('#glLead').value = c.leadMin;
+}
+async function saveGlitchCfg() {
+  const r = await fetch('/api/glitch/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ on: $('#glOn').checked, relog: $('#glRelog').checked, leadMin: Number($('#glLead').value) }) })
+    .then((x) => x.json()).catch(() => null);
+  if (r && r.config) { GLOG = { ...(GLOG || {}), config: r.config }; paintGlitchCfg(); }
+  $('#glCfgSaved').textContent = r && r.ok ? 'saved' : 'could not be saved';
+  setTimeout(() => { $('#glCfgSaved').textContent = ''; }, 2500);
+}
+$('#glOn').onchange = saveGlitchCfg;
+$('#glRelog').onchange = async () => {
+  // Switching it ON is the one with a price, so it is the one that asks.
+  if ($('#glRelog').checked) {
+    const ok = await ask('Log every account in afresh before each maintenance?', {
+      title: 'Relog before the record', ok: 'Do that', danger: true,
+      detail: 'A console\'s cached resource figures go stale on a busy account, and only a relog refreshes them — without this the "before" figures can be an hour old.\n\n'
+        + 'But a refresh ENDS every city\'s running script and nothing puts it back, and it spends a login each. It fires once per maintenance, only when the window was actually announced, and never inside the stand-down.',
+    });
+    if (!ok) { $('#glRelog').checked = false; return; }
+  }
+  saveGlitchCfg();
+};
+$('#glLead').onchange = saveGlitchCfg;
+
+$('#glRecordBefore').onclick = () => glRecord('before');
+$('#glRecordAfter').onclick = () => glRecord('after');
+async function glRecord(side) {
+  const btn = $(side === 'before' ? '#glRecordBefore' : '#glRecordAfter');
+  btn.disabled = true;
+  const r = await fetch('/api/glitch/record', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ side }) }).then((x) => x.json()).catch(() => null);
+  btn.disabled = false;
+  if (!r || r.error) return tell((r && r.error) || 'the record failed', { title: 'Glitch log' });
+  if (!r.ok) return tell(`Nothing to record: ${(r.skipped || []).join('; ') || 'no snapshots'}`, { title: 'Glitch log' });
+  $('#glMeta').textContent = `recorded ${r.rows} cities as the "${side}" of ${r.day}`;
+  loadGlitch();
+}
+$('#glRelogNow').onclick = async () => {
+  const ok = await ask('Log every account in afresh, now?', {
+    title: 'Relog the fleet', ok: 'Relog them', danger: true,
+    detail: 'Every console logs in again, which refreshes what each city holds — and ENDS every script running in every city. Nothing puts those back.\n\n'
+      + 'It is refused for any account standing down for maintenance, and a console that refreshed in the last 15 minutes will not do it again.',
+  });
+  if (!ok) return;
+  $('#glRelogNow').disabled = true;
+  $('#glMeta').textContent = 'relogging the fleet — this takes a minute or two…';
+  const r = await fetch('/api/glitch/relog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then((x) => x.json()).catch(() => null);
+  $('#glRelogNow').disabled = false;
+  if (!r || r.error) return tell((r && r.error) || 'the relog failed', { title: 'Relog the fleet' });
+  const bad = Object.values(r.results || {}).filter((x) => !x.ok);
+  $('#glMeta').textContent = `relogged ${r.relogged}/${r.total} accounts`
+    + (bad.length ? ` — ${bad.map((x) => `${x.label}: ${x.error}`).join('; ')}` : '');
+  loadGlitch();
+};
+
+function paintGlitch() {
+  const days = GLOG.days || [];
+  const span = GLOG.first ? ` The log goes back to ${glDayName(GLOG.first)}.` : '';
+  $('#glMeta').innerHTML = days.length
+    ? `${days.length} maintenance${days.length === 1 ? '' : 's'} in this range. A record is taken at the fleet's stand-down and again once it is back in; `
+      + `click a day for every town, in and out.${esc(span)}`
+    : `No record in this range yet — the first is taken at the next maintenance.${esc(span)}`;
+  $('#glDays').innerHTML = days.map((d) => glDayCard(d)).join('')
+    || '<div class="tr-muted">nothing to show</div>';
+  if (GL_OPEN && !days.some((d) => d.day === GL_OPEN)) { GL_OPEN = null; $('#glDetail').hidden = true; }
+  if (GL_OPEN) paintGlitchDetail();
+}
+
+function glDayCard(d) {
+  const open = d.day === GL_OPEN;
+  const half = (s, t) => (t ? `${s} ${glClock(t)}` : `<span class="tr-muted">${s} not taken</span>`);
+  const relog = d.relogAt
+    ? `<span class="tr-tag" title="every account was logged in afresh before the record, so these are the server's figures and not a console's cache">refreshed ${d.relogged}${d.relogFailed ? ` · ${d.relogFailed} failed` : ''}</span>`
+    : '<span class="tr-tag" title="no relog before this record — the figures are whatever each console had cached, which lags on a busy account">cached</span>';
+  const sums = d.before && d.after
+    ? GL_RES.map((k) => `<div class="gl-sum" title="the whole fleet's ${k}: ${rsAmt(d.before[k])} going in, ${rsAmt(d.after[k])} coming out">
+        <span class="k">${k}</span><b>${rsAmt(d.after[k])}</b>
+        <span class="d ${glCls(d.delta[k])}">${glSigned(d.delta[k])}</span></div>`).join('')
+    : `<div class="tr-muted">${d.before ? 'only the "before" record was taken' : d.after ? 'only the "after" record was taken' : 'nothing recorded'}</div>`;
+  const runs = (d.runs || []).map((r) => `<div class="gl-run">
+      <span class="tr-tag ${r.bankSide ? 'hol' : ''}">${esc(r.kind === 'gold' ? 'gold play' : 'resource play')}</span>
+      <b>${esc(r.res || '—')}</b> @ ${esc(String(r.price))}
+      <span class="tr-muted">${glClock(r.createdAt)}${r.stoppedAt ? '–' + glClock(r.stoppedAt) : ' — still going'} ·
+      ${r.banks} bank${r.banks === 1 ? '' : 's'}, ${r.buy} buying, ${r.sell} selling · ${esc(r.state || '')}</span></div>`).join('');
+  return `<div class="gl-day${open ? ' open' : ''}" data-day="${esc(d.day)}">
+    <div class="gl-dayhead">
+      <h3>${esc(glDayName(d.day))}</h3>
+      <span class="gl-when">${half('in', d.beforeAt)} → ${half('out', d.afterAt)}</span>
+      <span class="tr-muted">maintenance ${glClock(d.startAt)}${d.endAt ? ' → ' + glClock(d.endAt) : d.resumeAt ? ' → about ' + glClock(d.resumeAt) : ''}${d.source === 'assumed' ? ', assumed' : ''}</span>
+      ${relog}
+      ${d.before ? `<span class="tr-muted">${d.before.cities} cities, ${d.before.accounts} accounts</span>` : ''}
+      <span style="flex:1"></span>
+      <span class="tr-muted">${open ? '▾ close' : '▸ every town'}</span>
+    </div>
+    <div class="gl-sums">${sums}</div>
+    ${runs ? `<div class="gl-runs">${runs}</div>` : '<div class="gl-runs tr-muted">no trading run recorded that day</div>'}
+  </div>`;
+}
+
+$('#glDays').onclick = (e) => {
+  const card = e.target.closest('.gl-day');
+  if (!card) return;
+  const day = card.dataset.day;
+  if (GL_OPEN === day) { GL_OPEN = null; GL_DETAIL = null; $('#glDetail').hidden = true; paintGlitch(); return; }
+  GL_OPEN = day;
+  loadGlitchDay(day);
+};
+
+let GL_DSEQ = 0;
+async function loadGlitchDay(day) {
+  const qs = new URLSearchParams({ day, accounts: GL_ACC, q: GL_Q });
+  const mine = ++GL_DSEQ;                      // typing in the search box does the same
+  const got = await fetch('/api/glitch/day?' + qs).then((r) => r.json()).catch(() => null);
+  if (mine !== GL_DSEQ) return;
+  GL_DETAIL = got;
+  paintGlitch();
+}
+
+function paintGlitchDetail() {
+  const d = GL_DETAIL;
+  const box = $('#glDetail');
+  box.hidden = false;
+  if (!d || d.error || !d.found) {
+    box.innerHTML = `<div class="tr-muted">${esc((d && d.error) || 'nothing recorded for that day')}</div>`;
+    return;
+  }
+  // the account picker is filled from the day itself, so it only offers what is in it
+  const sel = $('#glAcc');
+  const opts = '<option value="">every account</option>'
+    + (d.accounts || []).map((a) => `<option value="${esc(a.id)}"${a.id === GL_ACC ? ' selected' : ''}>${esc(a.label)}</option>`).join('');
+  if (sel.innerHTML !== opts) sel.innerHTML = opts;
+
+  const cell = (t, k) => (t ? rsAmt(t[k]) : '<span class="tr-muted">—</span>');
+  const rows = (d.towns || []).map((t) => `<tr>
+      <td>${esc(t.label)}</td><td>${esc(t.city)}</td><td class="tr-muted">${t.x},${t.y}</td>
+      ${GL_RES.map((k) => `<td class="num pair">${cell(t.before, k)} → ${cell(t.after, k)}
+        ${t.delta && t.delta[k] ? `<span class="${glCls(t.delta[k])}">${glSigned(t.delta[k])}</span>` : ''}</td>`).join('')}
+      <td>${t.live ? '<span class="tr-tag ours" title="this account was logged in afresh before the record — the server\'s own figures">live</span>'
+    : '<span class="gl-cached" title="the console\'s cached figures, which lag on a busy account">cached</span>'}</td>
+    </tr>`).join('');
+  const accRow = (a) => `<tr>
+      <td><b>${esc(a.label)}</b>${a.lord ? ` <span class="tr-muted">${esc(a.lord)}</span>` : ''}</td>
+      <td colspan="2">${a.holiday === true ? '<span class="tr-tag hol">on holiday</span>' : a.holiday === false ? '<span class="tr-muted">not on holiday</span>' : '<span class="tr-muted">holiday unknown</span>'}
+        ${a.side ? `<span class="tr-tag">${esc(a.side)}</span>` : ''} <span class="tr-muted">${a.towns} towns</span></td>
+      ${GL_RES.map((k) => `<td class="num ${glCls(a.delta[k])}">${glSigned(a.delta[k])}</td>`).join('')}
+      <td class="tr-muted">${a.live}/${a.towns} live</td></tr>`;
+  box.innerHTML = `
+    <div class="rs-head"><h3>${esc(glDayName(d.day))} — every town, in and out</h3>
+      <span class="tr-muted" style="margin-left:auto">stood down ${glClock(d.pauseAt)} · recorded ${glClock(d.beforeAt)} and ${glClock(d.afterAt)}</span></div>
+    <div class="tr-muted" style="margin:6px 0 10px">Each cell is what that town held going in → coming out, and the difference.
+      An account on holiday should come out at what it went into the <i>previous</i> maintenance with; one that does not is a town the glitch does not restore
+      — those are the towns not to sell dry.</div>
+    <div class="tr-scroll"><table class="tr-tbl gl-tbl">
+      <tr><th>account</th><th>city</th><th>x,y</th>${GL_RES.map((k) => `<th class="num">${k}</th>`).join('')}<th>figures</th></tr>
+      ${rows || `<tr><td colspan="${GL_RES.length + 4}" class="tr-muted">no towns match</td></tr>`}
+    </table></div>
+    <div class="rs-head" style="margin-top:14px"><h3>By account</h3></div>
+    <div class="tr-scroll"><table class="tr-tbl gl-tbl">
+      <tr><th>account</th><th colspan="2">holiday / side</th>${GL_RES.map((k) => `<th class="num">${k}</th>`).join('')}<th>refreshed</th></tr>
+      ${(d.accounts || []).map(accRow).join('')}
+      <tr class="rs-total"><td colspan="3"><b>the whole fleet</b></td>${GL_RES.map((k) => `<td class="num ${glCls(d.totals.delta[k])}">${glSigned(d.totals.delta[k])}</td>`).join('')}<td></td></tr>
+      <tr class="rs-side"><td colspan="3"><span class="rs-dot hol"></span>the holiday side</td>${GL_RES.map((k) => `<td class="num ${glCls(d.bySide.hol[k])}">${glSigned(d.bySide.hol[k])}</td>`).join('')}<td></td></tr>
+      <tr class="rs-side"><td colspan="3"><span class="rs-dot out"></span>our other accounts</td>${GL_RES.map((k) => `<td class="num ${glCls(d.bySide.out[k])}">${glSigned(d.bySide.out[k])}</td>`).join('')}<td></td></tr>
+    </table></div>
+    ${glRelogTable(d)}`;
+}
+
+// What the refresh before the record cost and what it caught — the accounts it could
+// not reach are exactly the ones whose "before" figures are not to be trusted.
+function glRelogTable(d) {
+  const rows = Object.entries(d.relog || {});
+  if (!rows.length) return '<div class="tr-muted" style="margin-top:14px">No relog before this record — every figure above is whatever the console had cached.</div>';
+  const bad = rows.filter(([, x]) => !x.ok);
+  const scripts = rows.reduce((s, [, x]) => s + (Number(x.scripts) || 0), 0);
+  return `<div class="rs-head" style="margin-top:14px"><h3>The refresh before it</h3></div>
+    <div class="tr-muted" style="margin:6px 0 0">${rows.length - bad.length} of ${rows.length} accounts logged in afresh at ${glClock(d.relogAt)}.
+      ${scripts ? `${scripts} script run(s) were going and a refresh ends those.` : ''}
+      ${bad.length ? 'Not refreshed: ' + esc(bad.map(([, x]) => `${x.label} (${x.error || 'failed'})`).join(', ')) + '.' : ''}</div>`;
+}
 
 // ======================================================================
 //  Resources — every city's stock, recorded once an hour (/api/resources)
@@ -3208,6 +3839,759 @@ $('#amRenumber').onclick = async () => {
 
 refresh();
 setInterval(() => { if (PAGE === 'fleet' || PAGE === 'accounts') refresh(); else loadUptime(); }, 5000);
+
+// ======================================================================
+//  Monitor — one watcher over the whole server (/api/monitor, monitor.js)
+//
+//  Five views. Setup says which console it reads through and how often;
+//  Statistics is the game's four ranked lists, filtered a column at a time;
+//  Cities and Lords are what the map sweeps found; Changes is the feed of
+//  what moved — above all a lord coming off holiday, and a bot going quiet.
+// ======================================================================
+let MON = null;
+let MON_SUB = (() => { try { return localStorage.getItem('dir_monsub') || 'setup'; } catch { return 'setup'; } })();
+const MS = { kind: 'players', q: '', sort: 'rank', dir: 'asc', offset: 0, limit: 200, filters: {} };
+const MC = { sort: 'prestige', dir: 'desc', offset: 0, limit: 200 };
+const ML = { sort: 'prestige', dir: 'desc', offset: 0, limit: 200, moving: '' };
+const ME = { kind: '', limit: 300, offset: 0, sort: 'at', dir: 'desc' };
+const MONSTATE = { 1: 'peace', 2: 'truce', 3: 'beginner', 5: 'holiday', 6: 'dream truce' };
+
+function debounceMon(fn, ms = 250) {
+  let t = null;
+  return () => { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+// A list value goes out as the same key repeated — ally=A&ally=B — rather than
+// joined, because an alliance name is free text and may hold a comma.
+function monQs(qs) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(qs || {})) {
+    if (Array.isArray(v)) v.forEach((x) => p.append(k, x));
+    else if (v !== undefined && v !== null) p.append(k, v);
+  }
+  return p.toString();
+}
+const monGet = (p, qs) => fetch('/api/monitor' + p + (qs ? '?' + monQs(qs) : '')).then((r) => r.json());
+const monPost = (p, b) => fetch('/api/monitor' + p, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}),
+}).then((r) => r.json());
+
+const agoMin = (t) => (!t ? '—' : Math.round((Date.now() - Number(t)) / 60000) + 'm ago');
+const monClock = (t) => (!t ? '—' : new Date(Number(t)).toLocaleTimeString());
+const monDur = (m) => {
+  m = Number(m || 0);
+  if (m < 90) return m + 'm';
+  if (m < 60 * 36) return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  return Math.floor(m / 1440) + 'd ' + Math.floor((m % 1440) / 60) + 'h';
+};
+const statePill = (name) => (name ? `<span class="mon-pill ${esc(name)}">${esc(name)}</span>` : '<span class="tr-muted">—</span>');
+// A lord's name opens their history wherever it appears.
+const who = (name) => `<span class="mon-who" data-who="${esc(name)}">${esc(name)}</span>`;
+
+function showMonSub(v) {
+  MON_SUB = v;
+  try { localStorage.setItem('dir_monsub', v); } catch { /* private window */ }
+  document.querySelectorAll('#monSub [data-s]').forEach((x) => x.classList.toggle('on', x.dataset.s === v));
+  for (const [id, s] of [['#monSetup', 'setup'], ['#monStats', 'stats'], ['#monCities', 'cities'],
+    ['#monLords', 'lords'], ['#monEvents', 'events']]) $(id).hidden = v !== s;
+  if (PAGE !== 'monitor') return;
+  if (v === 'stats') loadMonStats();
+  else if (v === 'cities') loadMonCities();
+  else if (v === 'lords') loadMonLords();
+  else if (v === 'events') loadMonEvents();
+  else loadMonitor();
+}
+$('#monSub').onclick = (e) => { const d = e.target.closest('[data-s]'); if (d) showMonSub(d.dataset.s); };
+$('#monSub').onkeydown = (e) => {
+  const d = e.target.closest('[data-s]');
+  if (d && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showMonSub(d.dataset.s); }
+};
+
+// ---- the alliance picker ---------------------------------------------
+//
+// One control, used by Cities, Lords and Changes: every alliance the map has
+// seen, searchable, each one ticked either to keep or to hide. HIDING is the
+// point of it — the Changes feed is mostly the same few big alliances shuffling
+// about, and hiding them leaves what the user actually watches for.
+//
+// The choice is kept in localStorage, one entry a view, so a feed cleaned up
+// once stays clean the next time the Director is opened.
+const ALLY_NONE = '(no alliance)';
+let ALLY_ROWS = null, ALLY_AT = 0;
+async function allyRows(force) {
+  if (!force && ALLY_ROWS && Date.now() - ALLY_AT < 120000) return ALLY_ROWS;
+  const r = await monGet('/alliances');
+  if (r && r.ok) { ALLY_ROWS = r.rows || []; ALLY_AT = Date.now(); }
+  return ALLY_ROWS || [];
+}
+
+function allyPicker(id, onChange) {
+  const host = $('#' + id), key = 'dir_ally_' + id;
+  let mode = 'hide', names = [], open = false;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || 'null') || {};
+    if (saved.mode === 'only') mode = 'only';
+    if (Array.isArray(saved.names)) names = saved.names.map(String);
+  } catch { /* private window, or a half-written entry */ }
+
+  // The popover is built once and then only its LIST is redrawn, so typing in
+  // the search box never loses the caret.
+  host.innerHTML = '<button class="ally-btn"></button>'
+    + '<div class="ally-pop" hidden>'
+    + '<div class="range ally-mode"><div data-mode="hide">hide these</div><div data-mode="only">only these</div></div>'
+    + '<input class="ally-find" placeholder="search alliances...">'
+    + '<div class="ally-list"></div>'
+    + '<div class="ally-foot"><button class="ally-clear">Show all</button>'
+    + '<span style="flex:1"></span><button class="ally-done primary">Done</button></div>'
+    + '</div>';
+  const btn = host.querySelector('.ally-btn'), pop = host.querySelector('.ally-pop');
+  const find = host.querySelector('.ally-find'), list = host.querySelector('.ally-list');
+
+  const save = () => { try { localStorage.setItem(key, JSON.stringify({ mode, names })); } catch { /* private window */ } };
+  function paintBtn() {
+    const shown = names.map((x) => x || ALLY_NONE);
+    btn.textContent = !shown.length ? 'Alliances: all'
+      : (mode === 'only' ? 'Only ' : 'Hiding ')
+        + shown.slice(0, 2).join(', ') + (shown.length > 2 ? ` +${shown.length - 2}` : '');
+    btn.classList.toggle('primary', !!names.length);
+    host.querySelectorAll('.ally-mode [data-mode]').forEach((d) => d.classList.toggle('on', d.dataset.mode === mode));
+  }
+  function paintList() {
+    const want = find.value.trim().toLowerCase();
+    // a ticked alliance stays on the list even when the search would drop it,
+    // so nothing can be hidden by a filter the user cannot see
+    const rows = (ALLY_ROWS || []).filter((a) => !want
+      || (a.name || ALLY_NONE).toLowerCase().includes(want) || names.includes(a.name));
+    list.innerHTML = rows.length
+      ? rows.map((a) => `<label><input type="checkbox" data-name="${escq(a.name)}"`
+        + `${names.includes(a.name) ? ' checked' : ''}>${esc(a.name || ALLY_NONE)}`
+        + `<i>${fmt(a.lords)} lord${a.lords === 1 ? '' : 's'}</i></label>`).join('')
+      : `<div class="tr-muted" style="padding:6px 4px">${ALLY_ROWS
+        ? 'nothing matched — has a map sweep run yet?' : 'reading the alliances...'}</div>`;
+  }
+  const changed = () => { save(); paintBtn(); onChange(); };
+  const close = () => { open = false; pop.hidden = true; };
+
+  btn.onclick = async () => {
+    open = !open;
+    pop.hidden = !open;
+    if (!open) return;
+    paintList();                       // whatever is already known, at once
+    await allyRows();
+    if (open) { paintList(); find.focus(); }
+  };
+  host.querySelector('.ally-mode').onclick = (e) => {
+    const d = e.target.closest('[data-mode]');
+    if (d) { mode = d.dataset.mode; changed(); }
+  };
+  find.oninput = paintList;
+  list.onchange = (e) => {
+    const box = e.target.closest('input[data-name]');
+    if (!box) return;
+    const name = box.dataset.name;
+    names = box.checked ? [...new Set([...names, name])] : names.filter((x) => x !== name);
+    changed();
+  };
+  host.querySelector('.ally-clear').onclick = () => { names = []; paintList(); changed(); };
+  host.querySelector('.ally-done').onclick = close;
+  document.addEventListener('click', (e) => { if (open && !host.contains(e.target)) close(); });
+  document.addEventListener('keydown', (e) => { if (open && e.key === 'Escape') close(); });
+
+  paintBtn();
+  // What the three searches add to their query: one side or the other, never both.
+  return { params: () => ({ ally: mode === 'only' ? names : [], notAlly: mode === 'hide' ? names : [] }) };
+}
+
+const MC_ALLY = allyPicker('mcAlly', () => { MC.offset = 0; loadMonCities(); });
+const ML_ALLY = allyPicker('mlAlly', () => { ML.offset = 0; loadMonLords(); });
+const ME_ALLY = allyPicker('meAlly', () => { ME.offset = 0; loadMonEvents(); });
+
+// ---- Setup -----------------------------------------------------------
+
+function monBanner() {
+  const live = (MON && MON.live) || {};
+  const run = MON && MON.running;
+  const p = live.progress;
+  const on = MON && MON.config && MON.config.on;
+  let cls = 'mon-bar', text;
+  if (!on) text = 'The Monitor is off. Choose an account and press Start.';
+  else if (live.error) { cls += ' bad'; text = `${esc(live.state || 'waiting')} — ${esc(live.error)}`; }
+  else if (p && p.of) {
+    cls += ' run';
+    text = `Map sweep: ${fmt(p.blocks)} of ${fmt(p.of)} blocks, ${fmt(p.castles)} cities so far`;
+  } else if (run) { cls += ' run'; text = `${esc(run.kind)} sweep running since ${monClock(run.startedAt)}`; }
+  else text = `Running — ${esc(live.state || 'waiting')}${live.nextAt ? `, next pass ${monClock(live.nextAt)}` : ''}`;
+  const bar = p && p.of
+    ? `<div class="mon-prog"><i style="width:${Math.round((p.blocks / p.of) * 100)}%"></i></div>` : '';
+  $('#monBanner').innerHTML = `<div class="${cls}"><span>${text}</span>${bar}</div>`;
+}
+
+function monCards() {
+  const c = MON.counts || {}, last = MON.last || {};
+  const card = (title, big, sub, cls) =>
+    `<div class="mon-card ${cls || ''}"><span>${esc(title)}</span><b>${big}</b><span>${sub}</span></div>`;
+  const sweepSub = (s) => (!s ? 'never run' : (s.error ? `<span style="color:#ff9b7a">${esc(s.error)}</span>`
+    : `${monClock(s.startedAt)} · took ${Math.max(1, Math.round(((s.endedAt || 0) - s.startedAt) / 1000))}s`));
+  $('#monCards').innerHTML = [
+    card('Map sweep', last.map ? agoMin(last.map.startedAt) : '—',
+      last.map ? `${fmt(last.map.got)}/${fmt(MON.blocks)} blocks · ${sweepSub(last.map)}` : 'never run',
+      last.map && last.map.error ? 'warn' : ''),
+    card('Rankings', last.stats ? agoMin(last.stats.startedAt) : '—',
+      last.stats ? `${fmt(last.stats.got)} ranked rows · ${sweepSub(last.stats)}` : 'never run',
+      last.stats && last.stats.error ? 'warn' : ''),
+    card('Watch pass', last.watch ? agoMin(last.watch.startedAt) : '—',
+      last.watch ? `${fmt(last.watch.got)} of ${fmt(last.watch.asked)} lords · ${sweepSub(last.watch)}` : 'never run',
+      last.watch && last.watch.error ? 'warn' : ''),
+    card('The server', fmt(c.players) + ' lords', `${fmt(c.cities)} cities · ${fmt(c.holiday)} on holiday`),
+    card('Watched', fmt(c.watched), `${fmt(c.events)} changes recorded`),
+  ].join('');
+}
+
+function monSetupFill() {
+  const cfg = MON.config || {};
+  const sel = $('#monAcc');
+  if (document.activeElement !== sel) {
+    sel.innerHTML = '<option value="">— choose —</option>' + (MON.accounts || []).map((a) =>
+      `<option value="${esc(a.id)}" ${a.id === cfg.account ? 'selected' : ''} ${a.consoleUrl ? '' : 'disabled'}>`
+      + `${esc(a.label)}${a.consoleUrl ? '' : ' — no console running'}</option>`).join('');
+  }
+  const set = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v; };
+  set('#cfgMapMin', cfg.mapMin); set('#cfgStatsMin', cfg.statsMin); set('#cfgWatchMin', cfg.watchMin);
+  set('#cfgWatchTop', cfg.watchTop); set('#cfgStallMin', cfg.stallMin);
+  set('#cfgBlocks', cfg.blocksPerCall); set('#cfgPause', cfg.pauseMs);
+  set('#cfgReadEvery', cfg.readingEveryMin); set('#cfgReadKeep', cfg.readingKeepDays);
+  set('#cfgNames', (cfg.watchNames || []).join('\n'));
+  $('#monSwitch').textContent = cfg.on ? 'Stop' : 'Start';
+  $('#monSwitch').classList.toggle('primary', !cfg.on);
+  $('#monProc').innerHTML = MON.process
+    ? `running as pid ${MON.process.pid}${MON.process.mine ? '' : ' (started outside the Director)'}`
+    : (cfg.on ? '<span style="color:#ff9b7a">switched on but no process — the Director starts it within a minute</span>'
+      : 'not running');
+
+  const sw = MON.sweeps || [];
+  $('#monSweepTbl').innerHTML = '<thead><tr><th>Pass</th><th>Started</th><th>Took</th><th>Read</th>'
+    + '<th>Changes</th><th>Note</th></tr></thead><tbody>'
+    + (sw.length ? sw.map((s) => `<tr><td>${esc(s.kind)}</td><td>${monClock(s.startedAt)}</td>`
+      + `<td>${s.endedAt ? Math.max(1, Math.round((s.endedAt - s.startedAt) / 1000)) + 's' : '<i>running</i>'}</td>`
+      + `<td>${fmt(s.got)}${s.asked ? ' / ' + fmt(s.asked) : ''}</td><td>${fmt(s.events)}</td>`
+      + `<td>${s.error ? `<span style="color:#ff9b7a">${esc(s.error)}</span>` : '<span class="tr-muted">—</span>'}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="tr-muted">nothing yet</td></tr>') + '</tbody>';
+}
+
+async function loadMonWatchlist() {
+  const r = await monGet('/watchlist');
+  const rows = (r && r.rows) || [];
+  $('#monWatchTbl').innerHTML = '<thead><tr><th>Lord</th><th>Why</th></tr></thead><tbody>'
+    + (rows.length ? rows.map((w) => `<tr><td>${who(w.userName)}</td><td class="tr-muted">${esc(w.why)}</td></tr>`).join('')
+      : '<tr><td colspan="2" class="tr-muted">nothing yet — read the rankings once, or add a name</td></tr>') + '</tbody>';
+}
+
+async function loadMonitor() {
+  const r = await monGet('');
+  if (!r || !r.ok) {
+    $('#monBanner').innerHTML = `<div class="mon-bar bad">${esc((r && r.error) || 'could not read the Monitor')}</div>`;
+    return;
+  }
+  MON = r;
+  monBanner();
+  if (MON_SUB === 'setup') { monCards(); monSetupFill(); loadMonWatchlist(); }
+}
+
+$('#monAcc').onchange = async () => {
+  const r = await monPost('/config', { account: $('#monAcc').value });
+  if (!r.ok) await tell(r.error);
+  loadMonitor();
+};
+$('#monSave').onclick = async () => {
+  const r = await monPost('/config', {
+    mapMin: $('#cfgMapMin').value, statsMin: $('#cfgStatsMin').value, watchMin: $('#cfgWatchMin').value,
+    watchTop: $('#cfgWatchTop').value, stallMin: $('#cfgStallMin').value,
+    blocksPerCall: $('#cfgBlocks').value, pauseMs: $('#cfgPause').value, watchNames: $('#cfgNames').value,
+    readingEveryMin: $('#cfgReadEvery').value, readingKeepDays: $('#cfgReadKeep').value,
+  });
+  if (!r.ok) await tell(r.error); else await loadMonitor();
+};
+$('#monSwitch').onclick = async () => {
+  const on = !(MON && MON.config && MON.config.on);
+  if (on) {
+    const acc = (MON.accounts || []).find((a) => a.id === MON.config.account);
+    const ok = await ask(`Start the Monitor, reading through ${acc ? acc.label : 'the chosen account'}?`, {
+      detail: 'It logs in to nothing. It asks that console to read the map and the rankings on the connection it '
+        + 'already has, so the game keeps seeing one session for the account. The console goes on playing its goals.',
+      ok: 'Start',
+    });
+    if (!ok) return;
+  }
+  const r = await monPost('/switch', { on });
+  if (!r.ok) await tell(r.error);
+  loadMonitor();
+};
+for (const [id, kind] of [['#runMap', 'map'], ['#runStats', 'stats'], ['#runWatch', 'watch']]) {
+  $(id).onclick = async () => {
+    const r = await monPost('/run', { kind });
+    if (!r.ok) await tell(r.error); else loadMonitor();
+  };
+}
+
+// ---- Statistics ------------------------------------------------------
+
+// The filter boxes are built from the list's own columns, so each list offers
+// exactly what it has: a substring for a name, a range for a number.
+function msFilters(cols) {
+  const box = $('#msFilters');
+  if (box.dataset.for === MS.kind) return;
+  box.innerHTML = cols.filter((c) => c.k !== 'rank').map((c) => (c.n
+    ? `<label>${esc(c.h)} <input type="number" data-f="${esc(c.k)}Min" placeholder="min">`
+      + ` <input type="number" data-f="${esc(c.k)}Max" placeholder="max"></label>`
+    : `<label>${esc(c.h)} <input data-f="${esc(c.k)}" placeholder="any"></label>`)).join('');
+  box.dataset.for = MS.kind;
+}
+
+async function loadMonStats() {
+  const qs = { kind: MS.kind, q: MS.q, sort: MS.sort, dir: MS.dir, limit: MS.limit, offset: MS.offset };
+  for (const [k, v] of Object.entries(MS.filters)) if (v !== '') qs['f_' + k] = v;
+  const r = await monGet('/stats', qs);
+  if (!r || !r.ok) { $('#msMeta').textContent = (r && r.error) || 'could not read the rankings'; return; }
+  msFilters(r.cols);
+  const st = ((r.status || {}).lists || {})[MS.kind] || {};
+  $('#msMeta').innerHTML = `${fmt(r.total)} of ${fmt(st.total || st.rows)} ${esc(r.label.toLowerCase())}`
+    + (st.at ? ` · read ${agoMin(st.at)}` : ' · never read in full')
+    + (st.state === 'running' ? ' · <b>reading now</b>' : '');
+  const head = r.cols.map((c) => `<th data-s="${esc(c.k)}" style="cursor:pointer">${esc(c.h)}`
+    + (MS.sort === c.k ? (MS.dir === 'asc' ? ' ▲' : ' ▼') : '') + '</th>').join('');
+  const named = (k) => ['lord', 'host', 'founder'].includes(k) || (k === 'name' && MS.kind === 'players');
+  const body = r.rows.length
+    ? r.rows.map((row) => '<tr>' + r.cols.map((c) => (c.n
+      ? `<td style="text-align:right">${fmt(row[c.k])}</td>`
+      : `<td>${named(c.k) ? who(row[c.k]) : esc(row[c.k])}</td>`)).join('') + '</tr>').join('')
+    : `<tr><td colspan="${r.cols.length}" class="tr-muted">nothing matched</td></tr>`;
+  $('#msTbl').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  $('#msPage').textContent = `${fmt(MS.offset + 1)}–${fmt(MS.offset + r.rows.length)}`;
+  $('#msPrev').disabled = MS.offset <= 0;
+  $('#msNext').disabled = MS.offset + r.rows.length >= r.total;
+}
+$('#msKind').onclick = (e) => {
+  const d = e.target.closest('[data-k]');
+  if (!d) return;
+  document.querySelectorAll('#msKind div').forEach((x) => x.classList.toggle('on', x === d));
+  MS.kind = d.dataset.k; MS.offset = 0; MS.sort = 'rank'; MS.dir = 'asc'; MS.filters = {};
+  $('#msFilters').dataset.for = '';
+  loadMonStats();
+};
+$('#msTbl').onclick = (e) => {
+  const th = e.target.closest('th[data-s]');
+  if (!th) return;
+  const k = th.dataset.s;
+  if (MS.sort === k) MS.dir = MS.dir === 'asc' ? 'desc' : 'asc';
+  else { MS.sort = k; MS.dir = k === 'rank' ? 'asc' : 'desc'; }
+  MS.offset = 0;
+  loadMonStats();
+};
+$('#msFilters').oninput = debounceMon(() => {
+  MS.filters = {};
+  document.querySelectorAll('#msFilters [data-f]').forEach((i) => { if (i.value !== '') MS.filters[i.dataset.f] = i.value; });
+  MS.offset = 0;
+  loadMonStats();
+});
+$('#msQ').oninput = debounceMon(() => { MS.q = $('#msQ').value.trim(); MS.offset = 0; loadMonStats(); });
+$('#msPrev').onclick = () => { MS.offset = Math.max(0, MS.offset - MS.limit); loadMonStats(); };
+$('#msNext').onclick = () => { MS.offset += MS.limit; loadMonStats(); };
+
+// ---- Cities ----------------------------------------------------------
+
+async function loadMonCities() {
+  const r = await monGet('/cities', {
+    q: $('#mcQ').value.trim(), ...MC_ALLY.params(), lord: $('#mcLord').value.trim(),
+    level: $('#mcLevel').value, minPrestige: $('#mcPrestige').value, state: $('#mcState').value,
+    sort: MC.sort, dir: MC.dir, limit: MC.limit, offset: MC.offset,
+  });
+  if (!r || !r.ok) { $('#mcMeta').textContent = (r && r.error) || 'could not read the cities'; return; }
+  $('#mcMeta').textContent = `${fmt(r.total)} cities`;
+  const cols = [['x', 'Where'], ['name', 'City'], ['level', 'Lvl'], ['userName', 'Lord'],
+    ['allianceName', 'Alliance'], ['prestige', 'Prestige'], ['honor', 'Honor'], ['state', 'State'], ['lastSeen', 'Seen']];
+  const head = cols.map(([k, h]) => `<th data-s="${k}" style="cursor:pointer">${h}`
+    + (MC.sort === k ? (MC.dir === 'asc' ? ' ▲' : ' ▼') : '') + '</th>').join('');
+  const body = r.rows.length ? r.rows.map((c) => '<tr>'
+    + `<td><code>${c.x},${c.y}</code></td><td>${esc(c.name)}</td>`
+    + `<td style="text-align:right">${c.level === null ? '—' : c.level}</td>`
+    + `<td>${who(c.userName)}</td><td>${esc(c.allianceName)}</td>`
+    + `<td style="text-align:right">${fmt(c.prestige)}</td><td style="text-align:right">${fmt(c.honor)}</td>`
+    + `<td>${statePill(c.stateName)}</td><td class="tr-muted">${agoMin(c.lastSeen)}</td></tr>`).join('')
+    : `<tr><td colspan="${cols.length}" class="tr-muted">nothing matched — has a map sweep run yet?</td></tr>`;
+  $('#mcTbl').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  $('#mcPage').textContent = `${fmt(MC.offset + 1)}–${fmt(MC.offset + r.rows.length)}`;
+  $('#mcPrev').disabled = MC.offset <= 0;
+  $('#mcNext').disabled = MC.offset + r.rows.length >= r.total;
+}
+$('#mcTbl').onclick = (e) => {
+  const th = e.target.closest('th[data-s]');
+  if (!th) return;
+  const k = th.dataset.s;
+  if (MC.sort === k) MC.dir = MC.dir === 'asc' ? 'desc' : 'asc'; else { MC.sort = k; MC.dir = 'desc'; }
+  MC.offset = 0;
+  loadMonCities();
+};
+for (const id of ['#mcQ', '#mcLord', '#mcLevel', '#mcPrestige']) {
+  $(id).oninput = debounceMon(() => { MC.offset = 0; loadMonCities(); });
+}
+$('#mcState').onchange = () => { MC.offset = 0; loadMonCities(); };
+$('#mcPrev').onclick = () => { MC.offset = Math.max(0, MC.offset - MC.limit); loadMonCities(); };
+$('#mcNext').onclick = () => { MC.offset += MC.limit; loadMonCities(); };
+
+// A plain .xlsx, built here: a zip (stored, not compressed) of the five XML parts
+// Excel needs. rows[0] is the header; numbers stay numbers, Dates become Excel dates.
+function xlsxBlob(rows, sheetName) {
+  const x = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+  const col = (i) => { let s = ''; for (i++; i; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+  const last = col(rows[0].length - 1) + rows.length;
+  const cell = (v, r, c) => {
+    const ref = col(c) + (r + 1);
+    if (v === null || v === undefined || v === '') return '';
+    if (v instanceof Date) return `<c r="${ref}" s="2"><v>${v.getTime() / 86400000 + 25569 - v.getTimezoneOffset() / 1440}</v></c>`;
+    if (typeof v === 'number' && Number.isFinite(v)) return `<c r="${ref}"${Math.abs(v) >= 10000 ? ' s="3"' : ''}><v>${v}</v></c>`;
+    return `<c r="${ref}" t="inlineStr"${r ? '' : ' s="1"'}><is><t xml:space="preserve">${x(v)}</t></is></c>`;
+  };
+  // each column as wide as its longest entry (a date or a thousands-separated number
+  // is wider than its raw value), capped so one long name does not take the sheet
+  const shown = (v) => (v instanceof Date ? 16 : typeof v === 'number' ? Math.ceil(String(Math.round(v)).length * 4 / 3) : String(v ?? '').length);
+  const widths = '<cols>' + rows[0].map((_, c) => {
+    const w = Math.min(40, rows.reduce((m, row) => Math.max(m, shown(row[c])), 6) + 2);
+    return `<col min="${c + 1}" max="${c + 1}" width="${w}" customWidth="1"/>`;
+  }).join('') + '</cols>';
+  const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  const NS = 'http://schemas.openxmlformats.org/', REL = NS + 'officeDocument/2006/relationships/';
+  const files = {
+    '[Content_Types].xml': head + `<Types xmlns="${NS}package/2006/content-types">`
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      + '<Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+      + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+      + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+    '_rels/.rels': head + `<Relationships xmlns="${NS}package/2006/relationships">`
+      + `<Relationship Id="rId1" Type="${REL}officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    'xl/workbook.xml': head + `<workbook xmlns="${NS}spreadsheetml/2006/main" xmlns:r="${NS}officeDocument/2006/relationships">`
+      + `<sheets><sheet name="${x(sheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels': head + `<Relationships xmlns="${NS}package/2006/relationships">`
+      + `<Relationship Id="rId1" Type="${REL}worksheet" Target="worksheets/sheet1.xml"/>`
+      + `<Relationship Id="rId2" Type="${REL}styles" Target="styles.xml"/></Relationships>`,
+    'xl/styles.xml': head + `<styleSheet xmlns="${NS}spreadsheetml/2006/main">`
+      + '<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm"/></numFmts>'
+      + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+      + '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+      + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+      + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+      + '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+      + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+      + '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+      + '<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>',
+    'xl/worksheets/sheet1.xml': head + `<worksheet xmlns="${NS}spreadsheetml/2006/main">`
+      + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+      + widths + '<sheetData>' + rows.map((row, r) => `<row r="${r + 1}">${row.map((v, c) => cell(v, r, c)).join('')}</row>`).join('')
+      + `</sheetData><autoFilter ref="A1:${last}"/></worksheet>`,
+  };
+  const table = [];
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c >>> 0; }
+  const crc = (b) => { let c = 0xffffffff; for (const v of b) c = table[(c ^ v) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const bytes = (size, fields) => {
+    const d = new DataView(new ArrayBuffer(size));
+    for (const [o, v, w] of fields) (w === 4 ? d.setUint32(o, v, true) : d.setUint16(o, v, true));
+    return new Uint8Array(d.buffer);
+  };
+  const enc = new TextEncoder(), parts = [], dir = [];
+  let off = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const nm = enc.encode(name), data = enc.encode(text), c = crc(data);
+    const loc = bytes(30, [[0, 0x04034b50, 4], [4, 20], [6, 0x0800], [14, c, 4], [18, data.length, 4], [22, data.length, 4], [26, nm.length]]);
+    dir.push(bytes(46, [[0, 0x02014b50, 4], [4, 20], [6, 20], [8, 0x0800], [16, c, 4], [20, data.length, 4], [24, data.length, 4],
+      [28, nm.length], [42, off, 4]]), nm);
+    parts.push(loc, nm, data);
+    off += loc.length + nm.length + data.length;
+  }
+  const dirLen = dir.reduce((s, b) => s + b.length, 0), count = Object.keys(files).length;
+  const end = bytes(22, [[0, 0x06054b50, 4], [8, count], [10, count], [12, dirLen, 4], [16, off, 4]]);
+  return new Blob([...parts, ...dir, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// Every city the filters match, in the table's order - not only the page on screen.
+$('#mcExport').onclick = async () => {
+  const btn = $('#mcExport'), label = btn.textContent;
+  btn.disabled = true;
+  try {
+    const qs = { q: $('#mcQ').value.trim(), ...MC_ALLY.params(), lord: $('#mcLord').value.trim(),
+      level: $('#mcLevel').value, minPrestige: $('#mcPrestige').value, state: $('#mcState').value,
+      sort: MC.sort, dir: MC.dir, limit: 5000 };
+    const all = [];
+    for (let offset = 0; ; offset += 5000) {
+      btn.textContent = `reading ${fmt(all.length)}…`;
+      const r = await monGet('/cities', { ...qs, offset });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'could not read the cities');
+      all.push(...r.rows);
+      if (!r.rows.length || all.length >= r.total) break;
+    }
+    const num = (v) => (v === null || v === undefined || v === '' ? '' : Number(v));
+    const rows = [['X', 'Y', 'Coords', 'City', 'Level', 'Lord', 'Alliance', 'Prestige', 'Honor', 'State', 'Last seen']]
+      .concat(all.map((c) => [num(c.x), num(c.y), `${c.x},${c.y}`, c.name || '', num(c.level), c.userName || '',
+        c.allianceName || '', num(c.prestige), num(c.honor), c.stateName || '', c.lastSeen ? new Date(Number(c.lastSeen)) : '']));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(xlsxBlob(rows, 'Cities'));
+    a.download = `cities-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    btn.textContent = `exported ${fmt(all.length)}`;
+    setTimeout(() => { btn.textContent = label; }, 3000);
+  } catch (e) {
+    btn.textContent = label;
+    $('#mcMeta').textContent = 'export failed: ' + e.message;
+  } finally { btn.disabled = false; }
+};
+
+// ---- Lords -----------------------------------------------------------
+
+async function loadMonLords() {
+  const r = await monGet('/players', {
+    q: $('#mlQ').value.trim(), ...ML_ALLY.params(), state: $('#mlState').value,
+    moving: ML.moving, watch: $('#mlWatch').checked ? '1' : '',
+    sort: ML.sort, dir: ML.dir, limit: ML.limit, offset: ML.offset,
+  });
+  if (!r || !r.ok) { $('#mlMeta').textContent = (r && r.error) || 'could not read the lords'; return; }
+  const cfg = (MON && MON.config) || {};
+  $('#mlMeta').textContent = `${fmt(r.total)} lords · still means ${monDur(cfg.stallMin || 45)} without a prestige change`;
+  const cols = [['userName', 'Lord'], ['allianceName', 'Alliance'], ['cities', 'Cities'], ['prestige', 'Prestige'],
+    ['prestigeAt', 'Still for'], ['state', 'State'], ['x', 'Where'], ['lastLoginTime', 'Last login'], ['lastSeen', 'Seen']];
+  const head = cols.map(([k, h]) => `<th data-s="${k}" style="cursor:pointer">${h}`
+    + (ML.sort === k ? (ML.dir === 'asc' ? ' ▲' : ' ▼') : '') + '</th>').join('');
+  const body = r.rows.length ? r.rows.map((p) => '<tr>'
+    + `<td>${who(p.userName)}${p.watch ? ' <span class="mon-pill">watched</span>' : ''}</td>`
+    + `<td>${esc(p.allianceName)}</td><td style="text-align:right">${fmt(p.cities)}</td>`
+    + `<td style="text-align:right">${fmt(p.prestige)}</td>`
+    + `<td style="text-align:right">${p.stillMin === null ? '—'
+      : `<span class="${p.still ? 'mon-still' : 'mon-moving'}">${monDur(p.stillMin)}</span>`}</td>`
+    + `<td>${statePill(p.stateName)}</td><td><code>${p.x},${p.y}</code></td>`
+    + `<td class="tr-muted">${p.lastLoginTime ? new Date(Number(p.lastLoginTime)).toLocaleString() : '—'}</td>`
+    + `<td class="tr-muted">${agoMin(p.lastSeen)}</td></tr>`).join('')
+    : `<tr><td colspan="${cols.length}" class="tr-muted">nothing matched — has a map sweep run yet?</td></tr>`;
+  $('#mlTbl').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  $('#mlPage').textContent = `${fmt(ML.offset + 1)}–${fmt(ML.offset + r.rows.length)}`;
+  $('#mlPrev').disabled = ML.offset <= 0;
+  $('#mlNext').disabled = ML.offset + r.rows.length >= r.total;
+}
+$('#mlTbl').onclick = (e) => {
+  const th = e.target.closest('th[data-s]');
+  if (!th) return;
+  const k = th.dataset.s;
+  if (ML.sort === k) ML.dir = ML.dir === 'asc' ? 'desc' : 'asc'; else { ML.sort = k; ML.dir = 'desc'; }
+  ML.offset = 0;
+  loadMonLords();
+};
+$('#mlMoving').onclick = (e) => {
+  const d = e.target.closest('[data-m]');
+  if (!d) return;
+  document.querySelectorAll('#mlMoving div').forEach((x) => x.classList.toggle('on', x === d));
+  ML.moving = d.dataset.m; ML.offset = 0;
+  loadMonLords();
+};
+$('#mlQ').oninput = debounceMon(() => { ML.offset = 0; loadMonLords(); });
+$('#mlState').onchange = () => { ML.offset = 0; loadMonLords(); };
+$('#mlWatch').onchange = () => { ML.offset = 0; loadMonLords(); };
+$('#mlPrev').onclick = () => { ML.offset = Math.max(0, ML.offset - ML.limit); loadMonLords(); };
+$('#mlNext').onclick = () => { ML.offset += ML.limit; loadMonLords(); };
+
+// ---- Changes ---------------------------------------------------------
+
+const EVENT_WORD = {
+  'left-holiday': 'came off holiday', 'went-holiday': 'went on holiday', stalled: 'stopped moving',
+  moving: 'moving again', alliance: 'changed alliance', cities: 'gained / lost a city', state: 'state change',
+};
+// A lord's best hero, as the Changes table shows it: the name, its level, and its
+// attack, with all three attributes on hover. It is their highest-LEVEL hero in
+// the server's hero ranking (monitor.js bestHeroes), which is the game's own
+// measure of best.
+//
+// Only ranked heroes are in that list, so a lord too small to appear in it gets a
+// dash rather than a wrong answer — and so does every lord until the rankings
+// sweep has run once.
+function bestHeroCell(h, lord) {
+  if (!h || !h.name) return '<span class="tr-muted">—</span>';
+  const tip = `attack ${fmt(h.attack)} · politics ${fmt(h.politics)} · intelligence ${fmt(h.intel)}`
+    + ' — click for every city of theirs, as a scouting script';
+  return `<span class="mon-who" data-hero-lord="${escq(lord)}" title="${escq(tip)}">${esc(h.name)}`
+    + ` <span class="tr-muted">L${fmt(h.level)} · atk ${fmt(h.attack)}</span></span>`;
+}
+
+// The "no change for ≥ N h" box, in minutes for the server; 0 = no limit.
+const meStillMin = () => Math.max(0, Math.round((parseFloat($('#meStill').value) || 0) * 60));
+// How long a lord has not moved prestige, as of now. A dash for a lord on
+// holiday or one the map has not placed yet.
+function stillFor(movedAt) {
+  if (!movedAt) return '<span class="tr-muted">—</span>';
+  const min = Math.max(0, Math.round((Date.now() - Number(movedAt)) / 60000));
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 48 ? `${h} h ${min % 60} min` : `${Math.floor(h / 24)} d ${h % 24} h`;
+}
+
+async function loadMonEvents() {
+  const r = await monGet('/events', { kind: ME.kind, watch: $('#meWatch').checked ? '1' : '',
+    ...ME_ALLY.params(),
+    stillMin: meStillMin() || '',
+    q: $('#meQ').value.trim(), sort: ME.sort, dir: ME.dir, limit: ME.limit, offset: ME.offset });
+  if (!r || !r.ok) { $('#meMeta').textContent = (r && r.error) || 'could not read the changes'; return; }
+  $('#meMeta').textContent = `${fmt(r.total)} change(s)`
+    + (r.capped ? ' — too many to order by hero at once; narrow it first' : '');
+  const cols = [['at', 'When'], ['userName', 'Lord'], ['hero', 'Best hero'], ['still', 'Still for'], ['kind', 'What'], ['detail', 'Detail']];
+  const head = cols.map(([k, h]) => (k === 'still'
+    ? `<th title="How long since this lord last moved prestige, as of now">${h}</th>`
+    : `<th data-s="${k}" style="cursor:pointer">${h}`
+    + (ME.sort === k ? (ME.dir === 'asc' ? ' ▲' : ' ▼') : '') + '</th>')).join('');
+  const body = r.rows.length ? r.rows.map((e) => '<tr><td class="tr-muted" style="white-space:nowrap">'
+    + `${new Date(Number(e.at)).toLocaleString()}</td><td>${who(e.userName)}</td>`
+    + `<td style="white-space:nowrap">${bestHeroCell(e.hero, e.userName)}</td>`
+    + `<td style="white-space:nowrap">${stillFor(e.movedAt)}</td>`
+    + `<td>${esc(EVENT_WORD[e.kind] || e.kind)}</td><td>${esc(e.detail)}</td></tr>`).join('')
+    : `<tr><td colspan="${cols.length}" class="tr-muted">nothing matched — changes are noticed from the second sweep onwards</td></tr>`;
+  $('#meTbl').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  $('#mePage').textContent = r.rows.length ? `${fmt(ME.offset + 1)}–${fmt(ME.offset + r.rows.length)}` : '—';
+  $('#mePrev').disabled = ME.offset <= 0;
+  $('#meNext').disabled = ME.offset + r.rows.length >= r.total;
+}
+$('#meKind').onclick = (e) => {
+  const d = e.target.closest('[data-k]');
+  if (!d) return;
+  document.querySelectorAll('#meKind div').forEach((x) => x.classList.toggle('on', x === d));
+  ME.kind = d.dataset.k; ME.offset = 0;
+  loadMonEvents();
+};
+// A click on a header sorts by it; clicking the one already sorting turns it round.
+$('#meTbl').onclick = (e) => {
+  const th = e.target.closest('th[data-s]');
+  if (!th) return;
+  const k = th.dataset.s;
+  if (ME.sort === k) ME.dir = ME.dir === 'asc' ? 'desc' : 'asc'; else { ME.sort = k; ME.dir = 'desc'; }
+  ME.offset = 0;
+  loadMonEvents();
+};
+$('#meQ').oninput = debounceMon(() => { ME.offset = 0; loadMonEvents(); });
+$('#meWatch').onchange = () => { ME.offset = 0; loadMonEvents(); };
+// hours only: digits and one decimal point, anything else is dropped as it is typed
+$('#meStill').addEventListener('input', (e) => {
+  const b = e.target, clean = b.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+  if (clean !== b.value) b.value = clean;
+});
+$('#meStill').oninput = debounceMon(() => { ME.offset = 0; loadMonEvents(); });
+$('#mePrev').onclick = () => { ME.offset = Math.max(0, ME.offset - ME.limit); loadMonEvents(); };
+$('#meNext').onclick = () => { ME.offset += ME.limit; loadMonEvents(); };
+
+// ---- one lord's history ----------------------------------------------
+
+// ---- one lord's cities, as a scouting script -------------------------
+//
+// Clicking the best hero in Changes opens this. It answers the two questions the
+// hero raises — how good are the rest of them, and where is this lord — and hands
+// the cities over as a script to paste into whichever city will do the scouting.
+//
+// The script is `repeat`, not `loop`: `loop 10` runs the WHOLE script ten times,
+// which would re-run the assignment and scout the first city over and over.
+// `repeat` runs only the line before it, and both count in TOTAL (SCRIPTS.md), so
+// the count is exactly the number of cities.
+let LD = null;                                  // the lord open in the dialog
+
+// 09/24 18:18 — short enough that a column of readings stays readable.
+function ldWhen(at) {
+  const d = new Date(Number(at));
+  const p = (v) => String(v).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function ldCoordArray(cities) {
+  return '[' + cities.map((c) => `"${c.x},${c.y}"`).join(', ') + ']';
+}
+function ldScript(cities) {
+  if (!cities.length) return '';
+  return `a = ${ldCoordArray(cities)}\n`
+    + 'scout {a.shift()} any s:100k'
+    + (cities.length > 1 ? `\nrepeat ${cities.length}` : '');
+}
+async function openLord(name) {
+  const r = await monGet('/lord', { name });
+  if (!r || !r.ok) { await tell((r && r.error) || 'could not read that lord'); return; }
+  LD = r;
+  const cities = r.cities || [], heroes = r.heroes || [];
+  $('#ldName').textContent = name;
+  const alliance = (cities.find((c) => c.allianceName) || {}).allianceName;
+  $('#ldHead').textContent = `${alliance || 'no alliance'} · ${fmt(cities.length)} city(ies) on the map`
+    + ` · ${fmt(heroes.length)} ranked hero(es)`;
+  $('#ldHeroes').innerHTML = '<thead><tr><th>#</th><th>Hero</th><th>Level</th><th>Atk</th><th>Pol</th><th>Int</th></tr></thead><tbody>'
+    + (heroes.length ? heroes.map((h, i) => `<tr><td class="tr-muted">${i + 1}</td><td>${esc(h.name)}</td>`
+      + `<td>${fmt(h.level)}</td><td>${fmt(h.attack)}</td><td>${fmt(h.politics)}</td><td>${fmt(h.intel)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="tr-muted">none of their heroes is in the server ranking</td></tr>')
+    + '</tbody>';
+  // Every prestige reading we hold, newest first. A row that MOVED is marked, so
+  // the top marked row is the moment the standing still began — which is what
+  // "has not moved prestige for 2,729 min" is really saying.
+  const rd = r.readings || [];
+  $('#ldReadings').innerHTML = '<thead><tr><th>When</th><th>Prestige</th><th>Cities</th><th>State</th></tr></thead><tbody>'
+    + (rd.length ? rd.map((h) => `<tr${h.moved ? ' style="color:var(--warn)"' : ''}>`
+      + `<td class="tr-muted" style="white-space:nowrap">${ldWhen(h.at)}</td>`
+      + `<td style="text-align:right">${fmt(h.prestige)}${h.moved ? ' ▲' : ''}</td>`
+      + `<td style="text-align:right">${h.cities === null ? '—' : h.cities}</td>`
+      + `<td class="tr-muted">${esc(MONSTATE[h.state] || '')}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="tr-muted">no readings yet — they come from the watch pass</td></tr>')
+    + '</tbody>';
+  const moved = r.movedAt
+    ? `last moved at ${new Date(Number(r.movedAt)).toLocaleString()} (${monDur(Math.round((Date.now() - Number(r.movedAt)) / 60000))} ago)`
+    : rd.length ? 'it has not moved in anything we hold' : '';
+  if (moved) $('#ldHead').textContent += ` · prestige ${fmt(r.prestige)}, ${moved}`;
+  $('#ldCount').textContent = cities.length ? `— ${fmt(cities.length)} of them` : '';
+  $('#ldScript').value = cities.length ? ldScript(cities)
+    : 'The map sweep has not seen a city of theirs.';
+  $('#ldNote').innerHTML = cities.length
+    ? 'Paste it into the city that will do the scouting. <code>repeat</code> counts in total, so it '
+      + `sends ${fmt(cities.length)} scout${cities.length > 1 ? 's' : ''} — one a city — and stops. `
+      + 'The cities are the last map sweep’s, so one taken or founded since is not in this yet.'
+    : '';
+  $('#lordDlg').showModal();
+}
+const ldCopy = async (text, btn) => {
+  const was = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+  catch { $('#ldScript').select(); btn.textContent = 'Selected — press Ctrl+C'; }
+  setTimeout(() => { btn.textContent = was; }, 2500);
+};
+$('#ldCopy').onclick = (e) => LD && ldCopy(ldScript(LD.cities || []), e.target);
+$('#ldCopyArray').onclick = (e) => LD && ldCopy(ldCoordArray(LD.cities || []), e.target);
+$('#ldClose').onclick = () => $('#lordDlg').close();
+
+// Clicking a name anywhere in the Monitor opens what we know about them.
+$('#pageMonitor').addEventListener('click', async (e) => {
+  const hero = e.target.closest('[data-hero-lord]');
+  if (hero) return openLord(hero.dataset.heroLord);
+  const el = e.target.closest('[data-who]');
+  if (!el || !el.dataset.who) return;
+  const name = el.dataset.who;
+  const r = await monGet('/history', { name, limit: 200 });
+  if (!r || !r.ok) { await tell('could not read that lord'); return; }
+  const p = r.player;
+  const head = p
+    ? `${p.allianceName || 'no alliance'} · ${fmt(p.cities)} cities · ${fmt(p.prestige)} prestige · `
+      + `${p.stateName || 'state unknown'}${p.stillMin === null ? '' : ` · still for ${monDur(p.stillMin)}`}`
+    : 'not seen on the map yet';
+  const rows = (r.rows || []).slice(0, 40).map((h) =>
+    `${new Date(Number(h.at)).toLocaleString()}   ${String(fmt(h.prestige)).padStart(12)}   `
+    + `${h.cities === null ? '  ' : String(h.cities).padStart(2)} cities   ${MONSTATE[h.state] || ''}`).join('\n');
+  const ev = (r.events || []).slice(0, 12).map((x) =>
+    `${new Date(Number(x.at)).toLocaleString()}   ${x.detail}`).join('\n');
+  await tell(`${head}\n\nPrestige, newest first\n${rows || '  (nothing recorded yet)'}`
+    + (ev ? `\n\nChanges\n${ev}` : ''), { title: name });
+});
+
+// The Monitor's own refresh: only while its tab is open, and only what is
+// being looked at. A sweep in progress is worth watching crawl.
+setInterval(() => {
+  if (PAGE !== 'monitor') return;
+  loadMonitor();
+  if (MON_SUB === 'events') loadMonEvents();
+}, 6000);
+showMonSub(MON_SUB);
+
 </script>
 </body>
 </html>

@@ -194,6 +194,31 @@ t('a refused promotion leaves the old mayor in office and backs off instead of a
   has(r2.mayor.note, /held back: appoint Better/);
 });
 
+t('an ok the server never acted on is held back on the ladder, not sent every slice (Lord24 city 3, 2026-09-27)', async () => {
+  const a = city('Deaf', [hero({ name: 'Idle1', management: 50 }), hero({ name: 'QUEEN2', management: 500 })]);
+  const { e, game } = engineFor([a], { Deaf: 'config hero:1' });
+  await e.focus(a);                                    // ok, but the roster never changes
+  eq(sentCmds(game, 'promoteToChief').length, 1);
+  const cs = Object.values(e.state).find((s) => s && s.mayorAsked);
+  ok(cs, 'the promotion is remembered until the roster shows it');
+  cs.mayorAsked.at -= 60000;                           // a slice later, still no mayor
+  const r2 = await e.focus(a);
+  eq(sentCmds(game, 'promoteToChief').length, 1, 'not sent again straight away');
+  ok(r2.acted.some((x) => /the server answered ok but nothing changed/.test(x)), r2.acted.join(' | '));
+  has(r2.mayor.note, /held back: appoint QUEEN2 .* never became mayor/);
+});
+
+t('an ok the roster confirms clears the watch', async () => {
+  const a = city('Fine', [hero({ name: 'Idle1', management: 50 }), hero({ name: 'Pol', management: 500 })]);
+  const { e, game } = engineFor([a], { Fine: 'config hero:1' });
+  game.promoteToChief = async (cid, hid) => { game.calls.push(['promoteToChief', cid, hid]); a.heros.find((h) => h.id === hid).status = 1; return { ok: 1 }; };
+  await e.focus(a);
+  const r2 = await e.focus(a);
+  eq(sentCmds(game, 'promoteToChief').length, 1);
+  ok(!Object.values(e.state).some((s) => s && s.mayorAsked), 'nothing left to watch');
+  has(r2.mayor.note, /Pol already set/);
+});
+
 // ======================================================================
 section('2. one base formula: Game.heroBase');
 // ======================================================================

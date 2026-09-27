@@ -130,6 +130,32 @@ t('camp is whole seconds and the send makes up the fraction', () => {
   const lead = pl.sendAt - Date.now();
   assert.ok(lead >= 40 && lead <= 1100, 'sends within a second: ' + lead);
 });
+t('two Fleet Feet: the camp asked is the camp wanted / 0.3, and it lands on the aim (Lord24, 2026-09-27)', () => {
+  const s = sim();
+  const now = Date.now();
+  // two charges, 7 h 58 m left: the 4-8 h band, -70%
+  s.g.player.buffs = [{ typeId: 'ReduceArmyActionBuffx', endTime: now + 4 * 3600000 - 60000 }, { typeId: 'ReduceArmyActionBuffx', endTime: now + 8 * 3600000 - 60000 }];
+  const aim = now + 16 * 3600000;
+  const pl = TM.plan({ game: s.g, castle: s.g.castles[0], from: { x: 100, y: 100 }, target: { x: 103, y: 104 },
+    troopKeys: ['peasants'], aimMs: aim, params: PARAMS, cls: 'mine', key: '1:mine' });
+  assert.ok(Math.abs(pl.factor - 0.3) < 1e-9, String(pl.factor));
+  // the server: 0.3 x (the unbuffed march + the camp asked), whole seconds
+  const served = Math.floor((pl.base + pl.restTimeSec * 1000 * 0.3) / 1000) * 1000;
+  assert.strictEqual(served, pl.travel);
+  const lands = pl.sendAt + pl.leadMs + served;
+  assert.ok(lands <= aim && aim - lands < 1100, `lands ${aim - lands} ms before the aim`);
+  assert.ok(pl.restTimeSec * 1000 > 3 * (aim - now - pl.march), 'about 3.3x the camp wanted was asked for');
+  // Lord24's own figures: 3,047 s of march by the formula, 11,085 s of camp asked
+  assert.ok(Math.abs(3047 + 11085 * 0.3 - 6376) < 5);
+});
+t('no buffs: the camp asked is the camp wanted, as before', () => {
+  const s = sim();
+  const aim = Date.now() + 3600000 + 500;
+  const pl = TM.plan({ game: s.g, castle: s.g.castles[0], from: { x: 100, y: 100 }, target: { x: 103, y: 104 },
+    troopKeys: ['peasants'], aimMs: aim, params: PARAMS, cls: 'mine', key: '1:mine' });
+  assert.strictEqual(pl.factor, 1);
+  assert.strictEqual(pl.travel, pl.march + pl.restTimeSec * 1000);
+});
 t('too late says how long the march takes', () => {
   const s = sim();
   assert.throws(() => TM.plan({ game: s.g, castle: s.g.castles[0], from: { x: 100, y: 100 }, target: { x: 300, y: 300 },

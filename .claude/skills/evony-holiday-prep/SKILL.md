@@ -101,6 +101,52 @@ prepping: cancel queues, don't demolish or dump anything.
 - When the user says in that message to put accounts on holiday, run `holiday-go.txt` on
   them (glitch-run.js start --buy <ids> --buy-script holiday-go.txt). Still never `/exit`.
 
+## Lessons from 2026-09-23 (five accounts, prep and holiday in one pass)
+
+The user asked at 07:54 for Lord13, Lord12, Lord11, Lord10 and Lord04 to go on
+holiday — about 35 minutes before maintenance, and the consoles stand down 5 minutes
+before its announced start. Two restarts would not have fitted.
+
+- **`scripts/holiday-prep-go.txt` does prep and holiday from ONE console restart.**
+  `holiday-prep.txt` then `holiday-go.txt` needs two, and the second is refused by the
+  **10-minute autorun gate** — roughly 15 minutes before the holiday is even asked for.
+  The combined file runs the one-off prep (`recallall`, `canceltrade`, `cancelbuilding`)
+  after the staggered `sleep rnd:36`, then holiday-go's rounds unchanged. Prefer it
+  whenever the window is tight; `holiday-prep.txt` alone still stands for prepping the
+  evening before, which is better when there is time.
+- **It worked first try on three of five, inside 60 seconds of the restart**: consoles up
+  08:01:44–08:01:55, Lord10 on holiday 08:02:40, Lord11 08:02:43, Lord12 08:02:46.
+  Lord04 and Lord13 were refused `ok=-25` *"Recruiting soldiers. in 4"* — a troop batch already
+  in production in city 4, which no cancel can touch — and went in on **try 3**, at 08:04:00
+  and 08:04:12. Whole job: about 2.5 minutes for five accounts. Two rounds of 40 s was all
+  the waiting-out that batch needed; don't give up after one refusal.
+- **Check the coins before you start and tell the user** — and now you can say what they
+  buy. Measured live on Lord05 2026-09-23: **a 2-day renewal costs 20 coins (10 a day)**,
+  and `/autoextend` renews **at expiry for the same term**, unprompted (its holiday hit
+  `2m42s` and jumped back to `1d 23h` at 08:39:02, coins 1,834 → 1,814). So coins ÷ 10 ≈ the
+  days of holiday still paid for. Points went on holiday with **81** coins — about 8 days,
+  not the near-immediate lapse a bare "81" suggests. Don't repeat the mistake of calling a
+  low balance urgent without doing that division.
+- **Whether a holiday renews is readable: `player.autoFurlough`** (with `furloughDay`), off
+  the login's PlayerBean. The protection watch reports it and the Director's badge shows
+  `· not renewing` in amber on a holiday that will lapse. Use it to answer "are they all on
+  /autoextend?" instead of guessing from how they were sent.
+- **`$error` carries the refusal as plain text** — `Recruiting soldiers. in 4`, the city
+  named at the end. `if $error == null end` is still the only check the loop needs.
+- **The `HOLIDAYPREP done` line's troop figure is meaningless.**
+  `city.troopStillInProduction` is a dual property/call shim, so in a string it prints
+  `function Function() {}`. Walls (`tra:0`) and `offers` in that line are real; for troops
+  read a type off it (`city.troopStillInProduction.archer`). Recorded in EVONY-RULES.md §1.
+- **Tell the other Claude sessions before the restarts** (ListAgents + SendMessage) — all
+  four active ones answered inside a minute and one warned that the shared prepend goal
+  file had gained a demolition build line at 07:25 that morning, which the backup then
+  captured. A restart also loads every session's uncommitted edits: `node --check` the
+  files another session says it has been editing (server.js, session.js, statistics.js)
+  before restarting anything.
+- **Verify the holiday from a fresh snapshot, not from the echo.** `account_latest`'s
+  `furlough` flag is only as new as its poll — the ones sitting there at 08:02 still said
+  `false` for accounts that went on holiday at 08:04.
+
 ## Never go in or out of holiday
 
 **Holiday in and out is the user's alone** (the user, 2026-09-18, and EVONY-RULES.md §1).
@@ -113,4 +159,13 @@ unless the user asks for that account in that message — and never `/exit` at a
   (or when the user asks) — otherwise it sits there with no goals, building nothing.
 - The account's consoles keep running; a holiday login answers `ok=-100` and is a normal
   login (§1). Its resources now come back at every maintenance, so it is a glitch "bank".
+- **A holidayed account is never told about maintenance.** The game sends it no system
+  chat announcement at all (2026-09-23, EVONY-RULES.md §2), so on its own its console
+  would sit connected into the window and then hammer the reconnect ladder through it.
+  Since 2026-09-23 the fleet's shared window covers it: one console hearing the
+  announcement, or the Director seeing the fleet drop, stands every account down
+  (`maint.js`). It only reaches a console **when that console restarts** — so after
+  putting accounts on holiday, check the holidayed consoles logged
+  `maintenance: the fleet says the server …` at the next maintenance, not a run of
+  `reconnect failed (socks5 … host unreachable)`.
 - Record anything new — a refusal code, a coin cost, a timing — in EVONY-RULES.md and here.

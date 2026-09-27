@@ -1,37 +1,113 @@
 # OTTObot — notes for Claude
 
-A bot and fleet console for the live game Evony (server ss71). README.md explains the
-apps, SCRIPTS.md the script language.
+A bot and fleet console for the live game Evony Age 1, in dependency-free Node.js.
+README.md is the overview and setup, MANUAL.md explains the apps in depth, SCRIPTS.md the
+script language, STORAGE.md the database.
+
+**If a `CLAUDE.local.md` exists, read it too** — it is this install's own notes (its
+fleet, its machine, its habits) and is kept out of git.
+
+## Setup, if it is not done yet
+
+- **Node 24+** is the only requirement (`node --version`). The database is the built-in
+  `node:sqlite`; there is no `package.json` and nothing to `npm install`. If `node:sqlite`
+  is missing, Node is too old — upgrade Node, don't add an npm SQLite package.
+- The `sqlite3` CLI is optional, for reading `evony.db` by hand
+  (`winget install SQLite.SQLite` / `brew install sqlite` / `apt install sqlite3`).
+- First run: `cp .env.example .env`, then
+  `OTTO_PASSWORD=… node migrate-tenancy.js <email> "<fleet name>"`, then `node director.js`
+  (:8712) and add accounts there. README.md has the details.
+- **Servers are per account.** Each account row has its own `server` (`ss1`, `ss71`, …);
+  never assume one. `EVONY_SERVER` in `.env` is only a default, and code that finds no
+  server falls back to `ss71` — when you touch such a fallback, prefer the account's own.
+
+## Where things are
+
+Everything is flat at the repo root.
+
+| | |
+|---|---|
+| `amf0.js`, `amf3.js`, `evony.js`, `game.js` | the wire protocol and the game client (socket, commands, replies) |
+| `session.js` | one logged-in account: login, reconnect, kick hold, proxies, maintenance |
+| `server.js` | the **console** (one per account, HTTP + page `public/app.html`) |
+| `director.js`, `botctl.js` | the **Director** (fleet view, `public/director.html`) and console start/stop |
+| `engine.js`, `goals.js`, `goal-*.js`, `goalmods.js`, `goallayers.js` | the goal engine: parse goal lines, plan per city, act |
+| `script*.js`, `script-cmd-*.js` | the script language: parser, expressions, one file per command family |
+| `monitor.js`, `statistics.js`, `mapscan.js` | the server-wide watcher, rankings, map |
+| `db.js`, `tenancy.js`, `auth.js` | SQLite storage, org scoping, Director login |
+| `test-*.js` | tests, one suite per file, no framework |
+| `probe*.js`, `*-probe.js`, `bench*.js`, `migrate-*.js` | one-off tools and migrations |
+
+The decompiled game client (`src/`, gitignored, not always present) is the authority for
+command and field names when it exists. Otherwise EVONY-RULES.md and the existing code are.
+
+## Never do these
+
+- **Never log an account in twice.** A second login kicks whatever holds the account — a
+  running console, or the owner playing by hand. Before anything that logs in (a probe, a
+  live test, a new console) check the Director / `node botctl.js list` for one that already
+  holds it, and ask.
+- **Never `require('./server')`** (or `director`) from a test or a helper script: it starts a
+  real console and logs in. Use `node --check server.js` to check syntax.
+- **Never run `test-*.js` as a glob.** Run suites by name with a throwaway database:
+  `EVONY_DB=/tmp/x.db node test-goals.js`. Some suites open `evony.db` unless `EVONY_DB` is
+  set. `test-login`, `test-scope`, `test-raw`, `test-block`, `test-buy`, `test-wall`,
+  `test-clean`, `test-castle`, `test-ctx`, `test-shapes`, `test-lookup` log in to the live
+  game — only run them when asked.
+- **Never restart a running console or the Director without asking.** They are the live
+  bots; a restart logs every account out and back in.
+- **Never write a real in-game name, login email, password, security code, home or proxy IP
+  into a tracked file** — see Privacy.
+- **Never commit `evony.db`, `.env`, proxy lists, logs or `privacy.local.json`.**
 
 ## Read EVONY-RULES.md before touching the live game
 
-**Always read [EVONY-RULES.md](EVONY-RULES.md) first when a request would act on the real
-game** — starting, stopping or editing a running script (trading, marches, anything),
-placing or cancelling market orders, logging an account in, starting, stopping or
-restarting a console or the Director, switching an account on or off, changing its proxy,
-running a test file that might log in, using or buying items. It holds what has been
-learned about how Evony behaves and how the fleet breaks, so the same costly mistakes
-aren't made twice: a second login kicking a console, logging in during maintenance, a
-rate-limited account, a hero lost to `release`, gold spent from stale balances.
+**Read [EVONY-RULES.md](EVONY-RULES.md) first when a request would act on the real game** —
+starting, stopping or editing a running script (trading, marches, anything), placing or
+cancelling market orders, logging an account in, starting, stopping or restarting a console
+or the Director, switching an account on or off, changing its proxy, running a test file
+that might log in, using or buying items. It holds what has been learned about how Evony
+behaves and how a fleet breaks, so the same costly mistakes aren't made twice: a second
+login kicking a console, logging in during maintenance, a rate-limited account, a hero lost
+to `release`, gold spent from stale balances.
 
 Pure code work (editing files, offline tests) doesn't need it — until the change is about
 to go live.
 
-[EVONY-STRATEGY.md](EVONY-STRATEGY.md) says how the user plays and what the fleet is built
-towards: alts, dump, builders, spammers, mains and banks; insta heroes; the amulet farm.
-Read it when a request names a role or a plan and the reason behind it isn't obvious.
+[EVONY-STRATEGY.md](EVONY-STRATEGY.md) is one fleet's play — roles (alts, dump, builders,
+banks), insta heroes, the amulet farm. Read it when a request names a role or a plan and
+the reason behind it isn't obvious.
 
 ## Keep EVONY-RULES.md current
 
 **Every lesson, as soon as it is learned — not at the end.** Whenever something goes
 wrong, surprises you, or the user corrects or teaches you something about the game or the
-fleet, write it down before moving on: into EVONY-RULES.md (how the game behaves, what
-must never happen), and into the skill for that kind of task (`.claude/skills/…`: how to
-run it, what went wrong) when there is one — or a new skill when the user will ask for the
-same kind of task again. Say in your reply what you recorded. (The user, 2026-09-18.)
+fleet, write it down before moving on: into EVONY-RULES.md (how the game behaves, what must
+never happen), and into the skill for that kind of task (`.claude/skills/…`) when there is
+one — or a new skill when the same kind of task will come again. Say in your reply what you
+recorded.
 
-When you learn something about how the game behaves — a reply code, a limit, a timing,
-what the server does under load, a mechanic the user explains — **add it to
-EVONY-RULES.md in the same session**, in the right section, with the date and how it was
-observed. Mark inferences as *unverified*. Correct or remove entries that turn out to be
-wrong. Every future session relies on this file to know how Evony works.
+Add it in the right section, with the date and how it was observed. Mark inferences as
+*unverified*. Correct or remove entries that turn out to be wrong. Code documentation
+belongs in MANUAL.md and SCRIPTS.md, not there.
+
+## Privacy: accounts are aliases
+
+Tracked files name accounts by **alias** — `Lord01`, `Lord02` … — usually beside the
+account id (`a2 Lord02`). The real in-game names live only in `privacy.local.json`
+(gitignored). To see who is who: `node privacy.js`. The database and the web pages show the
+real names; only the repo's files don't.
+
+- Writing about an account in a doc, test, skill or comment: use its alias (and id).
+- A new account: `node privacy.js sync` gives it the next alias.
+- Before committing: `node privacy.js check` (the pre-commit hook runs it on staged files
+  once `node privacy.js install-hook` has been run). If it fails, `node privacy.js scrub`
+  fixes names and redacted strings; a password, email or security code must be removed
+  by hand.
+- Code must not hard-code account names: look labels up from the `accounts` table by id.
+
+## Style
+
+Match the surrounding code: CommonJS, `'use strict'`, no dependencies, comments that say
+*why* in plain prose with the date and the evidence when they record something learned
+live. Tests are plain `assert` suites run with `node test-x.js`.

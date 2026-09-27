@@ -48,7 +48,8 @@
 //   compare against every hero of the city. The string is checked when the script
 //   loads; a bare number (100) is refused, as NEAT does.
 //
-//   recall 111,222                  every army of yours on its way to (or staying at) 111,222
+//   recall 111,222                  this city's armies on their way to (or staying at) 111,222
+//   recall 111,222 all              every city's, not just this one's
 //   recallall                       every army that left this city and is not on its way home
 //   idrecall 100333040              that army
 //   recallhero Fred | recallhero any:att=best      a hero of this city that is out (one per line)
@@ -158,7 +159,7 @@ function coordsOf(t, what) {
 
 // "123, 456" and "a:100, c:500" read the same as without the spaces.
 const wordsOf = (line) => (String(line).replace(/\s*,\s*/g, ',').match(/"[^"]*"|\S+/g) || []).map((w) => w.replace(/^"(.*)"$/, '$1'));
-const isList = (t) => /^[a-z]+:[\d.]+[kmb]?(,[a-z]+:[\d.]+[kmb]?)*$/i.test(t);
+const isList = (t) => /^[a-z]+:([\d.]+[kmb]?|\*)(,[a-z]+:([\d.]+[kmb]?|\*))*$/i.test(t);
 const codesOf = (t) => t.split(',').map((p) => p.split(':')[0].toLowerCase());
 const allTroops = (t) => isList(t) && codesOf(t).every((c) => W.troopByWord(c));
 const allRes = (t) => isList(t) && codesOf(t).every((c) => W.resourceByWord(c));
@@ -319,7 +320,7 @@ function parseMarch(word, line, tok) {
 
   // No hero sends no heroId at all; see Game.buildArmyBean.
   let from = null, land = null, camp = null, hero, troops = null, resources = null, horde = false;
-  let nowait = false, waitMs = null, within = null, tries = null;
+  let nowait = false, waitMs = null, within = null, tries = null, nolimit = false, fullhold = false;
   for (let i = 2; i < words.length; i++) {
     const t = words[i];
     const lt = t.toLowerCase();
@@ -330,6 +331,13 @@ function parseMarch(word, line, tok) {
     }
     if (lt === '/big') { big = true; continue; }
     if (lt === '/horde') { horde = true; continue; }
+    // Our own troop-count guard, not the game's, and it cannot see every bonus
+    // (a haunted castle's). /nolimit sends the march and lets the game answer.
+    if (lt === '/nolimit') { nolimit = true; continue; }
+    // /fullhold: fill f:* to the whole load, setting nothing aside for the march's
+    // own food. The server does not enforce the food rule on an attack (EVONY-RULES
+    // 5b), so whether it enforces it on a transport is worth finding out.
+    if (lt === '/fullhold') { fullhold = true; continue; }
     // A march waits for what the city is short of (waitReady). /nowait sends it
     // at once and lets the server refuse it, as every march did before;
     // /wait=<time> waits that long and then fails.
@@ -356,6 +364,7 @@ function parseMarch(word, line, tok) {
       continue;
     }
     if (t.startsWith('/')) throw new Error(`${name}: "${t}" — the switches are /big (a War Ensign), /horde,`
+      + ' /nolimit (send it whatever the troop guard thinks the city may take),'
       + ' /nowait (send now and let the server refuse it), /wait=<seconds | m:ss | h:mm:ss>,'
       + ' and with an @: landing time /within=<500ms | 1s> and /tries=<n>');
     if (isTime(t)) {
@@ -367,7 +376,7 @@ function parseMarch(word, line, tok) {
       // NEAT reads troops first and resources second, so in a later list
       // s: and w: are stone and wood, not scouts and warriors.
       if (troops === null && allTroops(t)) { troops = W.parseTroops(t); continue; }
-      if (allRes(t)) { resources = { ...resources, ...W.parseResources(t) }; continue; }
+      if (allRes(t)) { resources = { ...resources, ...W.parseResources(t, { fill: true }) }; continue; }
       if (allTroops(t)) { troops = { ...troops, ...W.parseTroops(t) }; continue; }
       throw new Error(`${name}: "${t}" is neither a troop string nor a resource string`);
     }
@@ -397,6 +406,8 @@ function parseMarch(word, line, tok) {
   const out = { cmd: mission, target, targetCity, hero: hero || null, troops, troopsDefault, resources, land, camp, from };
   if (big) out.big = true;
   if (horde) out.horde = true;
+  if (nolimit) out.nolimit = true;
+  if (fullhold) out.fullhold = true;
   if (nowait) out.nowait = true;
   if (waitMs) out.waitMs = waitMs;
   if ((within !== null || tries !== null) && !land) {
@@ -575,6 +586,49 @@ function recordSent(a, env, castle, targetPoint) {
   } catch { /* the book is a convenience, never a reason a march fails */ }
 }
 
+// `f:*` / `i:*` on a march: "fill the hold with this". Resolved here because only
+// here are the troops, the march time and the city's store all known.
+//
+// The room is the load the troops carry, less the food the march eats out of that
+// same hold (NewArmyWin: leftSpace = loads - needFood - resources), less whatever
+// the line asks for by name. Several stars share what is left, each capped by what
+// the city actually holds — a star that asked for more than the city has would
+// otherwise leave the march waiting for resources that are never coming.
+//
+// Whether the server really reserves the march food is *unverified* (EVONY-RULES
+// §5b: it does not enforce the food rule on an attack at all), so the reservation
+// is kept but reported, and `/fullhold` sends the load with no food set aside.
+function fillHold(a, castle, holdRaw, foodNeeded, log, fullHold) {
+  const stars = Object.keys(a.resources || {}).filter((k) => a.resources[k] === Infinity);
+  if (!stars.length) return;
+  const bank = require('./game').Game.bankOf;
+  const hold = Math.floor(holdRaw);
+  const food = fullHold ? 0 : Math.floor(foodNeeded);
+  const named = Object.values(a.resources).filter((v) => Number.isFinite(v)).reduce((t, v) => t + v, 0);
+  let room = Math.max(0, hold - food - named);
+
+  const have = Object.fromEntries(stars.map((k) => [k, castle.resource ? bank(castle.resource, k) : room]));
+  const got = Object.fromEntries(stars.map((k) => [k, 0]));
+  let open = [...stars];
+  while (open.length && room > 0) {
+    const share = Math.floor(room / open.length);
+    if (share <= 0) { got[open[0]] += room; room = 0; break; }
+    const next = [];
+    for (const k of open) {
+      const take = Math.min(share, have[k] - got[k]);
+      got[k] += take; room -= take;
+      if (have[k] - got[k] > 0) next.push(k);
+    }
+    if (next.length === open.length && next.every((k) => got[k] >= have[k])) break;
+    if (!next.length) break;
+    open = next;
+  }
+  for (const k of stars) a.resources[k] = got[k];
+  log(`  fill: ${stars.map((k) => `${k} ${fmt(got[k])}${got[k] >= have[k] ? ' (all the city has)' : ''}`).join(', ')}`
+    + ` · hold ${fmt(hold)}${named ? ` less ${fmt(named)} asked for by name` : ''}`
+    + (food ? ` less ${fmt(food)} food for the march (/fullhold sends without it)` : ' · no food set aside (/fullhold)'));
+}
+
 async function runMarch(a, env) {
   const game = env.game;
   const log = env.log;
@@ -603,6 +657,21 @@ async function runMarch(a, env) {
   }
 
   const troopText = troopTextOf(a.troops);
+
+  // `f:*` — fill the hold. Must run before the capacity check below and before
+  // marchShort, both of which read a.resources as numbers.
+  if (Object.values(a.resources || {}).some((v) => v === Infinity)) {
+    const pf = await paramsFor(game, castle);
+    const ms = from ? (C.marchTimeMs(from, target, troopKeys, {
+      marchSkill: pf.marchSkill, driveSkill: pf.driveSkill, relief: Number(pf.relief) > 1 ? pf.relief : 0,
+      castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now: game.now(),
+    }) || 0) : 0;
+    const ls = pf.known && Number.isFinite(Number(pf.loadSkill)) ? Number(pf.loadSkill) : 0;
+    fillHold(a, castle, capacityOf(a.troops, ls),
+      foodPerHour(a.troops) * (ms + (a.camp || 0) * 1000) / 3600000, log, !!a.fullhold);
+    if (!pf.known) log('  note: this city\'s load research could not be read, so the fill used none — travelinfo shows what troops carry');
+  }
+
   const carried = Object.values(a.resources || {}).reduce((s2, v) => s2 + v, 0);
   if (carried > 0) {
     // Refused only when it cannot fit even at the fastest march (the Relief
@@ -678,18 +747,34 @@ async function runMarch(a, env) {
     return { done: res.sent ? 1 : 0, ok: !!res.sent || dryRun, end: res.why === 'stopped' };
   }
 
-  const march = from ? C.marchTimeMs(from, target, troopKeys, game.marchSkillParam) : null;
-  const restTimeSec = a.camp || 0;
+  // The city's own troop params and the Relief Station, as timed-march.js and
+  // travelinfo use: the login's marchSkillParam alone read 0 and ignored
+  // Horseback Riding, so this line said 6 h 6 m for Lord24's 48k cavalry 3 -> 5.
+  // The relief is counted for our own cities and tiles only: asking the server
+  // who owns any other tile would cost a request on every march.
+  const tm = require('./timed-march');
+  const pm = await paramsFor(game, castle);
+  const buffs = { castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now: game.now ? game.now() : Date.now() };
+  const ours = !!toCity || construct || (game.castles || []).some((c) => Number(c.fieldId) === targetPoint
+    || (c.fields || []).some((f) => Number(f.id) === targetPoint));
+  const relief = ours && Number(pm.relief) > 1 ? Number(pm.relief) : 0;
+  const march = from ? C.marchTimeMs(from, target, troopKeys, { marchSkill: pm.marchSkill, driveSkill: pm.driveSkill, relief, ...buffs }) : null;
+  // The game shortens a camp by the same buffs as the march (Fleet Feet: two
+  // charges make 16 h of camp 4 h 48 m — constants.js armyTimeFactor). Asking
+  // for camp / factor gets the camp that was written.
+  const factor = C.armyTimeFactor(buffs);
+  const restTimeSec = a.camp ? (factor > 0 ? Math.ceil(a.camp / factor) : a.camp) : 0;
   if (march !== null) {
-    log(`  march ${(march / 1000).toFixed(1)}s` + (restTimeSec
-      ? `, camp ${require('./timed-march').dur(restTimeSec * 1000)} (lands when the camp is over)`
+    log(`  march ${tm.dur(Math.floor(march / 1000) * 1000)}${relief ? ` (Relief Station x${relief})` : ''}` + (restTimeSec
+      ? `, camp ${tm.dur(a.camp * 1000)}${restTimeSec !== a.camp ? ` (${tm.dur(restTimeSec * 1000)} asked for: the game counts camp x${factor.toFixed(2)}, as the march buffs do the march)` : ''}`
+        + ` — lands about ${tm.clock(Date.now() + Math.floor(march / 1000) * 1000 + a.camp * 1000)}`
       : ' (no @: time, lands on arrival)'));
   }
   const bean = makeBean(restTimeSec);
   if (dryRun) { log('  [dry run] not sent'); return {}; }
   const gs = env.game;                 // the reads above may have crossed a reconnect
   const ensigns = a.big ? ensignsHeld(gs) : null;
-  const r = await gs.newArmy(gs.castleId(castle), bean);
+  const r = await gs.newArmy(gs.castleId(castle), bean, { noLimit: !!a.nolimit });
   log('  -> ' + env.say(r));
   if (r && r.ok === 1 && hero) markSent(gs, hero.id, env.sentHeroes);
   if (r && r.ok === 1 && a.big) usedEnsign(env, gs, ensigns);
@@ -859,8 +944,8 @@ const startLoop = async (a, env) => {
 const commands = {
   attack: march('attack <x,y | city> <hero> <troops> [resources] [@:hh:mm:ss | camp] [/big] [/horde] [from <city>]'),
   scout: march('scout <x,y | city> <hero | none> <troops> [@:hh:mm:ss | camp] [/big] [from <city>]'),
-  transport: march('transport <x,y | city> [hero] <troops> <resources> [@:hh:mm:ss | camp] [/big] [from <city>]'),
-  reinforce: march('reinforce <x,y | city> [hero] [troops] [resources] [@:hh:mm:ss | camp] [/big] [from <city>]'),
+  transport: march('transport <x,y | city> [hero] <troops> <resources> [@:hh:mm:ss | camp] [/big] [/fullhold] [from <city>]'),
+  reinforce: march('reinforce <x,y | city> [hero] [troops] [resources] [@:hh:mm:ss | camp] [/big] [/fullhold] [from <city>]'),
   bigattack: march('bigattack <x,y> <hero> <troops> [...] — attack with a War Ensign'),
   bigscout: march('bigscout <x,y> <hero | none> s:<scouts> [...] — scout with a War Ensign'),
   bigtransport: march('bigtransport <x,y | city> t:<transports> <resources> [...] — transport with a War Ensign'),
@@ -868,7 +953,7 @@ const commands = {
   // a build-city march: only `deploy bu` makes one
   construct: { run: runMarch },
   deploy: {
-    usage: 'deploy <at|bu|re|sc|tr> <x,y | city> [hero] <troops> [resources] [@:hh:mm:ss | camp] [/big] [/horde] [from <city>]',
+    usage: 'deploy <at|bu|re|sc|tr> <x,y | city> [hero] <troops> [resources] [@:hh:mm:ss | camp] [/big] [/fullhold] [/horde] [from <city>]',
     parse: (args, { line, tok }) => parseMarch('deploy', line, tok),
   },
   bigdeploy: {
@@ -877,19 +962,31 @@ const commands = {
   },
 
   recall: {
-    usage: 'recall <x,y | city>',
+    // This city's armies only, as recallall is — a script run in all cities recalls
+    // from each in turn, so the run covers the fleet without one city pulling back
+    // another's waves. `recall 111,222 all` asks for every city's in one go.
+    // (The user, 2026-09-23; ally-drain.txt had warned of the fleet-wide recall.)
+    usage: 'recall <x,y | city> [all]',
     parse(args, { line }) {
       const words = wordsOf(line);
-      if (words.length !== 2) throw new Error('recall: usage  recall 111,222   (or a city of yours by name, in quotes if it has spaces)');
+      const all = words.length === 3 && words[2].toLowerCase() === 'all';
+      if (words.length !== 2 && !all) throw new Error("recall: usage  recall 111,222 [all]   (or a city of yours by name, in quotes if it has spaces; \"all\" recalls every city's, not just this one's)");
       const target = coordsOf(words[1], 'recall');
-      return { cmd: 'recall', target, targetCity: target ? null : words[1] };
+      return { cmd: 'recall', target, targetCity: target ? null : words[1], all };
     },
     async run(a, env) {
       const game = env.game;
+      const castle = env.castle;
       const target = a.targetCity ? game.castleXY(ownCity(game, a.targetCity)) : a.target;
       const fid = C.coordsToFieldId(target.x, target.y);
-      const list = armiesOf(game).filter((x) => recallable(x) && Number(x.targetFieldId) === fid);
-      if (!list.length) { env.log(`  no army of yours is on its way to ${target.x},${target.y} (or staying there)`); return { ok: true, result: 0 }; }
+      const there = armiesOf(game).filter((x) => recallable(x) && Number(x.targetFieldId) === fid);
+      const list = a.all ? there : there.filter((x) => Number(x.startFieldId) === Number(castle.fieldId));
+      if (!list.length) {
+        const others = there.length - list.length;
+        env.log(`  no army from ${a.all ? 'any city of yours' : castle.name} is on its way to ${target.x},${target.y} (or staying there)`
+          + (others ? ` — ${others} from other cities; "recall ${target.x},${target.y} all" calls those back too` : ''));
+        return { ok: true, result: 0 };
+      }
       const n = await recallArmies(env, list);
       return { result: n, done: env.dryRun ? 0 : list.length };
     },
@@ -1242,7 +1339,7 @@ module.exports = {
   commands, parseMarch, ownCity, DEPLOY, BIG, ENSIGN, TIMING,
   // for deploy-loops.js and the tests
   pickHero, heroMatches, checkHeroString, rankHeroes, spamPool, spamRules, spamHero, spamHeroes, cityGoals, oursOf,
-  markSent, recentSkip, capacityOf, foodPerHour, troopTextOf, paramsFor, parseForts,
+  markSent, recentSkip, capacityOf, foodPerHour, troopTextOf, paramsFor, parseForts, fillHold,
   armiesOf, recallable, homeOf, armyText,
   marchShort, waitReady, WAIT,
 };

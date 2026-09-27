@@ -57,6 +57,12 @@ function world(lines, hhmm = [17, 30]) {
   const now = new Date(2026, 8, 18, hhmm[0], hhmm[1]).getTime();
   return { dir, mon: new TM.Monitor({ dir, now: () => now }), now };
 }
+// 'canceltrade buy' takes this city's own resting bids back off the book: not a fill.
+const cancelled = (hms, city, n) =>
+  `[autorun ${city}] ${hms}.000 line 53: canceltrade buy · cancelled ${n} of ${n} offer(s) in ${city}`;
+const noBids = (hms, city) =>
+  `[autorun ${city}] ${hms}.000 line 53: canceltrade buy · ${city} has no open bids to cancel`;
+
 const at = (hms, city, side, res, price, n) =>
   `[autorun ${city}] ${hms}.000 line 24: ${side} ${res} 99999999 ${price} x${n} · ${n} × ${side} 99,999,999 ${res} @ ${price} from ${city} · a fee — ${n} of ${n} placed`;
 
@@ -79,6 +85,38 @@ t('the report: return per bucket and reading, the play totals, each account', ()
   assert.deepStrictEqual(o.sitting.map((s) => [s.city, s.res]), [['6', 'food']]);
   const rd = r.readings.find((x) => new Date(x.t).getMinutes() === 20);
   assert.deepStrictEqual([rd.hol, rd.ours, rd.pct], [20, 15, 75]);
+});
+
+// The user, 2026-09-24: 'are we buying someone elses stone?' — the tab said ours bought
+// 235.98t against 66.20t the banks had sold, and a return of 1072%. Our buying side
+// recycles its slots, so most of that was the same bids placed over and over.
+t('a cancelled bid is not a fill: our side counts placed MINUS cancelled', () => {
+  const { dir, mon } = world({
+    h1: [at('17:21:00', '1', 'sell', 'food', '0.5', 10)],
+    o1: [at('17:21:30', '3', 'buy', 'food', '0.5', 10), cancelled('17:22:00', '3', 8),
+      at('17:23:00', '3', 'buy', 'food', '0.5', 10), noBids('17:23:30', '4')],
+  });
+  const who = [{ id: 'h1', label: 'Lord06', holiday: true }, { id: 'o1', label: 'Lord04', holiday: false }];
+  const r = TM.report(mon, who, { minutes: 30, dir });
+  // ours: 10 + 10 placed, 8 taken back = 12 traded, against the bank's 10
+  assert.deepStrictEqual([r.total.hol, r.total.ours, r.total.pct], [10, 12, 120], 'placed less cancelled');
+  const b = r.buckets.find((x) => new Date(x.t).getMinutes() === 20);
+  assert.deepStrictEqual([b.hol, b.ours], [10, 12], 'the buckets too');
+  const rd = r.readings.find((x) => new Date(x.t).getMinutes() === 20);
+  assert.deepStrictEqual([rd.hol, rd.ours], [10, 12], 'and the 10-minute readings');
+  const o = r.accounts.find((a) => a.id === 'o1');
+  assert.strictEqual(o.placed10, 20, 'the per-minute activity still counts every order sent');
+  assert.strictEqual(o.cancelled10, 8, 'and says how many were taken back');
+});
+
+t('a side that cancels more than it placed reads as nothing, never as a negative', () => {
+  const { dir, mon } = world({
+    h1: [at('17:21:00', '1', 'sell', 'food', '0.5', 10)],
+    o1: [at('17:21:30', '3', 'buy', 'food', '0.5', 4), cancelled('17:22:00', '3', 9)],
+  });
+  const r = TM.report(mon, [{ id: 'h1', label: 'A', holiday: true }, { id: 'o1', label: 'B', holiday: false }], { minutes: 30, dir });
+  assert.strictEqual(r.total.ours, 0);
+  assert.strictEqual(r.buckets.find((x) => new Date(x.t).getMinutes() === 20).ours, 0);
 });
 
 t('what a log gains later is read on the next call, and only that', () => {

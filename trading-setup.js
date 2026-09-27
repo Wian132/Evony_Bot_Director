@@ -392,8 +392,11 @@ class Runner {
   //                  processDown, maintenance, at }]     — the consoles' live headers
   // monitor: { events(id) }                              — trade-monitor.js
   // lastLineAt(id) -> ms                                 — lastScriptLineAt
-  constructor({ store, control, exec, accounts, monitor, lastLineAt, now = () => Date.now(), note = () => {} }) {
-    Object.assign(this, { store, control, exec, accountsOf: accounts, monitor, lastLineAt, now, noteOut: note });
+  // `archive` is called with every saved run, so a finished one survives the next
+  // Start: the settings keep only the CURRENT run, and without this the Glitch log
+  // could never say what a past day's play actually was (glitch-log.js archiveRun).
+  constructor({ store, control, exec, accounts, monitor, lastLineAt, archive = null, now = () => Date.now(), note = () => {} }) {
+    Object.assign(this, { store, control, exec, accountsOf: accounts, monitor, lastLineAt, archive, now, noteOut: note });
     this.busy = false;
     // A stop (or a live edit's note) that comes in while a tick is awaiting a start is
     // held here and applied when that tick ends — the tick holds its own copy of the run
@@ -432,6 +435,9 @@ class Runner {
     if (this.pendingEvents.length) (run.events = run.events || []).push(...this.pendingEvents.splice(0));
     run.events = (run.events || []).slice(-300);
     this.store.set(RUN_KEY, run);
+    // The archive must never be able to break a run: it is a record of what
+    // happened, and the play matters more than the record of it.
+    if (this.archive) { try { this.archive(run); } catch (e) { this.noteOut('trading: archiving the run failed — ' + e.message); } }
     return run;
   }
   say(run, m) { (run.events = run.events || []).push({ t: this.now(), m }); this.noteOut('trading: ' + m); }

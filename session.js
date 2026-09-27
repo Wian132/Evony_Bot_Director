@@ -9,6 +9,7 @@ const C = require('./constants');
 const D = require('./db');
 const { getServerConfig } = require('./evony');
 const { buildSnapshot, marches } = require('./snapshot');
+const MAINT = require('./maint');          // the fleet's shared word on maintenance
 
 const RING = 400;
 const push = (arr, item, cap = RING) => { arr.push(item); if (arr.length > cap) arr.shift(); };
@@ -516,7 +517,10 @@ class Session {
   // 2026-09-20 thirteen consoles sat waiting with nothing in their log since 08:54,
   // and there was no way to tell a console that was patiently waiting from one that
   // had died. What a console is doing through a maintenance has to be on the record.
-  static CONN_NOTE = /socket|heartbeat|reconnect|connect failed|session ready|ignoring|kick|standing down|server went down|back online|logging out|switched off|no traffic|refresh|logged in as|port|maintenance/i;
+  // `protection` is here for the same reason: what an account is under — holiday,
+  // dream truce, truce, peace — and the moment it changes belongs on the record,
+  // not only in the live view the Director reads (2026-09-23).
+  static CONN_NOTE = /socket|heartbeat|reconnect|connect failed|session ready|ignoring|kick|standing down|server went down|back online|logging out|switched off|no traffic|refresh|logged in as|port|maintenance|protection/i;
 
   // Kept as a hook so tests can make the stagger deterministic.
   static rand() { return Math.random(); }
@@ -646,6 +650,14 @@ class Session {
         // A planned stand-down outranks everything: no logins at all while the
         // window is open, because login attempts into maintenance are what we
         // believe earned the block in the first place.
+        //
+        // The plan does not have to be this console's own find: another console
+        // hearing the announcement, or the Director watching the fleet drop at
+        // once, puts the window up for everyone (maint.js). Without this an
+        // account on holiday — which the server never tells — spends the whole
+        // maintenance on the reconnect ladder (2026-09-23).
+        this.adoptFleetMaintenance();
+        this.releaseIfFleetBack();
         const phase = this.planPhase();
         // A script's logout (logout.js) was asked for, so the maintenance
         // override does not cancel it; Connect does.
@@ -871,6 +883,17 @@ class Session {
     const id = this.account && this.account.id;
     if (!id) return;
     try { this.settings().set('maintEnded:' + id, { day: new Date().toISOString().slice(0, 10), at: Date.now() }); } catch { /* not counted */ }
+    // Tell the fleet the server is back — but only on a login that actually
+    // holds. A guess here sends every console into a closed server, and a
+    // signal that never arrives strands them all instead (EVONY-RULES.md
+    // section 2, 2026-09-20): every way back in writes it now, not just the
+    // maintenance monitor of the old race.
+    if (this.connected) {
+      try {
+        MAINT.signalBack(this.settings(), (this.account && this.account.server) || 'ss71');
+        this._fleetMaint = null;
+      } catch { /* the others fall back to their own port probe */ }
+    }
     this.holidayRun();
   }
 
@@ -896,6 +919,7 @@ class Session {
       // Only what a console can SEE counts as the holiday being over: while it
       // is offline it knows nothing, and must not throw the count away.
       if (rec && this.connected) { try { this.settings().set(key, null); } catch { /* kept next time */ } }
+      if (this.connected) this.warnNoGoalFile();
       return this.connected ? null : rec;
     }
     const next = rec && rec.since ? { ...rec } : { since: Date.now(), maints: 0 };
@@ -909,9 +933,60 @@ class Session {
       this.note(`on holiday through ${next.maints} maintenance(s) now — its resources are put back at each one`);
     }
     next.seenAt = Date.now();
+    this.holidayGoalFile();
     const changed = !rec || rec.since !== next.since || Number(rec.maints || 0) !== Number(next.maints || 0) || rec.lastMaint !== next.lastMaint;
     if (changed) { try { this.settings().set(key, next); } catch { /* shown anyway */ } }
     return next;
+  }
+  // ON HOLIDAY: MAKE SURE THE ACCOUNT HAS ITS GOALS (the user, 2026-09-24: "if a bot logs
+  // in it should check holidaymode yes/no — if its yes it should always automatically load
+  // the goal files (prepend file). We cant get caught with one of our accs not having
+  // goals.")
+  //
+  // WHY THE HOLIDAY GATE, and why it is not simply "always". Goals are emptied ON PURPOSE
+  // in the hours BEFORE an account goes on holiday: a queued build or troop batch makes the
+  // game refuse the holiday (ok=-25 — the evony-holiday-prep skill), so the prep empties the
+  // goals and cancels the queues first. Reloading them in that window would put the queues
+  // straight back and block the holiday. The moment the holiday is actually ON that reason
+  // is gone, and an account left empty is one that comes back off holiday with nothing to
+  // do — which is how Lord07 and Lord16 were found a day behind the fleet prepend on
+  // 2026-09-24. So: holiday confirmed -> name the fleet's prepend file if this account
+  // names none, and load it now rather than waiting on the Director's 15 s sync, which only
+  // runs if the Director is up at all.
+  //
+  // It only ever ADDS: the file is the source of a prepend (goalfiles.js), so loading it
+  // cannot empty anything, and an account that already names a file is left to the Director.
+  // An account NOT on holiday that names no file is only WARNED about, once — it may be
+  // mid-prep, and that is the user's doing.
+  holidayGoalFile() {
+    if (!this.connected || !this.org || !this.account || !this.account.id) return null;
+    if (Date.now() - (this._goalFileAt || 0) < Session.GOAL_FILE_GAP_MS) return null;
+    this._goalFileAt = Date.now();
+    const GF = require('./goalfiles');
+    try {
+      let file = GF.fileOf(this.org, this.account.id, 'prepend');
+      if (!file) {
+        file = GF.defaultFile(this.org, 'prepend');
+        if (!file) { this.note('on holiday with no prepend goal file, and no other account names one either — goals left as they are'); return null; }
+        GF.setFile(this.org, this.account.id, 'prepend', file);
+        this.note(`on holiday and naming no prepend goal file — pointed at ${file}, so it is never left without goals`);
+      }
+      this._goalFileSeen = this._goalFileSeen || new Map();
+      return GF.syncAccount(this.org, this.account, { note: (m) => this.note(m), seen: this._goalFileSeen });
+    } catch (e) { this.note(`prepend goal file not loaded — ${e.message}`); return null; }
+  }
+
+  // An account that is NOT on holiday and names no prepend file does not follow a fleet
+  // edit of the prepend at all: it keeps whatever copy it was last given and looks fine
+  // (Lord07 and Lord16 were 102 characters and five goal lines behind, 2026-09-24).
+  // Said once per console, because it may be an account being made ready for a holiday.
+  warnNoGoalFile() {
+    if (this._noGoalFileSaid || !this.connected || !this.org || !this.account) return;
+    try {
+      if (require('./goalfiles').fileOf(this.org, this.account.id, 'prepend')) return;
+      this._noGoalFileSaid = true;
+      this.note('this account names no prepend goal file, so a fleet-wide goal edit does not reach it — name one in the Director (✎ Goal files) unless it is being made ready for a holiday');
+    } catch { /* said next login */ }
   }
   // What the Director's "Market glitch ready" column reads.
   holidayRunView() {
@@ -919,6 +994,84 @@ class Session {
     if (!rec || !rec.since) return null;
     const maints = Number(rec.maints || 0);
     return { since: rec.since, maints, ready: maints >= 1, seenAt: rec.seenAt || null };
+  }
+
+  // ---- the protection watcher -----------------------------------------
+  //
+  // What the account is protected by RIGHT NOW: holiday, dream truce, truce or
+  // peace (buffs.js PROTECTION). Until 2026-09-23 the only thing the Director's
+  // Status column had was `game.holiday`, which is written in one place —
+  // game.js, from the login reply's ok=-100 — so an account that went on holiday
+  // while already logged in showed nothing until its console happened to
+  // reconnect. Five accounts went on holiday at 08:02-08:04 that morning and the
+  // badge was still missing at 08:12 on the four that had not re-logged in.
+  //
+  // Nothing has to be asked of the server. The buff list is seeded by the login
+  // and kept current by `server.PlayerBuffUpdate` pushes (game.js
+  // applyPlayerBuffUpdate), and buffs carry an endTime, so buffs.list() drops
+  // one the moment it expires. This is pure local reading: no command, no
+  // login, nothing for the rate limiter to count. The ONE thing it cannot see
+  // is a push that never arrived while the socket stayed up — there is no
+  // command that returns our own buffs (common.getPlayerInfoByName, what the
+  // heartbeat sends, is the public summary: name, alliance, prestige, no
+  // buffs), so that case is only corrected by the next login.
+  //
+  // It is deliberately NOT in the goal engine: engineTick() returns early on
+  // userPaused and on maintenance, which is exactly when a status still has to
+  // be reported. This runs on the session's own timer whenever connected.
+  // How often a holiday account re-checks its prepend goal file (holidayGoalFile). It is a
+  // file read and a string compare, and holidayRun() is called on every Director poll, so
+  // it is paced rather than run a few times a second. A login resets it to 0 so the check
+  // always happens at once on the way in.
+  static GOAL_FILE_GAP_MS = Number(process.env.OTTO_GOAL_FILE_GAP_SEC || 60) * 1000;
+  static PROTECTION_MS = Number(process.env.PROTECTION_MS || 120000);
+
+  startProtectionWatch({ everyMs = Session.PROTECTION_MS } = {}) {
+    if (this._protTimer) return;
+    this.checkProtection();
+    this._protTimer = setInterval(() => this.checkProtection(), everyMs);
+    this.note(`protection watch started (every ${Math.round(everyMs / 1000)}s: holiday, dream truce, truce, peace)`);
+  }
+
+  stopProtectionWatch() {
+    if (this._protTimer) { clearInterval(this._protTimer); this._protTimer = null; }
+  }
+
+  // One reading. Returns the protection view, and says so on the record when
+  // the KIND changes — a countdown ticking down is not news, going on holiday
+  // or a truce running out is.
+  checkProtection() {
+    if (!this.connected || !this.game) { this.protection = null; return null; }
+    let p = null;
+    try { p = require('./buffs').protectionOf(this.game); } catch { return this.protection || null; }
+    const now = Date.now();
+    // On a holiday, whether the game will renew it by itself. `/autoextend` sets
+    // the game's own isAutoFurlough (script-cmd-social.js), and it comes back on
+    // the login's PlayerBean as `autoFurlough`, with `furloughDay` for the days
+    // it was taken for. Those two are login-seeded, not pushed — but the flag
+    // only ever changes when a holiday is sent, so a login is soon enough. It is
+    // the only way to tell a holiday that renews from one about to lapse, which
+    // nothing could read before (the user asked, 2026-09-23).
+    const pb = (this.game && this.game.player) || {};
+    const holiday = p && p.kind === 'holiday';
+    const view = p ? {
+      kind: p.kind, label: p.label, type: p.type,
+      left: p.left, msLeft: p.msLeft,
+      auto: holiday ? !!pb.autoFurlough : null,
+      days: holiday ? (Number(pb.furloughDay) || null) : null,
+      at: now,
+    } : null;
+    const was = this.protection ? this.protection.kind : null;
+    const is = view ? view.kind : null;
+    if (was !== is) {
+      if (is) {
+        const renew = view.auto === null ? ''
+          : (view.auto ? ', renewing itself until the coins run out' : ', NOT set to renew — it will lapse');
+        this.note(`protection: ${view.label}${view.left && view.left !== 'no end' ? ` — ${view.left} left` : ''}${renew}`);
+      } else this.note(`protection: none now (${was} has ended)`);
+    }
+    this.protection = view;
+    return view;
   }
 
   // ---- scheduled maintenance ------------------------------------------
@@ -951,10 +1104,16 @@ class Session {
   armRaceFromServer(now = Date.now()) {
     try {
       const server = (this.account && this.account.server) || 'ss71';
-      const win = this.settings().get('maintWindow:' + server, null);
-      if (win && now >= Number(win.startAt) - 30 * 60000 && now <= Number(win.until)) return null;   // one is armed
-      const w = { startAt: now - 2 * 60000, until: now + 90 * 60000, text: `detected: ${this.maint.reason || 'server down'}`.slice(0, 120) };
-      this.settings().set('maintWindow:' + server, w);
+      // The window is the fleet's, not this console's: every other console reads
+      // it and stands down too, which is the only thing that reaches an account
+      // the system chat never told (a holiday account is sent no announcement —
+      // maint.js). It starts two minutes back, the point the monitor probes from.
+      const w = MAINT.declare(this.settings(), server, {
+        startAt: now - 2 * 60000,
+        text: `detected: ${this.maint.reason || 'server down'}`,
+        by: (this.account && this.account.id) || null,
+      }, now);
+      if (!w) return null;                                   // one is armed already
       this.note(Session.raceOn()
         ? `maintenance race armed from the server's own status — the monitor probes now, followers log in behind it`
         : `maintenance window recorded from the server's own status (${new Date(w.startAt).toLocaleTimeString()}) — no logins until the port answers`);
@@ -976,13 +1135,18 @@ class Session {
 
     this.maint.plan = { text, announcedAt: Date.now(), startsAt, pauseAt, resumeAt, source: 'announcement' };
     try { this.settings().set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
-    // Arm the maintenance race (maintRace) for every console of this server: the
-    // window runs from the announced start for an hour and a half — a monitor that
-    // is still out after that stops being special and the normal recovery takes over.
+    // Tell the whole fleet, through the Director's database: this console heard
+    // the announcement, the others may not have (a holiday account is sent no
+    // system message at all — maint.js), and one bot hearing it is enough to
+    // stand every account down. The window runs from the announced start for an
+    // hour and a half — after that it stops meaning anything and the ordinary
+    // recovery takes over.
     try {
       const server = (this.account && this.account.server) || 'ss71';
-      this.settings().set('maintWindow:' + server, { startAt: startsAt, until: startsAt + 90 * 60000, text: text.slice(0, 120) });
-    } catch { /* the race just does not run */ }
+      MAINT.declare(this.settings(), server, {
+        startAt: startsAt, resumeAt, text, by: (this.account && this.account.id) || null,
+      });
+    } catch { /* the fleet-wide word just does not get out; this console still stands down */ }
     this.note(`maintenance announced ("${text.slice(0, 80)}") — standing down in `
       + `${Math.max(0, Math.round((pauseAt - Date.now()) / 60000))}m, back about `
       + `${new Date(resumeAt).toLocaleTimeString()}`);
@@ -1032,6 +1196,10 @@ class Session {
   }
 
   clearMaintenancePlan() {
+    // Whatever cleared it — back online after the window, or the user by hand —
+    // this console is done with the window the fleet is holding up, and must not
+    // adopt it again on the next tick (adoptFleetMaintenance).
+    try { const rec = this.fleetMaintenance(Date.now(), 0); if (rec) this._fleetAdoptBlockAt = rec.startAt; } catch {}
     this.maint.plan = null;
     this.maint.nextLoginAt = 0;
     this.maint.nextProbeAt = 0;
@@ -1039,6 +1207,72 @@ class Session {
     this.maint.loginTries = 0;
     try { this.settings().set('maintPlan:' + (this.account && this.account.id), null); } catch {}
     this.note('maintenance plan cleared');
+  }
+
+  // ---- the fleet's word on maintenance (maint.js) ----------------------
+  //
+  // Every console writes what it knows into one record per server, and reads
+  // the others'. This is what the user asked for on 2026-09-23: the bots tell
+  // the Director it is maintenance now, and nothing logs in until it is over.
+  //
+  // It matters most for an account ON HOLIDAY. A holidayed account is not sent
+  // the system chat announcement (observed 2026-09-23: every other console
+  // logged four copies of it, the four holidayed ones none), so it had no plan
+  // of its own, stayed connected into the start of the window, had its socket
+  // closed under it at 09:00:00 and then spent the whole maintenance on the
+  // reconnect ladder — logins into a closed server, and a proxy hammered into
+  // "host unreachable" (EVONY-RULES.md section 2).
+  //
+  // The read costs a local SQLite row, so it is throttled rather than run on
+  // every 5 s supervisor tick.
+  static FLEET_MAINT_EVERY_MS = 15000;
+  fleetMaintenance(now = Date.now(), everyMs = Session.FLEET_MAINT_EVERY_MS) {
+    const cached = this._fleetMaint;
+    if (cached && now - cached.at < everyMs) return cached.rec;
+    const server = (this.account && this.account.server) || 'ss71';
+    const rec = MAINT.read(this.settings(), server, now);
+    this._fleetMaint = { at: now, rec };
+    return rec;
+  }
+
+  // Take on a window another console (or the Director) put up. A plan of this
+  // console's own — the announcement it heard itself, one set by hand, or a
+  // script's logout — always wins, and is left alone.
+  // -> the plan adopted, or null.
+  adoptFleetMaintenance(now = Date.now()) {
+    if (this.maint.plan) return null;
+    const rec = this.fleetMaintenance(now);
+    if (!rec || rec.phase === 'over') return null;
+    if (this._fleetAdoptBlockAt === rec.startAt) return null;   // done with this one already
+    this.maint.plan = {
+      text: rec.text || 'the fleet says the server is going down for maintenance',
+      announcedAt: now, startsAt: rec.startAt, pauseAt: rec.pauseAt, resumeAt: rec.resumeAt,
+      source: 'fleet', from: rec.by || null,
+    };
+    try { this.settings().set('maintPlan:' + (this.account && this.account.id), this.maint.plan); } catch {}
+    const phase = this.planPhase(now);
+    this.note(`maintenance: the fleet says the server ${phase === 'before' ? 'goes down at ' + new Date(rec.startAt).toLocaleTimeString() : 'is down'}`
+      + `${rec.by ? ` (from ${rec.by})` : ''} — ${phase === 'before'
+        ? `standing down at ${new Date(rec.pauseAt).toLocaleTimeString()}`
+        : 'standing down now'}, back about ${new Date(rec.resumeAt).toLocaleTimeString()}`);
+    return this.maint.plan;
+  }
+
+  // Another account is verifiably logged in again, so the server is back: a
+  // console still sitting out a window it only adopted stops waiting. It does
+  // NOT log straight in — it goes to the recovery phase, which checks the free
+  // TCP port first and staggers the fleet's logins (EVONY-RULES.md section 2).
+  releaseIfFleetBack(now = Date.now()) {
+    const p = this.maint.plan;
+    if (!p || p.source !== 'fleet' || now >= p.resumeAt) return false;
+    const rec = this.fleetMaintenance(now);
+    if (!rec || rec.phase !== 'over') return false;
+    p.resumeAt = now;
+    this.maint.nextLoginAt = now;
+    this.maint.nextProbeAt = 0;
+    try { this.settings().set('maintPlan:' + (this.account && this.account.id), p); } catch {}
+    this.note(`maintenance: another account is logged in again (${new Date(rec.over).toLocaleTimeString()}) — checking the port and going back in`);
+    return true;
   }
 
   // ---- the maintenance race (OFF by default) --------------------------
@@ -1219,6 +1453,11 @@ class Session {
       this.maint.netFails = 0;
       this.refreshMaintenance();
     }
+    // Every way in ends here, so this is where "if a bot logs in it should check
+    // holidaymode" lives: holidayRun() reads the badge from the login reply and, when it
+    // is on, holidayGoalFile() makes sure the account has the fleet's prepend goals.
+    this._goalFileAt = 0;
+    try { this.holidayRun(); } catch { /* the Director's poll runs it again anyway */ }
   }
 
   // True when we should hold off entirely.
@@ -1383,6 +1622,10 @@ class Session {
     // it two seconds later, and the pair went round like that for six minutes until
     // the proxy stopped answering. The stand-down has to be refused HERE, once, for
     // everyone. The maintenance override (the page's toggle) is the way through.
+    // A console STARTED in the middle of a window has no plan of its own yet —
+    // the supervisor's first tick is five seconds away, and the login would be
+    // spent before it. Take the fleet's word first (maint.js).
+    if (!this.maint.plan) this.adoptFleetMaintenance();
     const lo = this.maint.plan;
     if (lo && this.planPhase() === 'standdown'
         && (lo.source === 'logout' || !this.maint.override) && !this._raceGo) {
@@ -1537,15 +1780,19 @@ class Session {
       };
 
       switch (cmd) {
-        case 'server.ChannelChatMsg':
-          push(this.chat[bucketFor(data.channel)], { t: Date.now(), from: who(data), msg: strip(data.msg), channel: data.channel });
+        case 'server.ChannelChatMsg': {
+          const b = bucketFor(data.channel);
+          const line = { t: Date.now(), from: who(data), msg: strip(data.msg), channel: data.channel };
+          if (b === 'private') line.to = this.whisperTo(data, line.msg);
+          push(this.chat[b], line);
           break;
+        }
         case 'server.AllianceChatMsg':
           push(this.chat.alliance, { t: Date.now(), from: who(data), msg: strip(data.msg) }); break;
         case 'server.WorldChatMsg':
           push(this.chat.world, { t: Date.now(), from: who(data), msg: strip(data.msg) }); break;
         case 'server.PrivateChatMessage':
-          push(this.chat.private, { t: Date.now(), from: who(data), msg: strip(data.msg) }); break;
+          push(this.chat.private, { t: Date.now(), from: who(data), msg: strip(data.msg), to: this.whisperTo(data, strip(data.msg)) }); break;
         case 'server.SystemInfoMsg': {
           const text = strip(data.msg);
           push(this.chat.system, { t: Date.now(), from: 'system', msg: text });
@@ -1806,7 +2053,12 @@ class Session {
   }
 
   setWarTown(castleId, mode) {
-    const v = mode === 'auto' ? 'auto' : Number(mode);
+    // 2026-09-24: read it as TEXT first. Number(null), Number(undefined via ...) and
+    // Number('') are all 0, so a request that named no mode used to switch the city to
+    // Off without a word instead of being refused. Only auto, 0, 1 and 2 pass now,
+    // written as a number or a string.
+    const raw = mode === undefined || mode === null ? '' : String(mode).trim();
+    const v = raw === 'auto' ? 'auto' : (/^[012]$/.test(raw) ? Number(raw) : NaN);
     if (v !== 'auto' && ![0, 1, 2].includes(v)) throw new Error('war town mode must be auto, 0, 1 or 2');
     const g = this.game;
     const castle = g && g.castles.find((x) => g.castleId(x) === Number(castleId));
@@ -2073,8 +2325,13 @@ class Session {
       alliance: info.alliance || null,
       office: info.office || null,
       playedMs: created ? g.now() - created : null,
-      // holiday mode is an account buff, not a field on the player bean
-      furlough: (require('./buffs').protectionOf(g) || {}).kind === 'holiday' || !!(g.player && g.player.furlough),
+      // holiday mode is an account buff, not a field on the player bean — but the buff is
+      // PUSHED, so a console that has not been sent one yet reads no protection at all.
+      // `g.holiday` is the login artifact (EVONY-RULES §1) and is the third source:
+      // holidayRun() already counts it, and without it here the Director showed all four
+      // of 2026-09-25's new holidays as NOT on holiday for 15 minutes after they went in,
+      // while their own consoles had confirmed them. Same three sources in both places.
+      furlough: (require('./buffs').protectionOf(g) || {}).kind === 'holiday' || !!(g.player && g.player.furlough) || !!g.holiday,
       grievance: num(res.complaint),
     });
 
@@ -2425,6 +2682,11 @@ class Session {
       // { hours, minutes, text } while the account is on holiday: the login goes
       // through and everything works, so this is a badge, not an error.
       holiday: (this.game && this.game.holiday) || null,
+      // What it is protected by NOW — holiday, dream truce, truce or peace —
+      // read from the buffs every couple of minutes by the protection watch,
+      // so it does not wait for a login the way `holiday` above does.
+      // { kind, label, type, left, msLeft, at } or null.
+      protection: this.protection || null,
       // how many maintenances it has been on holiday through (holidayRun)
       holidayRun: this.holidayRunView(),
       alliance: p ? p.alliance || null : null,
@@ -2492,6 +2754,9 @@ class Session {
         phase: this.planPhase(),
         nextLoginAt: this.maint.nextLoginAt || null,
         loginTries: this.maint.loginTries || 0,
+        // what the whole fleet is going by (maint.js), so the Director can show
+        // one answer for the server rather than 21 different ones
+        fleet: (() => { const r = this.fleetMaintenance(); return r ? { startAt: r.startAt, resumeAt: r.resumeAt, phase: r.phase, text: r.text, by: r.by, over: r.over } : null; })(),
       },
     };
   }
@@ -2507,6 +2772,9 @@ class Session {
   static MAP_BLOCK_KEEP = 30 * 60000;  // older blocks are dropped (until then they are served while offline)
   static MAP_BATCH = 9;                // blocks per /api/mapblocks call, and per batch on the socket
   static MAP_FRESH_FLOOR = 15000;      // a forced rescan still never re-asks a block this young
+  static MAP_CACHE_CHUNK = 2000;       // tiles per map-cache transaction during a Monitor sweep
+  static MAP_SWEEP_BUSY = 10;          // a sweep waits while more of the account's own writes are in flight
+  static MAP_SWEEP_YIELD_MS = 20000;   // but never more than this for one request
 
   // The block store belongs to the account: a switch may land on another server.
   mapStore() {
@@ -2823,6 +3091,116 @@ class Session {
     } finally { this._scanBusy = false; }
   }
 
+  // ---- the Monitor's sweep ----
+  // The Monitor (monitor.js) reads the WHOLE world on a schedule and has no login
+  // of its own: a second login for an account kicks whatever holds it
+  // (EVONY-RULES §1), so it drives one console over HTTP instead and the server
+  // still sees the single session this console already had. This is that side of
+  // it — read these blocks on the live socket, keep every castle, camp, flat and
+  // valley in the shared map cache the way backgroundScan does, and answer with
+  // the PLAYER cities alone, which is all the Monitor reasons about.
+  //
+  // `drop` forgets each block again the moment it has been read. A whole-world
+  // sweep is 1,600 blocks and the block store keeps them for MAP_BLOCK_KEEP, so
+  // without this half an hour of the world would sit in a console's heap — and
+  // consoles have run out of memory before (EVONY-RULES §7). The rows are in the
+  // database either way.
+  async mapSweep(points, { fresh = false, drop = true, timeoutMs = 20000 } = {}) {
+    if (!this.connected) return { error: 'not connected' };
+    if (this.planPhase() === 'standdown') return { error: 'standing down for maintenance' };
+    const g = this.game;
+    if (!g || !g.c) return { error: 'no live connection' };
+    const seen = new Set(), origins = [];
+    for (const p of points || []) {
+      const o = Session.mapOrigin(Array.isArray(p) ? p[0] : p.x, Array.isArray(p) ? p[1] : p.y);
+      const k = o.x + ',' + o.y;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      origins.push(o);
+    }
+    if (!origins.length) return { asked: 0, got: 0, castles: [] };
+    // The account's OWN work comes first. A sweep is a big read on the same socket
+    // a trading play writes orders on, and rate limiting is per account
+    // (EVONY-RULES §3) — on 2026-09-23 the Monitor's account was selling stone at
+    // 150 while being swept. statistics.js has waited on this for the same reason;
+    // so does this now. Bounded, so a permanently busy account still gets swept.
+    if (typeof g.pipeInFlight === 'function') {
+      const until = Date.now() + Session.MAP_SWEEP_YIELD_MS;
+      while (this.connected && g.pipeInFlight() > Session.MAP_SWEEP_BUSY && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (!this.connected) return { error: 'not connected' };
+    }
+    await this.fetchMapBlocks(g, origins, { fresh, timeoutMs });
+    const store = this.mapStore();
+    const mine = new Set((g.castles || []).map((c) => Number(c.fieldId)));
+    const tiles = [], castles = [];
+    let got = 0;
+    for (const o of origins) {
+      const k = o.x + ',' + o.y;
+      const blk = store.blocks.get(k);
+      if (!blk) continue;                       // no answer by the deadline: the next sweep has it
+      got++;
+      // `relation` is how a castle stands to THIS account, which is no business of
+      // a shared table — the same reason backgroundScan drops it.
+      for (const { relation, ...t } of this.mapBlockTiles(blk, mine)) {
+        tiles.push({ ...t, seen: blk.at });
+        if (t.userName && !t.npc) {
+          castles.push({ id: t.id, x: t.x, y: t.y, name: t.name, userName: t.userName,
+            allianceName: t.allianceName || '', prestige: t.prestige, honor: t.honor,
+            state: t.state === undefined ? null : t.state,
+            // the second hex digit of the tile's terrain byte, which for an NPC camp
+            // IS its level — *unverified* that a player castle's means the same
+            level: t.level === undefined ? null : t.level });
+        }
+      }
+      if (drop) store.blocks.delete(k);
+    }
+    // The shared map cache is a BONUS of a sweep, not its point — the Monitor keeps
+    // its own player rows. Writing 18,000 tiles in one transaction while twenty
+    // consoles write too overran sqlite's 5 s busy timeout on the first live sweep
+    // ("database is locked", 2026-09-23), which failed the whole chunk. So: small
+    // transactions, a retry, and a failure that is reported rather than thrown.
+    let cached = 0, cacheError = null;
+    for (let i = 0; i < tiles.length; i += Session.MAP_CACHE_CHUNK) {
+      const part = tiles.slice(i, i + Session.MAP_CACHE_CHUNK);
+      for (let attempt = 0; ; attempt++) {
+        try { D.mapCache.upsertMany(part); cached += part.length; break; }
+        catch (e) {
+          if (attempt >= 2) { cacheError = e.message; break; }
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        }
+      }
+      if (cacheError) break;
+    }
+    if (cacheError) this.note(`map sweep: the map cache did not take these blocks — ${cacheError}`, { kind: 'net' });
+    return { asked: origins.length, got, at: Date.now(), castles, cached, cacheError };
+  }
+
+  // Ask the server about these lords by name (common.getPlayerInfoByName). The
+  // Monitor's watch pass lives on this: `lastLoginTime` and `prestige` together
+  // are what tell a bot that is still farming from one that has stopped. Read
+  // only — no login, no order — and paced, because it is one request a name.
+  async playerInfo(names, { gapMs = 150, timeoutMs = 8000 } = {}) {
+    if (!this.connected) return { error: 'not connected' };
+    const g = this.game;
+    if (!g || !g.c) return { error: 'no live connection' };
+    const rows = [], missing = [];
+    for (const raw of names || []) {
+      const userName = String(raw || '').trim();
+      if (!userName) continue;
+      let info = null;
+      try {
+        g.c.send('common.getPlayerInfoByName', { userName });
+        const r = await g.c.await(['common.getPlayerInfoByName'], timeoutMs);
+        if (r && r.data && Number(r.data.ok) === 1) info = r.data.playerInfo;
+      } catch { info = null; }
+      if (info) rows.push(info); else missing.push(userName);
+      if (gapMs) await new Promise((r) => setTimeout(r, gapMs));
+    }
+    return { rows, missing, at: Date.now() };
+  }
+
   // Instant lookup from the cache (no login needed).
   searchCache(q) {
     const hits = D.mapCache.search(q, 300);
@@ -2836,8 +3214,24 @@ class Session {
     const g = await this.connect();
     if (channel === 'alliance') return g.req('common.allianceChat', { msg, languageType: 0 }, 8000).catch(() => ({ ok: 1 }));
     if (channel === 'world') return g.req('common.worldChat', { msg, languageType: 0 }, 8000).catch(() => ({ ok: 1 }));
-    if (channel === 'private') return g.req('common.privateChat', { targetName: target, msg }, 8000).catch(() => ({ ok: 1 }));
+    if (channel === 'private') {
+      // The server echoes a whisper back to its sender "from" the sender, with no
+      // recipient (EVONY-RULES §5f), so remember who it went to for whisperTo.
+      this._pmOut = (this._pmOut || []).filter((p) => Date.now() - p.t < 60000);
+      this._pmOut.push({ to: target, msg: String(msg).replace(/<[^>]*>/g, ''), t: Date.now() });
+      return g.req('common.privateChat', { targetName: target, msg }, 8000).catch(() => ({ ok: 1 }));
+    }
     throw new Error('unknown channel ' + channel);
+  }
+
+  // Who a whisper line went to: a recipient field if the server ever sends one,
+  // else the whisper this console sent with the same text in the last minute.
+  whisperTo(data, msg) {
+    const named = data.toUser || data.targetName || data.toName || data.receiverName;
+    if (named) return named;
+    const out = this._pmOut || [];
+    const i = out.findIndex((p) => p.msg === msg && Date.now() - p.t < 60000);
+    return i < 0 ? undefined : out.splice(i, 1)[0].to;
   }
 
   // ---- mail & reports ------------------------------------------------------

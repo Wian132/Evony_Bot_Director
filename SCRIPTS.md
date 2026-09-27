@@ -186,6 +186,19 @@ die "message"                      end with an error: $error is the message
   altogether (`repeat 1` adds nothing), as the wiki's examples mean it. OTTObot used to
   read `repeat N` as N more times, so an old `buy food … / repeat 500` loadout now
   places 500 orders, not 501. A bare `repeat` stops when the line fails.
+- **Walking an array wants `repeat`, not `loop`.** `loop N` runs the WHOLE script N
+  times, so the assignment at the top runs again every round and the array is put back
+  the way it was — a list of ten cities scouts the first one ten times. `repeat N` runs
+  only the line before it, which is the one doing the walking:
+
+  ```
+  a = ["705,125", "709,124", "711,130"]
+  scout {a.shift()} any s:100k
+  repeat 3
+  ```
+
+  Both count in total, so the number is exactly how many entries there are. The Monitor's
+  Changes tab writes this script for you: click a lord's best hero (2026-09-25).
 - A `repeat` under an `if` reads the condition again before every round, as NEAT goes
   back and reads the `if` again: `x = GetDetailInfo(id)` / `if !x repeat` asks until
   the details arrive. A bare `repeat` right after `buyitem` is refused (it would buy
@@ -347,17 +360,17 @@ was not heard).
 ### Deployment
 
 ```
-attack <x,y | city> <hero> <troops> [resources] [@:hh:mm:ss | camp] [/within=1s] [/tries=n] [/big] [/horde] [from <city>]
-scout <x,y | city> <hero | none> <troops> [@:hh:mm:ss | camp] [/big] [from <city>]
-transport <x,y | city> [hero] <troops> <resources> [@:hh:mm:ss | camp] [/big] [from <city>]
-reinforce <x,y | city> [hero] [troops] [resources] [@:hh:mm:ss | camp] [/big] [from <city>]
-deploy <at|bu|re|sc|tr> <x,y | city> [hero] <troops> [resources] [@:hh:mm:ss | camp] [/big] [/horde] [from <city>]
+attack <x,y | city> <hero> <troops> [resources] [@:hh:mm:ss | camp] [/within=1s] [/tries=n] [/big] [/fullhold] [/horde] [from <city>]
+scout <x,y | city> <hero | none> <troops> [@:hh:mm:ss | camp] [/big] [/horde] [from <city>]
+transport <x,y | city> [hero] <troops> <resources> [@:hh:mm:ss | camp] [/big] [/fullhold] [/horde] [from <city>]
+reinforce <x,y | city> [hero] [troops] [resources] [@:hh:mm:ss | camp] [/big] [/fullhold] [/horde] [from <city>]
+deploy <at|bu|re|sc|tr> <x,y | city> [hero] <troops> [resources] [@:hh:mm:ss | camp] [/big] [/fullhold] [/horde] [from <city>]
 bigattack <x,y> <hero> <troops> [...] — attack with a War Ensign
 bigscout <x,y> <hero | none> s:<scouts> [...] — scout with a War Ensign
 bigtransport <x,y | city> t:<transports> <resources> [...] — transport with a War Ensign
 bigreinforce <x,y | city> [hero] [troops] [resources] [...] — reinforce with a War Ensign
 bigdeploy <atk|bld|rei|sct|tr> <x,y | city> [hero] <troops> [resources] [time] — deploy with a War Ensign
-recall <x,y | city>
+recall <x,y | city> [all]
 recallall
 idrecall <armyId>
 recallhero <hero string>
@@ -382,11 +395,24 @@ The target is `x,y`, or one of your cities by name (`reinforce Fla`,
 - Resources that more than fill the troops' hold, less the march's food, are refused
   before anything goes, as the game's march window refuses them. When the city's
   Logistics can't be read, it is sent with a warning and the server decides.
+- `/nolimit` sends the march whatever OTTObot's own troop guard makes of it. That guard
+  (10,000 a Rally Spot level, at most 100,000, +25% for a War Ensign, +25% for a haunted
+  castle, 1,000,000 with the Horde banner) is ours, not the game's, and it refuses a march
+  **without sending it**. A bonus it cannot see — anything the server grants that the city
+  bean does not show — is a reason to use this: the game's own refusal spends nothing.
+- **Where goes first, switches last.** The word after the command is the target and
+  nothing else, so `scout /horde 180,701 any s:1m` is refused with "say where first" —
+  write `scout 180,701 any s:1m /horde`. Every `/switch` is read after the hero and the
+  troops, in any order among themselves.
 - `/big` spends a War Ensign you hold, for 25% more troops; it is never bought for you.
   It goes only while the loaded inventory shows one, less those this run has used
   already (an inventory that hasn't loaded counts as none). `bigattack`, `bigscout`,
   `bigtransport`, `bigreinforce` and `bigdeploy` are the same lines with `/big`.
-  `/horde` ticks the march window's Horde box.
+  `/horde` ticks the march window's Horde box — Stygandr's Banner of the Horde, which
+  lets one march take **1,000,000** troops whatever the Rally Spot (1.25m with `/big` as
+  well). It works on any march: `attack`, `scout`, `transport`, `reinforce`, `deploy`.
+  Unlike `/big` it is **not** checked against your inventory, so a march sent without a
+  banner in the bag may have one charged for — hold them before sending.
 - `@0:30:00`, `@30:00` or a bare `0:30:00` camps the march that long first. Plain
   `@hh:mm:ss` used to be a landing time here; like NEAT, it is camp time now.
   `@:hh:mm:ss[.fff]` lands it at that moment (below).
@@ -432,8 +458,11 @@ still fails the line, as it always did.
 - A dry run never waits. `dumpresource` never waits either — it checks the city itself
   and says `not yet` on its own.
 
-**Recalls.** `recall x,y` brings back every army of yours on its way to, or staying at,
-x,y. `recallall` recalls every army that left this city and isn't already coming home.
+**Recalls.** `recall x,y` brings back the armies **of this city** on their way to, or
+staying at, x,y — like `recallall`, it is per city, so a script run in all cities recalls
+from each in turn and one city never pulls back another's waves. `recall x,y all` recalls
+every city's armies on that tile. `recallall` recalls every army that left this city and
+isn't already coming home.
 `idrecall` recalls one army by id (`city.selfArmies[0].armyId`...). `recallhero`
 recalls the one hero of this city that is out and matches (one per line). `$result` is
 how many were recalled.
@@ -441,6 +470,26 @@ how many were recalled.
 **`travelinfo 111,222 cav:10,cata:10`** reports without sending: the distance, the
 attack and reinforce times for those troops (this city's skills and buffs included),
 what they carry, and what is left after the march's food.
+
+**`f:*` fills the hold.** On any march that carries resources, an amount of `*` means "as
+much of this as fits": `transport 111,222 t:100k f:*` loads every transporter with food,
+and `transport 111,222 t:100k w:100m,s:100m,i:*` takes the wood and stone asked for by
+name and fills the rest with iron. Several stars share what is left equally, and each is
+capped by **what the city actually holds** — a star never leaves the march waiting for
+resources that are not there. The room is the troops' load (`travelinfo`'s "carrying"),
+less the food the march eats out of that same hold. The line says what it filled:
+
+```
+  fill: food 998,518,519 · hold 1,000,000,000 less 1,481,481 food for the march (/fullhold sends without it)
+```
+
+**`/fullhold`** fills to the whole load and sets **nothing** aside for the march's own
+food. The game's own march window reserves it, and so does OTTObot by default, but the
+server does not enforce the food rule on an attack at all (EVONY-RULES.md §5b), so it may
+not enforce it here either. `/fullhold` is how to find out; a refused march spends nothing.
+
+`*` is for the resources of a march only — not for troops (`cp:*`), and not for
+`dumpresource`, both of which say so.
 
 **`setballsused`** is refused and points to `config ballsused:<n>` in the goals: NEAT's
 own wiki retired it.
@@ -1049,7 +1098,7 @@ logout now <back> | logout <when> <back>   (@:hh:mm[:ss] clock times, or waits: 
   The code can also be typed into the Director's account editor. OTTObot never *sets*,
   changes or removes a security code in the game — that is the user's, like holiday.
 - **`completequests`** claims every finished quest on demand — the goal of the same name
-  (`config completequests`, README) already claims them on its own, in every city with
+  (`config completequests`, MANUAL.md) already claims them on its own, in every city with
   goals, and the two do not get in each other's way. The command claims both tabs when
   nothing else is given, the Routine tab otherwise; `$result` is the list claimed. `title` claims the title
   promotions (Knight to Prinzessin), `rank` or `office` the military ones (Lieutenant to

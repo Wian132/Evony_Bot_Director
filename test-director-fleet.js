@@ -559,8 +559,10 @@ t('the Trading tab draws the play, the bars, the readings and each account', asy
   assert.strictEqual(v.bars, 12);
   assert.strictEqual(v.pcts[3], '307%');
   assert.deepStrictEqual(v.prices, ['@1', '@0.5'], 'the price shows where it changed');
-  assert.match(v.rows[1], /^Lord06 holiday sells 270 0 8 — 6\.81t food/);
-  assert.match(v.rows[2], /^Lord04 ours buys 127 3 9 main \(food\) 3\.63t food/);
+  // "taken back" sits between orders/min and refused: the bids a city cancelled to keep its
+  // slots turning over, which are not fills (trade-monitor CANCELLED, 2026-09-24).
+  assert.match(v.rows[1], /^Lord06 holiday sells 270 — 0 8 — 6\.81t food/);
+  assert.match(v.rows[2], /^Lord04 ours buys 127 — 3 9 main \(food\) 3\.63t food/);
   assert.match(v.rows[3], /not trading in this window: Lord22/);
   assert.strictEqual(v.readings, 3);
   if (process.env.SHOT) {

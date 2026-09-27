@@ -212,7 +212,18 @@ async function guard(req, res, { readBody }) {
   // Service calls skip the login pages entirely, but only for a named few
   // read-only routes a console exposes about itself. Never a blanket /api/ pass:
   // the token is a machine secret, not a second way to drive the bots.
-  const INTERNAL_OK = new Set(['/api/session', '/api/debug/city']);
+  // /api/mapsweep and /api/players are the Monitor's (monitor.js): it runs as its
+  // own process with no browser session, and both only READ the game — map blocks
+  // and other players' public info. Still named one by one, never a blanket pass.
+  //
+  // /api/snapshot/refresh is the ONE exception to "read-only" (2026-09-23, the
+  // glitch log): it relogs this console so the Director's before-maintenance record
+  // holds the server's figures rather than a stale cache (EVONY-RULES §3). It is
+  // still not a way to drive the bot — it takes no arguments, does nothing but log
+  // in and hand back the snapshot, refuses inside a maintenance stand-down, and
+  // refuses a second relog inside its own gap (server.js REFRESH_GAP_MS).
+  const INTERNAL_OK = new Set(['/api/session', '/api/debug/city', '/api/mapsweep', '/api/players',
+    '/api/stats', '/api/stats/refresh', '/api/snapshot/refresh']);
   if (isInternal(req) && INTERNAL_OK.has(url.pathname)) return false;
 
   const cookies = cookiesOf(req);

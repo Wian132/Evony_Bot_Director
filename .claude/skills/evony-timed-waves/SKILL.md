@@ -58,3 +58,8 @@ it … from the aimed send", "server: lands … (+N ms)").
 - Planning with the formula's fractional seconds landed marches up to 1 s early (the
   server rounds down); fixed. That was probably NEAT's error too.
 - Rally slots full of NPC farming held one wave back 2 minutes until it gave up.
+- 2026-09-27 (Lord24): with two Fleet Feet on, a `@:12:00:00` reinforce landed 2 h 09 m
+  early — the server cuts the CAMP by the Fleet Feet factor as well as the march
+  (EVONY-RULES §5b). Fixed: the camp asked is now the camp wanted ÷ the factor; the log
+  line says "camp X (Y asked for …)". A `@:` time is this PC's clock (SAST), not server
+  time: `@:00:00:00` is local midnight.

@@ -82,6 +82,18 @@ const KINDS = {
       { col: 'attack', h: 'Atk', n: 1, from: (b) => b.power },
       { col: 'intel', h: 'Int', n: 1, from: (b) => b.stratagem },
     ],
+    // The hero ranking does not name the alliance, so it is the lord's, looked up in
+    // the player ranking when the list is searched. Not stored: a lord who changes
+    // alliance shows the new one as soon as the players are read again.
+    derived: [
+      { col: 'alliance', h: 'Alliance', q: 1,
+        sql: `(SELECT p.alliance FROM stat_players p WHERE p.server = stat_heroes.server
+          AND p.name = stat_heroes.lord COLLATE NOCASE LIMIT 1)`,   // no ORDER BY: it sends sqlite past the name index (20 s to sort)
+        // filtering on it: the lords of those alliances, which the lord index answers fast.
+        // It takes the server and then the text, so it is one lookup, not one per hero.
+        like: `lord COLLATE NOCASE IN (SELECT name FROM stat_players WHERE server = ?
+          AND alliance LIKE ? ESCAPE '\\')` },
+    ],
   },
   cities: {
     label: 'Cities', cmd: 'rank.getCastleRank', fallbackSort: 1,        // 1 population (RankWin.as:217-223)
@@ -461,37 +473,56 @@ const likeOf = (q) => `%${String(q).replace(/[\\%_]/g, (c) => '\\' + c)}%`;
 const colsOut = (k) => [{ k: 'rank', h: 'Rank', n: 1 }, ...k.cols.map((c) => ({ k: c.col, h: c.h, n: !!c.n, q: !!c.q }))];
 
 // One list, filtered by text in any of its searched columns, sorted by a column.
-function searchKind(server, kind, { q = '', sort = 'rank', dir = 'asc', limit = 200, offset = 0 } = {}) {
+//
+// `filters` narrows it a COLUMN at a time, which is what makes the Director's
+// Statistics view worth having: every player in one alliance, every hero of one
+// lord, every city of a level. A text column takes a substring, a number column
+// takes a value or {min, max}. A filter on a column the list does not have is
+// ignored, so the same filters can be thrown at all four lists.
+function searchKind(server, kind, { q = '', sort = 'rank', dir = 'asc', limit = 200, offset = 0, filters = null } = {}) {
   const k = KINDS[kind];
-  const qcols = k.cols.filter((c) => c.q).map((c) => c.col);
+  const all = [...k.cols, ...(k.derived || [])];
+  const expr = (c) => c.sql || c.col;
+  const like = (c) => c.like || `${c.col} LIKE ? ESCAPE '\\'`;
+  const likeArgs = (c, v) => (c.like ? [server, likeOf(v)] : [likeOf(v)]);
+  const qc = all.filter((c) => c.q);
   const text = String(q || '').trim();
   const where = ['server = ?'];
   const args = [server];
   if (text) {
-    where.push(`(${qcols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`);
-    for (let i = 0; i < qcols.length; i++) args.push(likeOf(text));
+    where.push(`(${qc.map(like).join(' OR ')})`);
+    for (const c of qc) args.push(...likeArgs(c, text));
   }
-  const cols = ['rank', ...k.cols.map((c) => c.col)];
+  for (const [col, want] of Object.entries(filters || {})) {
+    const c = all.find((x) => x.col === col);
+    if (!c || want === null || want === undefined || want === '') continue;
+    if (!c.n) { where.push(like(c)); args.push(...likeArgs(c, String(want).trim())); continue; }
+    const r = typeof want === 'object' ? want : { min: want, max: want };
+    if (r.min !== undefined && r.min !== null && r.min !== '') { where.push(`${col} >= ?`); args.push(num(r.min)); }
+    if (r.max !== undefined && r.max !== null && r.max !== '') { where.push(`${col} <= ?`); args.push(num(r.max)); }
+  }
+  const cols = ['rank', ...all.map((c) => c.col)];
   const by = cols.includes(sort) ? sort : 'rank';
   const d = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  const numeric = by === 'rank' || (k.cols.find((c) => c.col === by) || {}).n;
+  const numeric = by === 'rank' || (all.find((c) => c.col === by) || {}).n;
   // an exact name first, then the chosen order
-  const exact = text ? `(${qcols.map((c) => `${c} = ? COLLATE NOCASE`).join(' OR ')}) DESC, ` : '';
-  const exactArgs = text ? qcols.map(() => text) : [];
+  const exact = text ? `(${qc.map((c) => `${expr(c)} = ? COLLATE NOCASE`).join(' OR ')}) DESC, ` : '';
+  const exactArgs = text ? qc.map(() => text) : [];
   const total = num((D.one(`SELECT count(*) c FROM ${table(kind)} WHERE ${where.join(' AND ')}`, ...args) || {}).c);
   const lim = Math.max(1, Math.min(5000, Math.floor(num(limit)) || 200));
   const off = Math.max(0, Math.floor(num(offset)));
-  const rows = D.all(`SELECT rank, ${k.cols.map((c) => c.col).join(', ')} FROM ${table(kind)}
+  const rows = D.all(`SELECT rank, ${all.map((c) => (c.sql ? `${c.sql} AS ${c.col}` : c.col)).join(', ')} FROM ${table(kind)}
     WHERE ${where.join(' AND ')} ORDER BY ${exact}${by}${numeric ? '' : ' COLLATE NOCASE'} ${d}, pos LIMIT ? OFFSET ?`,
   ...args, ...exactArgs, lim, off).map((r) => ({ ...r }));
-  return { kind, label: k.label, cols: colsOut(k), total, rows, offset: off };
+  const out = [...colsOut(k), ...(k.derived || []).map((c) => ({ k: c.col, h: c.h, n: !!c.n, q: !!c.q }))];
+  return { kind, label: k.label, cols: out, total, rows, offset: off };
 }
 
 // The tab's search: one list, or every list ('all') with the first few of each.
-function search(server, { kind = 'all', q = '', sort, dir, limit, offset } = {}) {
-  if (KINDS[kind]) return { kind, lists: [searchKind(server, kind, { q, sort, dir, limit, offset })] };
+function search(server, { kind = 'all', q = '', sort, dir, limit, offset, filters } = {}) {
+  if (KINDS[kind]) return { kind, lists: [searchKind(server, kind, { q, sort, dir, limit, offset, filters })] };
   const each = Math.max(1, Math.min(100, Math.floor(num(limit)) || 10));
-  return { kind: 'all', lists: KIND_NAMES.map((k) => searchKind(server, k, { q, limit: each })) };
+  return { kind: 'all', lists: KIND_NAMES.map((k) => searchKind(server, k, { q, limit: each, filters })) };
 }
 
-module.exports = { KINDS, KIND_NAMES, start, stop, status, search, page, lookup, crawlKind, JOB, titleName, FRESH_MS };
+module.exports = { KINDS, KIND_NAMES, start, stop, status, search, searchKind, colsOut, page, lookup, crawlKind, JOB, titleName, FRESH_MS };

@@ -289,16 +289,24 @@ class Game {
   // 100,000; rally.js marchTroopLimit) is refused here, in the server's reply
   // shape, rather than sent to be refused: every caller already handles that.
   // A city whose list shows no Rally Spot is left to the server to judge. A War
-  // Ensign (useFlag, /big) and the Horde banner (useItem, /horde) raise the limit.
-  async newArmy(castleId, bean) {
+  // Ensign (useFlag, /big), the Horde banner (useItem, /horde) and a Haunted or
+  // Halloween Castle on the city raise the limit.
+  //   noLimit   don't judge it here at all (/nolimit): send it and let the
+  //             server answer. The guard is ours, and a bonus it cannot see
+  //             must never be the reason a march the game would take is not
+  //             even tried. (The user, 2026-09-24: a haunted castle's 125k.)
+  async newArmy(castleId, bean, { noLimit = false } = {}) {
     const castle = this.castles.find((c) => String(this.castleId(c)) === String(castleId));
     const big = !!(bean && bean.useFlag), horde = !!(bean && bean.useItem);
-    const limit = castle ? require('./rally').marchTroopLimit(castle, { big, horde }) : null;
+    const R = require('./rally');
+    const haunted = R.hauntedCastle(castle, this.player);
+    const limit = castle && !noLimit ? R.marchTroopLimit(castle, { big, horde, haunted }) : null;
     const troops = Object.values((bean && bean.troops) || {}).reduce((t, v) => t + (Number(v) || 0), 0);
     if (limit && troops > limit) {
-      const why = horde ? `with the Horde banner${big ? ' and a War Ensign' : ''}` : `10,000 per Rally Spot level${big ? ', +25% with a War Ensign' : ''}`;
+      const why = horde ? `with the Horde banner${big ? ' and a War Ensign' : ''}`
+        : `10,000 per Rally Spot level${big ? ', +25% with a War Ensign' : ''}${haunted ? ', +25% for the haunted castle' : ''}`;
       return { ok: 0, errorMsg: `a march from ${castle.name || 'this city'} takes at most ${limit.toLocaleString('en-US')} troops `
-        + `(${why}), not ${troops.toLocaleString('en-US')}` };
+        + `(${why}), not ${troops.toLocaleString('en-US')} — /nolimit sends it anyway and lets the game decide` };
     }
     this.c.send('army.newArmy', { castleId, newArmyBean: bean });
     const r = await this.c.await(['army.newArmy'], 12000);
@@ -574,6 +582,24 @@ class Game {
   fireHero(castleId, heroId) { return this.reqProtected('hero.fireHero', { castleId, heroId }); }
   releaseHero(castleId, heroId) { return this.req('hero.releaseHero', { castleId, heroId }); }
   promoteToChief(castleId, heroId) { return this.req('hero.promoteToChief', { castleId, heroId }); }
+  // An ok from promoteToChief is not proof. The server normally pushes
+  // server.HeroUpdate with the hero at status 1 straight after it, but Lord24's
+  // city 3 (2026-09-27, under attack) answered ok to 30+ promotions with no push,
+  // and its production stayed at the bare no-mayor rate: the server had ignored
+  // every one. So an ok is believed once the roster shows the hero as mayor.
+  // -> true (mayor now), false (not after waitMs), null (no such city).
+  async mayorTook(castleId, heroId, waitMs = Game.MAYOR_CONFIRM_MS) {
+    const until = Date.now() + waitMs;
+    for (;;) {
+      const c = (this.castles || []).find((x) => Number(this.castleId(x)) === Number(castleId));
+      if (!c) return null;
+      const h = (c.heros || []).find((x) => x.id === heroId);
+      if (h && Number(h.status) === 1) return true;
+      if (Date.now() >= until) return false;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  static MAYOR_CONFIRM_MS = 3000;
   dischargeChief(castleId) { return this.req('hero.dischargeChief', { castleId }); }
   levelUpHero(castleId, heroId) { return this.req('hero.levelUp', { castleId, heroId }); }
   resetPoint(castleId, heroId) { return this.req('hero.resetPoint', { castleId, heroId }); }

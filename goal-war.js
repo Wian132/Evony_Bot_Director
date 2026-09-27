@@ -784,13 +784,22 @@ function buildHideMarch(ctx, opt, t, game) {
   const inHorizon = t.real.filter((a) => a.msUntil !== null && a.msUntil <= opt.horizonMs);
   const lastImpactIn = inHorizon.length ? Math.max(...inHorizon.map((a) => a.msUntil)) : t.real[0].msUntil;
 
-  const oneWayMs = C.marchTimeMs(here, target.xy, Object.keys(troops), game.marchSkillParam ?? 100);
+  // The account's march buffs cut the march AND the camp (Fleet Feet: two
+  // charges make both 30% of what was asked — constants.js armyTimeFactor, Lord24
+  // 2026-09-27). Left out, a hide planned to be away past the wave came home
+  // in the middle of it. The city's cached troop params when there are some.
+  const buffs = { castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now: t.now };
+  const cachedParams = game._troopParams && game._troopParams.get(game.castleId(castle));
+  const skills = cachedParams ? { marchSkill: cachedParams.p.marchSkill, driveSkill: cachedParams.p.driveSkill } : { marchSkill: game.marchSkillParam ?? 100 };
+  const oneWayMs = C.marchTimeMs(here, target.xy, Object.keys(troops), { ...skills, ...buffs });
   if (oneWayMs === null) return { error: 'cannot compute march time for this troop mix' };
   const roundTripMs = 2 * oneWayMs;
+  const campFactor = C.armyTimeFactor(buffs) || 1;
 
-  // Be away until the last wave has landed, plus the margin.
-  let restSec = Math.ceil(Math.max(0, (lastImpactIn + opt.marginMs - roundTripMs)) / 1000);
-  restSec = clamp(restSec, 0, Math.floor(opt.maxRestMs / 1000));
+  // Be away until the last wave has landed, plus the margin: restSec is asked
+  // for, restSec x campFactor is what the game gives.
+  let restSec = Math.ceil(Math.max(0, (lastImpactIn + opt.marginMs - roundTripMs)) / campFactor / 1000);
+  restSec = clamp(restSec, 0, Math.floor(opt.maxRestMs / campFactor / 1000));
 
   // -- food --------------------------------------------------------------
   // NewArmyWin.as:2852, 3102 + 1717 (C.marchFood, shared with npc farming):
@@ -859,7 +868,8 @@ function buildHideMarch(ctx, opt, t, game) {
     restTimeSec: restSec,
   });
 
-  const returnAt = t.now + roundTripMs + restSec * 1000;
+  const campMs = Math.round(restSec * 1000 * campFactor);
+  const returnAt = t.now + roundTripMs + campMs;
   const impactAt = t.now + lastImpactIn;
   const safe = returnAt > impactAt;
 
@@ -867,8 +877,8 @@ function buildHideMarch(ctx, opt, t, game) {
     `${fmt(moving)} troop(s)`,
     carried ? `${fmt(carried)} resources` : 'no resources',
     `to ${target.label} (${target.xy.x},${target.xy.y})`,
-    `encamp ${hhmmss(restSec * 1000)}`,
-    `home in ${hhmmss(roundTripMs + restSec * 1000)}`,
+    `encamp ${hhmmss(campMs)}${campFactor !== 1 ? ` (${hhmmss(restSec * 1000)} asked: the march buffs cut camp to x${campFactor.toFixed(2)})` : ''}`,
+    `home in ${hhmmss(roundTripMs + campMs)}`,
   ];
   const warn = [];
   if (!safe) warn.push('WARNING: the round trip is shorter than the wait — the army lands back before impact');
@@ -884,7 +894,7 @@ function buildHideMarch(ctx, opt, t, game) {
       bean, targetPoint, targetXY: target.xy, missionType: opt.missionType,
       troops, resources, restSec, heroId: hero ? hero.id : null,
       forImpactAt: impactAt, expectedReturnAt: returnAt, safe,
-      label: `hide ${fmt(moving)} troops at ${target.label}, back in ${hhmmss(roundTripMs + restSec * 1000)}`,
+      label: `hide ${fmt(moving)} troops at ${target.label}, back in ${hhmmss(roundTripMs + campMs)}`,
     },
   };
 }
@@ -1143,6 +1153,20 @@ function lockdown(ctx, at) {
   const source = fromConsole !== null ? 'the console' : 'config';
   const base = { mode: cfg.mode, source, errors: cfg.errors, window: null };
   if (!cfg.enabled) return { ...base, on: false, heroMayMove: true, why: 'war town off' };
+
+  // THE CONSOLE'S SWITCH IS NOT ON A TIMETABLE (2026-09-24). A wartownpolicy line
+  // schedules `config wartown:` — but it was also scheduling a War Town Mode thrown by
+  // HAND from the console, which is an operator saying "on now". Every trading account
+  // carries `config wartown:1` + `wartownpolicy 05:00 10:00` in its ACCOUNT APPEND goals,
+  // so outside those hours a hand-set war town read as OFF: Lord07's city 5 sat at
+  // Mode 2 all afternoon and still shipped 100,000 catapults to main at 13:08 under the
+  // prepend's `keeptroops main cp:100k` (100,000 is the Rally Spot march cap, not the
+  // goal's figure). Off and Auto are unaffected: Off returns above on !cfg.enabled, and
+  // Auto never reaches here because fromConsole is null. Anyone who wants a SCHEDULED war
+  // town writes `config wartown:` in the goals, which is still scheduled.
+  if (fromConsole !== null) {
+    return { ...base, on: true, heroMayMove: cfg.heroMayMove, why: `war town ${cfg.mode} (the console)` };
+  }
 
   const pol = (ctx.goals || []).find((g) => g.name === 'wartownpolicy');
   const windows = (pol && pol.windows) || [];

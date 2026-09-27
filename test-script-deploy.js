@@ -139,7 +139,8 @@ t('Attack: all six examples', () => {
   assert.deepStrictEqual([horde.troops, horde.big, horde.horde], [{ scouter: 1000000 }, undefined, true]);
   const both = P('attack 111,222 any s:1.25m /big /horde');
   assert.deepStrictEqual([both.troops, both.big, both.horde], [{ scouter: 1250000 }, true, true]);
-  assert.match(parseErr('attack 111,222 any a:1 /huge'), /the switches are \/big \(a War Ensign\), \/horde, \/nowait/);
+  assert.match(parseErr('attack 111,222 any a:1 /huge'), /the switches are \/big \(a War Ensign\), \/horde, \/nolimit/);
+  assert.strictEqual(P('attack 111,222 any a:1 /nolimit').nolimit, true, '/nolimit skips our own troop guard');
 });
 t('BigAttack, BigScout, BigTransport', () => {
   const a = P('bigattack 111,222 any a:125000');
@@ -211,7 +212,9 @@ t('SetGuard: the example, the NPC10 check, and no wall condition', () => {
   assert.match(parseErr('setguard 111,222 a:1 zz:1'), /a wall condition is needed/);
 });
 t('Recall, RecallAll, IdRecall, RecallHero, the End* lines, SetBallsUsed', () => {
-  assert.deepStrictEqual(P('recall 111,222'), { cmd: 'recall', target: { x: 111, y: 222 }, targetCity: null });
+  assert.deepStrictEqual(P('recall 111,222'), { cmd: 'recall', target: { x: 111, y: 222 }, targetCity: null, all: false });
+  assert.strictEqual(P('recall 111,222 all').all, true);
+  assert.match(parseErr('recall 111,222 everywhere'), /usage {2}recall 111,222 \[all\]/);
   assert.deepStrictEqual(P('recallall'), { cmd: 'recallall' });
   assert.deepStrictEqual(P('idrecall 100333040'), { cmd: 'idrecall', armyId: 100333040 });
   assert.deepStrictEqual(P('idrecall !100333040').armyId, 100333040, 'the wiki\'s !ArmyId is MoinMoin markup');
@@ -462,12 +465,18 @@ function armiesWorld() {
   ];
   return w;
 }
-t('recall x,y: every army on its way there or staying, from any city, each from its own city', async () => {
+t("recall x,y: only THIS city's armies on their way there or staying", async () => {
   const w = armiesWorld();
   const r = await runIn(w, 'recall 111,222' + probe);
+  assert.deepStrictEqual(w.recalls().map((x) => [x.castleId, x.armyId]), [[1, 1], [1, 3]], 'army 2 left another city');
+  assert.strictEqual(resultOf(r), '2');
+  assert.ok(!errorOf(r) || errorOf(r) === 'null', r.text);
+});
+t("recall x,y all: every city's, each recalled from the city it left", async () => {
+  const w = armiesWorld();
+  const r = await runIn(w, 'recall 111,222 all' + probe);
   assert.deepStrictEqual(w.recalls().map((x) => [x.castleId, x.armyId]), [[1, 1], [2, 2], [1, 3]]);
   assert.strictEqual(resultOf(r), '3');
-  assert.ok(!errorOf(r) || errorOf(r) === 'null', r.text);
 });
 t('recallall: every army out from this city', async () => {
   const w = armiesWorld();
@@ -483,7 +492,7 @@ t('idrecall: that army; an unknown one, or one on its way home, fails', async ()
 });
 t('a dry run lists the recalls and sends none', async () => {
   const w = armiesWorld();
-  const r = await runIn(w, 'recall 111,222', { dryRun: true });
+  const r = await runIn(w, 'recall 111,222 all', { dryRun: true });
   assert.strictEqual(w.recalls().length, 0);
   assert.strictEqual((r.text.match(/\[dry run\] not sent/g) || []).length, 3);
 });
@@ -657,7 +666,7 @@ t('no console, no background attack; a dry run starts nothing', async () => {
   assert.match(errorOf(r), /background attacks run inside the console/);
   const d = await runIn(w, 'spamattack 111,222 c:500 3\ncapture 111,222\nsetguard 111,222 a:1 ab:1', { dryRun: true, session: sessionFor(w) });
   assert.strictEqual((d.text.match(/\[dry run\] not started/g) || []).length, 2, d.text);
-  assert.match(d.text, /FAILED: no attack of yours is on its way to 111,222/);
+  assert.match(d.text, /FAILED: no attack from Home is on its way to 111,222/);
   assert.strictEqual(w.sends().length + L.TASKS.size, 0);
 });
 t('a spamheroes goal line picks the SpamHeroes', async () => {
@@ -713,17 +722,18 @@ t('loyaltyattack: waves every 30 s until the reports take loyalty to 7, then the
   assert.ok(out >= 1 && w.recalls().length === out, 'the waves still out were recalled');
   assert.strictEqual(L.TASKS.size, 0);
 });
-t('a lost battle recalls every attack on its way there, from every city', async () => {
+t("a lost battle recalls this city's attacks on their way there — never another city's", async () => {
   const w = world();
+  // another city's attack on the same tile: it must be left alone
   w.g.player.selfArmys.push({ armyId: 77, direction: 1, missionType: 5, targetFieldId: F(111, 222), startFieldId: F(120, 100) });
   const session = sessionFor(w);
   await runIn(w, 'capture 111,222 3000', { session });
   await until(() => w.sends().length >= 1);
   w.g.addReport(111, 222, battleXml({ win: false }));
-  await until(() => /a wave lost its battle, so every attack on its way there was recalled — done/.test(session.text()));
+  await until(() => /a wave lost its battle, so Home's attacks on their way there were recalled \(no other city's\) — done/.test(session.text()));
   const ids = w.recalls().map((x) => [x.castleId, x.armyId]);
-  assert.ok(ids.some(([c, a]) => c === 2 && a === 77), JSON.stringify(ids));
-  assert.ok(ids.some(([c]) => c === 1));
+  assert.ok(ids.some(([c]) => c === 1), JSON.stringify(ids));
+  assert.ok(!ids.some(([, a]) => a === 77), `army 77 left another city and must not be recalled: ${JSON.stringify(ids)}`);
 });
 t('capture ends when a report says the city was taken; the waves out are left to land', async () => {
   const w = world();
@@ -915,7 +925,7 @@ t('setguard: the NPC10 recipe — an attack, a scout, then the guard; a player t
   const session = sessionFor(w);
   const r = await runIn(w, 'attack 111,222 Ken c:99k,s:1k\nscout 111,222 none s:1\n'
     + 'setguard 111,222 wo:1,w:400001,s:1,p:1,sw:1,a:1,c:1,cata:1,t:1,b:1,r:1,cp:1 at:5000,tre:2000', { session });
-  assert.match(r.text, /watching 1 attack\(s\) on their way to 111,222/);
+  assert.match(r.text, /watching Home's 1 attack\(s\) on their way to 111,222/);
   const attackId = w.g.player.selfArmys.find((a) => a.missionType === 5).armyId;
   w.g.addReport(111, 222, scoutXml({ troops: [[3, 400000], [7, 2]], forts: [[16, 1000], [18, 0]] }));
   await until(() => /called off — 2 Archer \(limit 1\)/.test(session.text()));

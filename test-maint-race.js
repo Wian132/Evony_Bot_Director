@@ -41,7 +41,8 @@ t("the server's own status arms the race when no announcement did (yesterday's w
   m.maint.reason = 'the server reports ServerState=2';
   const w = m.armRaceFromServer(now);
   assert.ok(w, 'armed');
-  assert.deepStrictEqual([m.store['maintWindow:ss71'].startAt, m.store['maintWindow:ss71'].until], [now - 2 * 60000, now + 90 * 60000]);
+  // the window is 90 minutes long FROM ITS START (maint.js), which is two minutes back
+  assert.deepStrictEqual([m.store['maintWindow:ss71'].startAt, m.store['maintWindow:ss71'].until], [now - 2 * 60000, now - 2 * 60000 + 90 * 60000]);
   assert.match(m.store['maintWindow:ss71'].text, /detected: the server reports ServerState=2/);
   // the monitor probes at once (the window began two minutes back)
   await m.maintRace();

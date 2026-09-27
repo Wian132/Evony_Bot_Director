@@ -119,10 +119,10 @@ function plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key }
   const m = model(game);
   const now = game.now();
   const applied = reliefApplies(game, cls);
+  const buffs = { castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now };
   const base = C.marchTimeMs(from, target, troopKeys, {
     marchSkill: params.marchSkill, driveSkill: params.driveSkill,
-    relief: applied ? params.relief : 0,
-    castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now,
+    relief: applied ? params.relief : 0, ...buffs,
   });
   if (base === null) throw new Error('cannot work out the march time for those troops');
   const scale = m.scale.get(key) || 1;
@@ -130,12 +130,22 @@ function plan({ game, castle, from, target, troopKeys, aimMs, params, cls, key }
   // 21 of Lord02's marches read that way, 2026-09-22 (marchcheck). Planning
   // with the fraction landed every timed march up to a second early.
   const march = serverMarchMs(base * scale);
-  const slack = aimMs - now - march - m.leadMs - SEND_MARGIN_MS;
-  if (slack < 0) {
+  const room = aimMs - now - m.leadMs - SEND_MARGIN_MS;
+  if (room < march) {
     throw new Error(`too late: the march takes ${dur(march)} but ${clock(aimMs)} is only ${dur(aimMs - now)} away`);
   }
-  const restTimeSec = Math.floor(slack / 1000);
-  return { base, scale, march, applied, restTimeSec, sendAt: aimMs - march - restTimeSec * 1000 - m.leadMs, leadMs: m.leadMs };
+  // The server shortens the CAMP by the same buffs as the march — two Fleet Feet
+  // make 3 h of camp asked into 55 min (constants.js armyTimeFactor, Lord24
+  // 2026-09-27) — so the camp asked for is the camp wanted over that factor.
+  const factor = C.armyTimeFactor(buffs);
+  const travel = (rest) => (rest > 0 ? serverMarchMs(base * scale + rest * 1000 * factor) : march);
+  let restTimeSec = factor > 0 ? Math.floor((room - march) / factor / 1000) : 0;
+  while (restTimeSec > 0 && travel(restTimeSec) > room) restTimeSec--;
+  const total = travel(restTimeSec);
+  return {
+    base, scale, march, factor, applied, restTimeSec, campMs: total - march, travel: total,
+    sendAt: aimMs - total - m.leadMs, leadMs: m.leadMs,
+  };
 }
 
 // Sleep until close, then spin to the millisecond. False if stopped.
@@ -270,7 +280,7 @@ function splitMiss(army, landing, pl) {
   if (!Number.isFinite(start) || start <= 0) return null;
   if (start < 1e11) start *= 1000;
   const lag = start - (pl.sendAt + pl.leadMs);
-  const dur = landing - start - pl.restTimeSec * 1000 - pl.march;
+  const dur = landing - start - (pl.travel ?? pl.restTimeSec * 1000 + pl.march);
   // a reading that makes no sense (a whole-second stamp, a misread camp) teaches nothing
   if (Math.abs(lag) > 60000 || Math.abs(dur) > pl.march) return null;
   return { lag, dur };
@@ -339,8 +349,10 @@ async function send({ game, castle, construct = false, from, target, targetPoint
       log(`  cannot send it again: ${e.message}`);
       return { sent: false, why: 'too late' };
     }
-    log(`  march ${dur(pl.march)}${pl.scale !== 1 ? ` (x${pl.scale.toFixed(4)} learned)` : ''}, camp ${dur(pl.restTimeSec * 1000)},`
-      + ` send in ${((pl.sendAt - game.now()) / 1000).toFixed(3)}s, ${pl.leadMs} ms ahead for the network`);
+    const shortened = pl.restTimeSec > 0 && pl.factor !== 1;
+    log(`  march ${dur(pl.march)}${pl.scale !== 1 ? ` (x${pl.scale.toFixed(4)} learned)` : ''}, camp ${dur(shortened ? pl.campMs : pl.restTimeSec * 1000)}`
+      + (shortened ? ` (${dur(pl.restTimeSec * 1000)} asked for: the game counts camp x${pl.factor.toFixed(2)}, as the march buffs do the march)` : '')
+      + `, send in ${((pl.sendAt - game.now()) / 1000).toFixed(3)}s, ${pl.leadMs} ms ahead for the network`);
     const bean = makeBean(pl.restTimeSec);
     if (dryRun) { log('  [dry run] not sent'); return { sent: false, why: 'dry run' }; }
 
@@ -427,9 +439,10 @@ async function check(game, log) {
     const keys = Object.entries(a.troop || a.troops || {}).filter(([k, v]) => C.BY_KEY[k] && Number(v) > 0).map(([k]) => k);
     if (!keys.length) continue;
     const start = ms(a.startTime);
-    const server = ms(a.reachTime) - start - (Number(a.restTime) || 0) * 1000;
-    const from = C.fieldIdToCoords(Number(a.startFieldId)), to = C.fieldIdToCoords(Number(a.targetFieldId));
     const base = { marchSkill: params.marchSkill, driveSkill: params.driveSkill, castleBuffs: castle.buffs, playerBuffs: game.player && game.player.buffs, now: start };
+    // the camp inside reachTime is shortened by the march buffs (C.armyTimeFactor)
+    const server = ms(a.reachTime) - start - (Number(a.restTime) || 0) * 1000 * C.armyTimeFactor(base);
+    const from = C.fieldIdToCoords(Number(a.startFieldId)), to = C.fieldIdToCoords(Number(a.targetFieldId));
     const plain = serverMarchMs(C.marchTimeMs(from, to, keys, base));
     const relieved = Number(params.relief) > 1 ? serverMarchMs(C.marchTimeMs(from, to, keys, { ...base, relief: params.relief })) : null;
     const useRelief = relieved !== null && Math.abs(server - relieved) < Math.abs(server - plain);

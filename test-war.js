@@ -360,6 +360,24 @@ test('hiding: the march is still away when the wave lands', () => {
   assert.ok(a.expectedReturnAt > a.forImpactAt);
 });
 
+test('hiding with two Fleet Feet on: the camp asked is stretched so the army is still away (Lord24, 2026-09-27)', () => {
+  const ctx = makeCtx({
+    config: { hiding: 2 }, otherCastles: [secondCity()],
+    incoming: [
+      wireArmy({ inMs: 90000, troop: { archer: '200000' }, armyId: 1 }),
+      wireArmy({ inMs: 20 * 60000, troop: { archer: '200000' }, armyId: 2 }),
+    ],
+  });
+  const plain = W.plans.hiding(ctx, {}).actions[0];
+  ctx.game.player = { buffs: [{ typeId: 'ReduceArmyActionBuffx', endTime: NOW + 8 * 3600000 - 60000 }] };
+  const p = W.plans.hiding(ctx, {});
+  assert.ok(p.actions && p.actions.length, JSON.stringify(p));
+  const a = p.actions[0];
+  assert.ok(a.restSec > 2.5 * plain.restSec, `camp asked ${a.restSec}s vs ${plain.restSec}s with no buff`);
+  assert.strictEqual(a.safe, true);
+  assert.ok(a.expectedReturnAt > a.forImpactAt);
+});
+
 test('hiding: several waves -> stay out past the LAST one', () => {
   const ctx = makeCtx({
     config: { hiding: 2 }, otherCastles: [secondCity()],

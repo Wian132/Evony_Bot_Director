@@ -12,13 +12,14 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { Game } = require('./game');
 const { buildSnapshot } = require('./snapshot');
 
 const D = require('./db');
 const AUTH = require('./auth');
 const BOTS = require('./botctl');
+const MAINT = require('./maint');       // the fleet's shared word on maintenance
 // Prepend / Append goals kept in files, synced into each account (goalfiles.js)
 const GF = require('./goalfiles');
 AUTH.configure();
@@ -51,6 +52,8 @@ function autoscriptsOf(org, acc) {
 }
 
 const PORT = Number(process.env.DIRECTOR_PORT || 8712);
+// when this process came up, for /api/director/state
+const STARTED_AT = Date.now();
 const GAP_MS = Number(process.env.POLL_GAP_MS || 25000);   // between accounts
 const CYCLE_MIN_MS = Number(process.env.POLL_CYCLE_MS || 10 * 60000);
 const UPTIME_MS = Number(process.env.UPTIME_MS || 60000);  // bot health sample
@@ -105,7 +108,15 @@ function tradingAccounts(org) {
     const connected = !!(fresh && live.connected);
     const seen = HOLI_SEEN.get(a.id);
     let holiday = null, holidayText = null;
-    if (connected) { holiday = !!live.holiday; holidayText = live.holiday ? live.holiday.text || null : null; }
+    // The protection watch (session.js) reads the buffs every couple of minutes,
+    // so a holiday begun while the console was already logged in shows up within
+    // that; `live.holiday` only ever arrives with a login reply, so it is the
+    // fallback now rather than the source.
+    if (connected) {
+      const prot = live.protection && live.protection.kind === 'holiday' ? live.protection : null;
+      holiday = !!(prot || live.holiday);
+      holidayText = prot ? (prot.left || null) : (live.holiday ? live.holiday.text || null : null);
+    }
     else if (seen && now - seen.at < 30 * 60000) {
       // last seen on holiday with at least an hour of it left: still on it
       holiday = seen.holiday ? (seen.hours >= 1 ? true : null) : false;
@@ -130,11 +141,79 @@ function tradingRunner(orgId) {
       store: org.settings, control: TRADE_CONTROL, exec: glitchRun,
       accounts: () => tradingAccounts(org), monitor: TRADE_MON,
       lastLineAt: (id) => TS.lastScriptLineAt(TRADE_DIR, id), note,
+      // every save, so the Glitch log keeps the run after the next Start replaces it
+      archive: (run) => { try { require('./glitch-log').archiveRun(orgId, run); } catch { /* the play comes first */ } },
     });
     TRADE_RUNNERS.set(orgId, r);
   }
   return r;
 }
+// ------------------------------------------------------------------ Monitor
+// The Monitor tab: one watcher over the whole server (monitor.js) — the map every
+// few minutes, the rankings, and the lords of the top heroes. It runs as its own
+// process so a Director restart does not drop a sweep, and it has NO login of its
+// own: it drives the chosen account's console over HTTP, so the game still sees
+// one session for that account (EVONY-RULES §1).
+const MON = require('./monitor');
+const MON_PROCS = new Map();            // orgId -> { pid, at }
+
+// D.org(id) hands back a tenant handle that names itself `orgId`, not `id` — and
+// getting that wrong once already spawned a Monitor on `--org undefined`, which
+// then read another tenant's (empty) settings and sat there doing nothing.
+const orgKey = (org) => (org && (org.orgId || org.id)) || null;
+const monAlive = (pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+
+// Is a Monitor running for this org — this Director's child, or one started by
+// hand that wrote its pid into the settings?
+function monRunning(org) {
+  const mine = MON_PROCS.get(orgKey(org));
+  if (mine && monAlive(mine.pid)) return { pid: mine.pid, mine: true };
+  const st = MON.readStatus(org);
+  if (st && st.pid && monAlive(st.pid)) return { pid: st.pid, mine: false };
+  return null;
+}
+
+function monStart(org) {
+  const have = monRunning(org);
+  if (have) return { ok: true, adopted: true, pid: have.pid };
+  const outFile = path.join(process.env.BOT_LOG_DIR || __dirname, 'monitor.log');
+  const out = fs.openSync(outFile, 'a');
+  const id = orgKey(org);
+  if (!id) return { ok: false, error: 'that organization has no id' };
+  const child = spawn(process.execPath, [path.join(__dirname, 'monitor.js'), '--org', id], {
+    cwd: __dirname, env: process.env, detached: true, windowsHide: true, stdio: ['ignore', out, out],
+  });
+  child.unref();
+  MON_PROCS.set(id, { pid: child.pid, at: Date.now() });
+  MON.writeStatus(org, { pid: child.pid, state: 'starting', error: null });
+  note(`monitor: started (pid ${child.pid}) — ${outFile}`);
+  return { ok: true, pid: child.pid };
+}
+
+function monStop(org) {
+  const have = monRunning(org);
+  MON_PROCS.delete(orgKey(org));
+  if (!have) { MON.writeStatus(org, { pid: null, state: 'off', progress: null }); return { ok: true, already: true }; }
+  // SIGTERM, which monitor.js catches so it finishes the chunk it is on and
+  // writes its sweep row rather than leaving one open for ever.
+  try { process.kill(have.pid, 'SIGTERM'); } catch {}
+  note(`monitor: asked pid ${have.pid} to stop`);
+  return { ok: true, pid: have.pid };
+}
+
+// Like keep-bot-on, for the Monitor: if it is switched on it should be running.
+function keepMonitorOn() {
+  for (const o of D.orgs.all().filter((x) => !x.disabled)) {
+    try {
+      const org = D.org(o.id);
+      const cfg = MON.config(org);
+      if (cfg.on && !monRunning(org)) { note('monitor: switched on but not running — starting it'); monStart(org); }
+      if (!cfg.on && monRunning(org) && MON_PROCS.has(orgKey(org))) monStop(org);
+    } catch (e) { note('monitor watchdog: ' + e.message); }
+  }
+}
+setTimeout(() => { keepMonitorOn(); setInterval(keepMonitorOn, 60000); }, 20000);
+
 // The Resources tab: every city's food, wood, stone, iron and gold, recorded once an hour
 // on the hour (city-resources.js), from the snapshots the consoles publish.
 const CITY_RES = require('./city-resources');
@@ -170,7 +249,110 @@ function recordMorningResources() {
     for (const o of D.orgs.all()) if (Date.now() - CITY_RES.lastAt(o.id) > 55 * 60000) { recordCityResources('start-up'); break; }
   }, 90000);
   setTimeout(() => { recordMorningResources(); setInterval(recordMorningResources, 60000); }, 100000);
-}     // accountId -> last known holiday badge (a console restarting has none)
+}
+
+// ---------------------------------------------------------------- glitch log
+// The Trading tab's Glitch log (glitch-log.js): one record per maintenance of what
+// every town went in with and came out with, and the runs of that day. Three steps,
+// each done once and each at its own moment — the module decides which is due, this
+// does it. See glitch-log.js for why each step happens when it does.
+const GL = require('./glitch-log');
+
+// Who each account was at the moment of a record — none of which can be recovered
+// later: a holiday ends, a run stops, and the log would then call a bank an ordinary
+// account. The play's own sides win over the holiday badge, because a run names them.
+function glitchAccountMeta(org) {
+  let run = null;
+  try { run = tradingRunner(orgKey(org)).run(); } catch { run = null; }
+  const buy = new Set((run && run.buy) || []);
+  const sell = new Set((run && run.sell) || []);
+  const banks = new Set((run && run.banks) || []);
+  return tradingAccounts(org).map((a) => ({
+    id: a.id, label: a.label, lord: a.lord || null, holiday: a.holiday,
+    side: banks.has(a.id) ? 'bank' : buy.has(a.id) ? 'buy' : sell.has(a.id) ? 'sell' : null,
+  }));
+}
+
+// Log every console in afresh, so the "before" record holds the server's figures and
+// not a console's cache (EVONY-RULES §3). They go together rather than one at a time:
+// each is on its own proxy and the whole fleet logs in together after every
+// maintenance anyway, and serially there would not be time before the stand-down.
+//
+// This is not free — a refresh kills every city's autorun scripts (EVONY-RULES §4) —
+// which is why it only ever fires on an ANNOUNCED window, once, and why what it cost
+// (the scripts that were running) is written down beside each account.
+const RELOG_STAGGER_MS = 500;
+const RELOG_TIMEOUT_MS = 150000;
+async function glitchRelog(org, day) {
+  const orgId = orgKey(org);
+  const targets = org.accounts.all().filter((a) => a.enabled !== false);
+  const jobs = targets.map((a, i) => (async () => {
+    const live = liveByAccount.get(a.id);
+    const base = { label: a.label, at: Date.now() };
+    if (!live || !live.url) return [a.id, { ...base, ok: false, skipped: true, error: 'no console answering for this account' }];
+    if (!live.connected) return [a.id, { ...base, ok: false, skipped: true, error: live.state || 'not logged in' }];
+    await new Promise((r) => setTimeout(r, i * RELOG_STAGGER_MS));
+    const r = await postJson(`${live.url}/api/snapshot/refresh`, {}, RELOG_TIMEOUT_MS);
+    const j = (r && r.json) || {};
+    // File the snapshot it handed back at once: waiting for the next uptime sweep to
+    // pick it up would put the record after the stand-down, which is the whole point
+    // of doing this early.
+    if (j.snapshot && j.snapshot.at) {
+      try { if (org.ownsAccount(a.id)) { org.snapshots.add(a.id, j.snapshot); rememberHeroes(a.id, j.snapshot); } }
+      catch (e) { note(`glitch log: snapshot from ${a.label}: ${e.message}`); }
+    }
+    // A console that predates this route answers the sign-in guard, not JSON — which
+    // reads as "bad json" and is worth saying plainly, because the answer is a restart.
+    const why = j.error || (r.ok ? null : r.error === 'bad json'
+      ? `this console is older than the glitch log (HTTP ${r.status}) — restart it`
+      : r.error) || (j.skipped ? 'skipped' : null);
+    return [a.id, { ...base, ok: !!j.ok, at: Number(j.at) || Date.now(), scripts: j.scripts ?? null,
+      error: why, skipped: !!j.skipped }];
+  })());
+  const results = Object.fromEntries(await Promise.all(jobs));
+  GL.markRelog(orgId, day, results);
+  const ok = Object.values(results).filter((x) => x.ok).length;
+  const scripts = Object.values(results).reduce((s, x) => s + (Number(x.scripts) || 0), 0);
+  note(`glitch log ${day}: relogged ${ok}/${targets.length} accounts before maintenance`
+    + (scripts ? ` — ${scripts} script run(s) were going and a refresh ends those` : '')
+    + Object.entries(results).filter(([, x]) => !x.ok).map(([, x]) => ` · ${x.label}: ${x.error}`).join(''));
+  return results;
+}
+
+let glitchBusy = false;
+const GLITCH_SAID = new Set();          // reasons already said, so a retry is quiet
+async function glitchTick() {
+  if (glitchBusy) return;
+  glitchBusy = true;
+  try {
+    for (const o of D.orgs.all().filter((x) => !x.disabled)) {
+      let org = null;
+      try { org = D.org(o.id); } catch { continue; }
+      // the window this org's fleet believes in, for the server most of it is on
+      const server = (org.accounts.all().find((a) => a.enabled !== false) || {}).server || 'ss71';
+      const rec = MAINT.read(org.settings, server);
+      let step = null;
+      try { step = GL.due(org, Date.now(), { rec }); } catch (e) { note('glitch log: ' + e.message); continue; }
+      if (!step) continue;
+      if (step.action === 'relog') { await glitchRelog(org, step.day); continue; }
+      const r = GL.take({ orgId: o.id, day: step.day, side: step.action, accounts: glitchAccountMeta(org),
+        maxSnapAt: step.maxSnapAt || 0, minSnapAt: step.minSnapAt || 0 });
+      const said = `${o.id}|${step.day}|${step.action}|${r.taken}`;
+      const line = r.taken
+        ? `glitch log ${step.day}: ${step.action} record — ${r.rows} cities (${step.why})`
+          + (r.skipped.length ? ` — skipped ${r.skipped.join('; ')}` : '')
+        : `glitch log ${step.day}: nothing to record for "${step.action}" — ${r.skipped.join('; ') || 'no snapshots'}`;
+      // A record that cannot be taken stays owed and is tried again every half minute,
+      // so the reason is said once rather than filling the log with it.
+      if (r.taken || !GLITCH_SAID.has(said)) note(line);
+      GLITCH_SAID.add(said);
+    }
+  } catch (e) { note('glitch log: ' + e.message); }
+  finally { glitchBusy = false; }
+}
+// Every half minute: the announcement only comes about 15 minutes ahead (EVONY-RULES
+// §2), and the stand-down is a moment, not a window.
+setTimeout(() => { glitchTick(); setInterval(glitchTick, 30000); }, 45000);     // accountId -> last known holiday badge (a console restarting has none)
 const PROXY_FILE = path.join(__dirname, 'proxies.txt');
 const MAX_PER_PROXY = Number(process.env.MAX_PER_PROXY || 10);
 
@@ -254,6 +436,36 @@ async function heldByConsole(acc) {
   return false;
 }
 
+// ------------------------------------------------------- maintenance, fleet-wide
+// The consoles tell the Director when the server is going down — one hears the
+// announcement on the system chat, or sees the game port stop answering, and
+// writes it where everyone reads it (maint.js). The Director's own poll is a
+// login like any other, and a login into a maintenance is what holds an account
+// back for half an hour (EVONY-RULES.md section 2), so it stands down too.
+//
+// Is any console of this server still reporting? While one is, it is the thing
+// that finds the end of maintenance (it checks the free TCP port through its own
+// proxy and costs no login), so the poller simply waits for its word. With none
+// left, the poller is the only way to find out, and goes back to trying.
+function consolesWatching(org, server, now = Date.now()) {
+  let n = 0;
+  for (const a of org.accounts.all()) {
+    if ((a.server || 'ss71') !== server || a.enabled === false) continue;
+    const live = liveByAccount.get(a.id);
+    if (live && now - live.at < UPTIME_MS * 3 && live.state !== 'process down') n++;
+  }
+  return n;
+}
+
+// The record when this account must not be logged in right now, else null.
+function maintenanceHold(org, acc, now = Date.now()) {
+  const server = acc.server || 'ss71';
+  const rec = MAINT.read(org.settings, server, now);
+  if (!rec || rec.phase === 'over' || rec.phase === 'before') return null;
+  if (rec.phase === 'recovering' && !consolesWatching(org, server, now)) return null;
+  return rec;
+}
+
 // One process serves every organization, so the poller walks them in turn. The
 // gap between accounts is global on purpose: it exists to avoid hammering the
 // game server, which does not care whose account it is.
@@ -281,6 +493,14 @@ async function pollCycle() {
         const kick = org.settings.get('kickHold:' + acc.id, null);
         if (kick && Number(kick.until) > Date.now()) {
           note(`${acc.label}: kicked by another login — left alone until ${new Date(kick.until).toLocaleTimeString()}`);
+          continue;
+        }
+        // The bots said the server is down: no poll login until it is back.
+        const held = maintenanceHold(org, acc);
+        if (held) {
+          note(`${acc.label}: ${acc.server || 'ss71'} is in maintenance`
+            + `${held.by ? ` (${held.by} saw it)` : ''} — no poll login until it is back`
+            + ` (about ${new Date(held.resumeAt).toLocaleTimeString()})`);
           continue;
         }
         const snap = await pollAccount(org, acc);
@@ -334,6 +554,31 @@ function getJson(url, timeout = 2500) {
   });
 }
 
+// The few routes the Director POSTs to a console (auth.js INTERNAL_OK). Kept apart
+// from getJson so it is obvious in one place what the Director can make a bot do:
+// today that is the before-maintenance refresh and nothing else.
+function postJson(url, body = {}, timeout = 120000) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const data = Buffer.from(JSON.stringify(body));
+    const u = new URL(url);
+    const req = http.request({
+      hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST', timeout,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': data.length, 'x-otto-internal': AUTH.internalToken() },
+    }, (res) => {
+      let b = '';
+      res.on('data', (c) => (b += c));
+      res.on('end', () => {
+        try { resolve({ ok: true, status: res.statusCode, json: JSON.parse(b), ms: Date.now() - started }); }
+        catch { resolve({ ok: false, status: res.statusCode, error: 'bad json', ms: Date.now() - started }); }
+      });
+    });
+    req.on('error', (e) => resolve({ ok: false, error: e.code || e.message, ms: Date.now() - started }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout', ms: Date.now() - started }); });
+    req.end(data);
+  });
+}
+
 const lastSeq = {};
 
 // The live header each console last reported, keyed by account id. A console
@@ -353,6 +598,27 @@ function allProbes() {
   return out;
 }
 
+// THE DIRECTOR MUST NOT DIE OF A PASSING ERROR. Every console has had this guard since
+// the beginning (server.js) and the Director never did — so on 2026-09-24 at 21:26 a
+// single `database is locked` inside sampleUptime's uptime.add took the whole control
+// plane down, and it stayed down: no live sweep, no goal-file sync, no Trading tab, and
+// every row on the Fleet page fell back to "reporting"/"stale" because `live` had stopped
+// being refreshed. The lock itself was ordinary — 21 consoles were restarting into a
+// 20.7MB WAL checkpoint and the write waited out its 5-second busy_timeout.
+for (const kind of ['unhandledRejection', 'uncaughtException']) {
+  process.on(kind, (err) => {
+    const e = err instanceof Error ? err : new Error(String(err));
+    const what = kind === 'unhandledRejection' ? 'unhandled rejection' : 'uncaught exception';
+    console.error(`\n  ${what.toUpperCase()}: ${e.message}\n${e.stack || ""}\n  (the Director kept running)\n`);
+    try { note(`${what}: ${e.message} — the Director kept running; its terminal has the stack`); } catch { /* not up yet */ }
+  });
+}
+
+// This is the timer that met the locked database on 2026-09-24. It writes an uptime row
+// for every probe every minute, so it is the Director's likeliest write to collide with
+// 21 consoles restarting — and a missed sample is only a gap in a chart. The guard above
+// is what keeps that from being fatal; nothing here swallows the error, so it still
+// reaches the log where it can be seen.
 async function sampleUptime() {
   const at = Date.now();
   // Which accounts answered this round, and the probes that did not: a probe
@@ -360,6 +626,14 @@ async function sampleUptime() {
   // restart (see registerProbe in botctl.js), not the account being down.
   const answered = new Set();
   const dead = [];
+  // What this sweep says about each server, for the fleet-wide maintenance
+  // record (maintenanceFromFleet below).
+  const servers = new Map();      // `${orgId}|${server}` -> { orgId, server, dropped, saysDown, back }
+  const serverNote = (orgId, server) => {
+    const k = orgId + '|' + (server || 'ss71');
+    if (!servers.has(k)) servers.set(k, { orgId, server: server || 'ss71', dropped: 0, saysDown: 0, connected: 0, back: null });
+    return servers.get(k);
+  };
   for (const pr of allProbes()) {
     const org = pr.orgId ? D.org(pr.orgId) : null;
     const r = await getJson(pr.url.replace(/\/$/, '') + '/api/session');
@@ -398,6 +672,23 @@ async function sampleUptime() {
     const fresh = h.idleMs !== null && h.idleMs !== undefined && n(h.idleMs) < UPTIME_MS * 1.5;
     const paused = !!(h.maintenance && h.maintenance.paused);
     if (h.account && h.account.id) {
+      // What this console says about the SERVER, before its row is overwritten:
+      // did it just lose the game socket, did it just get back in, and does it
+      // believe the server is down (the chat announcement it heard, the game
+      // port it found closed). Several consoles losing the socket in the same
+      // sweep is the server going down — they do not share a proxy, and nothing
+      // else takes them all at once.
+      const prev = liveByAccount.get(h.account.id) || null;
+      const acc = org && org.accounts.get(h.account.id);
+      const sv = serverNote(pr.orgId, (acc && acc.server) || 'ss71');
+      const phase = h.maintenance && h.maintenance.phase;
+      // An account switched off, or held out after a kick, was not taken by the
+      // server going down — it was told to stay out.
+      const toldToStayOut = h.state === 'off' || h.state === 'kicked' || !!h.kick;
+      if (prev && prev.connected && !h.connected && prev.state !== 'process down' && !toldToStayOut) sv.dropped++;
+      if (!h.connected && (paused || phase === 'standdown' || phase === 'recovering')) sv.saysDown++;
+      if (h.connected) sv.connected++;
+      if (h.connected && (!prev || !prev.connected)) sv.back = (acc && acc.label) || h.account.id;
       liveByAccount.set(h.account.id, {
         at, probe: pr.probe, url: String(pr.url || '').replace(/\/$/, ''),
         connected: !!h.connected,
@@ -434,18 +725,18 @@ async function sampleUptime() {
           text: h.holiday ? h.holiday.text || null : null, lord: h.lord || null });
       }
     }
-    D.uptime.add({
-      orgId: pr.orgId, at, probe: pr.probe,
-      accountId: h.account && h.account.id, label: (h.account && h.account.label) || h.lord || null,
-      reachable: true, up: !!h.connected,
-      state: paused ? 'maintenance' : (h.state || null),
-      reason: paused ? 'server maintenance' : (h.reason || null),
-      engineMode: h.engineMode || null,
-      idleMs: n(h.idleMs), latencyMs: r.ms, logLines: seq,
-      activity: !!h.connected && (fresh || moved),
-      maintenance: paused,
-      rssMb: h.proc && h.proc.rssMb, heapMb: h.proc && h.proc.heapMb,
-    });
+      D.uptime.add({
+        orgId: pr.orgId, at, probe: pr.probe,
+        accountId: h.account && h.account.id, label: (h.account && h.account.label) || h.lord || null,
+        reachable: true, up: !!h.connected,
+        state: paused ? 'maintenance' : (h.state || null),
+        reason: paused ? 'server maintenance' : (h.reason || null),
+        engineMode: h.engineMode || null,
+        idleMs: n(h.idleMs), latencyMs: r.ms, logLines: seq,
+        activity: !!h.connected && (fresh || moved),
+        maintenance: paused,
+        rssMb: h.proc && h.proc.rssMb, heapMb: h.proc && h.proc.heapMb,
+      });
   }
 
   for (const { pr, r } of dead) {
@@ -469,10 +760,38 @@ async function sampleUptime() {
       }
       continue;
     }
-    D.uptime.add({ orgId: pr.orgId, at, probe: pr.probe, accountId: acct || undefined,
+      D.uptime.add({ orgId: pr.orgId, at, probe: pr.probe, accountId: acct || undefined,
       reachable: false, up: false,
       state: 'down', reason: r.error === 'ECONNREFUSED' ? 'bot process not running' : r.error,
       latencyMs: r.ms, activity: false });
+  }
+
+  maintenanceFromFleet(servers, at);
+}
+
+// What the sweep just saw, turned into the fleet's word on maintenance. The
+// reading of it is maint.verdict; this is what the Director does about it.
+function maintenanceFromFleet(servers, now = Date.now()) {
+  for (const sv of servers.values()) {
+    let org = null;
+    try { org = sv.orgId ? D.org(sv.orgId) : null; } catch { org = null; }
+    if (!org) continue;
+    const rec = MAINT.read(org.settings, sv.server, now);
+    const say = MAINT.verdict(sv, rec);
+    if (say === 'back') {
+      MAINT.signalBack(org.settings, sv.server, now);
+      note(`${sv.server}: ${sv.back} is logged in again — maintenance is over, the fleet can go back in`);
+      continue;
+    }
+    if (say !== 'down') continue;
+    const why = sv.saysDown >= MAINT.SAYS_DOWN_IS_MAINTENANCE
+      ? `${sv.saysDown} consoles report the server down`
+      : `${sv.dropped} consoles lost the game socket at once`;
+    const w = MAINT.declare(org.settings, sv.server, { startAt: now - 60000, text: why, by: 'the Director' }, now);
+    if (w) {
+      note(`${sv.server}: ${why} — telling the fleet it is maintenance now.`
+        + ` Nothing logs in until it is back (about ${new Date(w.resumeAt).toLocaleTimeString()})`);
+    }
   }
 }
 
@@ -531,7 +850,10 @@ http.createServer(async (req, res) => {
     const assign = proxyAssignments(ORG);
     const list = loadProxies(ORG);
     const counts = {};
-    for (const [, p] of assign) counts[p.label] = (counts[p.label] || 0) + 1;
+    // An account may have NO proxy (Lord23, 2026-09-25, switched on to join the fleet
+    // and running direct at the user's choice): proxyAssignments then has no entry for it
+    // and `p` is null, which threw on every /api/accounts call and broke the Accounts tab.
+    for (const [, p] of assign) if (p && p.label) counts[p.label] = (counts[p.label] || 0) + 1;
     return send(200, 'application/json', JSON.stringify({
       accounts: ORG.accounts.withSnapshots().map((a) => ({
         ...a,
@@ -579,6 +901,32 @@ http.createServer(async (req, res) => {
 
   // The fleet's start-up parameters: every console gets them at its next start,
   // under the account's own (botctl.js startupParms).
+  // TURNING THE DIRECTOR OFF BY HAND — the only thing that keeps it down. director-keep.js
+  // relaunches it whenever it stops, so a deliberate stop has to say so: this writes the
+  // stop file the supervisor watches and then exits. The page asks for confirmation first
+  // (its own themed dialog, never the browser box). Deleting the file, or pressing the
+  // switch again, brings it back within a few seconds.
+  if (url.pathname === '/api/director/stop' && req.method === 'POST') {
+    const KEEP = require('./director-keep');
+    try {
+      fs.writeFileSync(KEEP.STOP_FILE, `turned off from the Director page at ${new Date().toISOString()}
+`);
+    } catch (e) {
+      return send(500, 'application/json', JSON.stringify({ ok: false, error: `could not write the stop file — ${e.message}` }));
+    }
+    note('turned off from the page — writing the stop file and exiting; director-keep.js will leave it down');
+    send(200, 'application/json', JSON.stringify({ ok: true, stopped: true, file: KEEP.STOP_FILE }));
+    // let the answer reach the page before the process goes
+    setTimeout(() => process.exit(0), 250);
+    return true;
+  }
+  // Is a supervisor watching, and is the stop file set? The page shows the switch from this.
+  if (url.pathname === '/api/director/state') {
+    const KEEP = require('./director-keep');
+    let off = false;
+    try { off = fs.existsSync(KEEP.STOP_FILE); } catch { off = false; }
+    return send(200, 'application/json', JSON.stringify({ ok: true, off, pid: process.pid, since: STARTED_AT }));
+  }
   if (url.pathname === '/api/startup' && req.method === 'POST') {
     const b = await body(req);
     const text = String(b.text == null ? '' : b.text).trim();
@@ -836,6 +1184,56 @@ http.createServer(async (req, res) => {
     catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
 
+  // ---- the glitch log: one record per maintenance (glitch-log.js) ----
+  //   GET  /api/glitch?from=&to=          -> the days, newest first, for the date filter
+  //   GET  /api/glitch/day?day=&q=        -> one day in full: every town, in and out
+  //   POST /api/glitch/config {on,relog,leadMin}
+  //   POST /api/glitch/record {day, side} -> take one by hand
+  //   POST /api/glitch/relog  {day}       -> relog the fleet now (it spends a login each)
+  if (url.pathname.startsWith('/api/glitch')) {
+    if (!req.org) return send(401, 'application/json', JSON.stringify({ error: 'sign in first' }));
+    const org = D.org(req.org.id);
+    try {
+      if (url.pathname === '/api/glitch' && req.method === 'GET') {
+        const from = url.searchParams.get('from') || null, to = url.searchParams.get('to') || null;
+        const out = GL.days({ orgId: req.org.id, from, to });
+        return send(200, 'application/json', JSON.stringify({ ...out, config: GL.config(org) }));
+      }
+      if (url.pathname === '/api/glitch/day' && req.method === 'GET') {
+        const accounts = (url.searchParams.get('accounts') || '').split(',').map((x) => x.trim()).filter(Boolean);
+        return send(200, 'application/json', JSON.stringify(GL.detail({
+          orgId: req.org.id, day: url.searchParams.get('day') || '', accounts, q: url.searchParams.get('q') || '' })));
+      }
+      if (url.pathname === '/api/glitch/config' && req.method === 'POST') {
+        const b = await body(req);
+        return send(200, 'application/json', JSON.stringify({ ok: true, config: GL.setConfig(org, b || {}) }));
+      }
+      if (url.pathname === '/api/glitch/record' && req.method === 'POST') {
+        const b = await body(req);
+        const side = String(b.side || 'before');
+        const day = String(b.day || GL.dayKey(Date.now()));
+        // Taking one by hand still needs a window to hang it on, so that the day
+        // reads the same as one the fleet recorded for itself.
+        if (!GL.eventRow(req.org.id, day)) {
+          const server = (org.accounts.all().find((a) => a.enabled !== false) || {}).server || 'ss71';
+          const rec = MAINT.read(org.settings, server);
+          if (rec && GL.dayKey(rec.startAt) === day) GL.ensureEvent(req.org.id, rec);
+          else GL.saveEvent(req.org.id, day, { ...GL.assumedWindow(day), source: 'assumed', note: 'opened by hand' });
+        }
+        const r = GL.take({ orgId: req.org.id, day, side, accounts: glitchAccountMeta(org) });
+        return send(200, 'application/json', JSON.stringify({ ok: !!r.taken, ...r }));
+      }
+      if (url.pathname === '/api/glitch/relog' && req.method === 'POST') {
+        const b = await body(req);
+        const day = String(b.day || GL.dayKey(Date.now()));
+        if (!GL.eventRow(req.org.id, day)) GL.saveEvent(req.org.id, day, { ...GL.assumedWindow(day), source: 'assumed', note: 'opened by hand' });
+        const results = await glitchRelog(org, day);
+        const ok = Object.values(results).filter((x) => x.ok).length;
+        return send(200, 'application/json', JSON.stringify({ ok: true, relogged: ok, total: Object.keys(results).length, results }));
+      }
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+
   // ---- trading: the market play, read off the consoles' logs ----
   // Holiday accounts are one side of the play and the rest the other; which is
   // which comes from the consoles' own live headers (the holiday badge).
@@ -962,6 +1360,194 @@ http.createServer(async (req, res) => {
   }
 
   // ---- uptime ----
+  // ---------------------------------------------------------------- Monitor
+  // Everything the Monitor tab reads and writes. The searches are served from the
+  // database this Director shares with the Monitor process and the consoles, so
+  // they cost the game nothing — the only routes that reach the game at all are
+  // start/stop (which spawn the Monitor) and `run`, the Now buttons.
+  if (url.pathname.startsWith('/api/monitor')) {
+    if (!ORG) return send(401, 'application/json', JSON.stringify({ ok: false, error: 'sign in first' }));
+    const q = url.searchParams;
+    const cfg = MON.config(ORG);
+    // The server the Monitor is watching: the chosen account's, else the fleet's.
+    const chosen = cfg.account ? ORG.accounts.get(cfg.account) : null;
+    const server = (chosen && chosen.server)
+      || (ORG.accounts.all().find((a) => a.server) || {}).server || 'ss71';
+    const num = (v, d = null) => (v === null || v === '' || v === undefined ? d : Number(v));
+    // The alliance picker sends one `ally=` (keep) or `notAlly=` (hide) per
+    // alliance, repeated rather than comma-joined, because an alliance name may
+    // hold a comma. An EMPTY one is meant: it is "no alliance at all".
+    const allies = (k) => q.getAll(k);
+
+    if (url.pathname === '/api/monitor' && req.method === 'GET') {
+      const run = monRunning(ORG);
+      return send(200, 'application/json', JSON.stringify({
+        ok: true, ...MON.status(server, ORG),
+        process: run ? { pid: run.pid, mine: run.mine } : null,
+        // whose console it can drive: an account with a console registered for it
+        accounts: ORG.accounts.all().map((a) => ({
+          id: a.id, label: a.label, server: a.server || 'ss71', enabled: a.enabled !== false,
+          consoleUrl: MON.consoleUrl(ORG, a.id),
+          live: (liveByAccount.get(a.id) || null),
+        })),
+        sweeps: MON.sweeps(server, 30),
+      }));
+    }
+
+    if (url.pathname === '/api/monitor/config' && req.method === 'POST') {
+      const b = await body(req);
+      const patch = {};
+      for (const k of ['mapMin', 'statsMin', 'watchMin', 'watchTop', 'stallMin', 'blocksPerCall', 'pauseMs',
+        'readingEveryMin', 'readingKeepDays']) {
+        if (b[k] !== undefined) patch[k] = Number(b[k]);
+      }
+      if (b.account !== undefined) patch.account = String(b.account || '');
+      if (b.watchNames !== undefined) {
+        patch.watchNames = Array.isArray(b.watchNames) ? b.watchNames
+          : String(b.watchNames || '').split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+      }
+      // Choosing an account only says whose console to drive — nothing logs in,
+      // and that console goes on playing its own goals exactly as before.
+      if (patch.account !== undefined && patch.account && patch.account !== cfg.account) {
+        const a = ORG.accounts.get(patch.account);
+        if (!a) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no such account' }));
+        if (!MON.consoleUrl(ORG, patch.account)) {
+          return send(200, 'application/json', JSON.stringify({ ok: false,
+            error: `${a.label} has no console running — the Monitor reads through one, it never logs in itself` }));
+        }
+        note(`monitor: reading through ${a.label}'s console`);
+      }
+      const saved = MON.setConfig(ORG, patch);
+      return send(200, 'application/json', JSON.stringify({ ok: true, config: saved }));
+    }
+
+    if (url.pathname === '/api/monitor/switch' && req.method === 'POST') {
+      const b = await body(req);
+      const on = !!b.on;
+      if (on && !cfg.account) {
+        return send(200, 'application/json', JSON.stringify({ ok: false, error: 'choose an account first' }));
+      }
+      if (on) {
+        const reach = await MON.reachConsole(ORG, cfg.account);
+        if (reach.error) return send(200, 'application/json', JSON.stringify({ ok: false, error: reach.error }));
+      }
+      MON.setConfig(ORG, { on });
+      const r = on ? monStart(ORG) : monStop(ORG);
+      return send(200, 'application/json', JSON.stringify({ ok: true, on, ...r, config: MON.config(ORG) }));
+    }
+
+    // The Now buttons: one pass, started here rather than waiting for its turn.
+    // It runs in this process; the Monitor's own loop keeps its schedule.
+    if (url.pathname === '/api/monitor/run' && req.method === 'POST') {
+      const b = await body(req);
+      const kind = String(b.kind || 'map');
+      if (!cfg.account) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'choose an account first' }));
+      const reach = await MON.reachConsole(ORG, cfg.account);
+      if (reach.error) return send(200, 'application/json', JSON.stringify({ ok: false, error: reach.error }));
+      const args = { org: ORG, server, accountId: cfg.account, cfg, log: note };
+      const job = kind === 'map' ? MON.mapSweep({ ...args, onProgress: (p) => MON.writeStatus(ORG, { state: 'map sweep', progress: p }) })
+        : kind === 'stats' ? MON.statsPass(args) : kind === 'watch' ? MON.watchPass(args) : null;
+      if (!job) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'map, stats or watch' }));
+      note(`monitor: ${kind} pass started by hand`);
+      job.then((r) => note(`monitor: ${kind} pass ${r && r.error ? 'failed — ' + r.error : 'done'}`))
+        .catch((e) => note(`monitor: ${kind} pass failed — ${e.message}`))
+        .finally(() => MON.writeStatus(ORG, { state: 'waiting', progress: null }));
+      return send(200, 'application/json', JSON.stringify({ ok: true, started: kind }));
+    }
+
+    // The Statistics view: one of the four ranked lists, filtered a column at a time.
+    if (url.pathname === '/api/monitor/stats') {
+      const kind = q.get('kind') || 'players';
+      if (!MON.searchStats || !require('./statistics').KINDS[kind]) {
+        return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no such list' }));
+      }
+      const filters = {};
+      for (const [k, v] of url.searchParams) {
+        if (!k.startsWith('f_') || v === '') continue;
+        const col = k.slice(2);
+        if (col.endsWith('Min')) (filters[col.slice(0, -3)] ||= {}).min = v;
+        else if (col.endsWith('Max')) (filters[col.slice(0, -3)] ||= {}).max = v;
+        else filters[col] = v;
+      }
+      const res = MON.searchStats(server, kind, {
+        q: q.get('q') || '', sort: q.get('sort') || 'rank', dir: q.get('dir') || 'asc',
+        limit: q.get('limit') || 200, offset: q.get('offset') || 0, filters,
+      });
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, status: MON.status(server, ORG).stats, ...res }));
+    }
+
+    // The cities the map sweep found — every one of them, not just the ranked few.
+    if (url.pathname === '/api/monitor/cities') {
+      return send(200, 'application/json', JSON.stringify({ ok: true, server,
+        ...MON.searchCities(server, {
+          q: q.get('q') || '', alliance: q.get('alliance') || '', lord: q.get('lord') || '',
+          allies: allies('ally'), notAllies: allies('notAlly'),
+          state: q.get('state') || '', minPrestige: q.get('minPrestige') || '', level: q.get('level') || '',
+          sort: q.get('sort') || 'prestige', dir: q.get('dir') || 'desc',
+          limit: q.get('limit') || 200, offset: q.get('offset') || 0, seenMin: num(q.get('seenMin'), 0),
+        }) }));
+    }
+
+    // The lords: who is moving, who has stood still, and who is on holiday.
+    if (url.pathname === '/api/monitor/players') {
+      return send(200, 'application/json', JSON.stringify({ ok: true, server,
+        ...MON.searchPlayers(server, {
+          q: q.get('q') || '', alliance: q.get('alliance') || '', state: q.get('state') || '',
+          allies: allies('ally'), notAllies: allies('notAlly'),
+          watch: q.get('watch') === '1', moving: q.get('moving') || '',
+          sort: q.get('sort') || 'prestige', dir: q.get('dir') || 'desc',
+          limit: q.get('limit') || 200, offset: q.get('offset') || 0, stallMin: cfg.stallMin,
+        }) }));
+    }
+
+    // The Changes table: searched, sorted on any column it shows, a page at a
+    // time. Every row carries its lord's best hero, off the rankings the stats
+    // sweep already collected — no game traffic.
+    if (url.pathname === '/api/monitor/events') {
+      return send(200, 'application/json', JSON.stringify({ ok: true, server,
+        ...MON.eventPage(server, {
+          kind: q.get('kind') || '', userName: q.get('name') || '', watch: q.get('watch') === '1',
+          allies: allies('ally'), notAllies: allies('notAlly'),
+          q: q.get('q') || '', sort: q.get('sort') || 'at', dir: q.get('dir') || 'desc',
+          limit: q.get('limit') || 200, offset: q.get('offset') || 0, sinceMs: num(q.get('sinceMs'), 0),
+          stillMin: num(q.get('stillMin'), 0),
+        }) }));
+    }
+
+    // One lord in full, for the Changes table's best-hero panel: every city of
+    // theirs on the map, and their best heroes. Both come from sweeps already
+    // taken — it asks the game nothing.
+    if (url.pathname === '/api/monitor/lord') {
+      const name = q.get('name') || '';
+      if (!name) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'no lord named' }));
+      return send(200, 'application/json', JSON.stringify({ ok: true, server,
+        ...MON.lordSheet(server, name, { heroes: num(q.get('heroes'), 10),
+          readings: num(q.get('readings'), 200) }) }));
+    }
+
+    if (url.pathname === '/api/monitor/history') {
+      const name = q.get('name') || '';
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, name,
+        rows: MON.history(server, name, q.get('limit') || 500),
+        events: MON.events(server, { userName: name, limit: 100 }),
+        player: MON.searchPlayers(server, { q: name, limit: 1, stallMin: cfg.stallMin }).rows[0] || null }));
+    }
+
+    // Every alliance on the server, for the picker the Cities, Lords and Changes
+    // views filter with. It is a count over rows already swept — no game traffic.
+    if (url.pathname === '/api/monitor/alliances') {
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, rows: MON.alliances(server) }));
+    }
+
+    // Who the watch list would be right now, for the Setup view to show before
+    // the next pass runs.
+    if (url.pathname === '/api/monitor/watchlist') {
+      return send(200, 'application/json', JSON.stringify({ ok: true, server, rows: MON.watchList(server, cfg) }));
+    }
+
+    return send(404, 'application/json', JSON.stringify({ ok: false, error: 'not found' }));
+  }
+
   if (url.pathname === '/api/uptime') {
     const hours = Math.min(720, Math.max(1, Number(url.searchParams.get('hours')) || 12));
     const since = Date.now() - hours * 3600000;
@@ -1177,7 +1763,7 @@ http.createServer(async (req, res) => {
   }
   setInterval(() => { for (const r of TRADE_RUNNERS.values()) r.tick(); }, 5000);
   // Retention is by age and applies to every organization alike.
-  setInterval(() => { D.uptime.prune(30); D.snapshots.prune(90); }, 6 * 3600000);
+  setInterval(() => { D.uptime.prune(30); D.snapshots.prune(90); GL.prune(120); }, 6 * 3600000);
   // Keep the write-ahead log from growing all night.
   setInterval(() => {
     const before = D.stats().walBytes;

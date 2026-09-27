@@ -54,6 +54,13 @@ function world({ gold = 500000, items = {}, replies = {}, inn = null } = {}) {
     'hero.refreshHerosListFromTavern': () => INN,
     'hero.levelUp': (d) => { const h = hero(d.heroId); h.level++; h.remainPoint = num(h.remainPoint) + 10; return { ok: 1 }; },
     'hero.useItem': (d) => { const it = g.player.items.find((i) => i.id === d.itemId); if (it) it.count--; return { ok: 1 }; },
+    // the server's HeroUpdate pushes: the old mayor idle, the new one mayor
+    'hero.promoteToChief': (d) => {
+      const c = g.castles.find((x) => x.id === d.castleId);
+      for (const h of c.heros) if (h.status === 1) h.status = 0;
+      c.heros.find((h) => h.id === d.heroId).status = 1;
+      return { ok: 1 };
+    },
     ...replies,
   };
   g.req = async (cmd, data) => {
@@ -330,6 +337,18 @@ t('setmayor att / int: the most of it among idle heroes and the mayor', async ()
   // Rider has 200 attack but is marching; Bob 170 but a prisoner
   assert.deepStrictEqual(w.sent.map((s) => [s.cmd, s.data.heroId]), [['hero.promoteToChief', 11], ['hero.promoteToChief', 15]], r.text);
   assert.match(r.text, /most attack: Ken \(attack 120, L40\)/);
+});
+t('an ok the server did not act on is reported, not believed (Lord24 city 3, 2026-09-27)', async () => {
+  const w = world({ replies: { 'hero.promoteToChief': { ok: 1 } } });
+  const Game = require('./game').Game;
+  const was = Game.MAYOR_CONFIRM_MS;
+  Game.MAYOR_CONFIRM_MS = 150;
+  try {
+    const r = await runIn(w, 'mayor Ken' + TAIL);
+    assert.strictEqual(w.sent.length, 1);
+    assert.match(tail(r)[0], /the server answered ok, but Ken is still not mayor of 9 .* it ignored the appointment/);
+    assert.notStrictEqual(tail(r)[1], 'Ken');
+  } finally { Game.MAYOR_CONFIRM_MS = was; }
 });
 t('setmayor pol when the best politics hero is mayor already: nothing sent', async () => {
   const w = world();

@@ -208,7 +208,9 @@ Set up in ~15 minutes for 21 targets and 13 accounts:
   sister city (a `glitch-oneoff.txt` line: `reinforce <x,y> none c:15000`) and a smaller
   `takeCav` (1,500) so the cavalry lasts more waves.
 - **A taker's capture task can die quietly and sit dead for ten minutes.** A lost wave
-  ends it (and recalls that account's attacks on the target), and so does a relog
+  ends it (and recalls that **city's** attacks on the target — fleet-wide until
+  2026-09-23, when `recall`, `capture`/`loyaltyattack` and `setguard` were all made per
+  city), and so does a relog
   (Lord20's server drop at 16:29). `attackstatus` then says "no background attacks
   running" while the job waits for its 10-minute restart. `job-take.txt` restarts the
   waves every **2** minutes since 2026-09-22 16:40.
@@ -271,6 +273,9 @@ Two things that went wrong, both now in EVONY-RULES.md §5e1:
   burst city run `endloyaltyattack` and `recall <target>` once. `ally-drain.txt` already
   recalls when `UpdateDetailInfo` shows the target is no longer an NPC — but only while
   its loop is running. A script someone has stopped recalls nothing.
+  Since 2026-09-23 `recall <x,y>` calls back **only the running city's** armies, so a stop
+  path like this must run in every city that fired (a script run in all cities does);
+  `recall <x,y> all` is the one line that pulls the whole account's back.
 - **Read the server's arrival stamp** (`city.selfArmies[i].reachTime`, `TimeDiff` in ms,
   direction 1 out / 2 home) — the printed "march Ns" is 2.5-3x too long. Lord08's burst was
   793-835 s over ~23 tiles, not the 1,842-1,937 s printed.

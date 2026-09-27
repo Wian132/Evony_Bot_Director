@@ -106,6 +106,11 @@ const LOADOUTS = 10;     // script loadout slots per city
 // `stop`, which the run polls between lines — the only way an endless `repeat`
 // ends while its line keeps going through.
 const SCRIPT_RUNS = new Map();
+// The glitch log's relog (/api/snapshot/refresh) is the one internal route that
+// spends a login, so it will not fire twice inside this gap however often it is
+// asked for. One announced maintenance, one relog.
+const REFRESH_GAP_MS = Number(process.env.REFRESH_GAP_MS || 20 * 60000);
+let LAST_SNAP_REFRESH = 0;
 // The last run of each city, kept after it ends so the Script tab can still show
 // how it went: a live Run is answered the moment it starts (see /api/script), so
 // its ending reaches the page through /api/script/runs, not through the reply.
@@ -639,6 +644,75 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message }));
     }
+  }
+
+  // ---- the glitch log's relog before maintenance (director.js glitchRelog) ----
+  // The Director's Trading -> Glitch log records what each account HELD going into
+  // an announced maintenance. A console's cached figures are not good enough for
+  // that (EVONY-RULES §3), so the Director asks every console to log in
+  // afresh first and files the snapshot that comes back at once.
+  //
+  // This is the one internal route that is not read-only, so it is fenced in
+  // tightly: the internal token only, no arguments at all (it can be asked for
+  // nothing but this), never during a stand-down — logging in during maintenance
+  // holds the account back about half an hour (EVONY-RULES §2) — and never
+  // twice inside REFRESH_GAP_MS, so a Director that retries cannot spend an
+  // account's logins. It is not a way to drive the bot: it takes no orders.
+  //
+  // It costs something, and the answer says what: a fresh login ends every script
+  // running on this console (EVONY-RULES §4), so `scripts` is how many runs
+  // were going when it fired, and the Director writes that down beside the account.
+  if (url.pathname === '/api/snapshot/refresh' && req.method === 'POST' && AUTH.isInternal(req)) {
+    const reply = (v) => send(200, 'application/json', JSON.stringify({ at: Date.now(), ...v }));
+    if (!SESSION.connected) return reply({ ok: false, skipped: true, error: SESSION.state || 'not logged in' });
+    const phase = SESSION.planPhase();
+    if (phase === 'standdown') {
+      return reply({ ok: false, skipped: true,
+        error: 'standing down for maintenance — a login now holds the account back for ~30 minutes' });
+    }
+    if (LAST_SNAP_REFRESH && Date.now() - LAST_SNAP_REFRESH < REFRESH_GAP_MS) {
+      const mins = Math.ceil((REFRESH_GAP_MS - (Date.now() - LAST_SNAP_REFRESH)) / 60000);
+      return reply({ ok: false, skipped: true, error: `already relogged for this — not again for ${mins} more minute(s)` });
+    }
+    LAST_SNAP_REFRESH = Date.now();
+    const scripts = SCRIPT_RUNS.size;
+    try {
+      await SESSION.reconnect();
+    } catch (e) {
+      return reply({ ok: false, scripts, error: e.message });
+    }
+    // Force the rebuild rather than take the cache we just came here to get past.
+    return reply({ ok: true, scripts, snapshot: SESSION.snapshot(0) });
+  }
+
+  // ---- the Monitor's two reads (monitor.js) ----
+  // The Monitor watches the whole server but never logs in: a second login for an
+  // account kicks whatever holds it (EVONY-RULES §1). So it drives ONE running
+  // console over HTTP and the game still sees the single session that console
+  // already had. These are the two routes it calls; both only read the game, and
+  // auth.js lets the internal token through for them by name.
+  //
+  // Session.mapSweep and Session.playerInfo do the work — they yield to the
+  // account's own traffic, stand down during maintenance, and answer with an
+  // error rather than connecting when the console is not logged in.
+  if (url.pathname === '/api/mapsweep' && req.method === 'POST' && AUTH.isInternal(req)) {
+    const b = await body(req);
+    try {
+      const r = await SESSION.mapSweep(b.blocks || b.points || [], {
+        fresh: !!b.fresh, drop: b.drop !== false, timeoutMs: Number(b.timeoutMs) || undefined,
+      });
+      return send(200, 'application/json', JSON.stringify(r));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
+  }
+  if (url.pathname === '/api/players' && req.method === 'POST' && AUTH.isInternal(req)) {
+    const b = await body(req);
+    try {
+      const r = await SESSION.playerInfo(b.names || [], {
+        gapMs: b.gapMs === undefined ? undefined : Number(b.gapMs),
+        timeoutMs: Number(b.timeoutMs) || undefined,
+      });
+      return send(200, 'application/json', JSON.stringify(r));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
 
   // Diagnostic: the raw shapes the server actually sends, so UI work is built
@@ -1189,6 +1263,10 @@ const server = http.createServer(async (req, res) => {
         // Straight over the sitting mayor, as the client does (CastleChief.as:377-394):
         // discharging first left the city with no mayor whenever the promotion failed.
         r = await g.promoteToChief(cid, hero.id);
+        // An ok the server did not act on (game.js mayorTook) is told as a refusal.
+        if (r && r.ok === 1 && await g.mayorTook(cid, hero.id) === false) {
+          r = { ok: 0, errorMsg: `the server answered ok, but ${hero.name} is still not mayor — it ignored the appointment (seen in a city under attack)` };
+        }
       } else if (b.action === 'unmayor') {
         r = await g.dischargeChief(cid);
       } else if (b.action === 'fire') {
@@ -1539,6 +1617,19 @@ const server = http.createServer(async (req, res) => {
     }));
   }
 
+  // THE QUICK DROPDOWN beside Run (scripts/quick-scripts.txt). Running a script by hand in
+  // a city ENDS that city's autorun run — one run per city — and nothing puts it back, so
+  // after any hand-run the account has stopped trading until someone restarts the console.
+  // These are the one-click ways back (the user, 2026-09-24). The file is read on every
+  // ask, so editing it is enough and nothing restarts. {side} becomes the side this account
+  // is on in the Trading tab's setup; an entry naming a script that is not there is left out.
+  if (url.pathname === '/api/script/quick') {
+    const QS = require('./quick-scripts');
+    const side = QS.sideOf(ORG, SESSION.account && SESSION.account.id);
+    return send(200, 'application/json', JSON.stringify({
+      ok: true, side, quick: QS.list({ dir: path.join(__dirname, 'scripts'), side }),
+    }));
+  }
   // What scripts said and played (say / play), for the open console tabs. Each
   // tab polls with its own id; ?after=<seq>&boot=<id> gets what came since.
   if (url.pathname === '/api/script/notify') {

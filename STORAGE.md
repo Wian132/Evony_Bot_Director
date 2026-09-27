@@ -16,7 +16,7 @@ and `evony.db-shm`, which are part of it — back up all three, or none).
 | `engine_state` | the engine's bookkeeping, one row per key: each city's under its castle id (`lastFocus`, `troopStage`, backoffs, npc cycles, mission points and the other goals' timers), `hero` for the traininghero's round, and the `_keyedBy` marker |
 | `map_cache` | every castle and NPC camp seen, and the flats and valleys around the cities the background map scan covers, with a `seen` timestamp |
 | `tile_levels` | one row per level change of a tile: free flats and valleys go up a level at each maintenance |
-| `city_registry` | every city the tool has seen and where it came from — buildnpc's abandon guard (README, Safety) |
+| `city_registry` | every city the tool has seen and where it came from — buildnpc's abandon guard (MANUAL.md, Safety) |
 | `settings` | proxy list text, watchlist, uptime probe list, each account's maintenance plan (`abandonflats` reads it) |
 | `uptime` | one row per probe per minute — a **gap** means the bot was not running |
 | `player_snapshots` | prestige history for the offline-detection watchlist |
@@ -103,7 +103,7 @@ refuses to start against a console-held account.
 The JSON files are still on disk and are no longer read by anything.
 
 `node migrate-goals-transfer.js` and `node migrate-goals-build.js` rewrite saved
-goal lines for the NEAT goals (README, Upgrading from the old goals). Both are dry
+goal lines for the NEAT goals (MANUAL.md, Upgrading from the old goals). Both are dry
 runs unless given `--apply`, and both save every row they change in `json-backup/`
 beside the database first. The engine state's move to castle ids needs no command:
 it happens once, on the first start.

@@ -389,8 +389,14 @@ async function appoint(env, castle, h, why) {
   // hero.promoteToChief {castleId, heroId} (HeroCommand.as:127-137), straight
   // over a sitting mayor, as the client does (CastleChief.as:377-390)
   const r = await game.promoteToChief(game.castleId(castle), h.id);
-  env.log('  -> ' + env.say(r));
-  return { done: 1, result: r && r.ok === 1 ? h.name : '' };
+  if (!r || r.ok !== 1) { env.log('  -> ' + env.say(r)); return { done: 1, result: '' }; }
+  // The server can answer ok and change nothing (game.js mayorTook).
+  if (await game.mayorTook(game.castleId(castle), h.id) === false) {
+    return miss(env, `the server answered ok, but ${h.name} is still not mayor of ${castle.name} ${require('./game').Game.MAYOR_CONFIRM_MS / 1000}s later`
+      + ' — it ignored the appointment (seen in a city under attack; see EVONY-RULES)');
+  }
+  env.log('  -> ok');
+  return { done: 1, result: h.name };
 }
 
 async function removeMayor(a, env) {

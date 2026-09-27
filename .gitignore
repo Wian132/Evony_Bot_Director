@@ -50,3 +50,16 @@ node_modules/
 # ── large/local-only, kept out of the repo by request ─────────────────────
 /Images/
 /resource-records/
+
+# ── this install's private data ───────────────────────────────────────────
+# privacy.local.json maps the aliases (Lord01 …) used in tracked files to the real
+# in-game names; CLAUDE.local.md is this install's own notes for Claude. See privacy.js.
+privacy.local.json
+CLAUDE.local.md
+# Goal backups and prepend files are live goal scripts with real lord names in them
+# (`if u == "…"`); a scrubbed copy would restore wrong, so they stay local.
+goals-backup-*
+prepend-goals.txt
+prepend-capture-*.txt
+*.bak-*
+*.pid

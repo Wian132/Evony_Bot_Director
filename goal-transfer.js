@@ -35,6 +35,12 @@
 //                    tool's old order (<min> <max> <batch> <keep>) became
 //                    `<max> <keep> * <batch> /below:<min>` (migrate-goals-transfer.js),
 //                    which does exactly what they did before.
+//   /maxdist:<tiles> never reach farther than this: a request line passes over
+//                    a sender more than <tiles> away, a keep/send line a
+//                    receiver, and the note says which and how far. `/50` on
+//                    its own is the same as /maxdist:50 (the user, 2026-09-25).
+//                    The distance is the one the notes already print, this
+//                    city's x,y to the other's.
 //   /steps:<a>,<b>   (requestresources) even the account out in steps, the
 //                    poorest first (the user, 2026-09-19). The steps and then
 //                    localAmount are the levels, lowest first. At each level L
@@ -309,6 +315,34 @@ function checkTarget(target, errs) {
   }
 }
 
+// A switch on a transfer line: /slots:3, /below=5m, /steps:1b,2b — or /50, the
+// bare form of /maxdist:50. Returns [name, value] (value true when the switch
+// is written alone), or null when the token is not a switch at all.
+function switchTok(tok) {
+  const s = String(tok);
+  const d = s.match(/^\/(\d+(?:\.\d+)?)$/);
+  if (d) return ['maxdist', d[1]];
+  const m = s.match(/^\/([a-z]+)(?:[:=](.*))?$/i);
+  return m ? [m[1].toLowerCase(), m[2] === undefined ? true : m[2]] : null;
+}
+
+// How far apart two places are on the map: the distance the notes print.
+const distOf = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y) : Infinity);
+// "12.4 tiles", or a city the game has not placed yet
+const tiles = (d) => (Number.isFinite(d) ? `${d.toFixed(1)} tiles` : 'an unknown distance');
+
+// /maxdist:<tiles> (or the bare /50): how far this line may reach. A distance
+// that cannot be read is an error and the line does not run — reading it as
+// "no limit" is the one wrong guess that sends a march across the map.
+function readDist(v, errs) {
+  const d = v === true ? NaN : Number(v);
+  if (!(d > 0)) {
+    errs.push(`/maxdist needs a distance in tiles, more than 0 — e.g. /maxdist:50, or just /50`);
+    return null;
+  }
+  return d;
+}
+
 // A switch given twice on one push line: which value was meant can only be
 // guessed, so it is an error.
 function noteSwitch(sw, k, errs) {
@@ -320,10 +354,10 @@ function noteSwitch(sw, k, errs) {
 function parseRequest(args, troops, { push = false } = {}) {
   const errs = [], sw = {}, rest = [];
   for (const tok of args) {
-    const m = String(tok).match(/^\/([a-z]+)(?:[:=](.*))?$/i);
+    const m = switchTok(tok);
     if (m) {
-      if (push) noteSwitch(sw, m[1].toLowerCase(), errs);
-      sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2];
+      if (push) noteSwitch(sw, m[0], errs);
+      sw[m[0]] = m[1];
       continue;
     }
     rest.push(String(tok));
@@ -335,7 +369,7 @@ function parseRequest(args, troops, { push = false } = {}) {
     : `expected: ${verb}resources ${city} <type> <localAmount> <remoteAmount> [minBatch] [maxBatch] [troopType] [/slots:N]`;
   const [target, what, ...tail] = rest;
   const out = {
-    target: target || null, local: null, remote: null, minBatch: null, maxBatch: null, slots: 1,
+    target: target || null, local: null, remote: null, minBatch: null, maxBatch: null, slots: 1, maxDist: null,
     ...(troops ? {} : { carrier: 'carriage' }),
   };
   if (push) checkTarget(target, errs);
@@ -397,6 +431,9 @@ function parseRequest(args, troops, { push = false } = {}) {
     if (k === 'slots') {
       if (!/^\d+$/.test(String(v)) || Number(v) < 1) errs.push('/slots needs a whole number, 1 or more');
       else out.slots = Number(v);
+    } else if (k === 'maxdist') {
+      // OTTObot's: never reach farther than this many tiles, either way round
+      out.maxDist = readDist(v, errs);
     } else if (k === 'below' && !push) {
       // OTTObot's: start asking only under this. * is "doesn't matter".
       if (v === '*') out.below = null;
@@ -414,7 +451,7 @@ function parseRequest(args, troops, { push = false } = {}) {
         out.steps = vals;
       }
     } else {
-      errs.push(`unknown switch /${k} — ${push ? '/slots:N' : troops ? '/slots:N or /below:<amount>' : '/slots:N, /below:<amount> or /steps:<amount>,<amount>'}`);
+      errs.push(`unknown switch /${k} — ${push ? '/slots:N or /maxdist:<tiles>' : troops ? '/slots:N, /below:<amount> or /maxdist:<tiles>' : '/slots:N, /below:<amount>, /maxdist:<tiles> or /steps:<amount>,<amount>'}`);
     }
   }
   if (out.steps) {
@@ -433,10 +470,10 @@ function parseRequest(args, troops, { push = false } = {}) {
 function parseKeep(args, troops) {
   const errs = [], sw = {}, rest = [];
   for (const tok of args) {
-    const m = String(tok).match(/^\/([a-z]+)(?:[:=](.*))?$/i);
+    const m = switchTok(tok);
     if (m) {
-      noteSwitch(sw, m[1].toLowerCase(), errs);
-      sw[m[1].toLowerCase()] = m[2] === undefined ? true : m[2];
+      noteSwitch(sw, m[0], errs);
+      sw[m[0]] = m[1];
       continue;
     }
     rest.push(String(tok));
@@ -445,7 +482,7 @@ function parseKeep(args, troops) {
     ? 'expected: keeptroops <to> <troop:amount[,troop:amount]> [minBatch] [/slots:N]'
     : 'expected: keepresources <to> <res:amount[,res:amount]> [minBatch] [troopType] [/slots:N]';
   const [target, list, ...tail] = rest;
-  const out = { target: target || null, keep: {}, minBatch: null, slots: 1, ...(troops ? {} : { carrier: 'carriage' }) };
+  const out = { target: target || null, keep: {}, minBatch: null, slots: 1, maxDist: null, ...(troops ? {} : { carrier: 'carriage' }) };
   if (!target || !list) errs.push(`${usage} — the city to send to and what to keep are required`);
   checkTarget(target, errs);
 
@@ -493,8 +530,10 @@ function parseKeep(args, troops) {
     if (k === 'slots') {
       if (!/^\d+$/.test(String(v)) || Number(v) < 1) errs.push('/slots needs a whole number, 1 or more');
       else out.slots = Number(v);
+    } else if (k === 'maxdist') {
+      out.maxDist = readDist(v, errs);
     } else {
-      errs.push(`unknown switch /${k} — /slots:N`);
+      errs.push(`unknown switch /${k} — /slots:N or /maxdist:<tiles>`);
     }
   }
   return { ...out, ok: errs.length === 0, errors: errs };
@@ -533,6 +572,7 @@ function describeRequest(g) {
   else if (g.maxBatch == null) bits.push(`at least ${amt(g.minBatch)} per send, up to what one march carries${lowNote}`);
   else bits.push(`${amt(g.minBatch)} to ${amt(g.maxBatch)} per send${lowNote}`);
   if (g.carrier && g.carrier !== 'carriage') bits.push(`carried by ${troopName(g.carrier)}`);
+  if (g.maxDist != null) bits.push(`only from cities within ${g.maxDist} tiles`);
   if (g.slots > 1) bits.push(`${g.slots} missions at a time`);
   return `${g.name || 'request'}: ${what} from ${g.target}, ${bits.join(', ')}${g.ok === false ? ' — NOT RUN, the line has errors' : ''}`;
 }
@@ -558,6 +598,7 @@ function describePush(g) {
     else bits.push(`${amt(g.minBatch)} to ${amt(g.maxBatch)} per send${lowNote}`);
   }
   if (g.carrier && g.carrier !== 'carriage') bits.push(`carried by ${troopName(g.carrier)}`);
+  if (g.maxDist != null) bits.push(`only to cities within ${g.maxDist} tiles`);
   if (g.slots > 1) bits.push(`${g.slots} missions at a time to each receiver`);
   return `${g.name}: ${what} to ${g.target}, ${bits.join(', ')}${g.ok === false ? ' — NOT RUN, the line has errors' : ''}`;
 }
@@ -664,7 +705,7 @@ function transferPlan(ctx, state, game) {
     for (const [k, v] of Object.entries(c.troop || {})) troops[k] = Math.max(0, n(v) - n(sent.troops[k]));
     const xy = game.castleXY(c);
     const s = {
-      castle: c, dist: xy && hereXY ? Math.hypot(xy.x - hereXY.x, xy.y - hereXY.y) : Infinity,
+      castle: c, dist: distOf(xy, hereXY),
       stock, troops, troops0: { ...troops }, goals: goalsOf(c) || [], march: { r: null, t: null },
     };
     senders.set(cid, s);
@@ -713,6 +754,8 @@ function transferPlan(ctx, state, game) {
         .sort((a, b) => a.have - b.have)[0];
       if (!low) continue;
       const donor = all.some((c) => c !== low.c && !warTownOf(c)
+        // /maxdist: a city too far to reach the short one is no donor for it
+        && (g.maxDist == null || distOf(game.castleXY(c), game.castleXY(low.c)) <= g.maxDist)
         && stockAt(c, k) - Math.max(L, floorOf(linesAt(c), 'requestresources', k, (x) => x.type)) >= min);
       out = { level: donor ? L : null, at: L, top: L === g.local, short: low.c.name, shortHave: low.have };
       break;
@@ -787,6 +830,11 @@ function transferPlan(ctx, state, game) {
         const pp = PROC.allowed({ goals: goalsOf(c) || [], game }, spec.kind);
         if (!pp.on) { why.push(`${c.name}: ${pp.why}`); continue; }
         const s = senderOf(c);
+        // /maxdist: a city farther than the line allows never sends
+        if (g.maxDist != null && !(s.dist <= g.maxDist)) {
+          why.push(`${c.name} is ${tiles(s.dist)} away, past this line's /maxdist:${g.maxDist}`);
+          continue;
+        }
         let busy = 0;
         if (!s.march[spec.kind]) {
           // a new march: needs a free pair and a free rally slot at the sender.
@@ -912,6 +960,8 @@ function transferPlan(ctx, state, game) {
           if (!lines.length) continue;
           const ok = lines.some((g) => {
             if (book.between(s.castle, o.fieldId, C.MISSION.transport) >= (g.slots || 1)) return false;
+            // its line would not reach this sender either, so nothing is left for it
+            if (g.maxDist != null && !(distOf(sXY, game.castleXY(o)) <= g.maxDist)) return false;
             if (netHold(g.carrier || 'carriage', sXY, game.castleXY(o), [], game, s.castle) <= 0) return false;
             const r = levels(g).remote;
             const floor = Math.max(r == null ? 0 : r, ownFloor(s, 'requestresources', k, (x) => x.type));
@@ -1021,7 +1071,7 @@ function transferPlan(ctx, state, game) {
 // city only `any` picked (receiverCeiling applies to it). Nearest first.
 function receiversFor(spec, here, others, game) {
   const hereXY = game.castleXY(here);
-  const dist = (xy) => (xy && hereXY ? Math.hypot(xy.x - hereXY.x, xy.y - hereXY.y) : Infinity);
+  const dist = (xy) => distOf(xy, hereXY);
   const byField = new Map(), unknown = [];
   const add = (r) => {
     const had = byField.get(r.fieldId);
@@ -1072,10 +1122,11 @@ function pushItems(g) {
   if (g.keep) {
     return Object.entries(g.keep).map(([key, kept]) => ({
       g, key, local: kept, remote: null, minBatch: g.minBatch, maxBatch: null, carrier: g.carrier, slots: g.slots,
+      maxDist: g.maxDist,
     }));
   }
   return [{ g, key: PUSH_GOALS[g.name] === 't' ? g.troop : g.type, local: g.local, remote: g.remote,
-    minBatch: g.minBatch, maxBatch: g.maxBatch, carrier: g.carrier, slots: g.slots }];
+    minBatch: g.minBatch, maxBatch: g.maxBatch, carrier: g.carrier, slots: g.slots, maxDist: g.maxDist }];
 }
 
 function pushPlan(ctx, state, game) {
@@ -1162,6 +1213,11 @@ function pushPlan(ctx, state, game) {
       const why = [...unknown], sentTo = [];
       for (const recv of list) {
         if (spare <= 0) break;
+        // /maxdist: a receiver farther than the line allows is passed over
+        if (item.maxDist != null && !(recv.dist <= item.maxDist)) {
+          why.push(`${recv.name} is ${tiles(recv.dist)} away, past this line's /maxdist:${item.maxDist}`);
+          continue;
+        }
         // Another account's city: what it holds cannot be read, so a line that
         // must not fill it past remoteAmount cannot send there.
         if (recv.foreign && item.remote != null) {

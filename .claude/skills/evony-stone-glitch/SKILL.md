@@ -175,3 +175,23 @@ Longer term the user wants to build a level-5000 hero by passing it between acco
   Lord15). Two stones, no medals, 18 minutes. The user renamed it OTTO by hand. Record what actually happens — how many attacks a capture
 took, whether the valley trick was needed, anything the server said — here and in
 `EVONY-RULES.md`, dated.
+
+## The direct move: capture, then persuade (2026-09-23)
+
+The user's own call when medals are plentiful: skip the stones and the third account
+entirely — A attacks B with the hero until B captures it, and **B persuades it**. One
+march loop, no stone, no C. `scripts/heromove-control.txt` + `heromove-a.txt` (sender) +
+`heromove-b.txt` (receiver) run it, and the receiver finishes the job the way the fleet
+needs it: `persuadehero`, then the old OTTO is renamed `{level}A{attack}` and the new hero
+becomes **OTTO**, so `traininghero OTTO` and `keepherobuff OTTO excalibur /below:1526`
+both pick it up without another edit.
+
+- **Leave the alliance first.** You cannot attack an alliance mate, so the SENDER quits
+  (`quitalliance confirm`) — 10% of its prestige, the user's choice of who pays it.
+- **Rename the hero by ID before it marches.** Lord16 held two `attkush` and three
+  `cptkush`; `attack <target> <name>` takes the FIRST match, so without unique names the
+  wrong hero marches. `renamehero <id> <name>` is the guard.
+- **Pick the receiving city for Feasting Hall room**, not distance: a full hall never
+  captures. Lord16's heroes went to towns with 5-9 free slots, 5-9 tiles away.
+- Live figures, three heroes from Lord16 698,118: **captured after 2, 5 and 8+ attacks**
+  with the hero + 1 scout against towns holding 60k-260k troops.

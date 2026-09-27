@@ -14,6 +14,129 @@ moves and piggyback (under-cut our offers, over-bid our bids) within minutes.
 **Read `EVONY-RULES.md` first** (§0 checklist, §3 market, §4 glitch). This skill says how
 to run a play; that file says what must never happen.
 
+## ALWAYS run the play through the Director's Trading tab
+
+**The user, 2026-09-25: *"Always trade through this trading tab please, its really useful
+for me to be able to see whats going on … document it in the trading skill so future
+agents always work through it."*** This is not a preference about tooling — the tab is how
+the user watches a play they are not driving themselves. Starting a play any other way
+leaves that screen showing a stale or wrong picture (on 2026-09-25 it still listed the
+previous day's stone sides and "Start is refused — 9 issues" while a gold play was
+actually running from the command line), and the user is then blind to their own fleet.
+
+`glitch-run.js` is a FALLBACK for when the tab genuinely cannot do the thing. If you use
+it, say so and reconcile the tab afterwards.
+
+### What the tab does that a hand-start does not
+
+- **It refuses to start a play that would lose resources.** `checkPlay` tests every account
+  on the cheap-selling / dear-buying side against what the consoles say about holiday
+  *right now*, and names each offender ("X is NOT on holiday, and the Selling side sells at
+  0.001 — only a holiday account may"). This is EVONY-RULES §4's hardest rule, enforced.
+- **It handles the 10-minute autorun gate** (`GATE_MS`/`GATE_PAD`, `REWATCH_MS`). Started by
+  hand on 2026-09-25 I restarted six sellers twice inside that window; they logged in and
+  ran NOTHING for nine minutes. The tab schedules around it instead.
+- **It sequences the sides** — buyers first, sellers `delaySec` (60s) later — so the bids
+  are on the book before anything is sold into them.
+- **Clean before / clean after**, the price ladder and the watchdog (no order for 12 min =
+  stopped → restart) all hang off the run.
+- It writes the control file **once**, atomically, with a version, instead of hand edits
+  racing a running play.
+
+### The sides are the sides of the PLAY, not who we are
+
+"Buying" and "Selling" mean which side of the market that account takes. In a **gold play
+the holiday banks are the Buying side** (they buy the resource dear and their gold comes to
+us); our accounts are Selling. In a **resource play it is the other way round**. Get this
+backwards and the check will usually catch it — but understand it, do not guess.
+An account left out of `sides` entirely is **not trading** (that is how Lord07 was
+held out on 2026-09-25 when the user wanted it by hand).
+
+### Driving it
+
+The endpoints are on the Director (:8712) and need a signed-in cookie. From the command
+line, mint one for the user rather than reusing the browser's:
+
+```js
+const A = require('./auth'), D = require('./db');
+const org = D.all('SELECT id FROM orgs LIMIT 1')[0];
+console.log(A.newSession('<userId from users table>', org.id, '127.0.0.1', 'claude-cli'));
+```
+
+then `curl -H "Cookie: otto_sid=$SID" …`:
+
+| Call | What it does |
+|---|---|
+| `GET /api/trading/setup` | the setup, the run, the control file **and `check.errors`** |
+| `POST /api/trading/setup` | `{sides, play:{res,price,capGold,caps…}}` — merges; `sides` replaces wholesale. **While a play runs, price/caps/runways go live to the control file with no restart**; changing `res` or moving an account between sides needs a Start |
+| `POST /api/trading/control` | the control file now (live), incl. the `holi` list — it refuses any lord the consoles do not report as on holiday |
+| `POST /api/trading/start` | checks, one control-file write, then the whole sequence |
+| `POST /api/trading/stop` | `end`, waits for the runs to drain, restores, cleans after |
+
+**Always `GET` first and read `check.errors` — zero before you Start.** Nine errors on
+2026-09-25 were simply a stale stored setup (still stone @ 0.001) while the control file
+had already moved to food @ 150; fixing the setup cleared all nine.
+
+### The holi list has its own guard
+
+`POST /api/trading/control` will not put a lord in the `holi` list unless that account's
+console reports it on holiday. Note the control file's parser expects **one**
+`if u == "…" … holi = 1` line (`HOLI_RE`); hand-writing a second line for extra accounts is
+not what it reads. Let the tab write that list.
+
+### Walking all four resources to the end, unattended
+
+**WHEN DRAINING THE BANKS RIGHT DOWN, RUN GOLD LAST** (the user, 2026-09-26: *"clear up
+stone food and wood and then repass through gold else we need to run through gold after wood
+again and after food again"*): **stone → food → wood → iron → gold**. Every resource pass
+begins with `canceltrade`, and cancelling a bank's resting BUY orders **refunds the gold**
+locked in them, so gold reappears after each one — sweep it once at the end instead of
+chasing it four times. A gold reading taken while bids are resting is meaningless: the
+banks read 0.77t and looked finished, then **8.64t** the moment the stone pass cancelled
+their books (our own gold unchanged, so it was their refund, not our payment).
+
+**THE DAY'S ORDER (the user, 2026-09-26): 1. gold  2. stone  3. food  4. wood  5. iron**
+— and **gold moves THROUGH STONE, never food**. A gold pass ends when the side receiving the
+carrier runs out of ROOM, and food caps at 950b a town (1t resets a city to 0) while stone
+caps at 2,000b. Carried by food on 2026-09-26 the pass jammed with Lord08 holding 364t of gold
+against 0.9t of food room; switched to stone the same banks had 97.8t of room for the ~5t the
+remaining 740t of gold needed. **The sides flip per step**: a GOLD pass has the banks BUYING
+the carrier, a RESOURCE pass has them SELLING it.
+
+**`trade-advance.js` + the Windows task "OTTObot Trade Advance"** (the user, 2026-09-25:
+*"if the food is done, move on to wood and then stone and then iron and a schedule task, so
+all of them get completed … so we actually move everything from holiday into the unholiday
+accounts"*). The task runs the script every 20 minutes; the script looks at the play that is
+on and starts the next resource when the current one is finished, in the order
+**food → wood → stone → iron**, then stops the play and cleans the reports.
+
+It drives the Trading tab's own endpoints, so every guard above still applies.
+
+**"Finished" means any of three things**, because only one of them is "the banks are empty"
+and all three mean *move on*:
+
+| | what it means |
+|---|---|
+| banks hold < 1t | nothing left to move |
+| our room < 1t | our towns are full — the rest resets to them at maintenance anyway |
+| nothing moved in 25 min | the book is stuck; not worth waiting with three resources queued |
+
+**Check our ROOM per resource before promising a clean sweep.** On 2026-09-25 the banks held
+food 47.7t / wood 33.8t / stone 82.9t / iron 25.8t, and our 120 towns had room for
+22.5t / 67.4t / 148.7t / 72.8t — so wood, stone and iron all fitted and **food could only
+half move**, because our own towns were already at 85.5t against a 900b-a-town cap.
+Room is `sum over towns of (cap - held)`, and the caps differ per resource.
+
+Two bugs worth not repeating, both found by running it once before trusting it:
+- **`view.control` IS the parsed control file** — `res` and `price` sit on it directly. Its
+  own `play` field is the control file's `play = "auto"` variable, something else entirely.
+- **Treat `starting` and `stopping` as running.** A start takes minutes (stop the old play,
+  wait out the autorun gate, sides 60 s apart); calling that "not running" makes the script
+  ask for a second start, which the Director refuses with *"a play is already starting"*.
+
+Log: `trade-advance.log`. To stop it early:
+`Unregister-ScheduledTask -TaskName 'OTTObot Trade Advance' -Confirm:$false`.
+
 ## What the user means
 
 | The user says | Holiday accounts | Normal accounts | Price |
@@ -45,7 +168,7 @@ must be updated whenever this changes — they decide the safety lines.
   keeps nearly everything in one city.
 - Normal, traded with: **a4 Lord04, a5 Lord05, a8 Lord08, a9 Lord09**.
 - Added 2026-09-19 as buyers (the user): **a10 Lord10, a11 Lord11, a12 Lord12,
-  a13 Lord13 (in-game `points`), a14 Lord14, a15 Lord15 (in-game `Lord15`)**. They are
+  a13 Lord13 (in-game all lower case), a14 Lord14, a15 Lord15 (in-game `Lord15`)**. They are
   short of gold, so the control file lets them keep buying down to **10m** gold (a
   `keepGold` override by lord name) — they gather cheap resources to sell later. Cities at
   the soft cap sit out and these carry on.
@@ -160,12 +283,18 @@ city's gold so a poor city can bootstrap; don't remove that.
    call), each has its own tested proxy, maintenance isn't due, no other session is
    mid-restart. **Every holiday-side account shows holiday in the Director** and is
    "Market glitch ready". If one isn't, don't start. Ask.
-2. Set `res`, `price` and check the limits in the control file.
-3. Snapshot first: `node glitch-run.js snap "before" --reset`.
-4. Start — the **buying side first**, so its bids are on the book before the selling:
+2. **Set it up in the Trading tab and Start from there** — see *ALWAYS run the play
+   through the Director's Trading tab* above. `POST /api/trading/setup` with the sides and
+   the play, `GET` it back until `check.errors` is empty, then `POST /api/trading/start`.
+   The tab orders the sides itself (buyers, then sellers 60 s later) and works around the
+   10-minute autorun gate. The user asked on 2026-09-25 that every play go this way.
+3. Snapshot first: `node glitch-run.js snap "before" --reset` (reading only, still useful).
+4. FALLBACK ONLY, when the tab cannot do it — the **buying side first**, so its bids are on
+   the book before the selling:
    `node glitch-run.js start --buy <ids> --buy-script <file> --sell <ids> --sell-script <file>`
    This restarts those consoles (it kills whatever they were running) with the script on
-   autorun; every city starts it after login.
+   autorun; every city starts it after login. It does NOT know about the autorun gate, and
+   it leaves the Trading tab showing a stale play — tell the user, and reconcile the tab.
 5. Watch: the Director's **Trading** tab (the play, 10-minute returns, 5-minute bars, each
    account's speed, sit-outs and connection — read off the console logs, refreshed every
    15 s; trade-monitor.js), or `node glitch-run.js flow` (orders per account over the last two minutes), and
@@ -319,6 +448,42 @@ Lord08, Lord09, Lord10, Lord11, Lord12, Lord13, Lord15 — plus 3–5 more buyer
 accounts the user brings in during the day (port them to the hub). The rotation's balance counts from the maintenance they go in before, not the
 day after. Accounts going in stock up first: food cap 800b for them vs 600b for the rest.
 
+## What really ends a gold pass: the banks run out of ROOM, not gold (2026-09-25)
+
+A gold play is limited by the **carrying capacity of the side that BUYS the resource**, and
+that limit arrives long before their gold does. Food is the usual carrier and a city's food
+may never pass 950b (at 1t it resets to 0), so each bank town can absorb only
+`950b - what it already holds`.
+
+The 2026-09-25 pass moved **2,180t of 3,092t (70%)** and then stopped dead with 913t still
+in the banks. Nothing was broken — the gold and the room had ended up in DIFFERENT accounts:
+
+| bank | gold left | food room | extractable |
+|---|---|---|---|
+| Lord08 | 423.9t | 0.02t | 2.3t |
+| Lord15 | 213.6t | 0.13t | 19.2t |
+| Lord09 | 121.7t | 0.05t | 7.0t |
+| Lord05 / Lord11 / Lord14 | 0.1t each | 12.2t | — |
+
+759t of gold sat in three banks whose every town was at the cap, while the banks with room
+had nothing to spend. Only 182t of the 913t could still move.
+
+**So: check gold AGAINST room per account, not in total.** A fleet total looks fine
+(17.5t of room, 913t of gold) and hides the mismatch completely. The early check that
+matters is `min(gold, room x price)` **per bank**, summed — that is the real prize.
+
+**The unblock is a round trip:** flip to a RESOURCE pass (the full banks SELL that food back
+at 0.001, our accounts buy it), which empties their towns, then flip back to gold. It costs
+nothing — the food is theirs, it returns to them at the next maintenance, and we keep it.
+Watch OUR room on the way back (110 towns x 900b against what we already hold).
+
+**And the price cannot rescue it:** 150 is the box's maximum, so you cannot buy more gold
+per unit of food. Room is the only lever.
+
+If the user would rather not do the round trip, the rest simply waits for maintenance: the
+banks' food resets to what they held at the last one, freeing every town, and their gold
+comes back too.
+
 ## Measuring
 
 - **Capture / return** = the share of the holiday side's trading that lands with our
@@ -341,6 +506,39 @@ day after. Accounts going in stock up first: food cap 800b for them vs 600b for 
   appends 5-minute buckets to `glitch-ledger.csv`; then add the run's events and anything
   new about the competition to `GLITCH-LEDGER.md` (its "What the data shows" and
   "Questions" sections). Over 100% return means other players traded into our orders too.
+
+## The Glitch log (Trading → Glitch log, 2026-09-23)
+
+The Director keeps its own record of every maintenance now, so a day's glitch can be read
+back weeks later: **what every town of every account held going in, what it held coming
+out, the difference per resource, and the runs of that day** — filtered by date, opened a
+day at a time. It is the answer to "did the put-back actually happen, and where didn't
+it", which order counts alone can never give.
+
+How to use it during a play:
+
+- **Before a run, look at yesterday.** A bank town whose wood came out flat two
+  maintenances running is a town not to sell dry — what leaves it is gone.
+- **The per-town cells read `in → out` with the difference.** On a holiday account the
+  "out" should be what it went into the *previous* maintenance with.
+- **`live` vs `cached` per town matters.** `live` means that account was logged in afresh
+  just before the record, so the figures are the server's; `cached` means they are the
+  console's, which lags badly on an account being traded hard (EVONY-RULES §3). Never
+  judge a town on a `cached` row.
+- The **runs** under each day carry the play, the price, the sides and when it started and
+  stopped — the ledger (`glitch-ledger.csv`) still holds the minute-by-minute capture, and
+  these two are read together.
+
+What it does to the fleet, and it is not nothing:
+
+- **It relogs every account ~10 minutes before the announced maintenance**, to make the
+  "before" figures honest. **That ends every city's running script and nothing puts it
+  back** (EVONY-RULES §4). In practice the play is over by then — the stand-down is 5
+  minutes later — but if a run is meant to go right up to the window, switch the relog off
+  in the tab (the record still happens, marked `cached`) or expect to restart the play.
+- It never relogs on a day nobody heard the announcement, and never inside the stand-down.
+- **Relog the fleet now** on that tab does the same thing on demand — same cost, and it
+  asks first. Use it before reporting any balance, which was already the rule.
 
 ## After maintenance
 
@@ -378,8 +576,122 @@ within ~10 s, no restart. Only once another account is verifiably logged in.
 Then leave them alone: an account that has just logged back in and is restarted a few
 seconds later answers `no reply to server.LoginResponse` and drops onto the 60s/120s ladder.
 
+### A "maintenance" in the middle of the day is usually THIS PLAY (2026-09-25)
+
+The play at full throttle can stall the server and stand the whole fleet down, hours after
+the real maintenance. On 2026-09-25 (real maintenance over at 09:19) every console lost its
+socket between **11:05:13 and 11:06:15** with
+
+    heartbeat failed (no reply in 30s, 20 market writes in flight) — cycling the socket
+
+the last frames sent being four `trade.newTrade`, and the scripts already saying
+`no reply to trade.newTrade (server is ignoring this account — rate limited)`. Too many
+market writes in flight → no reply → the heartbeat times out → the console closes its own
+socket. All 21 did it inside a minute, the Director read that as the server going down, and
+wrote a window with `"3 consoles lost the game socket at once"`. 21 accounts stopped for
+15 minutes and every running script stopped with them.
+
+**Before believing a mid-day maintenance, check the game port.** It is open in this case
+and closed in a real one:
+
+    node -e "require('./evony').getServerConfig('ss71').then(c=>{const s=require('net').connect(c.port||443,c.host);s.setTimeout(5000);s.on('connect',()=>{console.log('OPEN');s.destroy()});s.on('error',e=>console.log('closed',e.message));s.on('timeout',()=>{console.log('TIMEOUT');s.destroy()})})"
+
+Port open + a `maintWindow` whose `text` counts dropped sockets + `maintEnded:*` already
+dated today = a fake window. Release it the same way as a stale signal above
+(`maintOver:<server>` = `Date.now()`). Nothing in the Director cancels one for you.
+
+Going back in, **turn the throttle down** or it happens again on the next pass — it is the
+writes in flight per console that do it, not the number of accounts.
+
+## Did the script reach every town? (2026-09-23)
+
+The mechanism does guarantee it: `startAutoruns` (server.js) loops over **every** castle and
+starts the RUNSCRIPT in each, and `clean-then-buy.txt` / `clean-then-sell.txt` run
+`cleanreports` in the FIRST city only — every other town falls straight through to
+`call "glitch-res-buy.txt"` / `..-sell.txt`. A town is skipped only if it already has a run
+(impossible right after a console restart) or the script fails to parse.
+
+**Proving it afterwards is the hard part, and two obvious checks are traps:**
+
+- **`cities[].script` in `/api/session` is always `null`** for an autorun run — nothing
+  fills it. It read `0/10` on all 21 accounts while every one of them was visibly trading.
+  Don't use it.
+- **The `[autorun <city>]` prefix in `console-<id>.log` is the city NAME, and names repeat.**
+  Lord10 has nine towns called "New city"; counting distinct prefixes said "2 towns" for
+  an account whose ten were all trading. It is a floor, never a count.
+- And per EVONY-RULES §4, **read the log as utf8, not latin1** — an em-dash or `·` in the
+  regex silently matches nothing (this cost a whole reading of "0 orders everywhere").
+
+What does work, until the log carries coordinates: **orders placed per account per 2
+minutes** from the `N of 10 placed` lines. A town that has its ten offers resting logs
+nothing at all (the `full` branch, `sleep 0.3`), so a quiet account means "its book is full
+and waiting for fills" or "it is out of the resource" — check the snapshot's resource
+column to tell those apart, never the silence.
+
+## The small accounts run out of resource long before the gold cap (2026-09-23)
+
+On the 09:30 gold pass, the six new accounts (Lord01, Lord17, Lord18, Lord19, Lord20,
+Lord21) held only ~0.1t of stone each — about 10b a town. At 150 that is ~90 orders a
+town, ~1.35t of gold a town, and they were **dry inside seven minutes**: Lord01 14.2t →
+29.2t gold with stone 0.106t → 0.005t, Lord17 14.7t → 30.5t, Lord18 15.1t → 29.9t, Lord21
+14.7t → 29.3t, all four then silent with nothing left to sell.
+
+So a gold cap of 20t **a town** (= 200t an account) is not a plan for an account that holds
+no resource. Sizing rule: an account can only take in
+`(its resource − keepRes) / 99,999,999 × price` of gold. To fill the poor accounts, give
+them resource first (a cheap resource play out of the banks) and run the gold pass after —
+otherwise the whole bank balance lands on the few rich sellers that already have the stone.
+
 ## Keep it true
 
 When a play teaches something new — a capture figure, a price that worked or didn't, a
 limit, a failure — add it to `EVONY-RULES.md` (dated, how observed) and, if it changes how
 to run a play, to this skill.
+
+## Turning the play around (2026-09-24)
+
+When the direction reverses — the banks stop selling a resource and start buying one —
+**the side that is about to BUY must cancel its old offers before it can do anything**.
+Its ten slots still hold the asks from the play before, `free = cap - tradesArray.length`
+is 0, and it places nothing at all while its old cheap asks sit on the book for rivals.
+The control file's per-offer cancel loop does not clear them.
+
+So the reversal is: edit the control file in ONE write (res, price, prevRes, the limits),
+then restart
+
+- the new BUYING side onto `cancel-clean-then-buy.txt` — bare `canceltrade`, then
+  `cleanreports trade` in the first city, then `glitch-res-buy.txt`;
+- the new SELLING side onto `clean-then-sell.txt` (or `cancel-then-sell.txt` if it is
+  coming off a play where it was the buyer).
+
+`cleanreports trade` — not bare `cleanreports` — while a play is live: trade reports clean
+fine beside the trading, army ones silence the whole account for a couple of minutes
+(EVONY-RULES.md §7). Sweep army and other when the fleet is idle.
+
+**Debugging a side that does nothing:** the control file is `@call`ed, and `@` means silent,
+so nothing it says — holds, cancels, refusals — reaches the log. Put the echo in the
+calling script instead (`glitch-res-buy.txt` keeps a `DBG` line for it). A loop that comes
+round once a MINUTE rather than every second or two is sitting in the control file's
+60-second HOLD, silently.
+
+## Getting back into the play after a hand-run (2026-09-24)
+
+A script run by hand in a city **ends that city's autorun run** — one run per city — and
+nothing puts it back, so any hand-run stops that account trading until its console is
+restarted. The console's Script tab now has a **Quick… dropdown** beside Run for exactly
+this: picking **"Turn trading back on"** starts `glitch-res-buy.txt` / `-sell.txt` again in
+every city that has no run of its own, in one click and with no restart.
+
+The list is `scripts/quick-scripts.txt`, read on every ask, so entries are added by editing
+that file — `Label | script file | all`, where `{side}` in the file name becomes the side
+this account is on in the Trading tab's setup. The code is `quick-scripts.js`
+(`test-quick-scripts.js`), served by `/api/script/quick`; **a console has it only after it
+restarts**.
+
+## A seller that places nothing and says nothing (2026-09-24)
+
+Stock in the town, no `SITOUT` line, and the log only shows `sleep 0.3` coming round: the
+console is on a **stale trade list** and thinks all ten slots are taken. A `canceltrade`
+does not clear it — the list is the console's cache and only a fresh login re-seeds it.
+**Restart that account's console**, then confirm with `glitch-run.js flow` that it is
+placing. It can happen to an account that was *already* restarted once (EVONY-RULES.md §4).

@@ -2996,6 +2996,24 @@ class Engine {
     // refused used to leave the city with no mayor at all. A refusal backs off
     // on the retry ladder rather than being asked again every slice.
     let newMayor = false, newMayorName = null;
+    // An ok the server never acted on (game.js mayorTook): the promotion sent
+    // last slice, still not showing on the roster 20 s on, counts as refused, so
+    // the retry ladder holds it back instead of sending it every minute forever
+    // (Lord24's city 3, 2026-09-27).
+    const asked = cityState.mayorAsked;
+    if (asked) {
+      const h = (castle.heros || []).find((x) => x.id === asked.heroId);
+      if (h && Number(h.status) === 1) {
+        delete cityState.mayorAsked;
+        recordResult(cityState, `mayor:${asked.heroId}`, true);
+      } else if (!h || Number(h.status) !== 0) delete cityState.mayorAsked;   // gone or out since: nothing to judge
+      else if (Date.now() - asked.at > 20000) {
+        delete cityState.mayorAsked;
+        recordResult(cityState, `mayor:${asked.heroId}`, false,
+          `the server answered ok but ${asked.name || 'the hero'} never became mayor — it ignored the appointment`);
+        report.acted.push(`appoint ${asked.name || asked.heroId} as mayor: the server answered ok but nothing changed — held back on the retry ladder`);
+      }
+    }
     if (report.mayor && report.mayor.actions) {
       for (const a of report.mayor.actions) {
         const mkey = `mayor:${a.hero.id}`;
@@ -3003,8 +3021,12 @@ class Engine {
         if (this.dryRun) { report.acted.push(`[plan] ${a.label}`); continue; }
         try {
           const r = await g.promoteToChief(g.castleId(castle), a.hero.id);
-          if (r.ok === 1) { newMayor = true; newMayorName = a.hero.name || null; }
-          recordResult(cityState, mkey, r.ok === 1, r.errorMsg || ('ok=' + r.ok));
+          if (r.ok === 1) {
+            newMayor = true; newMayorName = a.hero.name || null;
+            // cleared as a success only once the roster shows it (above), so a
+            // run of ignored oks climbs the ladder rather than resetting it
+            cityState.mayorAsked = { heroId: a.hero.id, name: a.hero.name || null, at: Date.now() };
+          } else recordResult(cityState, mkey, false, r.errorMsg || ('ok=' + r.ok));
           report.acted.push(`${a.label} -> ${r.ok === 1 ? 'ok' : (r.errorMsg || 'ok=' + r.ok)}`);
         } catch (e) { report.acted.push(`${a.label} -> ${e.message}`); }
       }

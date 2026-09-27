@@ -379,6 +379,205 @@ The fastest way to build a hero and the main source of amulets:
 With about 50 accounts attacking like this, a **level 1500–2000 hero takes weeks to
 months**. Hero XP needed for the next level is 100 × level².
 
+## The farm, laid out: defender 704,119 and twenty launchpads (2026-09-25)
+
+The plan above says *what* the farm is. This says **where**, worked out against the map
+scan of 2026-09-24 17:02-19:15 (640k tiles in `map_cache`) and the client's own research
+and building tables. Nothing here has been moved yet.
+
+### The numbers it is built on
+
+All from `WarReport.swf` and EVONY-RULES.md §5b, and **confirmed live 2026-09-25 06:49** by
+`travelinfo 704,119 cp:7500` run from Lord07's 700,110 (9.85 tiles out): attack
+1h:22m:04, reinforce 13m:41 at Relief Station ×6, carrying 1,125,000 / −4,004,614 / 270,064.
+Every figure below matched to the second. Every account has all 20 researches at L10.
+
+| | |
+|---|---|
+| catapult attack speed | 80 x 1.5 (Horseback L10 is +50%, not +100%) = 120 -> **8m20s a tile** |
+| catapult reinforce speed | x6 (Relief Station L10) = 720 -> **1m23s a tile** |
+| march range | **no limit** — the food/carry figure is a client-window rule the server does not enforce (proved live, below) |
+| marches out of one city | **10** (Rally Spot L10) |
+| heroes in one city | **10** (Feasting Hall L10) |
+| loyalty cost of a wave | **none** — a wave only takes loyalty when the attacker *wins* (the user) |
+
+So a launchpad at distance *d* lands **10 x 3600 / (d x 500)** waves an hour, and because a
+wave dies at the target, the slot frees on landing. **Distance is the throughput**: a tile at
+d=1 is worth 72 waves/hour, at d=2 thirty-six, at d=4 eighteen. That is what the site was
+chosen on, not on centrality.
+
+### Why 704,119
+
+About half of every neighbourhood in this hub is valley, and no city can stand on a valley.
+Nowhere within x 670-750 / y 90-165 has more than 16 of its 24 nearest tiles usable. Ranking
+every candidate by the throughput of its best twenty launchpads:
+
+| tile | owner today | ring 1 | within 2.16 (cp range) | within 2.9 | waves/hour | swaps |
+|---|---|---|---|---|---|---|
+| **704,119** | Lord12 | 6/8 | 10/12 | 16/24 | **803** | 13 |
+| 705,119 | Lord10 | 7/8 | 10/12 | 14/24 | 805 | 14 |
+| 704,120 | Lord12 | 7/8 | 10/12 | 14/24 | 789 | 13 |
+| 702,119 | Lord09 | 3/8 | 6/12 | 15/24 | 686 | 11 |
+| 701,112 (middle of today's seven `main` cities) | — | — | 8/12 | 9/24 | far lower | — |
+
+704,119 and 705,119 are a dead heat; 704,119 takes it on one fewer swap, more tiles inside
+pure-catapult range, and a shorter mean reinforcement leg (9.2 tiles to all 210 fleet cities).
+**Today's seven cities called `main` sit around (701,112), one of the worst spots in the hub** —
+they move south, the defender does not move north.
+
+The hub can only grow **east, west and south**: 6-22 tiles out, the northern sector holds 57
+foreign cities against 2-3 in each of the others.
+
+### The twenty launchpads
+
+803 waves/hour = **19,300 a day** with every rally slot busy — far past what the fleet will
+actually produce, which is the point: the ring should never be the limit.
+
+| # | account | launchpad | tiles | one-way | waves/h | on it today | action |
+|---|---|---|---|---|---|---|---|
+| 1 | Lord09 (a9) | 703,119 | 1 | 8m20s | 72 | Lord09 | stays |
+| 2 | Lord12 (a12) | 704,120 | 1 | 8m20s | 72 | Lord12 | stays |
+| 3 | Lord10 (a10) | 705,119 | 1 | 8m20s | 72 | Lord10 | stays |
+| 4 | Lord02 (a2) | 704,118 | 1 | 8m20s | 72 | Lord09 | **swap** — Lord09 moves out |
+| 5 | Lord11 (a11) | 705,120 | 1.41 | 11m45s | 51 | Lord11 | stays |
+| 6 | Lord04 (a4) | 705,118 | 1.41 | 11m45s | 51 | Lord09 | **swap** — Lord09 moves out |
+| 7 | Lord08 (a8) | 704,117 | 2 | 16m40s | 36 | Lord08 | stays |
+| 8 | Lord06 (a6) | 702,119 | 2 | 16m40s | 36 | Lord09 | **swap** — Lord09 moves out |
+| 9 | Lord07 (a7) | 704,121 | 2 | 16m40s | 36 | Lord11 | **swap** — Lord11 moves out |
+| 10 | Lord13 (a13) | 706,119 | 2 | 16m40s | 36 | Lord12 | **swap** — Lord12 moves out |
+| 11 | Lord14 (a14) | 702,120 | 2.24 | 18m40s | 32 | Lord11 | **swap** — Lord11 moves out |
+| 12 | Lord15 (a15) | 703,121 | 2.24 | 18m40s | 32 | Lord12 | **swap** — Lord12 moves out |
+| 13 | Lord16 (a16) | 705,121 | 2.24 | 18m40s | 32 | Lord12 | **swap** — Lord12 moves out |
+| 14 | Lord17 (a17) | 706,120 | 2.24 | 18m40s | 32 | Lord11 | **swap** — Lord11 moves out |
+| 15 | Lord03 (a3) | 702,117 | 2.83 | 23m35s | 25 | Lord03 | stays |
+| 16 | Lord18 (a18) | 706,117 | 2.83 | 23m35s | 25 | Lord12 | **swap** — Lord12 moves out |
+| 17 | Lord19 (a19) | 707,119 | 3 | 25m00s | 24 | Lord12 | **swap** — Lord12 moves out |
+| 18 | Lord05 (a5) | 705,116 | 3.16 | 26m20s | 23 | Lord05 | stays |
+| 19 | Lord20 (a20) | 701,118 | 3.16 | 26m20s | 23 | Lord03 | **swap** — Lord03 moves out |
+| 20 | Lord21 (a21) | 701,121 | 3.61 | 30m05s | 20 | Lord12 | **swap** — Lord12 moves out |
+
+Twelve more usable tiles sit at 3.6-4.5 tiles for the next accounts, and 52 within 6.
+
+### The fourteen swaps
+
+Every tile in the zone is already ours, so **no captures and no fighting** — these are
+internal swaps. Only four accounts give ground, because they are the ones who clustered
+there: Lord12 loses 7 cities from the zone, Lord09 3, Lord11 3, Lord03 1.
+
+Each one runs through the **`evony-city-swap` skill**: the taker loops on the tile first, the
+holder moves off it second, and both accounts are relogged before the next pair starts.
+Destinations below are free tiles 6-13 tiles out (so still one relief-speed hop from the
+launchpad) — **re-probe each one on the day** with `scripts/teleport-probe.txt`: the map
+cache cannot see who owns a flat.
+
+| taker | tile taken | holder today | holder sends that city out to | taker moves in this city |
+|---|---|---|---|---|
+| **Lord01 (a1) — the defender** | **704,119** | Lord12 | 710,122 (war, NPC 5) | 704,127 (its closest) |
+| Lord02 (a2) | 704,118 | Lord09 | 711,121 (adv, flat) | 694,122 (d10.4, its furthest) |
+| Lord04 (a4) | 705,118 | Lord09 | 700,126 (adv, flat) | 692,109 (d15.6, its furthest) |
+| Lord06 (a6) | 702,119 | Lord09 | 703,127 (adv, flat) | 708,109 (d10.8, its furthest) |
+| Lord07 (a7) | 704,121 | Lord11 | 702,127 (adv, flat) | 179,701 (d783.8, its furthest) |
+| Lord13 (a13) | 706,119 | Lord12 | 706,127 (adv, flat) | 716,103 (d20, its furthest) |
+| Lord14 (a14) | 702,120 | Lord11 | 701,127 (adv, flat) | 695,123 (d9.8, its furthest) |
+| Lord15 (a15) | 703,121 | Lord12 | 707,127 (adv, flat) | 716,119 (d12, its furthest) |
+| Lord16 (a16) | 705,121 | Lord12 | 706,128 (adv, flat) | 689,104 (d21.2, its furthest) |
+| Lord17 (a17) | 706,120 | Lord11 | 701,128 (war, NPC 5) | 713,108 (d14.2, its furthest) |
+| Lord18 (a18) | 706,117 | Lord12 | 697,126 (adv, flat) | 691,119 (d13, its furthest) |
+| Lord19 (a19) | 707,119 | Lord12 | 714,118 (adv, flat) | 715,108 (d15.6, its furthest) |
+| Lord20 (a20) | 701,118 | Lord03 | 713,124 (adv, flat) | 687,129 (d19.7, its furthest) |
+| Lord21 (a21) | 701,121 | Lord12 | 714,122 (adv, flat) | 691,124 (d13.9, its furthest) |
+
+### Which city is called `main`
+
+The fleet prepend carries one line, `keeptroops main cp:100k`, and it resolves per account.
+A city name is looked up with `.find`, so **two cities called `main` in one account means the
+goal silently takes whichever comes first** — no warning, no error. So exactly one `main` per
+account, and it is the launchpad. Rename the old one *before* naming the new one.
+
+| account | its `main` becomes | called `main` today | action |
+|---|---|---|---|
+| Lord02 (a2) | 704,118 | — | name 704,118 `main` |
+| Lord03 (a3) | 702,117 | 703,115 | rename 703,115 first, then name 702,117 `main` |
+| Lord04 (a4) | 705,118 | 702,110 | rename 702,110 first, then name 705,118 `main` |
+| Lord05 (a5) | 705,116 | 702,112 | rename 702,112 first, then name 705,116 `main` |
+| Lord06 (a6) | 702,119 | — | name 702,119 `main` |
+| Lord07 (a7) | 704,121 | 698,110 | rename 698,110 first, then name 704,121 `main` |
+| Lord08 (a8) | 704,117 | 701,111 | rename 701,111 first, then name 704,117 `main` |
+| Lord09 (a9) | 703,119 | 704,113 | rename 704,113 first, then name 703,119 `main` |
+| Lord10 (a10) | 705,119 | — | name 705,119 `main` |
+| Lord11 (a11) | 705,120 | — | name 705,120 `main` |
+| Lord12 (a12) | 704,120 | — | name 704,120 `main` |
+| Lord13 (a13) | 706,119 | — | name 706,119 `main` |
+| Lord14 (a14) | 702,120 | — | name 702,120 `main` |
+| Lord15 (a15) | 703,121 | — | name 703,121 `main` |
+| Lord16 (a16) | 705,121 | 701,113 | rename 701,113 first, then name 705,121 `main` |
+| Lord17 (a17) | 706,120 | — | name 706,120 `main` |
+| Lord18 (a18) | 706,117 | — | name 706,117 `main` |
+| Lord19 (a19) | 707,119 | — | name 707,119 `main` |
+| Lord20 (a20) | 701,118 | — | name 701,118 `main` |
+| Lord21 (a21) | 701,121 | — | name 701,121 `main` |
+
+Give every other city of an account a unique name too (`f1`...`f9`): `teleport ... from <city>`
+breaks on duplicates, which is how Lord14's five "Eldian" cities caused trouble in §5e.
+
+### Wave size
+
+Amulets come per attack, so **amulets an hour = waves an hour**, which the rally slots cap.
+Wave *size* does not change that — it only changes how many catapults each amulet costs. Hero
+XP scales with what is killed, so it tracks catapults an hour, not wave count. The two do not
+fight: run every slot, and size the wave to whatever production sustains.
+
+The self-balancing rule is **wave = stock / 10** (one per rally slot), floored at a few
+hundred and capped at 100,000 (the Rally Spot march cap). Supply short -> smaller waves, more
+of them, more amulets per catapult; supply long -> bigger waves and nothing idles. That is the
+user's "catapults/20" instinct with the divisor the game actually sets.
+
+### Food does not limit the ring at all — proved live
+
+I had this wrong twice over, and the user's own send settled it (2026-09-25 07:08, Lord09):
+**10,000 catapults, 698,121 → 699,111, 10.05 tiles, no transporters, and the server said
+`ok`.** `travelinfo` for that same march reads `carrying 1,500,000 / −5,479,081 / 336,819` —
+a shortfall of five and a half million food — and it went anyway, army 1930754, landing
+08:31:54.016.
+
+So the carry figure is a rule of the **client's march window**, not of the server, and
+OTTObot never applies it to an attack (it only weighs food when the march is carrying
+resources). **No transporter tax, and the launchpad ring is not constrained by food.** The
+earlier table here said otherwise; ignore it.
+
+One thing is still open: whether the army **arrives whole**. Nothing suggests a starved march
+loses troops — most likely the carry figure only ever governed how much loot an army can haul
+home, which an attack does not do. The cheapest check is to recall that march and count what
+comes back.
+
+What food *does* still bound is a **transport**, which really is carrying something.
+
+### The march time in the send log is not to be trusted
+
+The same send logged `attack 699,111 any cp:10k · march 7537.4s` — 750 s a tile, as if the
+city had no Horseback Riding. `travelinfo` said **1h:23m:45** and the server landed it at
+**1h 23m 44s**: 500 s a tile, catapult speed 120, exactly the model this plan is built on.
+
+The log line is the wrong one. `script-cmd-deploy.js:687` hands `marchTimeMs` the **login's**
+`marchSkillParam` (0 on this console) and lets it stand in for the drive speed too, instead of
+asking the city's own `army.getTroopParam`. `travelinfo` and `timed-march.js` both ask the
+city, and both are right, so **timed waves are unaffected** — but never plan a wave off the
+untimed log line. It is worth fixing before the farm runs, since every number in this section
+is a march time.
+
+### Order of work
+
+1. ~~`travelinfo 704,119 cp:7500`~~ — **done 2026-09-25, every figure confirmed.**
+2. Build the defence on an **Lord01** city where it stands now (it is in TiTANs, not
+   We3Kings, and **you cannot attack your own alliance**), and run a few hundred waves at it
+   from the nearest existing `main`. Measure: amulets per attack, XP per defence, whether the
+   defence is truly lossless, and that loyalty really does not move.
+3. Keep that city's **feasting hall full** for as long as the farm runs — one vacancy and our
+   own heroes start being captured.
+4. Only then the fourteen swaps, one pair at a time.
+5. Rename, then point the prepend at the new `main` cities.
+
+
 ## The dream
 
 Where the fleet is heading (the user, 2026-09-18):

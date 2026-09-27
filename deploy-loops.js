@@ -80,7 +80,12 @@ const msOf = (v) => { const n = Number(v); return !Number.isFinite(n) || n <= 0 
 const posOf = (s) => { const m = String(s == null ? '' : s).match(/\((\d+)\s*,\s*(\d+)\)\s*$/); return m ? { x: +m[1], y: +m[2] } : null; };
 const samePlace = (a, b) => !!a && !!b && a.x === b.x && a.y === b.y;
 const outbound = (a) => Number(a.direction) === 1;
-const attacksTo = (g, fid) => D.armiesOf(g).filter((a) => outbound(a) && Number(a.missionType) === C.MISSION.attack && Number(a.targetFieldId) === fid);
+// A task's own attacks on the tile: the ones that left ITS city. Not the whole
+// account's — a lost wave in one city must never recall another city's hits on the
+// same target (the user, 2026-09-23; ally-drain.txt had it happen live).
+const attacksTo = (g, fid, homeFieldId) => D.armiesOf(g).filter((a) => outbound(a)
+  && Number(a.missionType) === C.MISSION.attack && Number(a.targetFieldId) === fid
+  && (homeFieldId === undefined || Number(a.startFieldId) === Number(homeFieldId)));
 
 // ------------------------------------------------------------------ reports
 
@@ -221,6 +226,7 @@ class Task {
     this.cityName = castle.name;
     this.target = a.target;
     this.fieldId = C.coordsToFieldId(a.target.x, a.target.y);
+    this.homeFieldId = Number(castle.fieldId);   // only this city's marches are this task's
     this.started = Date.now();
     this.since = game.now();          // server clock: reports from then on are this task's
     this.baseline = new Set();        // report ids already there when it began
@@ -392,23 +398,23 @@ async function loyaltyBody(t) {
     if (t.stats.sent >= t.maxWaves) { t.end(`${t.maxWaves} waves sent — the most this line sends (write /waves=N on it for more)`); break; }
     if (Date.now() - t.started >= t.maxMs) { t.end(`it ran ${dur(t.maxMs)} — the longest this line runs (write /hours=N on it for longer)`); break; }
     if (t.lost) {
-      await t.recall(g, attacksTo(g, t.fieldId), 'a wave lost its battle there');
-      t.end('a wave lost its battle, so every attack on its way there was recalled');
+      await t.recall(g, attacksTo(g, t.fieldId, t.homeFieldId), 'a wave lost its battle there');
+      t.end(`a wave lost its battle, so ${t.cityName}'s attacks on their way there were recalled (no other city's)`);
       break;
     }
     if (t.taken) {
-      const left = attacksTo(g, t.fieldId).length;
+      const left = attacksTo(g, t.fieldId, t.homeFieldId).length;
       t.end(`${t.where} was taken${left ? ` — the ${left} wave(s) still on the way are left to land` : ''}`);
       break;
     }
     if (!capture && t.loyalty !== null && t.loyalty <= LOYALTY_FLOOR) {
-      await t.recall(g, attacksTo(g, t.fieldId), `loyalty is down to ${t.loyalty}`);
+      await t.recall(g, attacksTo(g, t.fieldId, t.homeFieldId), `loyalty is down to ${t.loyalty}`);
       t.end(`loyalty is ${t.loyalty}`);
       break;
     }
 
     // loyaltyattack holds back while the waves already out should take it to 7
-    const out = attacksTo(g, t.fieldId).length;
+    const out = attacksTo(g, t.fieldId, t.homeFieldId).length;
     const avg = t.drops.length ? t.drops.reduce((s, x) => s + x, 0) / t.drops.length : 0;
     const expect = capture || t.loyalty === null ? null : t.loyalty + avg * out;
     const hold = expect !== null && avg < 0 && expect <= LOYALTY_FLOOR;
@@ -563,19 +569,24 @@ async function start(a, env) {
       : `a wave of ${troops} at ${where} every ${Math.round(TIMING.waveMs / 1000)}s with an idle SpamHero, until `
         + (kind === 'capture' ? 'the city is taken' : `its loyalty is ${LOYALTY_FLOOR} or lower`)
         + ` (${fmt(a.maxWaves || LIMITS.waves)} waves or ${a.maxHours || LIMITS.hours} h at most, and ${LIMITS.unreadable} reports in a row that`
-        + ' cannot be read stop it); a battle lost there recalls every attack of yours on its way to it');
+        + ` cannot be read stop it); a battle lost there recalls ${castle.name}'s attacks on their way to it (no other city's)`);
     lines.push(`SpamHeroes: ${sr.text} — free now: ${free.map((h) => h.name).join(', ') || 'none'}`);
   }
 
   if (kind === 'setguard') {
-    const list = attacksTo(game, fid);
-    if (!list.length) throw new Error(`no attack of yours is on its way to ${where} — send it (and a scout after it) first`);
+    // this city's attacks only: setguard in one city never watches (or recalls) another's
+    const list = attacksTo(game, fid, castle.fieldId);
+    if (!list.length) {
+      const others = attacksTo(game, fid).length;
+      throw new Error(`no attack from ${castle.name} is on its way to ${where} — send it (and a scout after it) first`
+        + (others ? ` (${others} attack(s) of other cities are on their way there; setguard watches only this city's)` : ''));
+    }
     const TM = require('./timed-march');
     const lands = list.map((x) => TM.landingOf(game, x)).filter((x) => x !== null);
     if (lands.length !== list.length) throw new Error(`the server gives no landing time for an attack on its way to ${where}, so it cannot be watched`);
     const landing = Math.min(...lands);
     const starts = list.map((x) => msOf(x.startTime)).filter((x) => x !== null);
-    lines.push(`watching ${list.length} attack(s) on their way to ${where} (the first lands ${clock(landing)}): recalled if the scouts die,`
+    lines.push(`watching ${castle.name}'s ${list.length} attack(s) on their way to ${where} (the first lands ${clock(landing)}): recalled if the scouts die,`
       + ` bring no report by then, or see ${limitText(a.limits)}`);
     if (env.dryRun) return { ok: true, lines: [...lines, '[dry run] not started'] };
     const need = needSession(env, lines);

@@ -167,6 +167,10 @@
   #kickBar.over { background:#7a5a10; border-bottom-color:#4a3608; font-weight:normal; }
   #kickBar button { background:#fff; color:#8a1c1c; border:0; border-radius:4px; padding:3px 10px; font-weight:bold; cursor:pointer; }
   #kickBar .why { font-weight:normal; opacity:.9; }
+  #kickBarText { flex:1; }
+  #kickBarClose { background:transparent !important; color:inherit !important; font-weight:bold; font-size:var(--fs-lg);
+                  padding:0 4px !important; line-height:1; opacity:.8; }
+  #kickBarClose:hover { opacity:1; }
 
   /* ── city tabs ────────────────────────────────────────────────────────── */
   /* an account can hold 10+ cities: the strip wraps onto a second line rather
@@ -355,6 +359,8 @@
   body.mapdrag { user-select:none; }
   .mt.sx { border-left:1px dashed var(--dim); }     /* the world edge: x 799 runs on into 0 */
   .mt.sy { border-top:1px dashed var(--dim); }
+  .mt.zx { border-left:1px solid #3d3dbb; }         /* a state's edge: every 200 tiles */
+  .mt.zy { border-top:1px solid #3d3dbb; }
   .mpan { display:inline-flex; gap:1px; }
   .mpan button { padding:2px 7px; }
   .legend { margin-top:6px; font-size:var(--fs-xs); color:var(--dim); }
@@ -584,7 +590,8 @@
 <!-- "Another user has logged into your account" — the game's own words. The server
      sends server.ConnectionLost and the console stands down; this says so. -->
 <div id="kickBar" hidden><span id="kickBarText"></span>
-  <button id="kickBarTake" type="button" title="Log back in now and take the account back from whoever has it">Take it back now</button></div>
+  <button id="kickBarTake" type="button" title="Log back in now and take the account back from whoever has it">Take it back now</button>
+  <button id="kickBarClose" type="button" title="Clear this banner">✕</button></div>
 
 <div id="maintBar" hidden>
   <b>SERVER MAINTENANCE</b>
@@ -618,7 +625,7 @@
         <div class="gatestate" id="gateState"></div>
         <div class="ctl">
           <div class="cl">War Town Mode</div>
-          <select id="warSel" title="Overrides config wartown: for this city">
+          <select id="warSel" title="Overrides config wartown: for this city. On: nothing MARCHES OUT — no transfer, npc or valley run leaves it, and its marching armies are recalled once. It still receives: other cities may reinforce it and its own requests still pull. Hero may move: the training hero comes and goes. Hero stays: it stays in the city it has landed in. Off beats a config wartown: line in the goals; Auto hands the city back to them.">
             <option value="auto">Auto</option>
             <option value="0">Off</option>
             <option value="1">On — hero may move</option>
@@ -631,6 +638,7 @@
       <div class="bar">
         <select id="acctSel" title="This city's own text, or one the whole account shares: the new-city template, the goals every city runs first (prepend) and last (append), the new-city script, the goal sets a script loads"></select>
         <button id="clearScript" title="A script changed the goals this city is running. Clear them to go back to the saved goals" hidden>Clear script goals</button>
+        <select id="quickSel" title="One-click scripts (scripts/quick-scripts.txt). Running a script by hand ends that city's autorun run, so after any hand-run this account has stopped trading — Turn trading back on starts it again in every city, with no console restart."></select>
         <select id="loadSel" title="This city's script loadouts — every city has its own ten; the first line names one"></select>
         <button id="apply">Apply</button>
         <button id="save">Save</button>
@@ -719,7 +727,7 @@
       <div class="well" id="chatWell"><div class="chatbody" id="chatBody"><div class="empty">No messages yet.</div></div></div>
       <div class="sendbar">
         <span id="pmTo" hidden></span>
-        <input id="chatInput" placeholder="message…" aria-label="Message" title="Enter sends it as chat. A line that starts with \ runs an in-line command in the open city instead (\who Bob) — its output goes to Output">
+        <input id="chatInput" placeholder="message…" aria-label="Message" title="Enter sends it as chat. /Name message whispers Name. A line that starts with \ runs an in-line command in the open city instead (\who Bob) — its output goes to Output">
         <button id="chatSend">Send</button>
       </div>
     </div>
@@ -807,6 +815,26 @@
     </div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button value="use" id="iuGo">Apply</button>
+      <button value="cancel" autofocus>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Buildings tab: the + on "Actively building" spends speed-up items on that job -->
+<dialog id="bsDlg" aria-labelledby="bsCap">
+  <form method="dialog" id="bsForm" novalidate>
+    <b id="bsCap">Speed up <span id="bsName"></span></b>
+    <div id="bsInfo" style="color:var(--dim);font-size:var(--fs-sm);margin:5px 0 4px"></div>
+    <div id="bsList" role="group" aria-label="Speed-up items held"
+         style="max-height:260px;overflow:auto;border:1px solid var(--grid);padding:4px;min-width:340px"></div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <label for="bsCount" style="font-size:var(--fs-sm);color:var(--dim)">Use</label>
+      <input id="bsCount" type="number" min="1" value="1" style="width:78px">
+      <span class="muted" style="font-size:var(--fs-sm)" id="bsNote"></span>
+    </div>
+    <div style="color:var(--dim);font-size:var(--fs-sm);margin-top:6px;max-width:360px">Only items you hold are used, never coins. It stops when the building is done.</div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button value="use" id="bsGo">Speed up</button>
       <button value="cancel" autofocus>Cancel</button>
     </div>
   </form>
@@ -928,7 +956,7 @@ function claimTabName(accountId) {
 function $(id) { return document.getElementById(id); }
 const S = {
   city: null, edit: 'goals', mon: store.get('evony_mon', 'general'), logs: 'activity', chat: 'alliance',
-  cityData: null, cities: [], head: null, logFind: '', logCity: '', pmTo: '',
+  cityData: null, cities: [], head: null, logFind: '', logCity: '', pmTo: '', pmSent: [],
   armiesAll: false, incomingAll: false,
 };
 
@@ -1136,7 +1164,7 @@ setInterval(paintConn, 1000);
 // Somebody else logged into this account. While the console is standing down the bar is
 // red and says how long; for an hour afterwards it stays up in amber, because "the bot
 // did nothing for half an hour" needs its reason on the screen, not in the log.
-const KICK = { at: 0, until: 0, ip: null, step: 0, mins: null };
+const KICK = { at: 0, until: 0, ip: null, step: 0, mins: null, dismissedAt: 0 };
 function kickAgo(ms) {
   const m = Math.round((Date.now() - ms) / 60000);
   return m < 1 ? 'just now' : m === 1 ? 'a minute ago' : m < 60 ? `${m} minutes ago` : `${Math.round(m / 60)}h ago`;
@@ -1153,6 +1181,8 @@ function paintKick(h) {
   const held = KICK.until > Date.now();
   // gone quiet an hour after the last one: the account is plainly ours again
   if (!KICK.at || (!held && Date.now() - KICK.at > 3600000)) { bar.hidden = true; return; }
+  // cleared by hand — stays cleared until a fresh kick (a later KICK.at) arrives
+  if (KICK.dismissedAt === KICK.at) { bar.hidden = true; return; }
   bar.hidden = false;
   bar.classList.toggle('over', !held);
   btn.hidden = !held;
@@ -1252,6 +1282,8 @@ $('kickBarTake').onclick = async () => {
   try { await post('/api/connect'); } finally { $('kickBarTake').disabled = false; }
   refresh();
 };
+// clears the banner locally only — a fresh kick (a later KICK.at) brings it back
+$('kickBarClose').onclick = () => { KICK.dismissedAt = KICK.at; paintKick(null); };
 $('maintOverride').onchange = () => post('/api/maintenance', { override: $('maintOverride').checked });
 (function () {
   const btn = $('themeBtn');
@@ -1414,6 +1446,7 @@ const allTowns = () => S.edit === 'script' && !acctWhich() && $('allTowns').chec
 const cityIds = () => (S.cities || []).map((c) => String(c.id));
 const freeCities = () => cityIds().filter((c) => !RUNS.has(c));
 $('allTowns').checked = !!store.get('evony_alltowns', false);
+setTimeout(() => { try { loadQuick(); } catch { /* the dropdown simply stays empty */ } }, 0);
 $('allTowns').onchange = () => {
   store.set('evony_alltowns', $('allTowns').checked);
   paintRunBtn();
@@ -1583,6 +1616,7 @@ async function loadEditor() {
   ed.readOnly = false;
   const show = (id, on) => { $(id).style.display = on ? '' : 'none'; };
   show('loadSel', k === 'script');
+  show('quickSel', k === 'script' && !acctWhich() && (QUICK || []).length > 0);
   show('apply', k !== 'engine'); show('save', k !== 'engine');
   show('runScript', k === 'script');
   show('allTownsWrap', k === 'script');
@@ -1793,7 +1827,7 @@ function paintAcctSel() {
   $('acctSel').innerHTML = opts.filter(([v]) => !GOAL_SETS.includes(v)).map(opt).join('')
     + (sets.length ? `<optgroup label="Goal sets a script loads (loadgoals N)">${sets.map(opt).join('')}</optgroup>` : '');
   $('acctSel').value = ACCT[S.edit] || '';
-  if (acctWhich()) { for (const id of ['loadSel', 'runScript', 'allTownsWrap']) $(id).style.display = 'none'; }
+  if (acctWhich()) { for (const id of ['loadSel', 'quickSel', 'runScript', 'allTownsWrap']) $(id).style.display = 'none'; }
 }
 $('acctSel').onchange = () => {
   if (!ACCT_OPTS[S.edit]) return;
@@ -1950,6 +1984,55 @@ const whyNotRun = (r) => ((r.log || []).map(unstamp).filter((l) => !/^parsed |^n
 
 // Always live. A script with errors is refused whole by the server. Runs in
 // different cities go side by side, and each city's Output shows its own run.
+// ---------- the quick dropdown ----------
+// The user, 2026-09-24: "whenever I try to do something I do it in the script window and
+// trading is turned off until you restart it. I want to be able to just click an option in
+// the dropdown which says turn trading back on."
+//
+// Running a script by hand in a city ENDS that city's autorun run (one run per city) and
+// nothing puts it back, so any hand-run leaves the account out of the play until someone
+// restarts the console. A pick here starts the named script again — in every city that has
+// no run of its own, for an "all" entry — and asks nothing: one click is the whole point.
+// The list comes from scripts/quick-scripts.txt (/api/script/quick), which is read on every
+// ask, so entries can be added by editing that file. It never touches the editor or any
+// saved loadout: what runs is the one line `call "<file>"`.
+// var, not let: paintEditor() reads it and can run before this line does — a let would
+// throw on its temporal dead zone and take the whole editor bar down with it.
+var QUICK = [];
+async function loadQuick() {
+  let r = null;
+  try { r = await (await fetch('/api/script/quick', { cache: 'no-store' })).json(); } catch { r = null; }
+  QUICK = (r && r.quick) || [];
+  const sel = $('quickSel');
+  sel.innerHTML = ['<option value="">Quick…</option>']
+    .concat(QUICK.map((e, i) => `<option value="${i}">${esc(e.label)}</option>`)).join('');
+  sel.value = '';
+  if (S.edit === 'script' && !acctWhich()) sel.style.display = QUICK.length ? '' : 'none';
+}
+$('quickSel').onchange = async () => {
+  const sel = $('quickSel'), e = QUICK[Number(sel.value)];
+  sel.value = '';
+  if (!e) return;
+  const src = `call "${e.file}"`;
+  const label = e.label;
+  if (!e.all) {
+    if (!S.city) return paintEditHint('no city is open yet', true);
+    const city = String(S.city);
+    if (RUNS.has(city)) return paintEditHint(`a script is already running in ${cityNameById(city)} — stop it first`, true);
+    const r = await startRun(city, { src, from: '', at: '', label });
+    return paintEditHint(r && r.started ? `${label} — running in ${cityNameById(city)}`
+      : `${label} — did not start, see Output`, !(r && r.started));
+  }
+  const targets = freeCities();
+  if (!cityIds().length) return paintEditHint('no cities are loaded yet', true);
+  if (!targets.length) return paintEditHint('a script is already running in every city — stop those first', true);
+  const rs = await Promise.all(targets.map((c) => startRun(c, { src, from: '', at: '', label: `${label} · all towns` })));
+  const ok = targets.filter((c, i) => rs[i] && rs[i].started);
+  const busy = cityIds().length - targets.length;
+  paintEditHint(`${label} — running in ${ok.length} of ${targets.length} city(ies)`
+    + (busy ? `, ${busy} skipped (a script is running there)` : '')
+    + (ok.length < targets.length ? ' — see Output for the rest' : ''), ok.length < targets.length);
+};
 $('runScript').onclick = async () => {
   if (acctWhich()) return;             // the new-city script runs by itself, in new cities
   if (!S.city) return paintEditHint('no city is open yet', true);
@@ -2634,7 +2717,10 @@ function renderBuildings(d) {
     + ` L${c.level}${c.to === undefined ? '' : ` &rarr; L${c.to}`} · ${until(c.endTime, now)}`).join('<br>');
   const B = d.builder;
   const rows = [
-    { cls: busy.length ? 'warn' : '', cells: ['Actively building', '', doing || '<span class="muted">nothing: the builder is free</span>'] },
+    // one + per running job, on the same line as the job it speeds up
+    { cls: busy.length ? 'warn' : '', cells: ['Actively building',
+      busy.map((c) => `<button class="sm buffadd" data-act="bspeed" data-pos="${Number(c.positionId)}" data-label="${esc(c.name)}" title="Speed up ${esc(c.name)} with a speed-up item you hold">+</button>`).join('<br>'),
+      doing || '<span class="muted">nothing: the builder is free</span>'] },
     { title: B ? [B.note, ...(B.held || []).map((x) => 'held back: ' + x)].filter(Boolean).join('\n') : '', cells: ['Planned next', '', plannedNext(B)] },
     { cls: sl.inside.free ? 'good' : 'bad', cells: ['Inside free', sl.inside.free, `<span class="muted">of ${sl.inside.total}</span>`] },
     { cls: sl.outside.free ? 'good' : 'bad', cells: ['Outside free', sl.outside.free, `<span class="muted">of ${sl.outside.total}</span>`] },
@@ -3385,6 +3471,16 @@ const MAP_RETRY_MS = 30000;         // a block that could not be had waits this 
 const MAP_KEEP = 300;               // blocks kept in the page (120k tiles), oldest dropped first
 const MAP_DEBOUNCE_MS = 250;        // quiet time after the last move before loading
 const mapWrap = (v) => ((Math.round(v) % MAP_W) + MAP_W) % MAP_W;
+// The sixteen states: a 4x4 grid of 200x200 blocks read row by row, the same
+// table as constants.js ZONES. (457,281) is Thuringia, as NEAT shows.
+const MAP_ZONES = [
+  'Friesland', 'Saxony', 'North March', 'Bohemia',
+  'Lower Lorraine', 'Franconia', 'Thuringia', 'Moravia',
+  'Upper Lorraine', 'Swabia', 'Bavaria', 'Carinthia',
+  'Burgundy', 'Lombardy', 'Tuscany', 'Romagna',
+];
+const MAP_ZONE_SIZE = 200;
+const mapZone = (x, y) => MAP_ZONES[Math.floor(mapWrap(y) / MAP_ZONE_SIZE) * 4 + Math.floor(mapWrap(x) / MAP_ZONE_SIZE)] || '';
 const mapKey = (x, y) => `${x - (x % MAP_BLK)},${y - (y % MAP_BLK)}`;   // wrapped tile -> its block
 const mapStep = () => Math.max(1, Math.round(MAP.r / 2));                // what an arrow button moves
 function mapDist(ax, ay, bx, by) {  // the short way round, as the game measures it
@@ -3443,9 +3539,9 @@ function renderMap() {
 
   let body;
   if (MAP.hits) {
-    body = grid([{ h: 'City' }, { h: 'Lord' }, { h: 'Prestige', a: 'n' }, { h: 'Alliance' }, { h: 'Coords', a: 'c' }],
-      MAP.hits.hits.slice(0, 80).map((h) => [esc(h.name || ''), esc(h.userName || '—'), short(h.prestige), esc(h.allianceName || '—'),
-        `<a href="#" data-map="goto" data-x="${h.x}" data-y="${h.y}" title="Show it on the map">(${h.x},${h.y})</a>`]))
+    body = grid([{ h: 'City' }, { h: 'Lord' }, { h: 'Prestige', a: 'n' }, { h: 'Alliance' }, { h: 'Coords', a: 'c' }, { h: 'State' }],
+      MAP.hits.hits.slice(0, 80).map((h) => [esc(h.name || ''), esc(h.userName || '—'), fmt(h.prestige), esc(h.allianceName || '—'),
+        `<a href="#" data-map="goto" data-x="${h.x}" data-y="${h.y}" title="Show it on the map">(${h.x},${h.y})</a>`, esc(mapZone(h.x, h.y))]))
       + `<div class="tb"><span class="note">${MAP.hits.hits.length} of ${fmt(MAP.hits.total)} cached castles match "${esc(MAP.q)}" · click the coordinates to go there</span></div>`;
   } else if (MAP.x === null) {
     body = `<div class="empty">${S.head && S.head.connected ? 'loading…' : 'Connect, or type coordinates and press Show.'}</div>`;
@@ -3458,6 +3554,7 @@ function renderMap() {
     const filtering = MAP.filter.size > 0 || MAP.minLevel > 0;
     const city = d ? d.x + ',' + d.y : null;
     const listed = [];
+    const zones = new Set();
     let cells = '', known = 0, seam = false;
     for (let dy = -r; dy <= r; dy++) {
       const wy = mapWrap(MAP.y + dy);
@@ -3474,7 +3571,10 @@ function renderMap() {
         // the world's edge: 799 runs on into 0
         const sx = wx === 0 && dx > -r, sy = wy === 0 && dy > -r;
         if (sx || sy) seam = true;
-        cells += `<div class="mt${sx ? ' sx' : ''}${sy ? ' sy' : ''}" data-xy="${k}" style="${style}"></div>`;
+        // a state begins every 200 tiles, so its border is drawn like the seam
+        const zx = wx % MAP_ZONE_SIZE === 0 && dx > -r, zy = wy % MAP_ZONE_SIZE === 0 && dy > -r;
+        zones.add(mapZone(wx, wy));
+        cells += `<div class="mt${sx ? ' sx' : ''}${sy ? ' sy' : ''}${zx ? ' zx' : ''}${zy ? ' zy' : ''}" data-xy="${k}" style="${style}"></div>`;
       }
     }
     const filters = '<div class="tb"><span class="note">show</span>'
@@ -3489,8 +3589,8 @@ function renderMap() {
         cls: 'mcat', style: `background:${colour}`, title: label,
         cells: [esc(t.userName ? (t.name || '') : t.npc ? 'NPC' : (t.typeName || t.kind)),
           esc(t.userName || (t.npc ? `level ${t.level ?? '?'} camp` : (t.desc || ''))),
-          t.userName ? short(t.prestige) : '', t.userName ? short(t.honor) : '',
-          esc(t.allianceName || ''), t.level ?? '', `(${t.x},${t.y})`, dist],
+          t.userName ? fmt(t.prestige) : '', t.userName ? short(t.honor) : '',
+          esc(t.allianceName || ''), t.level ?? '', `(${t.x},${t.y})`, esc(mapZone(t.x, t.y)), dist],
       };
     });
     const now = Date.now(), view = mapViewBlocks();
@@ -3513,10 +3613,12 @@ function renderMap() {
       + ` aria-label="World map around ${MAP.x},${MAP.y}. Drag, or use the arrow keys, to move."`
       + ` style="grid-template-columns:repeat(${size},${px}px);grid-auto-rows:${px}px">${cells}</div>`
       + `<div class="legend">${legend}<br>${standing}`
-      + `${status}<br><span class="muted">drag to move, or click the map and use the arrow keys (Shift: 10)${seam ? ' · dashed line: the world edge (the map wraps)' : ''}</span></div></div>`
+      + `${status}<br>${zones.size > 1 ? 'states' : 'state'}: <b>${[...zones].filter(Boolean).map(esc).join(' · ') || '—'}</b>`
+      + `<br><span class="muted">drag to move, or click the map and use the arrow keys (Shift: 10)`
+      + ` · solid blue line: a state's border${seam ? ' · dashed line: the world edge (the map wraps)' : ''}</span></div></div>`
       + `<div class="side" style="max-width:${tableW}px">`
       + grid([{ h: 'City' }, { h: 'Lord' }, { h: 'Prestige', a: 'n' }, { h: 'Honor', a: 'n' }, { h: 'Alliance' }, { h: 'Lvl', a: 'c' }, { h: 'Coords', a: 'c' },
-        { h: 'Dist', a: 'n', t: 'tiles from the centre of the view' }], rows)
+        { h: 'State', t: 'the state the tile is in' }, { h: 'Dist', a: 'n', t: 'tiles from the centre of the view' }], rows)
       + '</div></div>';
   }
   const hadFocus = !!ae && ae.id === 'mgrid';
@@ -3830,17 +3932,18 @@ $('monBody').addEventListener('mousemove', (ev) => {
   if (!t) {
     const [x, y] = xy.split(',').map(Number), k = mapKey(x, y);
     const what = MAP.inflight && MAP.inflight.has(k) ? 'loading…' : MAP.blocks.has(k) ? 'nothing known' : 'not loaded yet';
-    return showTipHtml(ev, `<b>${esc(xy)}</b><div class="muted">${what}</div>`);
+    return showTipHtml(ev, `<b>${esc(xy)}</b><div class="muted">${esc(mapZone(x, y))} · ${what}</div>`);
   }
   const c = S.cityData;
   const row = (k, v) => `<div><span class="k">${k}</span>${v}</div>`;
   let html = `<b>${esc(t.typeName || t.kind)}${t.level != null && !t.userName ? ' level ' + t.level : ''}</b>`
-    + `<div class="muted">${t.x},${t.y}${c ? ` · ${mapDist(c.x, c.y, t.x, t.y)} from ${esc(c.name)}` : ''}</div>`;
+    + `<div class="muted">${t.x},${t.y}${c ? ` · ${mapDist(c.x, c.y, t.x, t.y)} from ${esc(c.name)}` : ''}</div>`
+    + row('State', esc(mapZone(t.x, t.y)));
   if (t.userName) {
     html += row('Player', esc(t.userName) + (t.mine ? ' (you)' : '')) + row('City', esc(t.name || '—'))
       + row('Alliance', esc(t.allianceName || '—')) + row('Standing', MAP_CAT[mapCat(t)][0])
       + row('Prestige', fmt(t.prestige)) + row('Honor', fmt(t.honor));
-    if (t.state !== undefined) html += row('State', t.state === 1 ? 'peace' : (t.furlough ? 'furlough' : 'at war'));
+    if (t.state !== undefined) html += row('War state', t.state === 1 ? 'peace' : (t.furlough ? 'furlough' : 'at war'));
   } else if (t.npc) html += row('NPC', 'level ' + (t.level ?? '?') + ' camp');
   else if (t.desc) html += row('Bonus', esc(t.desc));
   showTipHtml(ev, html);
@@ -4656,6 +4759,39 @@ $('statStop').onclick = async () => {
 const ITEMS = { data: undefined, kind: 'items', find: '', sort: null };
 const ITEM_ORDER = ['General', 'Speed Up', 'Produce', 'Chest', 'Stratagem', 'Material', 'Quest', 'Other'];
 
+// The catalogue (itemcatalog.json, from the client's own table, plus whatever
+// common.getItemDefXml has added) names most items; for the rest the console
+// sends the raw id back as the name. These are the ones OUR OWN code and
+// EVONY-RULES.md already name — the game's wording, not invented here.
+const ITEM_NAMES = {
+  'player.haunted.castle': 'Haunted Castle',
+  'player.haunted.castle.adv': 'Haunted Castle (Advanced)',
+  'player.halloween.castle': 'Halloween Castle',
+  'player.halloween.castle.adv': 'Halloween Castle (Advanced)',
+  'player.item.stygandrsbannerofthehorde': "Stygandr's Banner of the Horde",
+  'player.item.stoneoffinding': 'Stone of Finding',
+  'player.more.castle.1.c': 'War Teleporter',
+  'player.box.present.money.70': 'Fleet Feet',
+  'player.box.present.money.71': 'Endurance of the Immortals',
+  'player.box.present.money.72': "Alchemist's Amplifier",
+  'player.box.present.money.74': "Opportunist's Plague",
+  'player.box.present.money.75': 'Lost in the Wastes',
+  'player.box.present.money.76': 'Poisoned Feast',
+  'player.box.present.money.77': 'Broken Gates',
+};
+// No name anywhere: read one off the id so the row still sorts and reads like a
+// name (player.haunted.castle -> "Haunted Castle"). Shown in italics, because
+// it is the id tidied up and not the game's own word for the thing.
+const ITEM_PREFIX = /^(player\.item|player\.box|player|consume|hero|alliance)\./;
+function itemNameOf(it) {
+  if (it.name && it.name !== it.id) return { text: it.name, real: true };
+  if (ITEM_NAMES[it.id]) return { text: ITEM_NAMES[it.id], real: true };
+  const tail = String(it.id).replace(ITEM_PREFIX, '').split('.')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  return { text: tail.join(' ') || String(it.id), real: false };
+}
+
 async function renderItems(force) {
   if (force) paintItems(true);            // what we already have, at once
   // the open city, so its own buffs come with the account's
@@ -4713,14 +4849,21 @@ function paintItems(force) {
 
   const needle = ITEMS.find.toLowerCase();
   const pick = all.filter((it) => it.medal === medals);
-  const shown = pick.filter((it) => !needle || [it.name, it.id, it.category, it.desc].some((s) => s.toLowerCase().includes(needle)));
+  // Every row carries the name it will show, so the search and the sort use the
+  // same words the eye does — including a name read off the id.
+  for (const it of pick) { const n = itemNameOf(it); it.shownName = n.text; it.realName = n.real; }
+  const shown = pick.filter((it) => !needle
+    || [it.shownName, it.name, it.id, it.category, it.desc].some((s) => String(s || '').toLowerCase().includes(needle)));
 
   const rank = (it) => { const i = ITEM_ORDER.indexOf(it.category); return i < 0 ? ITEM_ORDER.length : i; };
   const tier = (it) => Number(it.id.split('.').pop()) || 0;          // hero.loyalty.1 .. 9
   // Amulet 2 before Amulet 10, and case never splits a name from its twin
-  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id);
+  const byName = (a, b) => a.shownName.localeCompare(b.shownName, undefined, { numeric: true, sensitivity: 'base' })
+    || a.id.localeCompare(b.id);
+  const byId = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: 'base' });
   const cols = [
-    { h: medals ? 'Medal' : 'Item', sort: true, by: byName },
+    { h: medals ? 'Medal' : 'Name', sort: true, by: byName },
+    { h: 'Code', sort: true, by: byId, t: "the game's own id for the item" },
     { h: 'Qty', a: 'n', sort: true, by: (a, b) => a.count - b.count },
     ...(medals ? [] : [{ h: 'Type', sort: true, by: (a, b) => rank(a) - rank(b) || byName(a, b) }, { h: '' }]),
     { h: 'Description', a: 'desc' },
@@ -4730,7 +4873,7 @@ function paintItems(force) {
   // Apply is greyed, not disabled, so a click can still say why not
   const applyBtn = (it) => (it.noApply
     ? `<button class="sm" data-act="apply" data-id="${esc(it.id)}" aria-disabled="true" title="${esc(it.noApply)}">Apply</button>`
-    : `<button class="sm" data-act="apply" data-id="${esc(it.id)}" title="Use ${esc(it.name)}">Apply</button>`);
+    : `<button class="sm" data-act="apply" data-id="${esc(it.id)}" title="Use ${esc(it.shownName || it.name)}">Apply</button>`);
 
   let html;
   if (r === undefined) html = '<div class="empty">loading…</div>';
@@ -4739,8 +4882,9 @@ function paintItems(force) {
   else if (!shown.length) html = `<div class="empty">${needle ? 'nothing matches' : medals ? 'No medals held.' : 'No items held.'}</div>`;
   else {
     html = grid(cols, shown.map((it) => ({
-      title: `${it.id}${it.desc ? '\n' + it.desc : ''}`,
-      cells: [it.name === it.id ? `<span class="muted">${markIn(it.name, needle)}</span>` : markIn(it.name, needle),
+      title: `${it.id}${it.realName ? '' : ' (no catalogue name: read off the id)'}${it.desc ? ' - ' + it.desc : ''}`,
+      cells: [it.realName ? markIn(it.shownName, needle) : `<i class="muted">${markIn(it.shownName, needle)}</i>`,
+        `<span class="muted">${markIn(it.id, needle)}</span>`,
         fmt(it.count), ...(medals ? [] : [esc(it.category), applyBtn(it)]), markIn(it.desc, needle)],
     })), { cls: 'items', sort: s });
   }
@@ -4806,6 +4950,57 @@ $('iuForm').addEventListener('submit', async (e) => {
   refresh();
 });
 
+// Buildings tab: + on "Actively building" -> pick a held speed-up item and use it
+// on that plot (/api/building/speedup, the buildingspeedup script line).
+let BSPEED = { pos: null, items: [] };
+function bsPick() { return $('bsList').querySelector('input[name="bsItem"]:checked'); }
+function bsSync() {
+  const it = BSPEED.items.find((x) => bsPick() && x.id === bsPick().value);
+  $('bsGo').disabled = !it;
+  const max = it ? it.count : 1;
+  $('bsCount').max = max;
+  if (Number($('bsCount').value) > max) $('bsCount').value = max;
+  $('bsNote').textContent = it ? `of ${fmt(it.count)} held` : '';
+}
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act="bspeed"]');
+  if (!btn) return;
+  const r = await getJSON('/api/items' + (S.city ? '?city=' + encodeURIComponent(S.city) : ''));
+  if (!r || !r.ok) return tell('The item list could not be read — is the console connected?', { title: 'Speed up' });
+  // the speed-up items the game lets a building take (Guidelines), held ones only
+  // shortest first; what each takes off is the game's own description
+  const BS_ORDER = ['consume.2.a', 'consume.2.b', 'consume.2.b.1', 'consume.2.c', 'consume.2.c.1', 'consume.2.d'];
+  const BS_EFFECT = { 'consume.2.a': '15 min', 'consume.2.b': '1 hour', 'consume.2.b.1': '2.5 hours', 'consume.2.c': '8 hours',
+    'consume.2.c.1': '10 to 30 hours', 'consume.2.d': '30% of the time' };
+  BSPEED = { pos: Number(btn.dataset.pos), items: (r.items || []).filter((x) => BS_ORDER.includes(x.id) && x.count > 0)
+    .sort((a, b) => BS_ORDER.indexOf(a.id) - BS_ORDER.indexOf(b.id)).map((x) => ({ ...x, effect: BS_EFFECT[x.id] })) };
+  if (!BSPEED.items.length) return tell('You hold no speed-up items (Guidelines). Coins are never spent from here.', { title: `Speed up ${btn.dataset.label}` });
+  $('bsName').textContent = btn.dataset.label;
+  $('bsInfo').textContent = `plot ${BSPEED.pos} · ${S.cityData ? S.cityData.name : 'the open city'}`;
+  $('bsList').innerHTML = BSPEED.items.map((x, i) => `<label style="display:flex;gap:6px;align-items:center;padding:2px 0">`
+    + `<input type="radio" name="bsItem" value="${esc(x.id)}"${i === 0 ? ' checked' : ''}> ${esc(x.name)} <b>${esc(x.effect)}</b> <span class="muted">· ${fmt(x.count)} held</span></label>`).join('');
+  $('bsCount').value = 1;
+  bsSync();
+  $('bsDlg').showModal();
+});
+$('bsList').addEventListener('change', bsSync);
+$('bsCount').addEventListener('input', () => {
+  const max = Number($('bsCount').max) || 1;
+  if (Number($('bsCount').value) > max) $('bsCount').value = max;
+});
+$('bsForm').addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  const it = BSPEED.items.find((x) => bsPick() && x.id === bsPick().value);
+  if (!it) { e.preventDefault(); return; }
+  const count = Math.max(1, Math.min(Math.floor(Number($('bsCount').value)) || 1, it.count));
+  const r = await post('/api/building/speedup', { city: S.city, pos: BSPEED.pos, itemId: it.id, count });
+  // the new end time at once, and again a moment on for a push that trails the reply
+  refresh(true);
+  setTimeout(() => refresh(true), 1500);
+  tell(r.lines && r.lines.length ? r.lines.join('\n') : r.error || 'unknown',
+    { title: r.ok ? `${it.name} — used` : `${it.name} — not used` });
+});
+
 // ---------- chat ----------
 // NEAT's line: "<6:36>[Name]: message", stamped in SERVER time.
 $('chatTabs').addEventListener('click', (e) => {
@@ -4832,11 +5027,19 @@ async function renderChat() {
   const lines = (r && r.lines) || [];
   const well = $('chatWell');
   const atBottom = well.scrollHeight - well.scrollTop - well.clientHeight < 40;
+  const lord = (S.head && S.head.lord) || '';
+  const whoTag = (n) => `[<span class="who" data-who="${esc(n || '')}" title="whisper to ${esc(n || '')}">${esc(n || '?')}</span>]`;
   const html = lines.map((l) => {
     const sys = S.chat === 'system' || l.from === 'system';
-    return `<div class="cl-${sys ? 'system' : S.chat}">&lt;${serverHM(l.t)}&gt;`
-      + (sys ? 'SYSTEM: ' : `[<span class="who" data-who="${esc(l.from || '')}" title="whisper to ${esc(l.from || '')}">${esc(l.from || '?')}</span>]: `)
-      + `${chatText(l.msg)}</div>`;
+    let head = sys ? 'SYSTEM: ' : `${whoTag(l.from)}: `;
+    // A whisper we sent comes back "from" us: show who it went to. The console
+    // tags it (l.to); the page's own record covers a console not yet restarted.
+    if (!sys && S.chat === 'private') {
+      const to = l.to || (l.from === lord && (S.pmSent.find((p) => p.msg === l.msg) || {}).to);
+      if (to && l.from === lord) head = `To ${whoTag(to)}: `;
+      else if (l.from !== lord) head = `From ${whoTag(l.from)}: `;
+    }
+    return `<div class="cl-${sys ? 'system' : S.chat}">&lt;${serverHM(l.t)}&gt;${head}${chatText(l.msg)}</div>`;
   }).join('') || '<div class="empty">No messages since the bot logged in.</div>';
   const body = $('chatBody');
   if (body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; if (atBottom) well.scrollTop = 1e9; }
@@ -4844,23 +5047,34 @@ async function renderChat() {
 function paintPm() {
   const on = S.chat === 'private';
   $('pmTo').hidden = !on;
-  $('pmTo').innerHTML = S.pmTo ? `to <b>${esc(S.pmTo)}</b> <a href="#" id="pmClear" title="clear">&#10006;</a>` : 'click a name to whisper';
-  $('chatInput').disabled = on && !S.pmTo;
+  $('pmTo').innerHTML = S.pmTo ? `to <b>${esc(S.pmTo)}</b> <a href="#" id="pmClear" title="clear">&#10006;</a>` : 'click a name, or type /Name message';
+}
+// "/Name message" whispers Name from any tab, for a player who has not spoken
+// since the bot logged in; "/Name" alone just picks who to whisper.
+function pickPm(name) {
+  S.pmTo = name;
+  S.chat = 'private';
+  [...$('chatTabs').querySelectorAll('.t')].forEach((c) => c.classList.toggle('on', c.dataset.k === 'private'));
+  paintPm(); renderChat();
 }
 $('chatBody').addEventListener('click', (e) => {
   const w = e.target.closest('.who'); if (!w || !w.dataset.who) return;
-  S.pmTo = w.dataset.who;
-  S.chat = 'private';
-  [...$('chatTabs').querySelectorAll('.t')].forEach((c) => c.classList.toggle('on', c.dataset.k === 'private'));
-  paintPm(); renderChat(); $('chatInput').focus();
+  pickPm(w.dataset.who); $('chatInput').focus();
 });
 $('pmTo').addEventListener('click', (e) => { if (e.target.id === 'pmClear') { e.preventDefault(); S.pmTo = ''; paintPm(); } });
 $('chatSend').onclick = async () => {
-  const msg = $('chatInput').value.trim(); if (!msg) return;
+  let msg = $('chatInput').value.trim(); if (!msg) return;
   if (msg.startsWith('\\')) return inlineCommand(msg);       // NEAT's command line, never chat
+  const pm = /^\/(\S+)\s*([\s\S]*)$/.exec(msg);
+  if (pm) {
+    pickPm(pm[1]);
+    msg = pm[2].trim();
+    if (!msg) { $('chatInput').value = ''; return; }
+  }
   if (S.chat === 'system') return tell('The system channel is read-only.', { title: 'Chat' });
-  if (S.chat === 'private' && !S.pmTo) return tell('Click a name in the chat to choose who to whisper to.', { title: 'Chat' });
+  if (S.chat === 'private' && !S.pmTo) return tell('Click a name in the chat, or type /Name message, to choose who to whisper to.', { title: 'Chat' });
   $('chatInput').value = '';
+  if (S.chat === 'private') S.pmSent = [...S.pmSent.slice(-49), { to: S.pmTo, msg }];
   const r = await post('/api/chat', { channel: S.chat, msg, target: S.chat === 'private' ? S.pmTo : undefined });
   if (r && r.ok === false) tell(r.error || 'failed', { title: 'Chat not sent' });
   setTimeout(renderChat, 800);

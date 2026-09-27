@@ -173,6 +173,7 @@ function parseTroops(s) {
   const troops = {};
   for (const part of String(s).split(',')) {
     const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?)$/i);
+    if (!m && /:\s*\*\s*$/.test(part)) throw new Error(`"${part.trim()}": * (fill) works on the resources of a march, not on troops`);
     if (!m) throw new Error('bad troop string: ' + part);
     const t = troopByWord(m[1]);
     if (!t) throw new Error('unknown troop code: ' + m[1]);
@@ -181,13 +182,20 @@ function parseTroops(s) {
   return troops;
 }
 
-function parseResources(s) {
+// `f:*` means "as much as the hold has room for". It is only allowed where the
+// caller can work out what the room IS — a march, which knows the troops and the
+// march time — so it is off unless opts.fill is set, and it comes back as
+// Infinity for that caller to resolve (script-cmd-deploy.js fillHold).
+function parseResources(s, opts = {}) {
   const out = {};
   for (const part of String(s).split(',')) {
-    const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?)$/i);
+    const m = part.trim().match(/^([a-z]+)\s*:\s*([\d.]+[kmb]?|\*)$/i);
     const key = m && resourceByWord(m[1]);
     if (!key) throw new Error('bad resource string: ' + part + ' (f w s i g, l for lumber, or food/wood/stone/iron/gold)');
-    out[key] = num(m[2]);
+    if (m[2] === '*') {
+      if (!opts.fill) throw new Error(`"${part.trim()}": * (fill the hold) only works on a march — transport, reinforce, attack or deploy`);
+      out[key] = Infinity;
+    } else out[key] = num(m[2]);
   }
   return out;
 }

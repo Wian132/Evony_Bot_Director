@@ -107,17 +107,32 @@ function rallyCapacity(castle) {
     .reduce((m, b) => Math.max(m, n(b.level)), 0);
 }
 
+// A Haunted or Halloween Castle applied to a city (shop.useCastleGoods) leaves
+// one of these buffs running. The client reads them off the PLAYER buff bar
+// (WallBuilding.as:249, CastleInfoFrame.as:1317) although the item is spent on
+// one city, so both lists are searched here.
+const HAUNTED_BUFFS = new Set(['HauntedCastleBuf', 'HauntedCastleAdvBuf']);
+const hasBuff = (list, set) => (Array.isArray(list) ? list : [])
+  .some((b) => b && set.has(String(b.typeId)) && !(Number(b.endTime) > 0 && Number(b.endTime) < Date.now()));
+const hauntedCastle = (castle, player) => hasBuff(castle && castle.buffs, HAUNTED_BUFFS)
+  || hasBuff(player && player.buffs, HAUNTED_BUFFS);
+
 // The most troops one march from this city may take: 10,000 per Rally Spot
 // level, never more than the server's 100,000 (constants.js MARCH_TROOP_MAX).
 // 0 with no Rally Spot, null when the building list is not known.
-//   big    a War Ensign goes with it (/big, bean.useFlag): 25% more
-//   horde  Stygandr's Banner of the Horde (/horde, bean.useItem): 1,000,000,
-//          whatever the Rally Spot (constants.js MARCH_HORDE_MAX)
-function marchTroopLimit(castle, { big = false, horde = false } = {}) {
+//   big       a War Ensign goes with it (/big, bean.useFlag): 25% more
+//   horde     Stygandr's Banner of the Horde (/horde, bean.useItem): 1,000,000,
+//             whatever the Rally Spot (constants.js MARCH_HORDE_MAX)
+//   haunted   a Haunted/Halloween Castle on the city: 25% more again
+// This is a guard against a pointless round trip, not the rule itself — the
+// server decides. So where it cannot be sure it is generous: a bonus it can see
+// is always added, and an unknown building list refuses nothing.
+function marchTroopLimit(castle, { big = false, horde = false, haunted = false } = {}) {
   const lv = rallyCapacity(castle);
   let limit = horde ? C.MARCH_HORDE_MAX
     : lv === null ? null : Math.min(C.MARCH_TROOP_MAX, lv * C.MARCH_TROOPS_PER_LEVEL);
   if (limit !== null && big) limit = Math.floor(limit * C.MARCH_ENSIGN_BONUS);
+  if (limit !== null && haunted) limit = Math.floor(limit * C.MARCH_HAUNTED_BONUS);
   return limit;
 }
 
@@ -255,6 +270,6 @@ function rallyBook({ game = null, armies = null, goalsOf = null, pending = null 
 }
 
 module.exports = {
-  parser, parseRallyPolicy, policyOf, rallyCapacity, marchTroopLimit, rallyBook, kindOf, norm,
+  parser, parseRallyPolicy, policyOf, rallyCapacity, marchTroopLimit, hauntedCastle, HAUNTED_BUFFS, rallyBook, kindOf, norm,
   KIND_BY_MISSION, KIND_NAME, RALLY_SPOT_TYPE, PENDING_TTL,
 };

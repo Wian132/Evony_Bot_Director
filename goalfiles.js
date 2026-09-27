@@ -50,6 +50,29 @@ function setFile(org, accountId, which, p) {
   return v || null;
 }
 
+// THE FLEET'S OWN FILE for one of the two texts: the org's `goalFileDefault:<which>`
+// setting if it has one, otherwise whatever file most of its accounts already name. So an
+// account that names none can be put on the same prepend the rest of the fleet runs
+// without anyone naming it twice, and a rename follows by itself. null when no account
+// names one, because then there is nothing to copy from.
+// (2026-09-24, with session.holidayGoalFile below: "we can't get caught with one of our
+// accs not having goals" — the user.)
+function defaultFile(org, which = "prepend") {
+  if (!WHICH.includes(which) || !org) return null;
+  const named = org.settings.get("goalFileDefault:" + which, null);
+  if (named) { try { return checkPath(named) || null; } catch { return null; } }
+  let best = null, most = 0;
+  const count = new Map();
+  for (const acc of org.accounts.all()) {
+    const f = fileOf(org, acc.id, which);
+    if (!f) continue;
+    const n = (count.get(f) || 0) + 1;
+    count.set(f, n);
+    if (n > most) { most = n; best = f; }
+  }
+  return best;
+}
+
 // Read a goal file: { ok, src } or { ok: false, why }.
 function readFile(p) {
   let st;
@@ -115,4 +138,4 @@ function browse(dir) {
   return { ok: true, dir: d, parent, dirs, files, roots };
 }
 
-module.exports = { WHICH, SYNC_MS, fileOf, checkPath, setFile, readFile, syncAccount, syncAll, browse };
+module.exports = { WHICH, SYNC_MS, fileOf, defaultFile, checkPath, setFile, readFile, syncAccount, syncAll, browse };

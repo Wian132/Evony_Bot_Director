@@ -27,6 +27,12 @@ const MARCH_TROOP_MAX = 100000;
 // would take.
 const MARCH_ENSIGN_BONUS = 1.25;
 const MARCH_HORDE_MAX = 1000000;
+// A Haunted/Halloween Castle on the city (HauntedCastleBuf, HauntedCastleAdvBuf)
+// raises what one march may take by 25% as well (the user, 2026-09-24). The
+// client's own code only shows the buff's +10% production and its castle skin,
+// so the server is the authority here — which is why our guard is generous and
+// lets the server have the last word rather than refusing a march itself.
+const MARCH_HAUNTED_BONUS = 1.25;
 
 // com/evony/eum/TroopEumDefine + embedded <troopEum> XML.
 // `code` matches the NEAT bot's short codes; `key` is the protocol field.
@@ -374,20 +380,34 @@ function marchTimeMs(fromXY, toXY, troopKeys, skills = 100) {
   let speed = Math.trunc(Math.min(...speeds));
   if (Number(p.relief) > 0) speed = Math.trunc(Number(p.relief) * speed);
   if (speed <= 0) return null;
-  let ms = mapDistance(fromXY, toXY) * REC_SIZE / speed * 1000;
+  const ms = mapDistance(fromXY, toXY) * REC_SIZE / speed * 1000;
+  return Math.max(0, ms * armyTimeFactor(p));
+}
 
-  // Buffs, applied in the client's order. The first two scale with how long the
-  // buff has left to run.
+// What the buffs do to an army's time, as one multiplier, in the client's order
+// (NewArmyWin:3043-3100). The first two scale with how long the buff has left
+// to run: Fleet Feet (ReduceArmyActionBuff) is -35% with one charge on, -70%
+// with two.
+//
+// THE SERVER APPLIES THIS TO THE CAMP TOO, not only the march (Lord24, 2026-09-27:
+// a reinforce 3 -> 5 with two Fleet Feet on, 3,047 s of march by the formula and
+// 11,085 s of camp asked, landed 6,376 s after the send — 0.3 x (10,157 + 11,085)
+// = 6,373 s). The Relief Station is a speed, and speeds only the march. So a
+// camp of C seconds asked for is C x factor in the game; to camp C, ask C / factor
+// (timed-march.js, script-cmd-deploy.js). *Unverified* for the slower castle buff
+// and HarvesterWagesBuff — assumed to work the same way as Fleet Feet.
+function armyTimeFactor(p = {}) {
+  let k = 1;
   const now = Number(p.now ?? Date.now());
   const latest = (list, name) => Math.max(0, ...(list || [])
     .filter((b) => String((b && b.typeId) || '').includes(name)).map((b) => Number(b.endTime) || 0));
   const band = (end, pcts) => (end - now > 8 * 3600000 ? pcts[0] : end - now > 4 * 3600000 ? pcts[1] : pcts[2]);
   const slower = latest(p.castleBuffs, 'IncArmyActionTimeBuff');
-  if (slower > 0) ms += ms * band(slower, [60, 40, 20]) / 100;
+  if (slower > now) k += k * band(slower, [60, 40, 20]) / 100;
   const faster = latest(p.playerBuffs, 'ReduceArmyActionBuff');
-  if (faster > 0) ms -= ms * band(faster, [105, 70, 35]) / 100;
-  for (const b of p.playerBuffs || []) if (String((b && b.typeId) || '').includes('HarvesterWagesBuff')) ms = ms * 90 / 100;
-  return Math.max(0, ms);
+  if (faster > now) k -= k * band(faster, [105, 70, 35]) / 100;
+  for (const b of p.playerBuffs || []) if (String((b && b.typeId) || '').includes('HarvesterWagesBuff')) k = k * 90 / 100;
+  return Math.max(0, k);
 }
 
 // The food an army takes with it, per hour, the way the client charges it
@@ -443,14 +463,14 @@ const FREE_SPEED = {
 };
 
 module.exports = {
-  MISSION, MARCH_TROOPS_PER_LEVEL, MARCH_TROOP_MAX, MARCH_ENSIGN_BONUS, MARCH_HORDE_MAX, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
+  MISSION, MARCH_TROOPS_PER_LEVEL, MARCH_TROOP_MAX, MARCH_ENSIGN_BONUS, MARCH_HORDE_MAX, MARCH_HAUNTED_BONUS, TROOPS, BY_CODE, BY_KEY, EMPTY_TROOPS, WALLS, WALL_BY_CODE, WALL_BY_TYPE, WALL_SPACE,
   TROOP_WORDS, FORT_WORDS, RES_WORDS, troopByWord, fortByWord, resourceByWord,
   BUILDINGS, BUILDING_BY_CODE, BUILDING_BY_ID, TECHS, TECH_BY_CODE, TECH_BY_ID,
   SLOTS, TOWN_HALL, WALLS_TYPE, plotRange,
   TROOP_DISPLAY_ORDER, BUILDING_DISPLAY_ORDER,
   TRADE_RES, TRADE_TYPE, TRADE_COMMISSION, RES, REPORT_TYPE, PACIFY, DEFENSE_ITEMS, DEFENSE_ITEM_USE, TRUCE_COOLDOWN_BUFFS,
   QUEST_MODES, QUEST_TITLES, QUEST_RANKS,
-  MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
+  MAP_W, REC_SIZE, coordsToFieldId, fieldIdToCoords, marchTimeMs, armyTimeFactor, mapDistance, DRIVE_KEYS, FIELD_TYPES, decodeTile,
   marchFood, marchFoodPerHour,
   ZONES, zoneOf,
   FREE_SPEED,

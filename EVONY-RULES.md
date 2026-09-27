@@ -4,7 +4,7 @@ What OTTObot has learned about the live game (Evony Age 1, server **ss71**) — 
 mostly. Read this before doing anything that acts on the game: starting or stopping a
 script, placing or cancelling trades, logging an account in, restarting or starting a
 console, switching an account on or off, sending marches, using or buying items. The
-code is documented in README.md and SCRIPTS.md; this file is about the **game** and about
+code is documented in MANUAL.md and SCRIPTS.md; this file is about the **game** and about
 **operating the fleet** without doing damage. How the user plays and what the fleet is being
 built towards (alts, mains, builders, banks; insta heroes; amulet farming) is in
 [EVONY-STRATEGY.md](EVONY-STRATEGY.md).
@@ -59,6 +59,76 @@ file (see the end).
   until the coins run out; it was refused in OTTObot until the user asked for it
   (2026-09-20). It is account-wide: run it in ONE city, not on autorun in every city.
   *Unverified:* what the game charges in coins.
+- **`city.troopStillInProduction` in a string prints `function Function() {}`** (2026-09-23).
+  It is the dual property/call shim in `script-objects.js` (a property on one wiki page, a
+  call on another), so `"… " + city.troopStillInProduction` renders the callable, not the
+  troops — which means the "troops still queued" figure in `holiday-prep.txt`'s and
+  `holiday-prep-go.txt`'s `HOLIDAYPREP done` line has never said anything. Read a type off
+  it instead (`city.troopStillInProduction.archer`). Walls (`city.fortificationProduceQueue`,
+  prints `tra:0`) and `city.tradesArray.length` are fine.
+- **`/autoextend` works, and a holiday costs 20 coins for 2 days** (Lord05 a5, observed
+  live 2026-09-23). Its holiday ran down to `2m42s` at 08:36:17 and at **08:39:02** jumped
+  straight back to **1d 23h** — the game renews it **at expiry, for the same term it was
+  taken for**, with no login, no command and nothing from us. Its coins went **1,834 →
+  1,814 across the renewal: 20 coins for 2 days, i.e. 10 a day.** This replaces the
+  "*unverified:* what the game charges in coins" that stood here from 2026-09-20. *One
+  observation* — confirm it on the next account that renews before treating the rate as
+  exact, and note it was a RENEWAL; whether the first holiday costs the same is still
+  unverified.
+  What this means in practice: an account's coins divided by 10 is roughly the days of
+  holiday it can still pay for. Points went on holiday that morning with **81** coins —
+  about 8 more days, not the near-immediate lapse a low balance first suggested.
+- **Whether a holiday will renew itself is readable — `player.autoFurlough`** (2026-09-23).
+  `/autoextend` sets the game's own `isAutoFurlough` on `furlough.isFurlought`, and it comes
+  back on the login's PlayerBean as `autoFurlough`, with `furloughDay` for the term. Until
+  this was found nothing in OTTObot could tell a holiday that renews from one about to
+  lapse — the Director showed both the same. The protection watch (session.js
+  `checkProtection`) now reports `auto` and `days`, and the Director's badge marks a
+  holiday that will NOT renew. Both fields are login-seeded rather than pushed, but the
+  flag only changes when a holiday is sent, so a login is soon enough.
+- **The game PUSHES protection changes; it never answers a question about them**
+  (2026-09-23). An account's protection — holiday, dream truce, truce, peace — is not on
+  the castle's `status` field (a lord on holiday still reports status 0 on every city). It
+  is in the player's buff list, which reaches a console two ways only: the **login** seeds
+  it, and **`server.PlayerBuffUpdate`** adds, updates or removes one as it happens
+  (game.js `applyPlayerBuffUpdate`). There is **no command that returns our own buffs** —
+  `common.getPlayerInfoByName`, which the heartbeat sends every 60 s, is the PUBLIC summary
+  (name, alliance, prestige, honor, ranking, cities, population, title) and carries none.
+  So: a protection that starts while we are logged in arrives within seconds on a push and
+  needs nothing asked; a push **missed** while the socket stayed up is only corrected by the
+  next login. Buffs carry an `endTime`, so one running out is seen locally with no traffic
+  at all (`buffs.list()` drops it).
+- **`game.holiday` is a LOGIN artifact, not the holiday state.** It is written in one place
+  — game.js, from the login reply's `ok=-100` — and nothing else ever touches it. An account
+  that goes on holiday while already logged in keeps `holiday = null` until its console next
+  reconnects, which is why the Director's Status column looked broken on 2026-09-23: five
+  accounts went on holiday 08:02–08:04 and at 08:12 only the two that happened to re-login
+  (Lord13 08:08:01, Lord12 08:12:47) had the badge. The Director cannot fix this by
+  polling — it skips any account a console holds ("a second login would kick it"), so it
+  never gets a fresh login-derived holiday for one. Read protection from the buffs
+  (`buffs.protectionOf`), which is what `holidayRun` already did and what the **protection
+  watch** (session.js `checkProtection`, every 2 min, `PROTECTION_MS`) now publishes as
+  `live.protection` for the Status column.
+- **Prep and holiday in ONE console restart** (2026-09-23, `scripts/holiday-prep-go.txt`).
+  `holiday-prep.txt` then `holiday-go.txt` is two restarts, and the second is refused by the
+  **10-minute autorun gate** (a console skips its autorun if that account's script started in
+  the last 10 minutes) — about 15 minutes before the holiday is even asked for, which does
+  not fit in the hour before maintenance. The combined file does the one-off prep
+  (`recallall`, `canceltrade`, `cancelbuilding`) once, then holiday-go's rounds
+  (`cancelwalls`/`canceltroops` in every city, staggered `sleep rnd:36`, the `holiday` sent
+  from the first city only, 20 tries 40 s apart). Live on Lord13, Lord12, Lord11,
+  Lord10 and Lord04 at 08:01: **three of the five answered "put the account on holiday for 2
+  days, renewing itself until the coins run out" within 60 seconds of the restart**
+  (Lord10 08:02:40, Lord11 08:02:43, Lord12 08:02:46) — first try, no second pass.
+- **The `ok=-25` refusal reaches a script as plain text in `$error`**, not as a code:
+  `Recruiting soldiers. in 4` (Lord04 and Lord13, 2026-09-23) — the city is named at the end,
+  and `Manufacturing fortified units. in <city>` is the walls version. So `if $error == null
+  end` is the only check a holiday loop needs; the text itself says which city to wait for.
+- **Coins are what `/autoextend` spends.** Before a holiday, read the account's coins: the
+  game renews the holiday until they run out, so a low balance is a short holiday whatever
+  the 2 days say (Lord13 went on holiday 2026-09-23 with **81** coins against Lord04's 1,590,
+  Lord10's 2,306, Lord11's 2,880 and Lord12's 1,064). *Unverified:* the coins a
+  holiday and each renewal actually cost.
 - **Out of holiday, when the user asks for it** (2026-09-22 09:23): `scripts/holiday-exit.txt`
   (`holiday /exit` from the first city only) — Lord04, Lord08 and Lord09 answered `ok` within
   a second. Take the account off the control file's `holi` list FIRST, then restore its
@@ -253,6 +323,42 @@ file (see the end).
   limiting. **a2 Lord02 was set to 30 minutes on 2026-09-22 21:45** (5 at 21:27, raised to match NEAT), the rest of the
   fleet is still blank.
 
+- **The holiday goal-file restore works, verified live 2026-09-25.** Four accounts
+  (Lord08 a8, Lord09 a9, Lord15 a15, Lord16 a16) were prepped with their goals emptied
+  AND `goalFile:prepend:<id>` set to `null` — the unlink is what makes an emptied goal
+  stay empty, since the Director re-syncs the file over it within 15 s. The moment each
+  holiday confirmed, `session.js holidayGoalFile()` re-pointed that account at the fleet
+  prepend file and re-synced it on its own: a8, a9 and a16 were back to a full 4,096-char
+  prepend without anyone restoring anything, while a15 (still refused) stayed `null`.
+  So for a holiday, **unlink + empty is now self-healing** — do not hand-restore the goals
+  afterwards, just check the setting came back.
+- **Four accounts on holiday in 105 seconds** (2026-09-25 08:27:56 restart → 08:29:40).
+  `scripts/holiday-prep-go.txt` on autorun via
+  `node glitch-run.js start --buy a8,a9,a15,a16 --buy-script holiday-prep-go.txt`.
+  Lord08 and Lord09 went in on **try 1** (08:28:55), Lord16 on **try 2** (08:29:40). The
+  two that refused got the already-documented `ok=-25 Manufacturing fortified units`
+  (above) and were simply waited out by the loop's 40 s rounds. Second live confirmation
+  that one restart is enough when the window is under 30 minutes.
+- **Emptying "every goals row" for an account also hits its saved SCRIPT loadouts.** The
+  `goals` table holds rows of `kind='script'` (a console's script-box loadout, keyed
+  `<cityId>:load1`). A blanket `UPDATE`/`goals.set` over `WHERE accountId = ?` wipes those
+  too. They cannot block a holiday, so **filter on `kind='goal'`** — 2026-09-25 a8's
+  `script/4088776:load1` was emptied and restored from the backup JSON straight after.
+- **A new holiday can read `furlough: false` in the Director for a quarter of an hour, and
+  the account IS on holiday** (2026-09-25, found while holidaying four accounts). The
+  snapshot's `furlough` and `holidayRun()` used DIFFERENT definitions: holidayRun counted
+  `game.holiday` (the login artifact) OR the protection buff, while the snapshot counted
+  the protection buff OR `player.furlough` and **not** `game.holiday`. The protection buff
+  is PUSHED, so a console that has had no push yet reads no protection — all four of that
+  morning's holidays showed `furlough: false` on fresh 4-minute-old snapshots while their
+  own consoles had already confirmed the holiday and re-linked their goal files.
+  `session.js` now uses the same three sources in both places.
+  - **The trustworthy check is `settings holidayRun:<id>`** — that record is only ever
+    written once holidayRun() has decided the account is on holiday, so a `since` stamp is
+    proof. The Director's pill is not, until its console has restarted onto the fix.
+  - Do not conclude from a `false` that a holiday failed; read the console's `HOLIDAYGO
+    result` line and the holidayRun record before re-sending one.
+
 ## 2. Maintenance
 
 - **Daily**, announced on the system chat about 15 minutes ahead ("will be taken offline
@@ -337,6 +443,138 @@ file (see the end).
   after about a dozen rapid login attempts through it, and stayed that way. Treat a
   sudden run of `connect failed: socks5 ... host unreachable` as self-inflicted until
   proven otherwise, and stop connecting rather than retry harder.
+
+- **AN ACCOUNT ON HOLIDAY IS SENT NO MAINTENANCE ANNOUNCEMENT** (2026-09-23, from the
+  console logs of that morning's maintenance). Every console that was playing normally
+  logged four copies of "Evony Server ss71 will be taken offline for daily security
+  maintenance" (08:45, 08:48, 08:51, 08:54 — the lead in the text counts down, so the
+  stand-down lands in the right place) and stood down at 08:54:03. The four holidayed
+  accounts — a4 Lord04, a5 Lord05, a6 Lord07, a14 Lord14 — logged **none of
+  them**. So they were still connected when the server closed every socket at
+  09:00:00.6, and then spent the whole window on the ordinary reconnect ladder: attempts
+  at 09:00, 09:01, 09:03, 09:08, a proxy change at 09:11 and the same again, every one of
+  them answering `connect failed: socks5 ... host unreachable`. That is the login churn
+  that holds an account back half an hour, and it is how the proxies get killed (above).
+  They were still out at 09:18 while the rest of the fleet was back. *Why the server does
+  not send it is unverified* — holiday mode presumably drops the account out of the
+  system-chat broadcast. Do not assume a quiet console means no maintenance.
+- **One bot hearing it now stands the whole fleet down** (2026-09-23, the user asked for
+  it: "the bots tell the director it's maintenance now"). The first console to hear the
+  announcement, or to find the game port closed, writes `maintWindow:<server>` in the
+  ORG's settings (`maint.js`) and every other console adopts it as its own stand-down —
+  holidayed accounts included. The Director reads the same record and makes **no poll
+  login** while a window is open, and declares one itself when the fleet's own behaviour
+  says so: two consoles reporting the server down, or three losing the game socket in the
+  same uptime sweep (they do not share a proxy; one console alone proves nothing, because
+  a dying proxy looks exactly the same). One account still logged in vetoes it — the
+  server is up. **Every way back in now writes `maintOver:<server>`**, not just the
+  dormant race's monitor, which is what left it stale on 2026-09-20. *In code 2026-09-23;
+  it reaches a console only when that console restarts, and the Director when it does.*
+
+- **OUR OWN MARKET SPAM CAN FAKE A MAINTENANCE — the fleet stood itself down at 11:07 on a
+  day maintenance had ended at 09:19** (2026-09-25, the user: "suddenly all my bots think
+  its maintennance? at 11:08 AM"). The whole fleet was pushing the glitch play at full
+  throttle. The server stopped answering, and between **11:05:13 and 11:06:15 every one of
+  the 21 consoles lost its game socket** — most of them with
+  `heartbeat failed (no reply in 30s, 20 market writes in flight) — cycling the socket`,
+  the last frames sent being four `trade.newTrade`. The scripts were already logging
+  `no reply to trade.newTrade (server is ignoring this account — rate limited)`. So the
+  drops were self-inflicted: too many market writes in flight, no reply, heartbeat times
+  out, the console closes its own socket. All 21 did it inside one minute, which is
+  exactly the shape the Director reads as the server going down.
+  The sweep at ~11:07:03 saw three consoles dropped and **none connected**, so
+  `maint.verdict` said `'down'`, `maintWindow:ss71` was written with
+  `"3 consoles lost the game socket at once"`, and all 21 accounts were told to stand down
+  until 11:21:03.
+  **The "one account still logged in vetoes it" guard cannot help here**, because a
+  fleet-wide stall takes every account at once, so no console is connected in that sweep.
+  Worse: a2 Lord02 **did reconnect at 11:07:50** — proof the server was up — and was
+  told to stand down 3 seconds later, before the next sweep could see it connected and
+  call `'back'`.
+  **The tell:** the game port was open the whole time. `216.66.17.119:443` (ss71) answered
+  a TCP handshake in ~240 ms from this machine while the fleet sat in the fake window.
+  `maintenanceFromFleet` (director.js) declares from the drop counts alone and **never
+  probes the port** — the one check that separates "the server is down" from "we wrote
+  ourselves off the server". The Director already has `getServerConfig('ss71')` and
+  `testProxy` a few hundred lines away (the `/api/proxies/test` handler).
+  Also: **there is no way to cancel a false window** — no Director endpoint, no UI button.
+  The only route is writing `maintOver:<server>` into the ORG's settings by hand.
+  A fake window is not free: 21 accounts stop playing for the 15 minutes to `resumeAt`,
+  and every running script stops with them.
+  *Both gaps are unfixed as of 2026-09-25.*
+  **The release worked exactly as designed**, and fast: `maintOver:ss71` = `Date.now()` at
+  11:17:18, and 19 of the 21 consoles were logged in by **11:17:52** — 12 to 34 seconds,
+  no restart, every running script kept. Each one took the designed path,
+  `port is open — login attempt 1 after maintenance in 2s` → `logged in as … — 10 city(ies)`
+  → `maintenance plan cleared` → `back online after maintenance`. Within a minute the fleet
+  was placing hundreds of orders again (`10 of 10 placed`) against a handful of refusals.
+  Two accounts were never in the window at all: a18, whose `maintPlan` was `null`, stayed
+  connected right through — and it is the one still being refused almost everything
+  afterwards (3 placed against 120+ refused), because it never stopped hammering while the
+  others were stood down. **A console that sits out the stall recovers; one that keeps
+  pushing stays throttled.**
+
+- **NO NETWORK LOOKS EXACTLY LIKE MAINTENANCE — and a changed public IP kills every proxy
+  at once** (2026-09-25 evening, the second false window of the same day, different cause).
+  The PC is set to start the Director at boot; it booted **with no wifi**. Every console's
+  game-port probe failed, so each concluded the server was down, and at **20:12:24** the
+  Director wrote a window: `"22 consoles report the server down"`, stand down until
+  20:26:24. The game server was up the whole time.
+  **A console cannot tell "the server is down" from "I have no network."** `portOpen()`
+  fails the same way for both, and `armRaceFromServer` (session.js) declares a fleet-wide
+  window off `detected: server down`. A boot with no network therefore stands the entire
+  fleet down by design.
+  **Then the network came back and the fleet still could not play**, because the public IP
+  had changed. Every proxy line in `proxies.txt` is a bare `host:port` with **no
+  user:pass** — so Webshare authenticates us by **IP allowlist**, and the new IP was not on
+  it. All 100 proxies answered
+  `socks5: no acceptable auth method · http: CONNECT returned 407` (the app's own
+  `testProxy` says it in plain words: *"it wants a login: give the line as
+  host:port:user:pass, or allow this PC's IP at the provider"*). 12 of 12 sampled failed.
+  **a23 Lord23 is the only account with `proxy=""` — it connects direct.** That is why
+  it was the one and only console that got back in (20:15:02), and its login wrote
+  `maintOver:ss71`, which released the whole fleet without anyone touching the database.
+  A direct-connect account in the fleet is worth keeping for exactly this reason.
+  **The check that separates the two cases:** the game port direct from this PC
+  (`216.66.17.119:443` answered in ~300 ms) against the same port through a proxy. Port
+  open direct + every proxy refusing = our side, not Evony's.
+  **After any router reboot, ISP reconnect or move, the public IP must go back on the
+  Webshare allowlist** (`curl http://api.ipify.org` gives it — it was <home-ip> that
+  evening), or the proxy lines must carry `host:port:user:pass`. Until then the fleet
+  cannot log in at all, however healthy the game is.
+  **CONFIRMED and fixed the same evening.** The cause was travel: a new wifi network, so a
+  new public IP. The user put the new IP on the Webshare allowlist and the proxies came
+  back at once — **22 of the 23 accounts' proxies passed** `testProxy` on the retest
+  (600–1500 ms tunnels) against 0 of 12 before it. No console restart was needed: the
+  fleet reconnected itself between **20:19:50 and 20:22:18**, on the ordinary 30 s port
+  probe and reconnect ladder. The one remaining failure, a10 Lord10's
+  `<proxy-ip>:8073`, is `socks5: timeout · http: timeout` — a dead proxy, a different
+  fault from the allowlist, and a10 got back in anyway.
+  **So the signature is worth trusting:** `no acceptable auth method` / `CONNECT returned
+  407` on EVERY proxy = the allowlist, fix it at the provider; a `timeout` on ONE proxy =
+  that proxy is dead, let the rotation handle it.
+  *Unfixed in code as of 2026-09-25: nothing distinguishes a dead local network from a dead
+  server before declaring a window — travelling with this PC will do it again.*
+- **IT HAPPENED AGAIN OVERNIGHT, WITHOUT TRAVEL** (2026-09-26, the user: "the director now
+  says maintenance for everything"). The public IP changed again, from <home-ip> to
+  **<home-ip>**, sometime in the early hours, with the PC left where it was. The
+  likeliest cause is the ISP or router handing out a new IP (*unverified*). From 03:01
+  (11 consoles lost the socket at once) the Director declared a fake window, then
+  re-declared one **every hour at about :47** ("21 consoles report the server down") until
+  morning. a2's first reconnect after a kick hold, at 03:24:25, already answered
+  `socks5 …: no acceptable auth method`. At 08:30 the game port answered direct in 270 ms,
+  3 of 3 sampled proxies gave the allowlist signature, and a23 Lord23 (direct) was the
+  only account logged in. The glitch log's 03:01 "before" record was taken off this fake
+  window, not a real maintenance. **So the IP can change on its own at any time: check
+  `api.ipify.org` against the Webshare allowlist first whenever the fleet is stuck in
+  "maintenance" outside 08:30–09:30.** For a lasting fix, put user:pass on every proxy line
+  (`host:port:user:pass`) so a new IP no longer matters.
+  **Fixed at ~08:38 by the user updating the allowlist.** This time Webshare took about
+  **4 minutes** to accept the new IP: proxies were still refused at 08:41:43 and passed
+  from 08:42:16, and even then one of the three sampled still refused. **No restart was
+  needed.** The consoles came back by themselves on their 30 s port probe between
+  08:42:23 and 08:43, with every script kept. So after an allowlist change, wait 5 minutes
+  and retest before touching anything.
 
 ## 3. The market
 
@@ -497,6 +735,14 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   line appeared and the account never traded, while its log filled with goal work.
   **Check for `[autorun` lines with the new timestamp after every start**, not the
   "console up" line.
+  **Happened again 2026-09-24 07:20 and 07:27 (Lord02 a2):** `node botctl.js stop a2` +
+  `start a2` (to load a UI/endpoint change) killed the stone buy/cancel loop and **neither
+  restart brought it back** — no `[autorun` line after the new login. The last `[autorun`
+  lines in the log were the OLD process's, seconds before the stop; they look like a resumed
+  loop if you only read the tail. Compare the timestamp with the login line. A plain
+  `botctl` restart does not carry the play's script (it is set by `glitch-run.js start`), so
+  **a UI-only change to a console that is mid-play should wait or go to the other consoles
+  first — or be restarted through `glitch-run.js` so the script comes back.**
 - **"no reply to trade.newTrade (server is ignoring this account)" = rate-limited.** Seen
   on Lord02 at 21:28 after two restarts in ten minutes while the whole fleet was
   hammering the market. Nothing it sent was accepted and its socket kept closing. Leave it
@@ -509,6 +755,181 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   resource figure lags every fill by the march, and a busy seller's snapshot is stale on
   top of that. Count orders, never balances — and note a console log read as latin1 turns
   the "·" separator into "Â·", which silently breaks any regex that includes it.
+- **The Trading tab starts the BUYING side first, whatever side is ours** (2026-09-23,
+  trading-setup.js: `run.phase` goes 'buy' -> 'delay' -> 'sell'). In a RESOURCE play that
+  is right — our buyers' bids go on the book first. In a **GOLD** play the buyers are the
+  holiday banks, so their 150 bids rest on the book alone for the whole delay and rival
+  SELLERS fill them: that is bank gold going to other players, and it is the opposite of
+  the rule above ("start our normal accounts' side first"). Measured on the 09:30 gold
+  pass: the nine banks bid from **09:30:56–09:31:38**, our twelve sellers only placed from
+  **09:33:04–09:34:31** — between 2 and 3.5 minutes of exposure. Until the tab orders the
+  two sides by which one is OURS, either set the delay to 0 for a gold play or start the
+  selling side by hand with `glitch-run.js start` before pressing Start process.
+- **An account's live holiday state is readable straight from its console** (2026-09-23),
+  with no Director and no login: `GET http://127.0.0.1:<port>/api/session` with the header
+  **`x-otto-internal: <auth.internalToken()>`** (auth.js `INTERNAL_OK` lists /api/session).
+  `protection.kind === 'holiday'`, with `protection.left`, is the truth the Director itself
+  uses; `holiday` on the same object is only the login artifact (§1). This is the check to
+  run over every account before a play starts. On the 09:30 gold pass it found all nine
+  buy-side accounts genuinely on holiday, and Lord03 and Lord16 — taken out that
+  morning — correctly on the selling side and off the `holi` list.
+- **`capGold` is per CITY, not per account** (control file: `city.resource.gold > capGold`).
+  The user's "stack up to 20t throughout" on 2026-09-23 means 20t a town: twelve selling
+  accounts × 10 towns × 20t = 2,400t of room against the nine banks' ~2,559t of gold, so
+  the whole bank balance has somewhere to land. Read per-account it would be nonsense —
+  five of the sellers already held 59–129t and would have sat the play out at once.
+  **He raised it to 25t a town the same morning** (09:48), and said why: *"so we don't
+  decrease the amount of cities working together too much"* — a town over the cap SITS OUT,
+  so a cap set close to what the towns already hold quietly shrinks the number of cities
+  trading, and the number of cities trading is what makes a pass fast. So when a gold pass
+  feels slow, check the SITOUT lines and the cap before blaming the fleet: **the cap is a
+  throttle on parallelism, not only on where the gold lands.** Set it above what the
+  fullest towns hold, not at it.
+  A cap edited by hand in the control file is live within a second, but the **Trading tab's
+  saved setup still holds the old figure** — pressing Apply or Start there writes it back
+  over the edit. Change it in both.
+- **`capRes` does NOTHING in a gold play** (2026-09-23, read off the control file after I
+  had claimed the opposite). Both the sitout line and the `maxOrders` room line are gated on
+  `kind == "res"`, and `kind` is `"gold"` whenever the price is 50 or more. So in a gold
+  pass the buying banks are held only by the **hard** `foodCap` (950b, with its 2b margin) —
+  at ~600b of food a town that is ~350b of room, about 3,500 orders, ~52t of gold a town,
+  which comfortably covers the richest bank’s ~48t a town. The soft `capRes` figures are for
+  OUR buyers in a **resource** play; do not raise them “so the banks have room”, they were
+  never in the banks’ way. `capGold` is the mirror: gated on `kind == "gold"` and the sell
+  side, so it does nothing in a resource play.
+- **Counting which towns a play actually reached:** the `autorun: <file> started in <city>`
+  note goes to the session notes, **not** to `console-<id>.log`. In the log, count the
+  distinct `[autorun <city>]` prefixes after the last `Evony console ->` banner — that is
+  the only per-town evidence there. (2026-09-23, after a first reading of "0 towns
+  everywhere" that was purely the wrong grep.)
+- **Taking a bank out of holiday mid-play leaves its BIDS on the book, and nothing in the
+  control file takes them down** (2026-09-23, Lord07). Dropping it from the `holi` list
+  stops it placing anything new within a second — the safety line sets `hold = 1` and
+  `goto holdit`, which is **before** the cancel loop, so the loop never runs. And even if it
+  did, on the buy side its own bids at the play's price are the ones the file wants to keep.
+  So the account sits there with up to **10 bids a town × 10 towns × 15.07b = ~1.5t of gold**
+  live on the market, fillable by any rival seller, and every one of those fills is now real.
+  What actually clears them is **switching that account to the other side**: the sell script
+  sets `want = 1`, which makes every resting BUY stale, and the cancel loop takes them all
+  down. A restart onto a cancel script does it too. Both wait on the console's 10-minute
+  autorun gate, so there is a window either way.
+  **Therefore: an account comes out of holiday only after its runs are stopped AND its book
+  is cleared** — otherwise plan for that gap. On 09-23 Lord07 spent **2.768t → 0.070t
+  of gold in about five minutes** across the changeover; most of it went to our own sellers
+  (they were the ones selling food at 150 at that moment), so it was mostly a transfer
+  between our accounts rather than a loss, but that was luck, not design.
+- **`protection: none now (holiday has ended)` in a console's `[conn]` log is the live
+  confirmation** that an account has left holiday, and `/api/session` then reads
+  `protection: null`. **A disconnected console keeps serving the STALE buff** — Lord07
+  still read `holiday 22h37m` at 10:01 while `connected` was false, minutes after the user
+  had taken it off. Never read protection off a console that is not connected; `connected`
+  is part of the answer, which is why `tradingAccounts` in director.js only trusts the buff
+  when `connected` is true.
+- **Taking an account off holiday in the game client kicks our console** (one login per
+  account, §1). Lord07 dropped at ~10:01 and was back at 10:01:51 by itself. Expect the
+  disconnect; don't restart it into the kick hold.
+- **A restart costs that side the next TEN MINUTES — think before reaching for one**
+  (2026-09-23, learned the expensive way). The gold pass stalled at ~09:57 with both sides
+  on full books; our twelve sellers were restarted at **10:15:10** to clear them. A minute
+  later the user asked to turn the play around (banks sell food cheap, ours buy) — and that
+  could not happen until **10:26:08**, because the restart had set each console's autorun
+  gate. The login is not the cost; the gate is. **Before restarting a side, ask whether a
+  change of direction, resource or side might be wanted soon.** If it might, change the
+  control file instead and leave the gate unburnt — everything in that file is live within a
+  second, and only a change of SCRIPT (which side an account is on) needs a restart at all.
+- **A price step frees a stalled book on one side and may not on the other** (2026-09-23,
+  cause *unverified*). Both sides had stopped placing with ten resting offers a town.
+  Stepping 150 -> 140 at 10:13 made the BANKS cancel and re-list inside a minute (72 orders
+  at 140 across seven of them). **Our sellers placed nothing at 140**: every town stayed in
+  `glitch-res-sell.txt`'s `full` branch (`line 41: sleep 0.3`) with no `SITOUT` echo, which
+  means line 22 (`free < 1`) — their ten slots were still held by the old 150 offers, so the
+  control file's cancel loop had not freed them. Why is not known yet.
+  **And the log cannot answer it:** the control file is reached by `@call`, and the `@`
+  silences the called file's own logging, so its `execute "canceltrade …"` lines never
+  appear. You cannot tell from a console log whether the cancel loop ran. If this matters
+  again, add a temporary echo on the CALLING script, not in the control file.
+- **The garrison food floor must exempt holiday accounts** (2026-09-23). A floor that keeps
+  a day of `troopCostFood` under any food sale is right for our own towns, but a holiday
+  account is *meant* to sell every last b — the next maintenance puts it all back. Written
+  as `if res == "food" && side == "sell" && holi == 0 && keepRes < dayfood keepRes = dayfood`,
+  and it has to sit **after** `holi` is worked out, not with the `keepRes` lines at the top.
+- **Turning a gold play into a resource play changes which side each account must run**, so
+  it is the one change that cannot be done from the control file alone. Dropping the price
+  under 50 is safe on its own — the SAFETY lines immediately HOLD every non-holiday account
+  that is still on the selling script, so nothing is dumped cheap in the gap — but nothing
+  trades until both sides are restarted onto the opposite scripts. **Our buying side goes
+  first**; start the banks selling first and the cheap food goes to rival buyers.
+- **A PRICE CHANGE DE-SYNCHRONISES THE TWO BOOKS — it does not "free" them** (2026-09-23,
+  observed twice, and it is the opposite of what the skill's "switch resource / tune the
+  price live" wording implies). On a price step the **holiday side cancels and re-lists at
+  the new price within a minute; OUR side does not.** Our towns stay at `free < 1` with ten
+  orders resting at the OLD price, and an order at the old price never crosses one at the
+  new price — so the step stops the matching dead instead of restarting it.
+  - 150 -> 140 at 10:13: the banks placed 72 orders at 140 inside a minute; our twelve
+    sellers placed **nothing** at 140 and sat in `glitch-res-sell.txt`'s `full` branch
+    (`line 41: sleep 0.3`).
+  - 0.001 -> 0.002 at 10:55: the banks placed 204 orders at 0.002 in 40 s; our thirteen
+    buyers placed **6**, and sat in `glitch-res-buy.txt`'s `full` branch (`line 35`).
+  - It is NOT the caps: of 130 buying towns, only 10 had ever printed `SITOUT`, so they were
+    at line 24 (`free < 1`), not over `capRes`/`capGold`.
+  - **The early-session spikes that made a price step look like the cure were the RESTARTS
+    that went with it, not the price.** A fresh start re-lists everything at the live price.
+  - **So: do not step the price to unstick a stall.** Either put the price back to what our
+    side's resting orders are still at (the banks re-list onto it, and the books cross
+    again — no restart, instant), or restart OUR side so it re-lists at the live price.
+  - Why our side does not re-list is **unverified**. The cancel loop looks symmetrical
+    (`if t.tradeType == want && t.price == price goto next`, else cancel), and the control
+    file is reached by `@call`, which silences its `execute "canceltrade …"` lines — so the
+    log cannot show whether the loop ran. To chase it, echo from the CALLING script.
+- **The real throughput ceiling is 10 offer slots a city, with BOTH sides resting**
+  (2026-09-23). A fill happens only when a NEW order crosses a RESTING one; two resting
+  orders at the same price never match each other. Each side places until its ten slots are
+  full and then waits, so once both books are full the play deadlocks with no refusals, no
+  rate limiting and plenty of stock on both sides. At 10:53 every one of our 13 buyers and
+  6 of the 8 banks were in the `sleep 0.3` branch, the banks still held ~28t of food, our
+  towns were far under the 600b cap, and the Director read "steady, no drops or unanswered
+  orders in the last 10 min". **The short side sets the pace:** 8 banks x 10 towns = 80
+  selling towns against 130 buying towns, and only 98 of the 210 towns were trading at all.
+- **What the slot recycling is worth, measured (2026-09-23 11:36-11:39).** With the buy
+  side recycling its slots (`slotWait` / `recycleAfter`, live in the control file) the play
+  ran at **36,569 fills in three minutes = 1.22t of food a minute, ~95% capture** of the
+  3.84t the banks sold in the same window. Yesterday's best buy-back pass was 94b a minute.
+  So the deadlock, not the price and not the rivals, was the whole difference.
+  - **Count fills as `placed − cancelled`** from the logs: the recycling makes "placed"
+    meaningless on its own (44,139 placed, 7,570 cancelled in those three minutes), and
+    snapshots are worse still — they showed 71b a minute, a 17x understatement, because
+    bought food travels.
+  - The SELLING side's slots free only by filling: 38,394 sells placed, **zero cancels**.
+    That is the clean way to measure what the banks really moved.
+- **A long-running seller sits out while its towns are still full** (2026-09-23 11:41, Lord04).
+  Its run had been selling since 10:27 and the control file's own tracker (`startRes −
+  traded × order`, which counts every order PLACED as sold) had walked down to nothing, so
+  every city printed "SITOUT sell food — over a cap or under its runway" while really
+  holding 522-720b a town — 6.2t of the fleet's food idle, the largest holder of the eight.
+  Nothing in the log says "the tracker is stale"; the tell is a bank that places no orders
+  while its snapshot still shows food. **A relog resets `startRes` and `traded`** and it was
+  selling again within a minute. Check every seller's placement count against its snapshot
+  before assuming the supply is gone.
+- **After a pass that spends an account's gold, its sell side will not start until it
+  relogs** (2026-09-23 13:02). Every bank sat in `glitch-res-sell.txt`'s "no room / not
+  enough gold" branch (`sleep 0.3`, line 41) placing nothing, because the script checks the
+  city's gold against the 0.5% listing fee and the console's CACHED gold still read ~0 from
+  the end of the 150 gold pass. Nothing in the log says why — the branch is silent. A relog
+  refreshed the balances and all eight banks listed stone within seconds. `canceltrade`
+  reported 0 offers, so the slots were never the problem.
+- **Changing the RESOURCE mid-play needs no restart — changing the PRICE still does**
+  (2026-09-23 14:51). Stone -> wood was a two-line edit to the control file (`res` and
+  `prevRes`); within 45 seconds the banks were listing wood (4,182 orders) and our side
+  bidding on it (10,442), with no console touched. `prevRes` is what makes it clean: both
+  sides take their old-resource orders off the book, so the ten slots are free for the new
+  one. Contrast the price fault above, where only the banks re-list.
+- **The selling side sets the pace, and it fades as sellers empty** (the stone pass,
+  2026-09-23). Eight banks moved 69.2t of stone at ~950b a minute; once four had sold out
+  the remaining four managed ~250b a minute between them — each survivor lists at about
+  half the rate it did when all eight were going, because a seller's slot only frees when
+  an ask fills. 54.6t moved in about 50 minutes, 78% of it caught by our side. Leaving the
+  last 14.6t behind costs nothing: a holiday account's stock returns at the next
+  maintenance, so the tail of a pass is always the cheapest part to abandon.
 - **Speed is the whole game** — the piggybacking bots take whatever we are slow about.
 - **How it runs:** the **evony-glitch skill** (`.claude/skills/evony-glitch/`) has the whole
   procedure and the user's phrases ("glitch gold, through stone", "glitch stone" …).
@@ -585,6 +1006,8 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   that read `false` for all four banks on 2026-09-22 while every one of them was on holiday
   (27-31h left). The holiday state is each console's live header — `/api/session`, readable
   with the internal token — which is what the Director uses. Check THAT before any glitch.
+  **For a stranger, whose console we do not have**, the answer is the `state` on their
+  castles on the map: 5 is holiday (§6). That is how the Monitor tells who is sitting out.
 - **An exhausted resource makes every restart pointless, and looks exactly like a broken
   fleet.** A selling city ends its run the moment the resource is under `keepRes` (10b), so
   once the holiday accounts are sold down the cities die on their first loop, the watchdog
@@ -697,6 +1120,220 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   failed town sold that day is gone. `scripts/glitch-skip.txt` kept those three towns
   out of the plays until **2026-09-22 12:20, when the user had the list emptied**. No
   town is skipped now; about 1.3t of wood had been sitting in those three. The Director's Resources tab flags them (see the resource record near the end).
+
+
+### Turning the play around: the new BUYING side must be told to drop its old offers (2026-09-24)
+
+- **A bare `canceltrade` first, or the buying side places nothing at all.** At 09:30 the
+  play turned from "the banks sell stone at 0.001" to "the banks buy food at 150". Every
+  bank city came back from the restart with its ten slots still held by the ASKS it had
+  been resting (stone at 0.001, then food at 150 for the two minutes between the control
+  file changing and the restart). `glitch-res-buy.txt` computes `free = cap -
+  city.tradesArray.length`, so free was 0 in all 80 towns: for eleven minutes the eight
+  banks placed **not one bid**, while their stone asks at 0.001 sat on the book for any
+  rival to take. The control file's own per-offer cancel loop did NOT clear them.
+  The fix is the one that worked on the selling side on 2026-09-23: a bare `canceltrade`
+  (every offer of the city, unfilled ones refunded) as the first line of the script —
+  `scripts/cancel-clean-then-buy.txt`. Within 90 seconds of that restart the banks were
+  placing 86-445 bids each. **Whenever the play reverses, restart the new buying side onto
+  a script that cancels first.**
+- **A control file that is `@call`ed is SILENT, so a stuck side says nothing.** `@` first on
+  a line runs it without logging (script.js:262), and every glitch script calls the control
+  file as `@call "glitch-res-control.txt"`. So its `echo "HOLD …"`, its cancels and every
+  refusal inside it are invisible in `console-<id>.log` — the account looks idle for no
+  reason. To see why a side is doing nothing, put the echo in the CALLING script
+  (glitch-res-buy.txt has a `DBG` line for this), never in the control file.
+- **A 60-second cadence in the log is the tell for a silent hold or a stalled cancel loop.**
+  The only 60 s sleep in the play is the control file's HOLD; a loop that comes round once
+  a minute instead of every two seconds is in it (or in a cancel loop whose commands are
+  timing out), whatever the log says.
+
+- **A city stuck on a STALE trade list places nothing and says nothing — only a fresh login
+  clears it.** 2026-09-24 11:36-12:04: Lord05, Lord06 and Lord14 came out of the gold
+  pass, were restarted onto `cancel-then-sell.txt`, echoed `SITOUT over - trading again` in
+  all ten towns each — and then placed **not one order for 28 minutes** while holding 15.2t
+  of stone. Nothing was wrong with the play: `sitout` was 0, so the run was falling through
+  to `free = cap - city.tradesArray.length` and finding no free slot, on a cached list of
+  ten offers the server no longer had. Neither the script's own bare `canceltrade` on its
+  first line (it runs before the console has the list) nor a second and third one from the
+  control file changed anything. **Restarting those three consoles fixed it instantly** —
+  4,700-5,770 orders each in the next 110 seconds, against ~1,000 from the banks that were
+  already going.
+  - The tell: a seller with stock, no `SITOUT` line, and a log that shows only `sleep 0.3`
+    or `canceltrade buy` coming round. Place-count it (`glitch-run.js flow`) rather than
+    trusting that a restart alone put it right — **it had already been restarted once.**
+  - Do not chase it in the control file. The list is the console's cache of
+    `trade.getMyTradeList`, kept current by the server's `TradesUpdate` pushes; a login is
+    the only thing in OTTObot that re-seeds it.
+- **What the pacing IS for, seen the same afternoon.** On the user's instruction the delay
+  was taken to 0 on both sides at 13:22. Nothing happened for the first hour. Then, from
+  about 14:45, accounts began answering **"no reply to trade.newTrade (server is ignoring
+  this account)"** — Lord12 five times and Lord13 four in 92 seconds, then Lord04 ten times
+  and Lord06 nine, then Lord10, Lord12 and Lord13 again, which had been clear an hour
+  earlier. Their orders fell from ~1,000 per 92 s each to ~280 and the fleet from 664b a
+  minute to **99b**. Our own thirteen answered it 17 times in one window too.
+  - **The limiter is cumulative and it SPREADS.** It does not arrive when the pace changes;
+    it builds and then shows up across the fleet an hour or two later. Throughput measured
+    in the first minutes after a change says nothing about it.
+  - Climbing back out: 1 s cleared two accounts, 3 s brought Lord06 from 0 to 455 orders,
+    Lord04 needed 6 s, and at **2 s on both sides** the banks went back to ~440 orders each and
+    all but one were clear. Per-account pacing (`if u == "lord04" sellPace = 6`) is the way to
+    protect one without slowing the other seven — Lord06 needed the same at 3 s on 09-20.
+  - **Never restart an account while it is being ignored.** Pace it and wait; the limiter
+    eases with time as much as with the pacing.
+- **The loop pacing is NOT what limits throughput — measured 2026-09-24 13:00.** Asked
+  whether the play was "putting in unnecessary wait times", the control file's one-second
+  sleep was cut to 0.3 s on the selling side and the fleet was counted over a minute either
+  way: **1,084b a minute at 1.0 s, 965b at 0.3 s** — no gain, slightly worse — while the
+  sellers' "market is full" loops went up FOUR times (Lord10 46 -> 196, Lord04 138 -> 588).
+  The selling side is not waiting on us; it is waiting for its ten slots to be matched. A
+  shorter loop only spins against a full market and buys rate-limit risk for nothing. Put
+  back to 1.0 s, and `sellPace` / `buyPace` are separate in the control file now so either
+  can be tuned live.
+- **What DOES set the rate is how many bank CITIES are selling.** Each selling town runs at
+  roughly 270 orders a minute (27b of resource), whatever the pacing, so the fleet rate is
+  about `27b x towns`. Four live banks = ~1.08t a minute; all eight = **1,332b a minute**
+  (2026-09-24 13:03), which beats the 1.22t best of the day before. A bank that goes quiet
+  is worth a relog immediately — it is worth ~270b a minute.
+- **What one town sees is the fleet rate divided by the buying towns.** 1,332b a minute
+  across 13 accounts of ten towns is about **10b a minute a town**, or ~600b an hour — which
+  is the "400b incoming" figure remembered from a good day. A town showing "20b" over a
+  short window is not a fault; count the fleet from the logs before chasing it.
+### What the 2026-09-24 maintenance put back (the day the play ran overnight)
+
+- The eight banks (Lord04, Lord05, Lord06, Lord10, Lord11, Lord12, Lord13,
+  Lord14) came out of the 09:18 maintenance with **2,420.5t of GOLD**, 41.4t food,
+  23.5t wood, 68.1t stone and 18.5t iron put back into them — against 32.5t of gold and
+  almost no resources going in. Gold is restored like any other resource, and after a day
+  of selling resources cheap into our accounts it is the biggest single thing the glitch
+  gives back. Filed in the glitch log as `maint:2026-09-24` (see below).
+- **The glitch log had never recorded anything: its tables did not exist.** `glitch-log.js`
+  is only loaded by the Director, and the Director has not been restarted since it was
+  written (2026-09-23), so `glitch_maint` / `glitch_runs` were never created and no
+  before/after record was ever taken. Filed 2026-09-24 by hand from what was already
+  there — `before` = that morning's 08:30 record, `after` = the consoles' own post-restore
+  snapshots — and marked `source = assumed` in the row. **Until the Director is restarted,
+  no maintenance is being recorded: take the record by hand on the day, or it is lost.**
+
+- **Sizing `capGold` (or any cap on the side that RECEIVES): size it on where the towns
+  END, not where they start** (2026-09-25). Asked to raise the gold cap to "75t or 100t"
+  with at least half our towns selling, the useful numbers were not the current holdings
+  but the arithmetic of the pass: our 110 towns held 41.3t of gold at the median and 50.1t
+  at the most, so *every* candidate cap already had 99-100% of them selling and the choice
+  looked arbitrary. The banks held 3,092t, which is ~28t a town once moved, so a typical
+  town FINISHES near 69t and the fullest near 78t. 75t would therefore have dropped the
+  fullest towns onto the sitout in the closing stretch — the worst moment, when the last
+  gold is hardest to shift. 100t was chosen for that reason. **Always add the incoming
+  amount / town count to the current maximum before picking a cap.**
+- **Check the RECEIVING side's room before a gold pass, against the cap that actually
+  binds.** At price >= 50 `kind` is "gold", so `capRes` (the 900b food soft cap) is NOT
+  read — only the hard `foodCap` 950b is. Measuring against 900b said the nine banks had
+  26.3t of room for a 20.6t need (a worryingly thin 28%); against the 950b that really
+  binds it was 30.7t, or 149% of the need, with no town sitting out at the start. Read the
+  `kind` gate before believing a capacity figure.
+- **A lord name is NOT the account label, and the comparison is case-sensitive.**
+  `u = player.playerInfo.userName`, and the fleet's are `lord04`, `Lord05`, `points`,
+  `Lord19` and `Lord15` against labels Lord04, Lord05, Lord13, Lord19 and
+  Lord15. A mis-cased name in the `holi` list silently drops that account to the
+  non-holiday branch, where the safety HOLDS it — fail-safe, but the pass quietly runs
+  without it. Read the lord off a snapshot (`json.lord`) before editing the list.
+
+- **Cancelling to "recycle" market slots was a REGRESSION. Do not add it back without a
+  measurement** (the user, 2026-09-25). The original and correct behaviour is: read how
+  many offer slots are free (`free = cap - city.tradesArray.length`) and place exactly that
+  many (`x{free}`) each loop; a full city waits for one of its own offers to go. The user:
+  *"what worked really well was when we just would check x number of spots in market and we
+  place that number each time … that was like 3 days ago and we had 400b+ incoming of food
+  in one city at a stage, highest ive seen in past 2 days was 113b … we did change something
+  and its a change for the worse."* The dates line up: the **buy** script gained its
+  cancel-and-re-list recycle on 2026-09-23, AFTER that fast run, and the **sell** script
+  gained one at 10:02 on 2026-09-25, after which that pass got worse, not better. Both were
+  removed at 10:25; each `full` branch is now `waitslot {slotWait}` then `goto top`.
+  - **Cancelling a SELL does not refund the fee.** The console says so plainly — *"about
+    749,999,993 gold in fees stays paid"* per town per cycle (Lord03, 10:11). So a
+    recycling sell side BURNS gold to destroy orders that would otherwise have filled.
+    Cancelling an unfilled BID is refunded; the two are not symmetric, and the buy script's
+    comment ("Cancelling costs nothing") was only ever true of bids.
+  - The deadlock argument the recycle was written for ("two resting orders never cross")
+    did not survive contact: with the recycle off the banks went on draining normally.
+- **`recycleAfter` is NOT live-tunable, whatever its comment says** (2026-09-25). The
+  control file is `@call`ed every loop and prices and caps do apply within a second, but
+  `recycleAfter` was set to 999999 at 10:16 and the `canceltrade` it guards still fired at
+  **10:22:18** on Lord08, six minutes and many loops later. The mechanism is *unverified* —
+  what is established is that the knob did not stop the behaviour, so a change to the
+  recycle has to be made in the SCRIPT and needs a restart. Do not trust a live edit to
+  `recycleAfter`/`slotWait` to take effect; verify in the log that the behaviour changed.
+- **Never restart the same account twice inside 10 minutes — the second restart runs
+  NOTHING** (2026-09-25, cost ~9 minutes mid-pass). A console skips its autorun if that
+  account's script started in the last 10 minutes (the evony-holiday-prep skill has said so
+  since 2026-09-22). Six sellers were restarted at 09:53 and again at 10:02:59; they logged
+  in cleanly (`logged in as Lord01 — 10 city(ies)`) and then sat there with no script at
+  all, silent in the log, while the four accounts NOT caught by the gate ran normally. The
+  tell is a console whose log simply STOPS after the `[conn] … session ready` line. Check
+  the last `[autorun` timestamp per account before assuming a restart worked.
+
+- **Run every glitch play through the Director's Trading tab** (the user, 2026-09-25:
+  *"Always trade through this trading tab please, its really useful for me to be able to see
+  whats going on … document it in the trading skill so future agents always work through
+  it."*). Starting one from `glitch-run.js` leaves that screen showing a stale play — on
+  2026-09-25 it still listed the previous day's stone sides and "Start is refused — 9
+  issues" while a gold play ran from the command line, so the user could not see their own
+  fleet. The tab also enforces the holiday check per account, works around the 10-minute
+  autorun gate and starts the buyers 60 s before the sellers. How to drive it: the
+  **evony-glitch skill**, first section.
+- **A gold pass ends when the BUYING side runs out of ROOM, not gold** (2026-09-25). Food
+  caps at 950b a city, so each bank town absorbs only what is left under that. The pass
+  moved 2,180t of 3,092t and stopped with 913t still in the banks, because the gold and the
+  room were in different accounts: Lord08, Lord09 and Lord15 held **759t between them with
+  every town at the cap** (0.02-0.13t of room each), while the banks that had room held
+  0.1t of gold. The fleet total (17.5t of room, 913t of gold) looked healthy and hid it
+  completely. **Size it as `min(gold, room x price)` per bank, then sum.** 150 is the price
+  box's maximum, so price cannot buy more gold per unit of food — room is the only lever.
+  The unblock is a round trip (the full banks sell that food back at 0.001, then flip to
+  gold again); otherwise it waits for maintenance, which resets their food and their gold.
+
+- **MOVE GOLD THROUGH STONE, NOT FOOD — and the day's order is gold, stone, food, wood,
+  iron** (the user, 2026-09-26: *"going forward as a rule transfer gold through stone, for
+  exactly this reason, because theres no more space for more food … I want the order each
+  day to be 1. Gold 2. Stone 3. food 4. wood 5. iron"*).
+  - **Why.** The carrier's cap is what ends a gold pass. Food may never pass 950b a town (at
+    1t a city's food RESETS TO 0) and both sides sit near it, so a food-carried gold pass
+    strangles itself. Measured that morning: Lord08 still held **364t of gold with 0.9t of
+    food room** — 229t of it could not move at all — while the banks with room held no
+    gold, and a bank cannot use another bank's room. Stone's cap is **2,000b a town**: the
+    same banks had **97.8t of stone room** against the ~5t needed to carry the remaining
+    740t of gold.
+  - The user spotted it from the game, not the dashboard: *"I see a bunch of accounts
+    showing over 100b in stone coming in"*.
+  - `trade-advance.js` now walks gold -> stone -> food -> wood -> iron and **flips the sides
+    per step** (a GOLD pass has the banks BUYING the carrier; a RESOURCE pass has them
+    SELLING it).
+- **The Trading tab's `clean-then-buy.txt` / `clean-then-sell.txt` did NOT cancel the order
+  book** — only the reports (found 2026-09-26). So every switch left the previous pass's ten
+  resting orders in place: after the 08:43-08:54 stone pass the gold pass that followed
+  could place **one order a city** (`sell food … x1`) because nine slots still held stone
+  bids at 0.001, and those bids went on filling — which is how the user noticed. It ran at
+  about a tenth of its throughput for ten minutes. Both scripts now `canceltrade` first;
+  after the restart every account placed `x10`. **An unfilled BID is refunded; a cancelled
+  SELL keeps its fee**, which at 0.001 is a few hundred gold.
+  - Watch the `x<n>` in `sell|buy <res> … x<n>`: it is the count of FREE slots. A fleet
+    sitting at x1 is a held book, not a slow market.
+
+- **A BANK'S GOLD CANNOT BE MEASURED WHILE ITS BIDS ARE RESTING — the committed gold is
+  invisible, and a gold pass therefore looks finished when it is not** (2026-09-26). The
+  fee AND the full price are taken when a buy order is PLACED, so a bank sitting on ten
+  resting bids a city (10 cities x 10 orders x 99,999,999 stone @ 150 = ~15b each) has well
+  over a trillion locked away and reads as almost empty. That morning the banks read
+  **0.77t of gold** after the gold pass — every one at 0.07-0.11t, apparently down to the
+  20m keep floor — so the pass was called finished. The next step (stone at 0.001) began
+  with `canceltrade`, which **refunded every resting bid**, and the banks immediately read
+  **8.64t**. Our own gold was unchanged at 8,618.5t over the same window, which proves the
+  gold came back from their own cancelled orders and not from us.
+  - **So: cancel the books BEFORE judging whether a gold pass is done.** A reading taken
+    with orders resting understates the bank's gold by roughly (resting orders x price x
+    amount). Re-run the gold step after the next switch has cleared the books.
+  - `bank-truth.js` relogs the banks for a true figure, but a relog does NOT cancel orders,
+    so it does not cure this one. Only a cancel does.
 
 ## 5. Heroes, items, cities
 
@@ -910,6 +1547,24 @@ A named play the user runs; when they say "glitch <resource>", this is what they
     and 1.25m with a War Ensign too (the user, 2026-09-18; the NEAT wiki's Attack page says
     "10 times as many troops … 1 million"). *Unverified* below Rally Spot L10: whether it
     is a flat 1m or 10× the level's limit. OTTObot's guard allows the flat 1m.
+  - A **Haunted Castle / Halloween Castle** applied to a city (`player.haunted.castle`,
+    `.adv`, `player.halloween.castle`, `.adv`, spent through `shop.useCastleGoods` on ONE
+    city) raises what a march may take by **25%** as well — 125k at Rally Spot L10 with no
+    War Ensign (the user, 2026-09-24). It leaves a **`HauntedCastleBuf`** or
+    **`HauntedCastleAdvBuf`** running; the client reads that off the PLAYER buff bar
+    (`WallBuilding.as:249`, `CastleInfoFrame.as:1317`) although the item is spent on one
+    city, so both lists are worth searching. *In the decompiled client the only effects of
+    that buff are +10% on all four resources (`CastleInfoFrame.as:1317-1324`) and the
+    castle's skin — the march-capacity part is the server's and is **unverified in code**.*
+  - **When the march is refused, read WHOSE refusal it is.** On 2026-09-24 a 125k wave was
+    turned down by **our own guard**, not by Evony: `game.js newArmy` counts the troops
+    against `rally.js marchTroopLimit` and answers in the server's shape
+    (`ok=0, errorMsg`) without sending anything — the log line reads "a march from 2 takes
+    at most 100,000 troops (10,000 per Rally Spot level), not 125,000", which is our
+    wording. A guard that cannot see a bonus must never be the reason a march the game
+    would have taken is not even tried, so the guard now adds the haunted castle's 25% and
+    **`/nolimit`** sends a march whatever it thinks. The game's own refusal costs nothing:
+    no item is spent and no troops leave.
 - **Recalling a march** (`army.callBackArmy {castleId, armyId}`, ArmyCommands.as:118): only a
   march still going out or camped can be called back — ArmyConstants.as direction 1 (out) and
   3 (camped). Direction 2 means it has already turned round and is on its way home, and there
@@ -936,6 +1591,23 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   Destruct for them).
 - **Troop training costs little next to the stockpiles** (the user, 2026-09-19): about 2b of
   resources a day per account, so it can run alongside a bank build-up — no need to hold it.
+- **The server can answer `ok` to a mayor appointment and change nothing** (2026-09-27,
+  Lord24's city 3 at 678,497). From 08:06 the user's `setmayor pol` and then the engine
+  appointed QUEEN2 (politics 502) 30+ times, every one `hero.promoteToChief -> ok`, with
+  **no `server.HeroUpdate` push** and QUEEN2 still idle. The server's own figures prove it
+  was ignored: city 3's resource `increaseRate` ran at ~21.7 wood per worker against
+  54–77 in Lord24's other cities, which all have a politics mayor — the bare no-mayor rate.
+  Nothing of ours sent a `dischargeChief` in that time. City 3 was under a steady attack
+  (Chipp, 125k waves) with the gate being opened and closed by hand, and the engine had
+  had `Status of this hero is not Idle.` for other heroes there earlier; QUEEN2 herself had
+  read status 2 (guard) on the roster from at least 23:26 the night before until the 08:01
+  relog. **Why the server ignores it is unknown** — the attack is the first suspect,
+  *unverified*. Since that day an `ok` is only believed once the roster shows the hero at
+  status 1: the script's `mayor`/`setmayor` and the Heroes tab's Promote wait 3 s for it
+  and say "the server answered ok … it ignored the appointment", and the engine, finding
+  the hero still idle on its next pass, puts the appointment on the retry ladder instead of
+  sending it every minute. Worth trying when it happens: appoint in the real client, and
+  appoint again once the attacks stop, to see which condition the server wants.
 - **Instant training.** The mayor's **attack** sets troop training time. The mayor's
   **politics** sets construction, including wall fortifications. Research sets **intel**
   (research time = base × 0.995^intel).
@@ -1144,6 +1816,108 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   - The `attack` line's "march N s" is not the one-way time; `marchcheck` and
     `travelinfo` give the server's figure. Returns are fast with Relief Stations.
 
+
+### War Town holds what LEAVES the city, not what arrives (2026-09-24)
+
+The user asked for "wartown 1 is NO TROOPS MOVE except the training hero, wartown 2 no
+troops at all", and then, an hour later, **"its fine to send to a war town"**. So the rule
+is the NEAT one and it is about marches OUT:
+
+- a war town sends no transfer march of its own — keeptroops, sendtroops, keepresources,
+  sendresources are all held there — and no npc or buildnpc run leaves it;
+- it still RECEIVES: another city's keeptroops / sendtroops may reinforce it, and its own
+  requesttroops / requestresources still pull, because the march that carries them belongs
+  to the city that sends;
+- mode 2 keeps the training hero in the city it has landed in; mode 1 lets it come and go,
+  and either mode lets it move IN.
+
+**Sealing it to arrivals as well was tried and reverted the same day** (a receiver skip in
+pushPlan, a hold on requesttroops, and a block on the training hero arriving at mode 2).
+Do not build it again without being asked: a city at war wants reinforcing.
+
+**The sending side was never broken.** Before changing anything, every shape of it was
+checked and held: `keeptroops` under `config wartown:1`, `:2`, and under the console's War
+Town Mode 1 and 2, with the goal coming from the account PREPEND layer and the mode from
+`cityControls:<account>`, end to end through the engine — and `requesttroops` pulling out
+of one. **A war town seen marching troops out is worth checking against a hand-run
+`reinforce` in the Script tab before blaming the engine** (Lord07's log was full of
+them at the time). Tests: `test-wartown.js`.
+
+### A wartownpolicy line was putting the CONSOLE'S switch on a timetable (2026-09-24)
+
+**The bug, with live proof.** Lord07's city 5 sat on War Town Mode 2, set by hand from
+the console, and at 13:08 sent **100,000 catapults to main** under the prepend's
+`keeptroops main cp:100k`. Nothing was wrong with the sending guard: `lockdown()` found a
+`wartownpolicy 05:00 10:00` line, the clock said 13:08, and so it returned `on: false` —
+which makes `isWarTown()` return 0 and every transfer guard fall open. The mode was still
+2 and the source still "the console"; only `on` was false.
+
+**Where the policy line comes from matters: the ACCOUNT APPEND goals.** Sixteen accounts
+carry `config wartown:1` + `wartownpolicy 05:00 10:00` there (a2, a3, a5, a6, a7, a8, a9,
+a14, a15, a16, a17-a21 — the last five have the policy only in a COMMENT, so those and a1
+are war towns permanently, which is deliberate while they are being brought to the hub).
+The append layer is **database-only** — `goalFile:append:<id>` is null for all of them — so
+it is invisible if you only read `goals-backup-a15-prepend-2026-09-20.txt`. **Read both
+layers out of the `goals` table before concluding anything about a city's goals.**
+
+**Fixed** in `goal-war.js lockdown()`: a mode set from the console returns `on: true`
+immediately, before the wartownpolicy windows are looked at. A switch thrown by hand means
+"on now". Off and Auto are untouched (Off returns earlier on `!cfg.enabled`; Auto never
+reaches the branch). A SCHEDULED war town is still written as `config wartown:` in the
+goals. Test: "the switch is not scheduled" in `test-wartown.js` — it fails on the old code.
+**Needs a console restart per account**; done for a7 and a9 (the only two with a hand-set
+mode) at 13:28.
+
+**Two things that made this hard to find, worth remembering:**
+
+- **A console's log file can never show an engine decision.** `session.note()` writes only
+  `[conn]` lines to stdout; the engine's lines live in the in-memory ring the console UI's
+  Engine tab reads. `console-a7.log` had nothing at all about war town or keeptroops.
+- **`engine_state`'s `war.wartown.on` is not evidence.** It read `on: true` on all ten of
+  a7's cities from 2026-09-22 while the lockdown was not holding: `warTownPlan` returns
+  before it can clear the flag when nothing is set, and the flag means "the switch is on",
+  not "the lockdown holds". *Unfixed, minor.*
+- The corroboration that did work: `engine_state` `processing.points.t.at` for the city —
+  a troop mission had left city 5 at 13:08:10 — and the distance 631,92 -> 698,110 = 69.38,
+  exactly what the army table showed. **100,000 is the Rally Spot march cap**
+  (`constants.js MARCH_TROOP_MAX`), not the goal's figure.
+
+### The fleet has ONE war town now (2026-09-24)
+
+The user: *"that wartown was set initially for capturing cities, but its no longer
+necessary so you can remove it all"* — and before that, *"nothing should have the permanent
+wartown, only that 1 city of lord07 nothing else"*. So **every** `config wartown:` and
+`wartownpolicy` line is out of the account Append goals:
+
+- six accounts (Lord01, Lord17, Lord18, Lord19, Lord20, Lord21) had a bare
+  `config wartown:1` with no policy, which made every one of their cities a war town around
+  the clock — no transfers, no NPC farming, no valley runs. It was put there while they were
+  being brought to the hub and capturing cities;
+- ten trading accounts had `config wartown:1` + `wartownpolicy 05:00 10:00`, the morning
+  window that brought marches home before the holiday prep and the 09:00 maintenance.
+
+Both are gone. **The only war town in the fleet is Lord07 city 5 (castle 1667), War
+Town Mode 2, set by hand from its console.** Lord09's hand-set mode on its main was
+cleared back to Auto at the same time.
+
+Every append text as it stood is in **`goals-backup-append-wartown-2026-09-24.json`**, so
+the morning window can be put back in one command if the marches-home behaviour is missed.
+What those ten appends held was the war town pair and nothing else, so they are empty of
+goal lines now; the six new accounts keep their `keepherobuff OTTO excalibur /below:1526`.
+
+### The console's War Town Mode switch (2026-09-24)
+
+It works for all four settings, and this is now covered end to end in `test-wartown.js`:
+the page posts to `/api/wartown`, `Session.setWarTown` writes `cityControls:<account>` in
+the org settings (per city, so a restart keeps it), and the engine reads it back per city
+through `controlsFor`. **Off (0) BEATS a `config wartown:2` line in the goals** — it is not
+a "let the goals decide", that is what Auto is for.
+
+- Fixed on the way past: `setWarTown` read the mode with `Number(mode)`, and `Number(null)`
+  and `Number("")` are both 0 — so a request that named no mode switched the city to **Off**
+  without a word instead of being refused. It reads the value as text now and only auto, 0,
+  1 and 2 pass. The page always sent a proper value, so nothing in the fleet was affected.
+
 ## 5b. Battle mechanics (Age 1)
 
 From the guides the user pointed to (2026-09-18): "Battle Mechanics: Compact / 5K Range
@@ -1247,6 +2021,102 @@ beats Ranged" are The King's Return — a different game. Never mix them in.**
   `reachTime − startTime − camp` is always a whole second (± 1 ms). Planning a timed
   march with the fraction lands it up to a second EARLY. That is likely the −1 s…+1 s
   spread the user saw from NEAT's `@:` times. timed-march.js rounds down since then.
+- **The numbers that decide march range, out of the client's own tables, and CONFIRMED
+  LIVE** (tables read 2026-09-25 from `WarReport.swf` — `GetDataXML_XMLTech` and
+  `GetDataXML_XMLBuilding`, with the same Node tag walk `extract-items.js` uses; every
+  fleet account has all 20 researches at L10, from the engine's cached `techs.levels` in
+  `engine_state`). **`travelinfo 704,119 cp:7500` from Lord07's 700,110, 2026-09-25
+  06:49, matched every figure below to the second:**
+
+  ```
+  Distance to 704,119: 9.85miles (from 4)
+  attack time: 1h:22m:04          <- 9.8489 tiles x 500 s = 4924.4 s
+  reinforce time: 13m:41 (Relief Station x6)   <- 4924.4 / 6 = 820.7 s
+  carrying total/attack/reinforce: 1125000/-4004614/270064
+  ```
+
+  1,125,000 / 7,500 = **150 a catapult**, so Logistics is +100%. The attack figure is
+  1,125,000 − 3,750,000 x 1.3679 h = −4,004,589, and the reinforce figure
+  1,125,000 − 3,750,000 x 0.2280 h = +270,073 — both the client formula to the rounding.
+  Nothing here is inference any more:
+  - **Compass L10 = +100%** infantry moving speed → `marchSkillParam` 100.
+  - **Horseback Riding L10 = +50%**, not +100% — it is **5% a level**, and it covers
+    *"cavalrys and mechanics"*. So `driveSkillParam` is **50**, and it is what the
+    catapult, ballista, ram, transporter, cavalry and cataphract move on
+    (`constants.js DRIVE_KEYS`). **A catapult's speed is 80 × 1.5 = 120**, so a tile costs
+    `60000 / 120 = 500 s = 8m20s`. (An earlier note here said 6m15s from assuming +100%.)
+  - **Logistics L10 = +100% load** → `loadSkillParam` 100; a catapult holds 150.
+  - **Relief Station**: the `limit` column of its `levelDatas` is the multiplier —
+    2, 2, 2, 3, 4, 4, 4, 5, 5, **6**. **L10 multiplies march speed by six**, and the
+    building's own text is *"the speed of army movement between the cities of your own and
+    your allies"* — it is the TARGET's owner that earns it, which is what
+    `game.js troopParams` reads as `transportStationParam`. A catapult **reinforcement**
+    therefore runs at 720: **1m23s a tile**, one sixth of an attack.
+  - **Rally Spot L10 = 10 marches out of one city. Feasting Hall L10 = 10 heroes in it.**
+    Both are the `limit` column, 1 a level.
+  - **Archery L10 = +50% range for Archer, Ballista, Catapult and Archer's Tower** — the
+    text names those four and not the treb, abatis or trap. So a catapult reaches 2250, a
+    ballista 2100, an arrow tower 1950; the 5K field is still set by the 5000-range forts.
+- **A march carries its own food, and that caps how FAR a slow army can go** (the client's
+  formula, already in `constants.js` — `capacityOf` / `marchFood` — and confirmed by the
+  `travelinfo` run above, whose carry figures are exactly what it gives). Every troop carries `load × (1 + loadSkill/100)`
+  and eats `food × 2` an hour, on the march and in camp, out of that same hold. For an
+  army of ONE troop type the count cancels, so the range is fixed whatever its size:
+  `load × (1 + loadSkill/100) / (food × 2)` hours. A **catapult** (load 75, food 250) holds
+  150 and eats 500 an hour → **0.3 h = 18 minutes of marching**, whatever else is true.
+  - **Attacking**, at 8m20s a tile, that is **2.16 tiles**; **reinforcing**, at 1m23s a
+    tile, **12.96 tiles**. Past that the army cannot carry its own food and `travelinfo`'s
+    carry figure goes negative (−4,004,614 in the run above, at 9.85 tiles).
+  - **THE SERVER DOES NOT ENFORCE ANY OF THIS ON AN ATTACK** (live, 2026-09-25 07:08,
+    Lord09). 10,000 catapults were sent from 698,121 to 699,111, **10.05 tiles** — five
+    times the 2.16 the food arithmetic allows, with `travelinfo` reading
+    **carrying 1,500,000 / −5,479,081 / 336,819** — and the server answered plain `ok`,
+    army id 1930754, left 07:08:10.016, lands 08:31:54.016. **No transporters, no refusal.**
+    So the carry figure is a *client march-window* rule, not a server one, and OTTObot
+    (which only weighs food when the march carries resources — `script-cmd-deploy.js`,
+    `if (carried > 0)`) sails straight past it. A catapult wave can be sent any distance.
+    - **The army arrives whole — troops do NOT starve on a march** (the user, 2026-09-25).
+      So for an attack, which carries no loot, the carry figure can be ignored outright.
+    - **But the load IS real at long range** (the user, 2026-09-25): a *much* further march
+      does get rejected without transporters. Where the server starts caring is not known,
+      and it does not matter for the hub — nothing here is more than ~30 tiles apart, and
+      10 tiles already sails through at five times the arithmetic’s limit. Worth pinning
+      down only if we ever attack across the map.
+  - **The real trap is not food, it is that the deploy log's march time can be WRONG**
+    (found the same hour). The same send logged
+    `attack 699,111 any cp:10k · march 7537.4s` — 750 s a tile, catapult speed 80, as if no
+    Horseback Riding at all. `travelinfo` for the same city and target said **1h:23m:45**
+    and the server landed it at **1h 23m 44s** (5024 s, 500 s a tile, speed 120). The log
+    line is the odd one out: `script-cmd-deploy.js:687` passes
+    `game.marchSkillParam` — the LOGIN's number, which reads **0** here — as the whole
+    skills argument, so `marchTimeMs` uses it for the drive speed too. The right source is
+    the city's own `army.getTroopParam`, which is what `travelinfo` and `timed-march.js`
+    (`speedParams`) both use, and both are right. **Timed waves are unaffected.** Never
+    plan off the untimed log line; use `travelinfo` or the march's own `reachTime`.
+    *(Fixed 2026-09-27: the untimed line now uses the city's troop params, the Relief
+    Station to our own tiles and the buffs — it had said 6 h 6 m for Lord24's cavalry
+    3 → 5. Live from each console's restart.)*
+  - **Transporters buy the range back** and never slow the wave (225 against the
+    catapult's 120). Each holds 10,000 and eats only 20 an hour, so for N catapults over
+    D tiles you need `T ≥ N × (69.44 D − 150) / (10000 − 2.78 D)`: about **5 per 1,000
+    catapults at 2.8 tiles, 15 at 4.2, 27 at 6, 48 at 9**.
+  - `travelinfo <x,y> cp:7500` prints it for a real city — the **"carrying
+    total/attack/reinforce"** line, and a negative attack figure is a march that cannot
+    feed itself. Run it before laying out anything that depends on catapult range.
+- **A wave takes loyalty only when the ATTACKER WINS** (the user, 2026-09-25). A wave that
+  loses takes none. This corrects the *unverified* note below: a farm defence that never
+  falls costs the defending city **no loyalty at all**, so there is no comfort treadmill
+  and no ceiling on waves per day from loyalty.
+- **You cannot attack your own alliance** (the user, 2026-09-25). Anything built on
+  attacking our own accounts — the amulet and XP farm above all — needs the defending
+  account **outside** the attackers' alliance. It also settles the Relief Station
+  question: an attack can never earn that speed off the target being ours, so only
+  reinforcements and transports between our own cities get the ×6.
+- **The attacking hero's quality does not matter while the defender's feasting hall is
+  FULL** (the user, 2026-09-25): with no vacancy there is no capture (§5b), so any hero
+  may lead a farm wave and comes home. **Never let a spot open in the defending city's
+  feasting hall while a farm is running** — one vacancy and our own heroes start being
+  taken.
 - **An attack needs a hero** — the server answers `ok=-71` "You must appoint a hero to
   lead the attack." (2026-09-22, Lord02). The client's march window offers "no hero",
   but that is for transports, reinforcements and scouts.
@@ -1258,6 +2128,20 @@ beats Ranged" are The King's Return — a different game. Never mix them in.**
   `reachTime` to get the march time once the march has been out a few seconds (that
   broke `marchcheck`, fixed the same day). *Unverified:* what a march shows as direction 3
   (camped).
+- **The march buffs shorten the CAMP too — Fleet Feet above all** (2026-09-27, Lord24, seen
+  live). `reinforce 5 none wo:9k,w:4k,c:48880,cata:1000 @:12:00:00` from city 3 (678,497)
+  with **two Fleet Feet on** (−70%): the formula said 3,047 s of march, so 11,085 s of camp
+  was asked for — and the server set `reachTime` **6,376 s** after the send, 2 h 09 m
+  early. `0.3 × (10,157 s unbuffed march + 11,085 s camp) = 6,373 s`: the server applies
+  the ReduceArmyActionBuff factor to march **and camp together**. The Relief Station is a
+  speed and only speeds the march (fitting it to the camp as well gives 3,601 s, far off).
+  So **a camp of C asked for is C × factor in the game; to camp C, ask C ÷ factor** — with
+  two Fleet Feet, 16 h of camp needs 53 h 20 m asked. `constants.js armyTimeFactor` holds
+  the factor; timed marches (`@:`), plain camps (`0:30:00`), `marchcheck` and the war-town
+  hide march all use it since that day. *Unverified:* that the slower castle buff
+  (IncArmyActionTimeBuff) and HarvesterWagesBuff scale the camp the same way (assumed), and
+  whether the server caps a very long camp. The hide march was the dangerous one: planned
+  to be away past the wave, it would have come home into it with Fleet Feet on.
 - **Timed waves, live (2026-09-22, Lord02 → NPC 711,125, 1 scout each, all recalled
   before landing):** within ±500 ms, 3 waves at +206/+104/+184 ms; within ±100 ms, −30/
   −14/+0 ms; within ±20 ms, +10/−3 ms. Every wave was good first time. The server took each
@@ -1274,8 +2158,8 @@ beats Ranged" are The King's Return — a different game. Never mix them in.**
   - Each attack wave takes **1–4 loyalty**. Bigger waves take more, and the attacking
     hero's attack counts too. The user's rough figures for a level-500 hero, cavalry and
     scouts in equal numbers: 250 each → 1, 500 each → 2, somewhere in 1,000–2,000 each →
-    3, about 2,000+ each → 4. *Unverified:* the exact steps, and whether a lost wave
-    takes any.
+    3, about 2,000+ each → 4. *Unverified:* the exact steps. **A wave that LOSES takes
+    none** — loyalty only moves when the attacker wins (the user, 2026-09-25).
   - **Loyalty + public grievance + tax = 100.** A healthy city at 0% tax is 100/0.
     Tax comes out of loyalty: 10% tax makes it 90/0/10. A lost battle moves points from
     loyalty to grievance: one −4 at 10% tax makes it 86/4/10.
@@ -1433,6 +2317,14 @@ without unlocking anything.
   moves another city — but only where city names are unique (Lord14 has five called
   "Eldian"), so a control file keyed on `city.cityManager.coords` is the safer way to
   drive a fleet move.
+- **The sixteen states are a 4x4 grid of 200x200 tiles**, read row by row from (0,0):
+  Friesland, Saxony, North March, Bohemia / Lower Lorraine, Franconia, Thuringia, Moravia
+  / Upper Lorraine, Swabia, Bavaria, Carinthia / Burgundy, Lombardy, Tuscany, Romagna. So
+  the state of any tile is `ZONES[floor(y/200)*4 + floor(x/200)]` (`constants.js zoneOf`)
+  — (457,281) is Thuringia, which is what NEAT shows, and our hub (703,114) is Bohemia.
+  The *names* are what is relied on; the ids `city.moveCastle` takes come live from
+  `common.zoneInfo`. (Confirmed again 2026-09-24 while putting the state into the console's
+  Map tab — the page works it out from the coordinates, the server is not asked.)
 - **The item ids — count by id, never by a word** (2026-09-22: a search for "move" found
   only `consume.move.1` and reported "no War Teleporters" on five accounts holding 277–368
   each): Advanced = `player.more.castle.1.a`, War = `player.more.castle.1.c`, City
@@ -1574,6 +2466,17 @@ without unlocking anything.
     hand too.
   - Time the last wave: read the server's `reachTime` (§ march times) and stop sending
     once the ally is close to landing his capture.
+  - **`recall <x,y>` used to recall EVERY city's armies on that tile** — the whole
+    account's, not the running city's. A script run in all cities therefore recalled the
+    same marches once per city, and one city's stop pulled back the others' hits
+    (`ally-drain.txt` carried a warning never to put a bare `recall <x,y>` in a one-off;
+    on 2026-09-22 a console restart re-ran one and all the hits on 679,135 were pulled
+    back twice, 18:06 and 18:14). Fixed in code 2026-09-23 at the user's instruction:
+    `recall x,y` now recalls only the armies that left the city the line is running in,
+    like `recallall` always has, and `recall x,y all` is the explicit fleet-wide form.
+    The same per-city scope now applies inside `capture` / `loyaltyattack` (a wave lost,
+    or loyalty reaching the floor, recalls that city's attacks only) and to `setguard`
+    (it watches only its own city's attacks). `idrecall <id>` is unchanged — one named army.
 
 ## 5e2. Transporting resources to another account
 
@@ -1641,6 +2544,20 @@ without unlocking anything.
   an alliance change is allowed on holiday, or touches the holiday, is not known, and
   holiday in/out is the user's alone.
 
+### Private chat (whispers) (2026-09-27, tested Lord25 → Lord24)
+- `common.privateChat {targetName, msg}` reaches a player by name alone: they need not
+  have spoken since the bot logged in, nor be anywhere on screen. The console's chat box
+  takes `/Name message` for this (and `/Name` alone just picks who to whisper).
+- The server echoes a whisper back to the SENDER as `server.PrivateChatMessage` with
+  `from` = the sender's own name, so the sender's Private tab shows its own line but not
+  who it went to. The receiver gets the same line. Confirmed again 2026-09-27 when the
+  user sent `/Chipp Hey` from Lord24 and it showed as "[Lord24]: Hey". The console now
+  remembers each whisper it sends (`session.whisperTo`, matched by text within a minute)
+  and the page shows "To Chipp" / "From Chipp".
+- The console swallows the request's reply (`sendChat` … `.catch(() => ({ok:1}))`), so a
+  misspelt name still shows "sent"; whether the server answers a bad name with an error
+  code is *unverified*.
+
 ## 5g. Quests, and the free daily amulet
 
 - **A finished quest pays nothing until it is claimed.** The game's Quests window has two
@@ -1673,6 +2590,26 @@ without unlocking anything.
   quest it answers, so each one has to wait in its own lane — the same trap as the market
   and report reads, and as the per-city queue reads in §1.
 
+- **There is no free tile to teleport a city onto near the hub, and `ok=-84` is what says
+  so** (2026-09-25, 51 tiles probed). Moving Lord23's cities in, every single candidate
+  answered `ok=-84 "Unable to teleport city to a preoccupied valley."` — 51 distinct Flats
+  across 670-735 x 90-150, including the level-1s, and including tiles the console's own
+  fresh scan had just called *"an empty flat (level 4)"* a line earlier. **A local scan
+  saying "empty flat" does not mean landable.**
+  - The cause is in `db.js`: *unowned flats and valleys gain +1 level at each daily
+    maintenance*. **The cached map holds ZERO tiles at level 0** — out of 640,000 — and
+    every Flat is L1..L10. A levelled flat is a VALLEY, and a city cannot be placed on one.
+  - So a landable tile exists only in the window between a city leaving a tile and the next
+    daily maintenance levelling it. **That is why `evony-city-swap` works the way it does**:
+    the taker hammers `teleport <tile>` while the holder is still standing on it and lands
+    within seconds of it being freed. It is not merely about keeping strangers out — it is
+    the only way to get a tile at level 0 at all.
+  - **Consequence for bringing a new account into the hub:** its cities cannot simply be
+    teleported in. Each one needs a tile freed for it by one of ours moving out (a swap), or
+    a captured NPC/conquest. Plan the pairs before starting; do not burn map scans probing.
+  - Probing is otherwise safe — a refused teleport sends nothing and spends no item; the
+    cost is one map scan each, and the count in the log ("259 held") never moved.
+
 ## 6. Game data and references
 
 - The NEAT wiki (http://guide.neatportal.com/wiki/, plain HTTP only) is the spec for goals
@@ -1697,6 +2634,94 @@ without unlocking anything.
   sizes, and whether heavy reading adds to an account's rate limiting. The crawl and the
   read-ahead send one page at a time and wait while the account has more than 10 market
   writes in flight. Prefer a Refresh from an account that isn't in a trading play.
+- **A castle's `state` on the map is the only honest read of a STRANGER's protection**
+  (read from the client on 2026-09-23, `CityConstants` + `PlayerInfoTypeManager.getState`,
+  for the Monitor). Every castle in a `common.mapInfoSimple` reply carries it:
+
+  | `state` | client constant | the game's word | what it means |
+  |---|---|---|---|
+  | 1 | `CASTLE_NOMAL_STATE` | 和平 | peace — no protection |
+  | 2 | `CASTLE_ANTI_BATTLE_STATE` | 免战 | truce (a Truce Agreement) |
+  | 3 | `CASTLE_FRESH_MAN_STATE` | 新手 | beginner protection |
+  | 5 | `CASTLE_VACATION_STATE` | 休假 | **holiday** |
+  | 6 | `CASTLE_DREAM_TRUCE_STATE` | 时间段休战 | dream truce (the timed one) |
+
+  There is no 4. `script-functions.js` already had the same table under NEAT's names
+  (`PlayerState`: peace, truce, beginner, holiday, dream), and `monitor.js` repeats it.
+  For a stranger it is the **only** read available, and it is much better than the
+  `furlough` flag, which read `false` for all four of our own banks while every one of
+  them was on holiday (§4).
+- **But one map reading is NOT proof — it disagreed with the game itself (2026-09-23).**
+  Ten minutes after maintenance, a sweep read **Lord03 and Lord16 as `state 1` (peace)
+  while both accounts' own live `FurloughBuff` said holiday with 23h21m left** and still
+  counting down. A forced fresh re-read of their blocks said `1` again, so it was not a
+  stale cache. It is **not** viewer-relative either: read through Lord02's console in
+  the same sweep, our own alliance-mates Lord04, Lord05, Lord10, Lord11, Lord12,
+  points and Lord14 all showed `state 5` correctly. **Cause unverified** — the two
+  had both been read as `5` in the sweeps before maintenance, so the suspicion is that a
+  castle's state comes back wrong for a while after a maintenance, or that the vacation
+  shield and the furlough buff are genuinely two different things. *Until it is
+  understood:* treat a single state reading as a rumour. `monitor.js` now believes a state
+  only when **two sweeps in a row agree**, which is what stops it announcing a holiday
+  ending that has not happened. Where we own the account, the console's live
+  `protection` (the 2-minute buff watch) beats the map.
+- *Unverified:* whether a map castle's `prestige` is the LORD's prestige or
+  that castle's (the Monitor stores the highest across a lord's cities and says so), and
+  whether the second hex digit of a player castle's terrain byte is its city level the way
+  it is an NPC camp's.
+- **The map is live; the rankings are not.** The Statistics window is recomputed server
+  side roughly every 15 minutes (the user, 2026-09-23), so a lord's prestige there lags,
+  while the same lord's castles on the map answer with what is true now. Anything that has
+  to notice a change quickly — a holiday ending, a bot stopping — reads the MAP; the
+  rankings are for the shape of the server (who is biggest, whose heroes). Reading the
+  rankings more often than every 15 minutes buys nothing and costs ~250 pages.
+- **`common.getPlayerInfoByName {userName}`** answers a whole `PlayerInfoBean`: `prestige`,
+  `castleCount`, `ranking`, `population`, `honor`, `alliance`, `titleId`, `office`,
+  `medal`, `levelId` and — the useful one — **`lastLoginTime`** (read from the client
+  2026-09-23; `server.js runScan` has sent it live since 2026-09-12). It carries no state
+  or furlough field, which is why holiday has to come off the map. One request a name.
+- **A whole-world map sweep is 1,600 blocks** (800x800, the server answers at most 20x20 and
+  the client asks on a grid aligned to 20). The console pipelines them nine at a time
+  (`Session.MAP_BATCH`) and keeps each block for 30 minutes, so a sweep that does not throw
+  its blocks away again leaves half an hour of the world in that console's heap — the
+  Monitor's `/api/mapsweep` passes `drop` for exactly that reason (§7, the consoles that
+  ran out of memory).
+- **Measured live, 2026-09-23 through Lord02's console** (the Monitor's first two
+  sweeps, 45 blocks a request with a 300 ms pause): a whole-world sweep takes **118 s and
+  107 s** — about **two minutes**, comfortably inside a 10-minute period. ss71 held
+  **13,549 player cities across 2,501 lords**, of whom **165 were on holiday** (state 5),
+  2 truced, 1 in beginner protection. The account was trading nothing at the time and
+  showed no sign of being throttled by it. *Still unverified:* whether sweeping every
+  10 minutes for hours adds to the account's rate limiting — watch the console log for
+  "ignoring this account".
+- **Map prestige IS live, and it is the signal for "is that bot still running".** Between
+  two sweeps five minutes apart, **641 of 2,501 lords (26%) moved prestige** and the rest
+  did not (2026-09-23). So a lord whose prestige has not moved for tens of minutes really
+  has stopped, and the ranked lists' 15-minute lag is not in the way.
+- **Beware the top few: prestige is an int32 and the biggest accounts are at its ceiling.**
+  The highest on ss71 read **2,146,178,357 against a 2,147,483,647 maximum — 99.94% of it**
+  (2026-09-23); 4 lords are within 1% of the cap and 13 within 5%. Their prestige has
+  nowhere left to go, so **"prestige is not moving" says nothing about the very top
+  accounts** — exactly the ones a "top 10" watch list picks. For those, use the watch
+  pass's `lastLoginTime`, or their city count and honor, instead.
+- **A full sweep fills the shared map cache with the whole world, once.** The first one
+  took `evony.db` from 51 MB to 248 MB (640,000 `map_cache` rows, 655,816 `tile_levels`
+  rows). The **second sweep added nothing** — 0 new `tile_levels` rows, the same 248 MB —
+  so this is a one-off cost, not growth per sweep, and NPC farming and the valley goals
+  get the whole world for free out of it.
+- **Do not sweep through an account that is in a trading play — and if you must, make the
+  sweep yield.** On 2026-09-23 the Monitor was pointed at Lord02, which was at the same
+  time running the glitch play (`sell stone 99999999 150 x10` out of eight cities). A
+  whole-world sweep is ~1,600 reads on the same socket those orders go out on, and rate
+  limiting is per ACCOUNT (§3), so the two compete for the account's budget. `mapSweep`
+  now waits while more than 10 of the account's own writes are in flight (up to 20 s a
+  request), the way the statistics crawl already did. **Prefer a monitor account that is
+  not trading and not being watched for throughput.**
+- **The Monitor stands down with its console, and that is the point of driving one.**
+  On 2026-09-23 maintenance was announced 08:51, Lord02's console stood down 08:54, and
+  the Monitor simply reported *"waiting for the console — Lord02's console is not
+  logged in"* every 30 s until it came back. It never logs in, so it cannot log in during
+  maintenance (§2) and cannot kick anything.
 - **The Alliance window** (console's Alliance and Friends tabs, `alliance.js`, read from
   the client code on 2026-09-22, **none of it sent live yet**): `alliance.isHasAlliance {}`
   answers the Info tab (`indexAllianceInfoBean`: creatorName, leaderName, memberCount,
@@ -2062,6 +3087,118 @@ without unlocking anything.
   over-claims; the page and restoreReport should be reworded to count failures per
   maintenance instead (not done yet).
 
+- **The glitch log: a record either side of every maintenance** (2026-09-23, the user's
+  ask — glitch-log.js, the Trading tab's **Glitch log** view, filtered by date). It is the
+  pairing the hourly and 08:30 records could never give: for each maintenance, what every
+  town of every account held going **in** and what it held coming **out**, the difference
+  per resource, the trading runs of that day, and which side of the play each account was
+  on at the time. Where it sits in the record:
+  - **before** — taken at the fleet's stand-down (maint.js `pauseAt`, 5 minutes before the
+    announced start). **after** — taken once every console has published a snapshot from
+    after the server came back, or 20 minutes on if some never do.
+  - Both are filed in `city_resources` under `kind = 'maint:<day>:before' | ':after'`, so
+    they never mix with the hourly rows and `restoreReport` sees them too.
+  - Who each account was — its lord, its holiday badge, its side of the play — is stored
+    **with** the record, because none of it can be recovered later: a holiday ends and a
+    run stops, and the log would then call a bank an ordinary account.
+  - The runs are archived per run id (`glitch_runs`) on every save. The settings keep only
+    the *current* run, so before this a finished run was gone the moment the next started.
+  - No announcement was heard that day: the record still happens, hung on the assumed
+    08:30 window and marked `assumed` on the page.
+
+- **The before-record relogs the whole fleet first** (2026-09-23, the user's choice). A
+  console's cached figures go stale on a busy account and only a relog refreshes them
+  (§3), so without it the "before" figures can be an hour old — which is exactly the
+  account being traded hardest. **It is not free: a refresh ends every city's autorun
+  script and nothing puts it back (§4), and it spends a login each.** So it is fenced in:
+  - only on a window that was actually **announced** — never on the assumed 08:30 one,
+    because a relog fired on a guessed time can land inside a real maintenance, and that
+    holds the account back ~30 minutes (§2);
+  - once per maintenance, at `leadMin` before the announced start (default 10, floor 6),
+    and never inside the stand-down — `SESSION.connect()` refuses there anyway;
+  - a console will not relog twice inside 15 minutes (server.js `REFRESH_GAP_MS`);
+  - the page marks each town **live** or **cached**, so a figure is never passed off as
+    the server's when the relog failed or landed after the record was taken.
+  It runs over the console route `POST /api/snapshot/refresh`, which is the **one**
+  bot-driving route the machine token may call (auth.js `INTERNAL_OK`) — it takes no
+  arguments, relogs, and hands back the snapshot, which the Director files at once rather
+  than waiting for its next uptime sweep. Switch the relog off in the tab and the record
+  still happens, from whatever the consoles had cached.
+  *Unverified as of 2026-09-23: none of this has run against a real maintenance yet, and
+  the Director must be restarted before any of it exists.*
+
+### Starting the fleet after a reboot (2026-09-24)
+
+**Nothing used to start OTTObot when the machine booted** — no scheduled task, nothing in
+the Startup folder, nothing in either Run key. A reboot left the Director and all 21
+consoles down until somebody noticed.
+
+There is now a logon task, **"OTTObot Director"**, installed by `install-startup.ps1`
+(`-Remove` takes it away; no admin rights, it is a per-user logon task). It runs
+**`node director-keep.js`**, not `director.js` — the supervisor, so the Director is watched
+from the first second. The Director's own keep-on watchdog then starts a console for every
+account marked "keep on", which is how the fleet comes back without 21 logins at once.
+
+- **Laptop settings matter and are easy to miss:** the task is registered with
+  `AllowStartIfOnBatteries`, `DontStopIfGoingOnBatteries` and no execution time limit.
+  Windows defaults every one of those the wrong way for a machine that runs a fleet.
+- **Only one supervisor may ever run.** Two would each spawn a Director, the second would
+  fail to bind 8712, the first would read that as a crash and relaunch it for ever, and
+  both would be starting consoles. `director-keep.js` holds `director-keep.pid` and leaves
+  if the pid in it is alive; a stale lock from a killed supervisor is taken over.
+  Windows will not double-start the task itself, but a hand-started one beside it would.
+- To hand over from a hand-started supervisor to the task: stop the supervisor, delete
+  `director-keep.pid`, stop whatever is on 8712, then `Start-ScheduledTask -TaskName
+  "OTTObot Director"`. Verified live 2026-09-24 23:46.
+
+### "Turn off" on the Director page leaves nothing to turn it back on with (2026-09-25)
+
+The switch top-right writes `director-stop.flag` and then **exits the process that serves
+the page**, and `director-keep.js` deliberately leaves it down while the flag is there. So
+the moment it goes off, the page is gone — and the Turn on half of the switch is on that
+page. There is no way back through the browser.
+
+**The way back is the flag**: delete `C:\EvonyTool\director-stop.flag` and the supervisor
+relaunches the Director within a few seconds (verified 2026-09-25: off at 06:38:13, flag
+removed, up again at 06:38:58 on its own).
+
+So: **never use Turn off as a restart.** To pick up new `director.js` or `monitor.js` code,
+stop the process and let the supervisor bring it straight back — no flag, no gap you need a
+shell to climb out of. Turn off is for putting the Director away on purpose, and whoever
+uses it needs shell access to undo it.
+
+### The Director died of a locked database and nobody noticed for 50 minutes (2026-09-24)
+
+At 21:26, with 21 consoles restarting into a 20.7MB WAL checkpoint, an uptime write waited
+out its 5-second `busy_timeout` and threw `database is locked` inside `sampleUptime`. The
+Director exited. **It had no `unhandledRejection` / `uncaughtException` guard** — every
+console has had one since the beginning (`server.js`) — so an ordinary transient error took
+the whole control plane down: no live sweep, no goal-file sync, no Trading tab, no
+fleet-wide maintenance signal.
+
+**It failed silently, which is the worse half.** The Fleet page kept rendering; every row
+just fell back from `online` / `holiday` / `under attack` to **`reporting`** or **`stale`**,
+because all the rich statuses come from `a.live`, which only `sampleUptime` refreshes and
+`statusPillFor` ignores once it is more than five minutes old. That is the tell:
+**a whole fleet showing nothing but "reporting" and "stale" means the Director is dead**,
+not that the accounts are. Check `director.err.log` and whether anything is listening on
+8712 before looking at the accounts at all.
+
+Both halves are fixed:
+
+- `director.js` now carries the same crash guard the consoles have — the error is logged
+  loudly and the Director lives on.
+- **`director-keep.js` relaunches it whenever it stops**, with a wait that grows only while
+  it keeps crashing (2s, 5s, 15s … 2 min) and resets once it has been up five minutes.
+  Start it with `node director-keep.js`; it is what should be started at boot from now on,
+  not `director.js`. Proved live: killing the Director brought it back in two seconds.
+- **The only thing that keeps it down is the stop file**, `director-stop.flag`, written by
+  the Turn off button on the Director page (its own themed confirm, never the browser box)
+  via `/api/director/stop`. Deleting the file brings it back within five seconds. It is a
+  FILE on purpose: the database is the likeliest thing to be broken when the Director dies,
+  and a supervisor that cannot read its own switch is no supervisor.
+  Tests: `test-director-keep.js`.
+
 ### Trading consoles ran out of memory every few hours (fixed in code 2026-09-22)
 
 Seen 2026-09-22 in the consoles' own uptime rows (`rssMb`/`heapMb`) and `.err.log`s: every
@@ -2076,6 +3213,73 @@ a 512 MB heap cap (`BOT_HEAP_MB`) and rotates a console log over 50 MB to `.log.
 keeps leaking until restarted, and the heap cap needs the Director restarted (it loads
 botctl). Idle consoles were always fine at ~120–140 MB.
 If a console's heap climbs steadily again, look first for something kept per loop pass.
+
+### Where a goal really comes from: the FILE, then the row (2026-09-23)
+
+Three layers, and only the top one is the source:
+
+1. **The goal file.** An account may name a `.txt` for its Prepend or Append text
+   (Director ✎; org setting `goalFile:prepend:<id>`). `goalfiles.js` reads it **every 15
+   seconds** and copies it over the saved text whenever the two differ. The comment in
+   that file says it plainly: *"The file is the source: a save in the console's editor is
+   put back from the file on the next check."*
+2. **The `goals` table in `evony.db`** — `prepend`/`append` per account, plus per-city rows
+   keyed by castle id. This is what the engine reads, every tick, with no cache.
+3. **`prepend-goals.txt` in the repo is neither.** Nothing reads it. It is a draft.
+
+**A write to the database for an account that names a file is silently undone.** Measured
+2026-09-23: 21 prepend rows were written at 05:21:04 UTC and **16 of them were put back at
+05:21:10** — six seconds later — by the Director's sync. The 5 that survived (a5, a6, a7,
+a14, a16) are the only ones with no `goalFile:prepend` setting. The write *reported
+success*; only re-reading the rows showed it gone. **Always check which accounts name a
+file before editing goals, and edit the file for those.**
+
+**An account with no `goalFile` keeps whatever copy of the prepend it was last given, and
+looks fine.** 2026-09-24, on the user asking "did you remove the goals?": Lord07 (a7)
+and Lord16 (a16) had a full prepend in the goals table and were nevertheless out of date —
+3,919 characters from 2026-09-23 07:21 against the file's 4,021, missing `build b:0:1`,
+five `fortification ab:` lines and the newer `troop r:300k,…` (they still had `r:500k`).
+Nothing had deleted anything; they were simply never pointed at the file. **Auditing the
+goals table alone will not find this — compare each account's `goalFile:prepend:<id>`,
+and the LENGTH of its row against the file's.** Setting the setting is enough: the
+Director pushed the file to both within 15 seconds, no restart.
+
+The eight holiday banks are a separate case and are deliberately NOT on the file: five
+(Lord04, Lord10, Lord11, Lord12, Lord13) are stripped to a 94-character stub by the
+holiday prep so nothing queues, and three (Lord05, Lord06, Lord14) still carry the
+older copy. Pushing the prepend onto a bank starts it building and training out of the
+very resources the glitch is there to move, and queues work that can block a later
+holiday — so it is the user's call, not a gap to fix.
+
+As of 2026-09-23 sixteen accounts (a1–a4, a8–a13, a15, a17–a21) all point at the same
+file, `goals-backup-a15-prepend-2026-09-20.txt`, so one edit moves all sixteen. a22 is
+switched off and has no prepend row. `add-demolish-line.js` does this properly and is the
+model to copy: file first, rows only for the accounts with no file.
+
+### A build line that demolishes: the third number, and the line's place (2026-09-23)
+
+Both learned adding the "research is done, tear the four down" line fleet-wide.
+
+- **`x:0` does not demolish — `x:0:0` does.** A build target is `type:level[:quantity]`
+  and a missing quantity reads as **1** (goals.js: "1 is the reading that can never
+  demolish anything"). So `fo:0` means *at most one Forge*, which a city with one Forge
+  already meets. Only the third `:0` means none at all. Offline proof: `?ho:10,ar:10?fo:0,
+  ws:0,st:0` plans `all build targets met`; the same line with `:0:0` plans three
+  demolitions.
+- **Where the line sits decides whether it ever runs.** Build lines are worked **in
+  order** — the first line not yet met takes the builder, and later lines are only ranked
+  below it. Put at the *end* of the fleet prepend the demolition line sat behind
+  `build f:10:37`, which no developed city can ever meet (all 40 field plots in use), so
+  the demolitions were planned and never placed. Inserted **before** the first build line
+  it is worked at once, and once the four are gone it is met and hands the builder on.
+- The condition's codes are the research codes, not free text: `ho`, not `hbr` (an unknown
+  code throws the **whole line** out). Inside `?…?` **`st` is the Stable**, so Stockpile
+  must be written `sp:10` there.
+- Fleet-wide as of 2026-09-23 07:25, on all 21 switched-on accounts:
+  `build ?ag:10,…,pr:10?st:0:0,fo:0:0,ws:0:0,wh:0:0` as build line 1 of 6. The gate is not
+  really a gate — every account already has all 19 researches at 10 (a6's two cities were
+  one short, Stockpile L9) — so it fires immediately. **The warehouses are included at the
+  user's word**, giving up the resources a warehouse protects from a raid.
 
 ### Never `require()` a program that starts a console
 
@@ -2104,10 +3308,173 @@ nothing). `require()` is only safe for modules that export and do nothing at loa
 `game.js`, `db.js`, `security.js`, the `script-cmd-*.js`. Anything that listens, connects
 or spawns — `server.js`, `director.js`, `botctl.js`, the probes — is run, never required.
 
+### Three ways a new Director feature dies quietly (2026-09-23, the Monitor going live)
+
+All three looked like "it started fine" and then did nothing. Watch for them in anything
+new that talks to a console or spawns a process:
+
+- **A new console route needs adding to `auth.js` INTERNAL_OK.** Consoles are behind the
+  same login as everything else, and a background process has no browser session — it
+  sends `x-otto-internal`. `guard()` accepts that token for a *named* few read-only routes
+  only. A route left off the list answers **401**, which the caller reports as something
+  else entirely ("is it running this build?"). The Monitor needed `/api/mapsweep`,
+  `/api/players`, `/api/stats` and `/api/stats/refresh`; the first sweep failed because
+  only two of the four were listed.
+- **`D.org(id)` hands back a handle that names itself `orgId`, not `id`.** Reading
+  `org.id` gives `undefined`, and a process spawned with `--org undefined` reads an empty
+  organization's settings: it is alive, it logs its startup line, and it never does any
+  work. The Director did exactly this for ten minutes. If a background process is up and
+  idle, check its **command line** before anything else.
+- **The database is shared by twenty-odd writers and gives up after 5 seconds.**
+  `PRAGMA busy_timeout = 5000` (db.js) and every console, the Director and the Monitor
+  write to the same `evony.db`. A big transaction — the Monitor's sweep writing 18,000
+  map tiles at once — loses that race and throws **"database is locked"**, failing whatever
+  contained it. Write in small transactions (the sweep uses 2,000 tiles), retry, and treat
+  a cache write that fails as a lost bonus rather than a failed job.
+
+### A page can show an old setting: the Director is the code it STARTED with (2026-09-24)
+
+The Monitor's "watch the top N heroes" was set to 1000 and the page kept showing 50 after
+every save. Nothing was resetting it: `evony.db` held 1000 the whole time, and the Monitor
+process duly watched **481 lords** on its next pass (the top 1000 heroes belong to 481
+lords on ss71; the top 50 belong to 36 — that 36 was the giveaway). The Director process
+had been up since 2026-09-23 08:54 and so was still running *that hour's* `monitor.js`,
+which capped the setting lower — while serving *today's* `director.html`.
+
+- **`public/*.html` is read from disk on every request; the `.js` is loaded once, at
+  start.** A browser can show a brand-new page in front of a two-day-old API. Any "the UI
+  ignores my change" starts with `Get-CimInstance Win32_Process -Filter "Name='node.exe'"`
+  (CreationDate) against the file's mtime.
+- **Believe the database, not the page**: read the row (`settings` where `k='monitor'`) and
+  look at what the worker actually did (`mon_sweep.asked`).
+- The value was stored raw but clamped on the way out, so the two could disagree at all.
+  Fixed in `monitor.js` 2026-09-24: `normalize()` runs on the way in and on the way out.
+
+### A console restart can take away a route the Monitor needs (2026-09-24)
+
+`server.js` on disk has **no `/api/mapsweep` and no `/api/players`** any more, though
+`auth.js` still lists them in INTERNAL_OK and `monitor.js` still calls them. While a2's
+console kept the process it had started with, the Monitor read fine (19:10: 36 of 36
+lords). The console restarted onto the newer `server.js` and from 19:25 every pass
+answered *"the console answered 404 with something that is not JSON"* — 0/1,600 map blocks,
+0 of 481 lords. The Monitor has been blind since, and will stay blind on every console
+started from this build until the two routes are put back.
+
+A route that a background process needs is **not** proved by "it worked yesterday": it is
+proved by the console process that is running now having been started from a build that
+has it.
+
+**Put back 2026-09-25.** `git log -S` says neither route was ever committed at all: they
+only ever existed in a working copy, and the console that read the map fine had been
+started from it. `session.js` had both implementations the whole time — `mapSweep()` and
+`playerInfo()`, fully written, with their comments about yielding to the account's own
+traffic — and `auth.js` had both on INTERNAL_OK. The only thing missing in `server.js`
+was the six lines that call them. Both are now in `server.js`, POST and internal-token
+only. **Verified live the same morning**: a2's console was restarted at 05:58 and the very
+next passes read 1,600 of 1,600 map blocks (13,554 castles, 2,501 lords) and 481 of 481
+watched lords with 151 changes — against 0 and 0 twenty minutes earlier. The other twenty
+consoles still run the old build and will pick the routes up when they next restart.
+
+**A third route was missing with them: `/api/snapshot/refresh`.** That is the glitch
+log's pre-maintenance relog (`director.js glitchRelog`), so the "before" record of an
+announced maintenance has *never* been taken from a fresh login — every console answered
+the sign-in guard instead, which the Director reports as *"this console is older than the
+glitch log — restart it"*. Written 2026-09-25 with the fences `auth.js` already promised:
+no arguments, never during a stand-down, and never a second relog inside `REFRESH_GAP_MS`
+(20 minutes), so a Director that retries cannot spend an account's logins.
+
+**How this class of bug is caught now.** `test-monitor.js` stubbed the console, so it
+answered every route the Monitor asked for and could never notice a real console had none
+of them. Two tests were added there that read `auth.js` and `server.js` themselves: every
+path in INTERNAL_OK must have a route in `server.js`, and the Monitor's two must be a
+POST, internal-token only, and must not `connect()`. The first of them is what found
+`/api/snapshot/refresh`. **A stub that always answers proves nothing about the thing it is
+standing in for** — test the contract between the two files, not the stub.
+
+- **A failed poll writes a snapshot row with NO `totals`, and anything reading
+  `snapshot.totals[res]` blind will die on it** (2026-09-25). The user moved the machine to a
+  different network and re-did the IPs at about 18:04; polls came back without totals while
+  the proxies re-established, and `trade-advance.js` threw
+  `Cannot read properties of undefined (reading 'food')` on **every 20-minute run for the
+  next two hours** with the play sitting stopped. Nothing was lost — the banks' resources
+  reset at maintenance — but four passes' worth of time was. Guard every `totals` read;
+  skipping one stale account is far better than no scheduler.
+  - The same window is worth remembering generally: **a network or IP change stalls the
+    whole fleet**, and the trade-monitor's ladder shows it as "nothing traded HH:MM-HH:MM".
+    The consoles do reconnect on their own; the Trading tab refuses a start while any
+    account in the play is still `connecting`/`offline`, which is correct — wait and retry
+    rather than forcing it.
+
+- **TWO CONSOLES ON ONE ACCOUNT look exactly like a person logging in** (2026-09-26). Four
+  accounts — Lord02, Lord03, Lord19, Lord20 — sat permanently "kicked", each
+  logging the game's own words: *"ANOTHER USER HAS LOGGED INTO THIS ACCOUNT — that is the
+  game kicking us out, not a network fault"*, then *"another user took this account while we
+  were logging in"*. There was no person: **each had two console processes**, and they
+  kicked each other for ever. Every other account had exactly one console and was connected.
+  - **How to see it:** map every listening console port to the account it holds (ask each
+    `:87xx/api/session` who its `account` is) and look for an account on two ports. Here:
+    Lord02 on 8729 **and** 8757, Lord03 8731/8759, Lord19 8713/8717, Lord20
+    8747/8761 — 26 consoles listening for 22 accounts. A raw process count is the first
+    hint (43 node processes where ~24 were expected).
+  - **`botctl` cannot clear it.** `stopNow` kills only the console it REMEMBERS, and
+    `running()` walks the **probe list** — which holds one URL per account, so an untracked
+    orphan is invisible to it. Stopping the tracked console therefore just spawns a fresh
+    one beside the orphan and the war continues. The orphan process has to be ended.
+  - **Suspect it whenever an account is kicked again within a minute of every retry**, and
+    especially after a spell of restarts, a crash or a Director relaunch.
+  - Lowering `kickHoldMin` makes this WORSE, not better: at 1 minute the two consoles fight
+    every minute and the ladder climbs (1, 2, 3 … min) until they are both locked out.
+
+- **Duplicate consoles COME BACK after every Director restart — re-check, don't assume.**
+  Four were cleared at 15:0x on 2026-09-26; by 15:56 a new one had appeared (Lord05 on
+  8713 beside its tracked 8737) because the Director restarted at 15:42 and its `bots`
+  record went with it, so keep-on started a console for an account that already had one.
+  **After any Director restart, re-map the ports** (ask each `:87xx/api/session` who it
+  holds) and end the one the probe list does NOT name. Ports also shift between checks, so
+  re-map immediately before ending anything — on 2026-09-26 the four orphan ports had all
+  moved between the first look and the kill.
+- **"It doesn't open" — a bot tab was stuck on a dead port** (the user, 2026-09-26,
+  Lord19). `openBotTab` in director.html only navigated the named tab when it could
+  READ its location and found it blank; a console is on another PORT, so reading it throws
+  (cross-origin), `blank` stayed false and the tab was never re-pointed. Once a bot tab
+  existed it kept whatever port it first got, and after a console restart moved the port,
+  clicking the account only focused a dead tab. Writing another window's `location` IS
+  allowed cross-origin, so it is now set unconditionally. director.html is read from disk
+  per request — a page refresh is enough, no Director restart.
+
+## 8. The Director's own failures (2026-09-25)
+
+- **An account with NO proxy crashed `/api/accounts` on every call.** `director.js` counted
+  proxy use with `for (const [, p] of assign) counts[p.label] = …`; an account that has no
+  proxy has no entry, so `p` is null and it threw. Lord23 was switched on that morning to
+  join the fleet, running direct at the user's choice, and the Accounts tab broke instantly.
+  The crash guard caught each one ("the Director kept running") so it never showed up as an
+  outage — only as a repeating UNHANDLED REJECTION in `director.err.log`. Guarded with
+  `if (p && p.label)`. **Read `director.err.log` when anything looks odd; a guarded crash is
+  silent by design.**
+- **The supervisor itself can die, and a logon-only task cannot recover from it.**
+  `director-keep.log` for 2026-09-25 shows the supervisor relaunching the Director correctly
+  through the morning (06:17, 06:23), honouring a hand turn-off at 06:38:13 and restarting it
+  at 06:38:58 when the flag cleared — then **nothing at all** until it was started by hand at
+  12:44. It had died silently while the Director it spawned kept running, so when the Director
+  died at about 12:11 nothing relaunched it and the fleet sat idle for half an hour with the
+  trading play frozen.
+  - **Fix: the "OTTObot Director" task now REPEATS every 10 minutes for ever** as well as
+    firing at logon (`install-startup.ps1`). `director-keep.js` holds a single-instance pid
+    lock, so a repeat that fires while a healthy supervisor is up just logs
+    `another supervisor is already running (pid N) — leaving it to that one` and exits.
+    Verified live 2026-09-25 12:46.
+  - In PowerShell an indefinite repetition is `$rep.Duration = ''`;
+    `[TimeSpan]::MaxValue` is rejected by the task XML, and `Set-ScheduledTask` on the
+    running task answers **Access is denied** — re-register through `install-startup.ps1`
+    instead.
+  - **A Director that is up is not the same as a Director that is watched.** Check
+    `director-keep.pid` names a LIVE process, not just that :8712 answers.
+
 ## Keeping this file true
 
 When you learn something about how the game behaves — by watching it, not by guessing —
 add it to the right section with the date and how it was observed. Mark anything inferred
 as *unverified*. When an entry turns out to be wrong, fix it or delete it; don't leave a
 contradiction for the next session. Keep it about the game and about operating it safely;
-how the code works belongs in README.md and SCRIPTS.md.
+how the code works belongs in MANUAL.md and SCRIPTS.md.

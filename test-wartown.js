@@ -16,6 +16,7 @@ const B = require('./goal-buildnpc');
 const M = require('./goalmods');
 const { parseGoals } = require('./goals');
 const { Engine } = require('./engine');
+const D = require('./db');
 const { Game } = require('./game');
 
 let pass = 0, fail = 0;
@@ -801,6 +802,97 @@ fortification ab:5000`;
     has(lines.join('\n'), 'keepatthome: the best attack hero');
     has(lines.join('\n'), 'attackgap: incoming waves 3s or more apart are separate attacks');
     has(lines.join('\n'), 'defensecooldown: still under attack 10 min after the last real wave lands or is recalled');
+  });
+
+  // ============================ the console's manual War Town Mode switch
+  // The user, 2026-09-24: "does the manual switch at the top of the page work for wartown
+  // 0/1/2?" The whole chain, offline: the page posts to /api/wartown, which calls
+  // Session.setWarTown -> setControls (settings key cityControls:<account>), and the engine
+  // reads it back per city through controlsFor. Auto hands the city back to its goals; 0
+  // BEATS a config wartown: line in the goals rather than deferring to it.
+  section("the console manual switch (War Town Mode)");
+
+  await t('setWarTown takes auto, 0, 1 and 2 and refuses anything else', () => {
+    const org = D.org(D.orgs.create("WT").id);
+    const acc = org.accounts.upsert({ label: "WT1", email: "wt1@x.com", password: "x" });
+    const { Session } = require("./session");
+    const S = new Session(acc.id);
+    const a = city("A", 100, 100);
+    S.game = fakeGame([a]);
+    for (const [mode, want] of [["auto", "auto"], [0, 0], [1, 1], [2, 2], ["2", 2]]) {
+      const r = S.setWarTown(a.castleId, mode);
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.controls.wartown, want, `mode ${JSON.stringify(mode)}`);
+      assert.strictEqual(S.controls(a.castleId).wartown, want, "and it reads back");
+    }
+    for (const bad of [3, -1, "on", "", null]) {
+      assert.throws(() => S.setWarTown(a.castleId, bad), /war town mode must be auto, 0, 1 or 2/, String(bad));
+    }
+    // it is kept per city, in the account's own settings, so a restart does not lose it
+    const b = city("B", 101, 100);
+    S.game = fakeGame([a, b]);
+    S.setWarTown(a.castleId, 2);
+    assert.strictEqual(S.controls(b.castleId).wartown, "auto", "another city is untouched");
+    const saved = org.settings.get("cityControls:" + acc.id, null);
+    assert.strictEqual(saved[String(a.castleId)].wartown, 2, "written to the settings");
+  });
+
+  await t('the switch drives the engine: 1 and 2 lock down, 0 beats the goals, auto defers', async () => {
+    const org = D.org(D.orgs.create("WT2").id);
+    const acc = org.accounts.upsert({ label: "WT2", email: "wt2@x.com", password: "x" });
+    const { Session } = require("./session");
+    const S = new Session(acc.id);
+    // the city carries config wartown:2 in its goals, so "Off" has something to beat
+    const src = ["config wartown:2", "keeptroops Main cp:100k"].join(String.fromCharCode(10));
+    const mk = () => [
+      city("War", 100, 100, { troop: { catapult: 500000, carriage: 20000, scouter: 1000 } }),
+      city("Main", 102, 100, { troop: { catapult: 0, carriage: 0, scouter: 1000 } }),
+    ];
+    for (const [mode, sends, why] of [["auto", 0, "the goals still say wartown:2"],
+      [2, 0, "on"], [1, 0, "on"], [0, 1, "off beats config wartown:2"]]) {
+      const [war, main] = mk();
+      S.game = fakeGame([war, main]);
+      S.setWarTown(war.castleId, mode);
+      const r = engineFor([war, main], { War: src, Main: "" });
+      r.e.controlsFor = (c) => S.controls(r.game.castleId(c));
+      await r.e.tick();
+      assert.strictEqual(r.game.sent.length, sends, `mode ${mode}: ${why}`);
+    }
+  });
+
+  // The bug this was written for (a7 Lord07 city 5, 2026-09-24): every trading account
+  // carries "config wartown:1 + wartownpolicy 05:00 10:00" in its ACCOUNT APPEND goals, and
+  // that policy line was also scheduling the mode set BY HAND from the console. Outside the
+  // hours the switch read as Off and the city shipped 100,000 catapults to main.
+  await t('the switch is not scheduled: wartownpolicy hours do not lift a hand-set mode', async () => {
+    const org = D.org(D.orgs.create("WT3").id);
+    const acc = org.accounts.upsert({ label: "WT3", email: "wt3@x.com", password: "x" });
+    const { Session } = require("./session");
+    const S = new Session(acc.id);
+    const src = ["config wartown:1", "wartownpolicy 05:00 10:00", "keeptroops Main cp:100k"].join(String.fromCharCode(10));
+    const mk = () => [
+      city("War", 100, 100, { troop: { catapult: 500000, carriage: 20000, scouter: 1000 } }),
+      city("Main", 102, 100, { troop: { catapult: 0, carriage: 0, scouter: 1000 } }),
+    ];
+    NOW = at(13);                                   // outside 05:00-10:00
+    {                                               // the goals own line stays scheduled
+      const [war, main] = mk();
+      const r = engineFor([war, main], { War: src, Main: "" });
+      await r.e.tick();
+      assert.strictEqual(r.game.sent.length, 1, "config wartown: alone still follows wartownpolicy");
+    }
+    for (const mode of [1, 2]) {                    // the console switch is not
+      const [war, main] = mk();
+      S.game = fakeGame([war, main]);
+      S.setWarTown(war.castleId, mode);
+      const r = engineFor([war, main], { War: src, Main: "" });
+      r.e.controlsFor = (c) => S.controls(r.game.castleId(c));
+      await r.e.tick();
+      assert.strictEqual(r.game.sent.length, 0,
+        `War Town Mode ${mode} set by hand must hold outside the wartownpolicy hours`);
+      assert.strictEqual(W.isWarTown(ctxFor(war, src, { controls: { wartown: mode } })), mode);
+    }
+    NOW = at(8);
   });
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

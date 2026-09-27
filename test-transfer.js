@@ -176,6 +176,71 @@ const holds = (units, a, b, kind, skill) => Math.floor(units * netHold(a, b, kin
     assert.deepStrictEqual([a.rally.kind, a.rally.pairLimit, a.rally.from.name], ['r', 1, '5']);
   });
 
+  // ========================================================= /maxdist
+  console.log('\n/maxdist: how far a line may reach\n');
+
+  await t('/maxdist and its bare /50 form read the same, and a bad one is refused', () => {
+    const p = parseGoals('requestresources any food 1b 100m * * /maxdist:50');
+    assert.deepStrictEqual(p.errors, []);
+    assert.strictEqual(p.goals[0].maxDist, 50);
+
+    const q = parseGoals('requestresources any food 1b 100m * * /50');
+    assert.deepStrictEqual(q.errors, []);
+    assert.strictEqual(q.goals[0].maxDist, 50);
+    has(describe(q).join('\n'), 'only from cities within 50 tiles');
+
+    const r = parseGoals('requesttroops any archer 10k 1k /50');
+    assert.deepStrictEqual([r.errors, r.goals[0].maxDist], [[], 50]);
+
+    const k = parseGoals('keepresources any f:1b 50m /maxdist:12.5');
+    assert.deepStrictEqual([k.errors, k.goals[0].maxDist], [[], 12.5]);
+    has(describe(k).join('\n'), 'only to cities within 12.5 tiles');
+
+    // a distance that can't be read is never guessed at: the line doesn't run
+    for (const bad of ['/maxdist:far', '/maxdist', '/maxdist:0', '/maxdist:-5']) {
+      assert.match(parseGoals(`requestresources any food 1b 100m ${bad}`).errors[0].error,
+        /distance in tiles/, bad);
+    }
+    assert.match(parseGoals('sendresources any food 1b 100m /maxdist:50 /60').errors[0].error, /given twice/);
+  });
+
+  await t('a sender past /maxdist is passed over, and the note says how far it is', () => {
+    // only 8 (59.2 tiles) and 9 (91.7) have food to spare; 5 sits on its keep
+    const f = fleet({ five: { food: 1e9 }, eight: { food: 2e9 } });
+    const line = 'requestresources any food 5b 1b * 50m /below:500m';
+    let p = plan(f.fla, Object.values(f), line).plan;
+    assert.strictEqual(p.actions[0].from.name, '8', p.note);
+
+    p = plan(f.fla, Object.values(f), `${line} /maxdist:60`).plan;
+    assert.strictEqual(p.actions[0].from.name, '8', p.note);
+
+    p = plan(f.fla, Object.values(f), `${line} /50`).plan;
+    assert.strictEqual(p.actions.length, 0, p.note);
+    has(p.note, "8 is 59.2 tiles away, past this line's /maxdist:50");
+  });
+
+  await t('/maxdist holds for troops too', () => {
+    const f = fleet({ nine: { troop: { carriage: 20000, archer: 50e3 } } });
+    const line = 'requesttroops any archer 10k 0 * *';
+    let p = plan(f.fla, Object.values(f), line).plan;
+    assert.strictEqual(p.actions[0].from.name, '9', p.note);
+    p = plan(f.fla, Object.values(f), `${line} /50`).plan;
+    assert.strictEqual(p.actions.length, 0, p.note);
+  });
+
+  await t('a sender does not save a resource for a needier city its line cannot reach', () => {
+    // 8 holds the food; Fla (2.2 tiles from 5) asks, and 5 is needier still —
+    // but 5's own line only reaches 50 tiles, and 8 is 59.2 from Fla
+    const f = fleet({ fla: { food: 100e6 }, five: { food: 0 }, eight: { food: 5e9 }, nine: { food: 1e9 } });
+    const mine = 'requestresources any food 5b 1b * 50m /below:500m';
+    let p = plan(f.fla, Object.values(f), mine, { own: { 5: mine } }).plan;
+    assert.strictEqual(p.actions.length, 0, p.note);
+    has(p.note, 'leaves its food for 5, which holds less');
+    // the same line at 5, but it may not reach 8: 8 sends to Fla instead
+    p = plan(f.fla, Object.values(f), mine, { own: { 5: `${mine} /maxdist:5` } }).plan;
+    assert.strictEqual(p.actions[0].from.name, '8', p.note);
+  });
+
   // ===================================================== what is on its way
   console.log('\nrequestresources: what is already coming\n');
 
@@ -488,6 +553,35 @@ const holds = (units, a, b, kind, skill) => Math.floor(units * netHold(a, b, kin
     assert.strictEqual(sent.length, 4);
   });
 
+  // The user, 2026-09-24: a haunted castle was applied and 125k waves were
+  // still refused — by OUR guard, which could not see the buff.
+  await t('a haunted castle adds 25% too, and /nolimit sends whatever the guard thinks', async () => {
+    const sent = [];
+    const plain = city('Plain', 30, 30, { rally: 10 });
+    const spooky = city('Spooky', 31, 31, { rally: 10, buffs: [{ typeId: 'HauntedCastleBuf', endTime: Date.now() + 864e5 }] });
+    const g = { castles: [plain, spooky], castleId: (c) => c.castleId, player: { buffs: [] },
+      c: { send: (cmd, data) => sent.push(data), await: async () => ({ data: { ok: 1 } }) } };
+    const go = (c, n, o = {}, call = {}) => Game.prototype.newArmy.call(g, c.castleId,
+      { troops: { scouter: n }, useFlag: !!o.big, useItem: !!o.horde }, call);
+    assert.strictEqual((await go(spooky, 125e3)).ok, 1, '125k from the haunted city, no War Ensign');
+    assert.strictEqual((await go(spooky, 156250, { big: true })).ok, 1, 'a War Ensign on top: 156,250');
+    let r = await go(spooky, 125001);
+    has(r.errorMsg, 'takes at most 125,000 troops (10,000 per Rally Spot level, +25% for the haunted castle)');
+    r = await go(plain, 125e3);
+    assert.strictEqual(r.ok, 0, 'a city with no haunted castle is still held to 100,000');
+    has(r.errorMsg, '/nolimit sends it anyway');
+    // the account-wide buff counts for every city, as the client's buff bar has it
+    g.player.buffs = [{ typeId: 'HauntedCastleAdvBuf' }];
+    assert.strictEqual((await go(plain, 125e3)).ok, 1, 'the buff on the player, not the city');
+    g.player.buffs = [];
+    // and an expired one counts for nothing
+    spooky.buffs = [{ typeId: 'HauntedCastleBuf', endTime: Date.now() - 1000 }];
+    assert.strictEqual((await go(spooky, 125e3)).ok, 0, 'an expired haunted castle is no bonus');
+    // /nolimit: never judged here at all
+    assert.strictEqual((await go(plain, 900e3, {}, { noLimit: true })).ok, 1, '/nolimit goes to the server');
+    assert.strictEqual(sent.length, 4, 'the three refusals never reached the wire');
+  });
+
   // ============================================================ lowest first
   console.log('\nlowest first\n');
   const SPREAD = 'requestresources any gold 40000b 40000b 100m 1b t';
@@ -713,6 +807,33 @@ const holds = (units, a, b, kind, skill) => Math.floor(units * netHold(a, b, kin
     cs[0].resource.iron.amount = 90e9;               // 90% of 100b; gold 5.9t is 59% of 10t
     p = plan(cs[0], cs, LAYER, { skills: L10, selfArmys: [march(cs[2], cs[0], C.MISSION.transport)] }).plan;
     assert.deepStrictEqual(Object.keys(p.actions[0].resources), ['gold'], p.note);
+  });
+
+  // ================================================ /maxdist on push lines
+  console.log('\n/maxdist on keep and send lines\n');
+
+  await t('a keep line passes over a receiver past /maxdist', () => {
+    const here = city('H', 100, 200, { food: 5e9, troop: { carriage: 250e3 } });
+    const near = city('N', 110, 200, { food: 0 });
+    const far = city('F', 200, 200, { food: 0 });
+    const game = fakeGame([here, near, far]);
+    Object.assign(game, L10);
+    const push = (src) => {
+      const parsed = parseGoals(src);
+      assert.deepStrictEqual(parsed.errors, []);
+      return T.plans.push({ castle: here, goals: parsed.goals, config: parsed.config, goalsOf: () => [], selfArmies: [] }, {}, game);
+    };
+    let p = push('keepresources any f:1b');
+    assert.deepStrictEqual(p.actions.map((a) => a.to.name), ['N', 'F'], p.note);
+
+    p = push('keepresources any f:1b /50');
+    assert.deepStrictEqual(p.actions.map((a) => a.to.name), ['N'], p.note);
+    has(p.note, "F is 100.0 tiles away, past this line's /maxdist:50");
+
+    // sendresources reads it the same way
+    p = push('sendresources any food 1b * * * /maxdist:5');
+    assert.strictEqual(p.actions.length, 0, p.note);
+    has(p.note, "N is 10.0 tiles away, past this line's /maxdist:5");
   });
 
   // ============================================================== food cap

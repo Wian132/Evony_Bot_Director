@@ -23,6 +23,17 @@ const STAMP = /^\[autorun ([^\]]+)\] (\d\d):(\d\d):(\d\d)\.(\d{3}) line \d+: (.*
 const CONN = /^\[conn\] (\d\d):(\d\d):(\d\d)\.(\d{3}) (.*)$/;
 const MANY = /· (\d+) × (sell|buy) [\d,]+ (food|wood|stone|iron) @ ([\d.]+) from .*?(?:— (\d+) of (\d+) placed|-> none placed)/;
 const ONE = /· (sell|buy) [\d,]+ (food|wood|stone|iron) @ ([\d.]+) from .*?(— placed|-> FAILED|-> none placed)/;
+// A CANCELLED ORDER IS NOT A FILL. Our buying side recycles its slots — it cancels its own
+// resting bids so the next loop places fresh ones that cross the banks' asks (the user,
+// 2026-09-23: "make it instant") — and counting those re-places as purchases is what made
+// the Trading tab read "ours bought 235.98t" against 66.20t the banks had actually sold,
+// and a return climbing to 1072% as the banks ran dry (the user, 2026-09-24: "are we buying
+// someone elses stone?"). The seller never cancels during a play, so its count was always
+// honest; ours is placed MINUS cancelled from here on.
+//   "· canceltrade buy · cancelled 8 of 8 offer(s) in main"          -> 8 taken back
+//   "· canceltrade buy · New city has no open bids to cancel"        -> nothing
+//   "· canceltrade buy · none of the 10 offer(s) in 6 were cancelled: …" -> nothing
+const CANCELLED = new RegExp('· cancelled (\\d+) of \\d+ offer\\(s\\)');
 const FRESH = /FRESHSTART (sell|buy) food ([\d.e+]+) wood ([\d.e+]+) stone ([\d.e+]+) iron ([\d.e+]+)/;
 const SITOUT = /· SITOUT (?:(sell|buy) (food|wood|stone|iron) — over the cap|over — trading again)/;
 // clean-then-buy/sell.txt and clean-reports.txt echo these from the account's first city:
@@ -48,6 +59,8 @@ function parseLine(line) {
       const ok = o[4] === '— placed';
       return { kind: 'order', tod, city, side: o[1], res: o[2], price: o[3], placed: ok ? 1 : 0, refused: ok ? 0 : 1 };
     }
+    o = CANCELLED.exec(rest);
+    if (o) return { kind: 'cancel', tod, city, n: +o[1] };
     o = FRESH.exec(rest);
     if (o) {
       return { kind: 'fresh', tod, city, side: o[1], res: { food: +o[2], wood: +o[3], stone: +o[4], iron: +o[5] } };
@@ -183,6 +196,9 @@ function report(mon, accounts, { minutes = 60, bucketMin = 5, dir = __dirname } 
     const evs = mon.events(a.id);
     const row = { id: a.id, label: a.label, holiday: !!a.holiday, connected: a.connected ?? null,
       placed2: 0, refused2: 0, placed10: 0, sells10: 0, buys10: 0, active: new Set(), sitting: new Map(),
+      // orders this account took back off the book in the same windows: placed less these
+      // is what it actually traded (see CANCELLED above)
+      cancelled2: 0, cancelled10: 0,
       lastOrderAt: null, conn: [], fresh: null, freshAt: null, freshCities: 0,
       // report cleaning: the latest one ({ startAt, doneAt, removed, running }) and what
       // was removed inside the window
@@ -200,6 +216,17 @@ function report(mon, accounts, { minutes = 60, bucketMin = 5, dir = __dirname } 
       }
       if (e.kind === 'fresh') { freshBy.set(e.city, e); continue; }
       if (e.kind === 'sitout') { if (e.out) row.sitting.set(e.city, { t: e.t, res: e.res }); else row.sitting.delete(e.city); continue; }
+      if (e.kind === 'cancel') {
+        if (e.t >= now - 120000) row.cancelled2 += e.n;
+        if (e.t >= now - 600000) row.cancelled10 += e.n;
+        if (e.t >= first) {
+          const cb = buckets[Math.floor((e.t - first) / B)];
+          if (cb) { if (row.holiday) cb.hol -= e.n; else cb.ours -= e.n; }
+          const cr = readings[Math.floor((e.t - r10first) / R10)];
+          if (cr) { if (row.holiday) cr.hol -= e.n; else cr.ours -= e.n; }
+        }
+        continue;
+      }
       if (e.kind !== 'order') continue;
       if (e.t >= now - 120000) { row.placed2 += e.placed; row.refused2 += e.refused; }
       if (e.t >= now - 600000) {
@@ -240,13 +267,21 @@ function report(mon, accounts, { minutes = 60, bucketMin = 5, dir = __dirname } 
     const since = playSince(mon, accounts, control.res, now);
     for (const a of accounts) {
       for (const e of mon.events(a.id)) {
+        // a cancel names no resource, but during a play every open order of a city is the
+        // one being played — the control file takes any other down — and anything before
+        // `since` belongs to the play before, so the window itself keeps it honest
+        if (e.kind === 'cancel') { if (e.t >= since) { if (a.holiday) hol -= e.n; else ours -= e.n; } continue; }
         if (e.kind !== 'order' || e.res !== control.res || !e.placed || e.t < since) continue;
         if (a.holiday) hol += e.placed; else ours += e.placed;
       }
     }
+    // a city can cancel in one window what it placed in the one before, so clamp
+    hol = Math.max(0, hol); ours = Math.max(0, ours);
     total = { res: control.res, since, hol, ours, pct: hol ? Math.round(100 * ours / hol) : null,
       holT: hol * ORDER / 1e12, oursT: ours * ORDER / 1e12 };
   }
+  for (const b of buckets) { b.hol = Math.max(0, b.hol); b.ours = Math.max(0, b.ours); }
+  for (const r of readings) { r.hol = Math.max(0, r.hol); r.ours = Math.max(0, r.ours); }
   for (const b of buckets) { b.pct = b.hol ? Math.round(100 * b.ours / b.hol) : null; b.prices = Object.keys(b.prices); }
   const cleaned = { removed: acc.reduce((s, a) => s + a.cleanedInWindow, 0), runs: acc.reduce((s, a) => s + a.cleansInWindow, 0),
     running: acc.filter((a) => a.clean && a.clean.running).map((a) => a.id) };

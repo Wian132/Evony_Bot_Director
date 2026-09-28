@@ -482,6 +482,35 @@ t('an account holding prisoners is marked out: a violet row, a pill and the Pris
   assert.deepStrictEqual(shown, [A.id], 'the "Holding prisoners" view');
 });
 
+t('Idle pop: the sum, and the cities idling at half their maximum called out', async () => {
+  if (browserOff) return 'skipped';
+  const s0 = snap(10, 1158, 464800000, 6815000000000, 3231000000000);
+  ORG.snapshots.add(A.id, { ...s0,
+    totals: { ...s0.totals, population: 90000, maxPopulation: 100000, idlePopulation: 45000 },
+    cityList: [
+      { id: 'c1', name: 'busy', heroes: 5, population: 50000, maxPopulation: 50000, idle: 5000 },
+      { id: 'c2', name: 'lazy', heroes: 5, population: 40000, maxPopulation: 50000, idle: 40000 },
+    ] });
+  await ev('refresh()');
+  const cell = await until(async () => {
+    const c = await ev(`(() => { const tr = document.querySelector('#tbl tbody tr[data-id="${A.id}"]');
+      const i = shownCols().findIndex((c) => c.key === 'idlePop');
+      const td = tr && tr.querySelectorAll('td')[i]; const sp = td && td.querySelector('span');
+      return td ? { text: td.textContent.trim(), title: sp ? sp.title : '' } : null; })()`);
+    return c && /high/.test(c.text) ? c : null;
+  }, 8000, 'the idle cell');
+  assert.ok(/45k · 1 high/.test(cell.text), 'the sum and the one city: ' + cell.text);
+  assert.ok(/lazy: 40,000 of 50,000/.test(cell.title) && !/busy/.test(cell.title), 'only the idle city is named: ' + cell.title);
+  // a snapshot from an older console has no idle figure: a dash, not a zero
+  const s1 = snap(5, 1090, 150000, 1137000000000, 157700000000);
+  ORG.snapshots.add(B.id, s1);
+  await ev('refresh()');
+  const old = await until(async () => ev(`(() => { const tr = document.querySelector('#tbl tbody tr[data-id="${B.id}"]');
+    const i = shownCols().findIndex((c) => c.key === 'idlePop');
+    return tr ? tr.querySelectorAll('td')[i].textContent.trim() : null; })()`), 8000, 'the old row');
+  assert.strictEqual(old, '—');
+});
+
 t('an account holding none is left alone', async () => {
   if (browserOff) return 'skipped';
   const row = await ev(`(() => {

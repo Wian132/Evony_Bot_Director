@@ -251,6 +251,12 @@ t('the console tells the Director which cities are under attack, and a loyalty p
   w.push([a1]);
   let v = s.underAttackView();
   assert.strictEqual(v.on, true);
+  // the detail for the Claude waker (attack-brief.js) is checked in
+  // test-claude-wake.js; here only that it is there, then set aside
+  assert.strictEqual(v.cities[0].defence.troops.total, 62500);
+  assert.strictEqual(v.cities[0].real[0].heroLevel, 40);
+  const plain = (cs) => cs.map(({ defence, ...c }) => ({ ...c, real: c.real.map(({ troop, mission, hero, heroLevel, fromXY, ...a }) => a) }));
+  v = { ...v, cities: plain(v.cities) };
   // (2026-09-28: each city also carries its real attacks, with a key, and the
   // junk line it was judged by — attacks.js)
   assert.deepStrictEqual(v.cities, [{ id: 101, name: 'Home', inbound: 1, junk: 0, junkLine: 1000, firstLandsAt: NOW0 + 5000, lastWaveAt: null, loyalty: 100,
@@ -259,6 +265,8 @@ t('the console tells the Director which cities are under attack, and a loyalty p
   clock.t += 6000;
   w.push([]);
   v = s.underAttackView();
+  assert.strictEqual(v.cities[0].defence, null, 'no detail once nothing is inbound');
+  v = { ...v, cities: plain(v.cities) };
   assert.deepStrictEqual(v.cities, [{ id: 101, name: 'Home', inbound: 0, junk: 0, junkLine: 1000, firstLandsAt: null, lastWaveAt: NOW0 + 5000, loyalty: 100, real: [] }],
     'a wave landed in the last 30 min still counts');
   let woke = 0;

@@ -66,3 +66,8 @@ prepend-capture-*.txt
 # What a Claude key did to the consoles (claude-guard.js audit, logs/claude-actions.jsonl):
 # account names and script text, so it stays on this machine.
 /logs/
+# Live run data from the capture/NPC drives (account ids, lord names, stock): local.
+capture-marks.json
+npc-drive-plan.json
+stone-audit.json
+goals-prepend-*.txt

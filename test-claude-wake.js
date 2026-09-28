@@ -98,7 +98,8 @@ t('1000 troops: a real attack, with its key, size, attacker and landing time', (
   const v = s.underAttackView();
   assert.strictEqual(v.on, true);
   assert.deepStrictEqual(v.cities[0].real, [{ key: '42', armyId: 42, troops: 1000, from: 'Raider City', fromFieldId: a.startFieldId,
-    king: 'Raider', alliance: 'Foes', reachTime: NOW0 + 300000 }]);
+    king: 'Raider', alliance: 'Foes', reachTime: NOW0 + 300000,
+    troop: { archer: 600, pikemen: 400 }, mission: 'attack', hero: 'Brute', heroLevel: null, fromXY: { x: 150, y: 250 } }]);
   assert.strictEqual(v.cities[0].inbound, 1);
   assert.strictEqual(s.cities()[0].underAttack, true);
 });
@@ -149,7 +150,8 @@ section('claude-wake.js');
 const org = D.orgs.create('wake test ' + Date.now());
 const ACC = { id: 'tw' + Date.now().toString(36), label: 'Lord02', server: 'ss71' };
 D.org(org.id).accounts.upsert(ACC);
-const reset = () => { D.settings.set(WK.K_SEEN, {}); D.settings.set(WK.K_LOG, []); D.settings.set(WK.K_CAP, 6); };
+// the tests below run the hidden -p mode; the Remote Control mode has its own section
+const reset = (remote = false) => { D.settings.set(WK.K_SEEN, {}); D.settings.set(WK.K_LOG, []); D.settings.set(WK.K_CAP, 6); D.org(org.id).settings.set(WK.K_REMOTE, remote); };
 
 // finish: each run ends at once, so the one-Claude-per-account rule does not
 // hold the next attack back
@@ -163,7 +165,7 @@ function fakeLaunch({ finish = false } = {}) {
   fn.calls = calls;
   return fn;
 }
-const makeWaker = (launch) => WK.create({ D, launch, now: () => clock, aliasOf: () => 'Lord02', env: { PATH: '', OTTO_CLAUDE_BIN: 'fake-claude', ANTHROPIC_API_KEY: 'sk-should-go', CLAUDECODE: '1', KEEP: 'me' } });
+const makeWaker = (launch, more = {}) => WK.create({ D, launch, timers: false, ...more, now: () => clock, aliasOf: () => 'Lord02', env: { PATH: '', OTTO_CLAUDE_BIN: 'fake-claude', ANTHROPIC_API_KEY: 'sk-should-go', CLAUDECODE: '1', KEEP: 'me' } });
 // underAttack as a console sends it, from real ArmyBeans through the real session code
 function viewOf(armies, goals) {
   const home = city(1, 'Home', XY.home), fort = city(2, 'Fort', XY.fort);
@@ -330,6 +332,182 @@ t('the real launcher runs a command, collects its output and kills it at the tim
     assert.strictEqual(JSON.parse(got.stdout).result, 'hi');
     assert.ok(hung && hung.timedOut, 'the hanging child was killed at the timeout');
   });
+});
+
+// ============================================== the opening message's detail
+section('attack-brief.js: what the city has, and the prompt that says it');
+// a fuller city: home troops, walls, heroes (one mayor, one a prisoner), a far third city
+function richWorld() {
+  const home = city(1, 'Home', XY.home), fort = city(2, 'Fort', XY.fort);
+  const far = city(3, 'Faraway', { x: 790, y: 10 });
+  const edge = city(4, 'Edge', { x: 5, y: 300 });
+  Object.assign(fort, {
+    troop: { archer: 40000, pikemen: '10000', scouter: 0, lightCavalry: 2500 },
+    fortification: { trap: 3000, abatis: 1500, arrowTower: 0, rollingLogs: 200, rockfall: 0 },
+    buildings: [{ typeId: 32, level: 8 }, { typeId: 31, level: 10 }],
+    heros: [
+      { name: 'Otto', level: 120, power: 300, management: 40, stratagem: 20, status: 0 },
+      { name: 'Mayo', level: 90, power: 60, management: 250, stratagem: 30, status: 1 },
+      { name: 'Taken', level: 200, power: 999, management: 999, stratagem: 1, status: 4 },
+    ],
+  });
+  const armies = [
+    army(fort, { archer: '30000', lightCavalry: '5000' }, { armyId: 801, inMs: 240000, king: 'Brutus', alliance: 'Foes' }),
+    army(fort, { archer: '?', catapult: '?' }, { armyId: 802, inMs: 300000, king: 'Brutus', alliance: 'Foes' }),
+  ];
+  armies[0].heroLevel = 77; armies[0].hero = 'Grim';
+  return { cities: [home, fort, far, edge], armies, fort };
+}
+t('each real army: troops by type, mission, hero and level, the tile it comes from', () => {
+  const w = richWorld();
+  const v = sessionOver(w.cities, w.armies).underAttackView();
+  const [a, b] = v.cities[0].real;
+  assert.deepStrictEqual([a.troop, a.troops, a.mission, a.hero, a.heroLevel, a.fromXY], [{ archer: 30000, lightCavalry: 5000 }, 35000, 'attack', 'Grim', 77, { x: 150, y: 250 }]);
+  assert.deepStrictEqual([b.troop, b.troops], [{ archer: null, catapult: null }, null]);
+});
+t('the city: home troops, walls and Walls level, best attack and politics heroes (not the prisoner), nearest other city', () => {
+  const w = richWorld();
+  const d = sessionOver(w.cities, w.armies).underAttackView().cities[0].defence;
+  assert.deepStrictEqual(d.troops, { byType: { pikemen: 10000, archer: 40000, lightCavalry: 2500 }, total: 52500 });
+  assert.deepStrictEqual(d.walls, { byType: { trap: 3000, abatis: 1500, rollingLogs: 200 }, total: 4700, wallLevel: 8 });
+  assert.deepStrictEqual(d.bestAttack, { name: 'Otto', level: 120, attack: 300, politics: 40, intel: 20, status: 'idle' });
+  assert.deepStrictEqual(d.bestPolitics, { name: 'Mayo', level: 90, attack: 60, politics: 250, intel: 30, status: 'mayor' });
+  assert.deepStrictEqual(d.nearest, { name: 'Home', x: 200, y: 300, tiles: 11.2 });
+  assert.deepStrictEqual([d.x, d.y], [210, 305]);
+});
+t('the nearest city is measured the short way round the wrapping map', () => {
+  const B = require('./attack-brief');
+  const a = { name: 'A' }, b = { name: 'B' }, c = { name: 'C' };
+  const xy = new Map([[a, { x: 2, y: 300 }], [b, { x: C.MAP_W - 3, y: 300 }], [c, { x: 60, y: 300 }]]);
+  assert.deepStrictEqual(B.nearestOther([a, b, c], a, (q) => xy.get(q)), { name: 'B', x: C.MAP_W - 3, y: 300, tiles: 5 });
+});
+t('the opening message: N incoming armies, each army, then each city\'s defence, then permissions and the job', () => {
+  const w = richWorld();
+  const view = sessionOver(w.cities, w.armies).underAttackView();
+  const p = WK.buildPrompt({ account: { id: 'a2', label: 'REALNAME', server: 'ss71' }, alias: 'Lord02', attacker: 'alliance Foes',
+    cities: view.cities, perms: { gate: true }, now: clock });
+  const lines = p.split('\n');
+  assert.ok(lines[0].startsWith('2 incoming armies on a2 (Lord02), server ss71 (attack group: alliance Foes).'), lines[0]);
+  assert.ok(/^1\. -> Fort: 35000 troops \(a:30000 c:5000\), attack, hero Grim L77, lord Brutus \[Foes\] from Raider City \(150,250\), lands server \d\d:\d\d:\d\d \/ local \d\d:\d\d:\d\d \(in 4m00s, lands at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} server time\) \[key 801\]$/.test(lines[1]), lines[1]);
+  assert.ok(lines[2].startsWith('2. -> Fort: unknown troops (a:? cp:?), attack, hero Brute,'), lines[2]);
+  const cityLine = lines.find((l) => l.startsWith('City Fort'));
+  assert.strictEqual(cityLine, 'City Fort (210,305) has 52500 troops (p:10000 a:40000 c:2500), wall defence (Walls L8): trap 3000, abatis 1500, rolling logs 200 = 4700, '
+    + 'loyalty 88, junk line 1000; best attack hero Otto L120 (atk 300, pol 40, int 20; idle); best politics hero Mayo L90 (atk 60, pol 250, int 30; mayor); '
+    + 'nearest other city Home (200,300) 11.2 tiles away.');
+  assert.ok(p.includes('Permissions the user has given you on THIS account: gate (Control gate).'));
+  assert.ok(p.includes('KEEP THINGS ALIVE') && p.includes('short report'));
+  assert.ok(!p.includes('REALNAME'), 'the account\'s real lord name is never in the prompt');
+  console.log('\n' + p.split('\n').map((l) => '        | ' + l).join('\n') + '\n');
+});
+
+// ================================================== Remote Control sessions
+section('claude-wake.js: Remote Control sessions');
+function remoteKit() {
+  const alive = new Set();
+  let pid = 7000;
+  const calls = [];
+  const launchRemote = (cmd) => { const p = ++pid; alive.add(p); calls.push({ cmd, pid: p }); return { pid: p }; };
+  const files = {};
+  return { alive, calls, files,
+    deps: { launchRemote, pidAlive: (p) => alive.has(p), uuid: () => '11111111-2222-4333-8444-555555555555',
+      transcriptPath: (id) => (files[id] !== undefined ? 'T:' + id : null), readFile: (f) => files[f.slice(2)] } };
+}
+t('by default a wake opens a named Remote Control session: args, session id, prompt last, no -p', () => {
+  reset(true);
+  const K = remoteKit();
+  const hidden = fakeLaunch();
+  const w = makeWaker(hidden, K.deps);
+  assert.strictEqual(w.isRemote(org.id), true);
+  clock = NOW0;
+  w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 900 }]]) });
+  assert.strictEqual(hidden.calls.length, 0);
+  assert.strictEqual(K.calls.length, 1);
+  const { cmd } = K.calls[0];
+  const a = cmd.args;
+  const name = WK.sessionName(ACC.id, 'Lord02', NOW0);
+  assert.ok(/^Attack tw\w+ Lord02 \d\d:\d\d$/.test(name), name);
+  assert.deepStrictEqual(a.slice(0, 2), ['--remote-control', name]);
+  const flag = (f) => a[a.indexOf(f) + 1];
+  assert.strictEqual(flag('--session-id'), '11111111-2222-4333-8444-555555555555');
+  assert.strictEqual(a.indexOf('--session-id'), a.length - 3, 'a single-value option right before the prompt');
+  assert.ok(a[a.length - 1].startsWith('1 incoming army on '));
+  for (const f of ['--strict-mcp-config']) assert.ok(a.includes(f));
+  assert.strictEqual(flag('--tools'), '');
+  assert.strictEqual(flag('--allowedTools'), 'mcp__otto');
+  assert.strictEqual(flag('--permission-mode'), 'dontAsk');
+  assert.strictEqual(JSON.parse(flag('--mcp-config')).mcpServers.otto.env.OTTO_CLAUDE_MODE, 'auto');
+  for (const f of ['-p', '--no-session-persistence', '--output-format']) assert.ok(!a.includes(f), f);
+  assert.strictEqual(cmd.env.ANTHROPIC_API_KEY, undefined);
+  const log = w.wakes(org.id)[0];
+  assert.deepStrictEqual([log.status, log.mode, log.sessionName, log.pid, log.label], ['open', 'remote', name, K.calls[0].pid, 'Lord02']);
+});
+t('while the session window is open it holds its account; closed, the next attack wakes again', () => {
+  reset(true);
+  const K = remoteKit();
+  const w = makeWaker(fakeLaunch(), K.deps);
+  w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 910, alliance: 'X' }]]) });
+  const did = w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 911, alliance: 'Y' }]]) });
+  assert.strictEqual(did[0].kind, 'joined');
+  K.alive.delete(K.calls[0].pid);                     // the user closed the window
+  w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 912, alliance: 'Z' }]]) });
+  assert.strictEqual(K.calls.length, 2);
+  const st = w.wakes(org.id).map((x) => x.status);
+  assert.deepStrictEqual(st, ['open', 'joined', 'closed']);
+});
+t('the first report is read from the transcript once the first turn has ended', () => {
+  reset(true);
+  const K = remoteKit();
+  const w = makeWaker(fakeLaunch(), K.deps);
+  w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 920 }]]) });
+  const sid = '11111111-2222-4333-8444-555555555555';
+  const row = (o) => JSON.stringify(o);
+  K.files[sid] = [row({ type: 'user', message: { role: 'user', content: 'x' } }),
+    row({ type: 'assistant', message: { id: 'm1', stop_reason: 'tool_use', content: [{ type: 'text', text: 'Looking.' }, { type: 'tool_use' }] } })].join('\n');
+  w.tick();
+  assert.strictEqual(w.wakes(org.id)[0].output, null, 'no report while the turn is still going');
+  K.files[sid] += '\n' + [row({ type: 'assistant', message: { id: 'm2', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Saw 5000 troops.' }] } }),
+    row({ type: 'assistant', message: { id: 'm2', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Closed the gate at Home.' }] } }),
+    row({ type: 'assistant', message: { id: 'm3', stop_reason: 'end_turn', content: [{ type: 'text', text: 'a later answer' }] } }), '{"half a li'].join('\n');
+  w.tick();
+  const log = w.wakes(org.id)[0];
+  assert.strictEqual(log.output, 'Saw 5000 troops.\nClosed the gate at Home.');
+  assert.ok(log.reportAt);
+  assert.strictEqual(log.status, 'open');
+});
+t('a Director restart keeps an open session holding its account, and marks a gone one closed', () => {
+  reset(true);
+  const K = remoteKit();
+  const w1 = makeWaker(fakeLaunch(), K.deps);
+  w1.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 930, alliance: 'A' }]]) });
+  const w2 = makeWaker(fakeLaunch(), K.deps);
+  const did = w2.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 931, alliance: 'B' }]]) });
+  assert.strictEqual(did[0].kind, 'joined');
+  K.alive.clear();
+  const w3 = makeWaker(fakeLaunch(), K.deps);
+  assert.strictEqual(w3.wakes(org.id).find((x) => x.mode === 'remote').status, 'closed');
+});
+t('the transcript path: the cwd with every non-letter-or-digit made "-"', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ev-home-'));
+  const dir = path.join(home, '.claude', 'projects', 'C--EvonyTool');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'abc.jsonl'), '');
+  assert.strictEqual(WK.transcriptPath('abc', 'C:\\EvonyTool', home), path.join(dir, 'abc.jsonl'));
+  const other = path.join(home, '.claude', 'projects', 'c--Elsewhere');
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, 'def.jsonl'), '');
+  assert.strictEqual(WK.transcriptPath('def', 'C:\\EvonyTool', home), path.join(other, 'def.jsonl'), 'found in another folder');
+  assert.strictEqual(WK.transcriptPath('nope', 'C:\\EvonyTool', home), null);
+});
+t('the Director\'s switch turns Remote Control off: back to the hidden -p run', () => {
+  reset(true);
+  const K = remoteKit();
+  const hidden = fakeLaunch();
+  const w = makeWaker(hidden, K.deps);
+  w.setRemote(org.id, false);
+  w.observe({ orgId: org.id, account: ACC, underAttack: viewOf([['Home', { archer: '5000' }, { armyId: 940 }]]) });
+  assert.strictEqual(K.calls.length, 0);
+  assert.strictEqual(hidden.calls.length, 1);
+  assert.strictEqual(hidden.calls[0].cmd.args[0], '-p');
 });
 
 setTimeout(() => {

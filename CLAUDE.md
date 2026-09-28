@@ -78,6 +78,27 @@ to go live.
 banks), insta heroes, the amulet farm. Read it when a request names a role or a plan and
 the reason behind it isn't obvious.
 
+## Say when an endpoint would have helped
+
+The fleet has its own tool API (`otto-mcp.js`, registered in `.mcp.json`: `fleet`, `state`,
+`log`, `events`, `wait`, `cmd`, `script`, `script_stop`, `script_runs`, `act`). It is meant
+to grow as the work exposes gaps.
+
+**So, as you work, notice the moment you think "an endpoint for this would have saved me"**
+— and say so, there and then, in your reply to the user. Do not save it for the end and do
+not quietly work around it. The moments worth catching are:
+
+- you are parsing a console log, or reading `account_latest`, to get a fact the game knows
+- you are polling in a loop instead of waiting on an event
+- you hit a failure that a pre-flight check would have caught before anything was sent
+- you are running the same one-off script across many cities to gather one number
+- you discovered a limit (a march cap, a hero filter, a truce) only from a refusal
+
+Write the suggestion as **what you were trying to do and what went wrong without it**, not
+as an API design. The user decides what gets built. (The user, 2026-09-28: *"Is there
+enhancements you would like to make to the API to further enable you? ... as we work so we
+enhance it as we go along"*.)
+
 ## Keep EVONY-RULES.md current
 
 **Every lesson, as soon as it is learned — not at the end.** Whenever something goes

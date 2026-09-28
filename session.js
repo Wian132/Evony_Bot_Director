@@ -513,6 +513,8 @@ class Session {
   // or more — retrying fast keeps it blocked": a new IP is no reason to hurry, and a
   // move must never end up spending MORE logins than the ladder it restarts.
   static ROTATE_PAUSE_MS = Number(process.env.OTTO_PROXY_ROTATE_PAUSE_SEC || 60) * 1000;
+  // Opt-in, per console: move to a fresh proxy line on every refresh. See reconnect().
+  static ROTATE_PROXY_ON_REFRESH = String(process.env.OTTO_ROTATE_PROXY_ON_REFRESH || '').trim() === '1';
   // Which notes are about the connection (they are also printed, see note()).
   // `port` and `maintenance` are here because a stand-down is otherwise SILENT: on
   // 2026-09-20 thirteen consoles sat waiting with nothing in their log since 08:54,
@@ -1583,6 +1585,28 @@ class Session {
     if (this.connecting) { try { await this.connecting; } catch {} }
     if (this.maint.plan && this.maint.plan.source === 'logout') this.clearMaintenancePlan();
     this.clearKickHold();
+    // ROTATE THE PROXY ON EVERY REFRESH, when this console was started with
+    // OTTO_ROTATE_PROXY_ON_REFRESH=1 (the user, 2026-09-28: "lets make it so the proxy is
+    // rotated each time the bot is refreshed and check if that speeds it up").
+    //
+    // It is OFF by default and deliberately opt-in per console, because it cuts against two
+    // things already learned: EVONY-RULES §1 — one proxy per account, two accounts sharing a
+    // line both lost their logins on 2026-09-22 — and proxy-pick.js's own note that changing
+    // IP on every login "would look nothing like a player". `rotate` still honours both: it
+    // only ever takes a line no other account holds, and it leaves the old line on this
+    // account's avoid list for six hours.
+    //
+    // The question it is here to answer: the ~250 orders/min ceiling measured on three banks
+    // — is it per ACCOUNT or per IP? If per IP, a fresh line restores full speed.
+    if (Session.ROTATE_PROXY_ON_REFRESH && this.org && this.account) {
+      try {
+        const moved = require('./proxy-pick').rotate(this.org, this.account, {
+          note: (m) => this.note(m, { kind: 'sys' }),
+          why: 'rotate on refresh (OTTO_ROTATE_PROXY_ON_REFRESH)',
+        });
+        if (moved) this.note(`refresh: moved to proxy ${moved.raw || moved}`, { kind: 'sys' });
+      } catch (e) { this.note(`refresh: could not rotate the proxy — ${e.message}`, { kind: 'sys' }); }
+    }
     this.note('refresh — logging in afresh');
     const old = this.game;
     this.game = null;
@@ -2752,7 +2776,9 @@ class Session {
   // Under attack, for the Director, the Claude waker (claude-wake.js) and the
   // events feed: { on, at, cities: [{ id, name, inbound, junk, junkLine,
   // firstLandsAt, lastWaveAt, loyalty, real: [{ key, armyId, troops, from,
-  // fromFieldId, king, alliance, reachTime }] }] } — each city with a REAL
+  // fromFieldId, king, alliance, reachTime, troop, mission, hero, heroLevel,
+  // fromXY }], defence: { x, y, troops, walls, bestAttack, bestPolitics,
+  // nearest } (attack-brief.js) }] } — each city with a REAL
   // attack marching at it now (at or above its /junktroop; troops null = size
   // unknown, which counts), or a real wave landed in the last 30 min. A city
   // with only junk inbound is left out: junk shows nothing and wakes nobody
@@ -2763,6 +2789,9 @@ class Session {
     if (!this.connected || !g || !Array.isArray(g.castles)) return null;
     const byCity = this.attacksByCity();
     const A = require('./attacks');
+    const B = require('./attack-brief');
+    // the detail is extra: a bean it cannot read never costs the attack view itself
+    const brief = (f, dflt) => { try { return f(); } catch { return dflt; } };
     const now = g.now ? g.now() : Date.now();
     const waves = (this._realWave && this._realWave.lastAt) || {};
     const cities = [];
@@ -2782,7 +2811,13 @@ class Session {
           key: A.attackKey(a), armyId: a.armyId ?? null, troops: A.armySize(a),
           from: a.from || null, fromFieldId: a.startFieldId ?? null,
           king: a.king || null, alliance: a.alliance || null, reachTime: Number(a.reachTime) || null,
+          // troop by type, mission, hero and level, the tile it comes from
+          // (attack-brief.js; for the Claude waker's opening message, 2026-09-28)
+          ...brief(() => B.armyDetail(a), {}),
         })),
+        // what the city has to meet it with: home troops, walls, its best attack
+        // and politics heroes, the account's nearest other city
+        defence: list.length ? brief(() => B.cityDefence(g, c, Game.STATUS_WORD), null) : null,
       });
     }
     return { on: cities.length > 0, at: now, cities };

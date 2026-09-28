@@ -884,9 +884,17 @@ function events(server, opts = {}) {
 const EVENT_SORTS = new Set(['at', 'userName', 'kind', 'detail']);
 const EVENT_SORT_CAP = 5000;              // how many rows a hero sort will order at once
 
+// One line per lord (the user, 2026-09-28: "the same player is being displayed
+// multiple times ... 1 line per player"): a lord who stalls every day left a row
+// per day, and the table filled with the same name. Of the rows that match, only
+// each lord's newest is shown, and `times` says how many matched in all.
 function eventPage(server, { sort = 'at', dir = 'desc', limit = 200, offset = 0, ...rest } = {}) {
-  const { sql, args } = eventWhere(server, rest);
-  const total = n((D.one(`SELECT count(*) c FROM mon_event WHERE ${sql}`, ...args) || {}).c);
+  const w = eventWhere(server, rest);
+  const from = `mon_event JOIN (SELECT id lid, count(*) OVER (PARTITION BY lower(userName)) times,
+      row_number() OVER (PARTITION BY lower(userName) ORDER BY at DESC, id DESC) rn
+    FROM mon_event WHERE ${w.sql}) latest ON latest.lid = mon_event.id`;
+  const sql = 'latest.rn = 1', args = w.args;
+  const total = n((D.one(`SELECT count(*) c FROM ${from} WHERE ${sql}`, ...args) || {}).c);
   const take = Math.max(1, Math.min(2000, n(limit) || 200));
   const skip = Math.max(0, n(offset));
   const d = String(dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -903,7 +911,8 @@ function eventPage(server, { sort = 'at', dir = 'desc', limit = 200, offset = 0,
   };
 
   if (sort === 'hero') {
-    const all = withHeroes(D.all(`SELECT * FROM mon_event WHERE ${sql} ORDER BY at DESC, id DESC LIMIT ?`,
+    const all = withHeroes(D.all(`SELECT mon_event.*, latest.times FROM ${from} WHERE ${sql}
+      ORDER BY at DESC, id DESC LIMIT ?`,
       ...args, EVENT_SORT_CAP));
     // a lord with no ranked hero sorts last whichever way round it is asked for,
     // rather than crowding the top of "best first"
@@ -920,7 +929,7 @@ function eventPage(server, { sort = 'at', dir = 'desc', limit = 200, offset = 0,
 
   const by = EVENT_SORTS.has(sort) ? sort : 'at';
   const text = by === 'userName' || by === 'kind' || by === 'detail';
-  const rows = D.all(`SELECT * FROM mon_event WHERE ${sql}
+  const rows = D.all(`SELECT mon_event.*, latest.times FROM ${from} WHERE ${sql}
     ORDER BY ${by}${text ? ' COLLATE NOCASE' : ''} ${d}, id DESC LIMIT ? OFFSET ?`, ...args, take, skip);
   return { total, offset: skip, rows: withHeroes(rows), capped: false };
 }

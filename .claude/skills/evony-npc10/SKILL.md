@@ -334,14 +334,14 @@ a26 Lord26 + a27 lord27 taking. Full detail in EVONY-RULES.md; what to carry for
   targets in `takeTargets` from the start, or expect to edit and restart.
 - **Freed drainers are reusable at once; freed takers are not.** That asymmetry is the main
   thing that slows a multi-target drive.
-- **696,123 was DESTROYED, not captured** — the third target became a **Flat** inside the drain
-  window because the heaviest drain reached zero loyalty while the takers were still held back
-  by `takeDelay = 60`, and a16 (10 cities) cannot capture. Full timestamps in EVONY-RULES.md.
+- **696,123 was NOT destroyed by the drain** (retracted 2026-09-28). A tile reads as a **Flat**
+  once a city *teleports off* it — that camp had been captured and then teleported away. The
+  user: *"you can drain as much as you want. you can overkill a city with 10000 extra waves."*
 
-### `takeDelay` is a two-sided risk — bias it SHORT (2026-09-27)
+### `takeDelay` has ONE failure mode: too short (corrected 2026-09-28)
 
 - too short → the taker's wave meets the full garrison and dies (1,500 cavalry)
-- **too long → the drain destroys the camp and the extra city is gone for good**
+- too long → nothing. Draining is free; there is no upper limit on waves and no window to miss.
 
 Set it to the *smallest* value that clears the clearing city's march, `(clearing march s + 60) / 5`,
 and **with five or more heavy drainers set it to 0 and start the takers first** — the clearing
@@ -416,3 +416,102 @@ Two things that went wrong, both now in EVONY-RULES.md §5e1:
 - **Read the server's arrival stamp** (`city.selfArmies[i].reachTime`, `TimeDiff` in ms,
   direction 1 out / 2 home) — the printed "march Ns" is 2.5-3x too long. Lord08's burst was
   793-835 s over ~23 tiles, not the 1,842-1,937 s printed.
+
+## BEFORE EVERY RUN: the capturing account must not be able to truce itself (2026-09-28)
+
+A truce is **account-wide** — `truce` spends an agreement for the whole account — so an
+account under truce cannot attack from any city. Every capture wave comes back
+`ok=-83 Your city is now in Truce status`, and because the drain lands anyway, a refused
+capture wastes the whole run — the drain lands, nobody converts it, and the camp is simply
+still there to be done again.
+
+The fleet prepend carries `defensepolicy /usetruce:79`, so **any account on it will do this**.
+On 2026-09-28 all four of Lord26's capture waves on 699,128 were refused this way.
+
+**Do this:**
+
+1. Point each capturing account at `goals-prepend-capturing.txt` (the fleet prepend with
+   `/usetruce` removed) before the run — `goalFile:prepend:<id>`, the Director syncs in 15 s.
+2. Run the capture.
+3. Put it back on `goals-backup-a15-prepend-2026-09-20.txt` once the waves are home and the
+   capture is confirmed. The user: *"the cities capturing shouldnt have truce applied until
+   we know all waves are recalled and fixed etc"*.
+
+`ok=-83` means the ACCOUNT is truced — switching to another city of the same account will
+not help. Switch accounts, or clear the truce.
+
+
+## USE THIS SKILL'S METHOD. Do not rebuild it. (2026-09-28)
+
+This is the most expensive lesson of the 2026-09-27/28 sessions. Over 20 camps had been
+taken before with the method already written down here. Instead of running it, a session
+rebuilt the machinery around it — new drain/take scripts, a target list, a retarget loop, a
+timed-wave driver, a batch driver — and produced, in order:
+
+- a clearing city chosen from notes whose best hero had 311 attack (the big hit failed all night)
+- a hero filter that matched no heroes at all, which stopped the waves dead
+- 659 waves into one camp led by level-1 junk heroes
+- a camp wrongly written off as destroyed by over-draining — draining is free (user, 2026-09-28)
+- five of six targets left with no capturer because one city cannot run two scripts
+- a capture town picked that had been captured 20 minutes earlier and had no troops
+- 37 friendly-fire marches at two of our own new cities
+
+The user, after capturing two by hand: *"this has been a terribly frustrating task for me, in
+the past you were able to do this nicely! You have capped over 20 npc10s before."*
+
+**So: run the method below as written. Read it first, every time.** If something in it looks
+wrong, ask — do not redesign it mid-run.
+
+## RECALL ON CAPTURE — every wave still in the air will hit our own city (2026-09-28)
+
+The moment a camp is captured it becomes a FLEET CITY, and every wave already in flight at
+it lands as a **real enemy attack**, because the drainers (0utCasts/Nbk) and the takers
+(1111/1112) are in different alliances.
+
+The looping drain script handled this: `npc-taken-watch.js` appended the tile to
+`doneTargets`, and every drainer city ran `recall <target>` within seconds. **A one-off or
+timed dispatch has no such step**, and on 2026-09-28 that left **37 incoming armies of
+50,000 troops each** aimed at 699,128 and 700,128 after they were captured — spotted by the
+user, not by us, with a 6h48m flight time.
+
+**Two rules:**
+
+1. **The instant a target is captured, issue `recall <x,y>` from every city that fired at**
+   **it.** Not just the drain loop — anything dispatched one-off too.
+2. **Never let a city more than ~20 tiles out join the drain.** Lord07's 290,651 is
+   ~660 tiles from the hub: a 6-7 hour march at a camp that falls in ten minutes, arriving
+   long after the tile is ours. Filter drainer cities by distance before dispatching.
+
+Recalls are refused while a console is standing down for maintenance (`ERROR: standing down
+for maintenance`), so do them before the window — or straight after, if the marches are long
+enough to outlast it.
+
+
+## The wave specs that actually work (2026-09-28, nine captures in one run)
+
+Use `npc-drive.js` — it encodes all of this. Do not rebuild it.
+
+| phase | troops | hero filter | why |
+|---|---|---|---|
+| kill | `cata:100000` | `any:attack>500,level<1800` | exactly the 100k march cap; ONE troop type so it can never stall |
+| loyalty | `cata:20000` | `any:level<1800` | a winning wave costs the camp 4 loyalty **whatever its size** — count beats weight |
+| capture | `a:10000,s:10000` | `any:level<1800` | young accounts hold ~180k archers and ~120k scouts but often <1,000 light cavalry |
+
+**Never put a scarce troop type in a wave.** An attack whose spec cannot be filled does not
+fail — it WAITS, once a minute, holding the city's only script slot. `c:5000` cost 706,127 its
+whole killing volley (18 minutes of `not yet: 3,648 of 5,000 Cavalry at home`) and stalled every
+capture loop in the run.
+
+**30-40 landed waves per camp, minimum** (the user). At `Loyalty Trend: -4` a camp needs ~25
+winning waves to reach zero, so aim well past it: 6-7 grinder cities per target at 60 rounds,
+not 1-2. `npc-drive.js rearm` re-spreads every freed city over whatever is still open.
+
+**Watch loyalty live** with `npc-drive.js loyalty` — it reads the SYSTEM chat channel, which
+prints `The Loyalty of this city is N` for every wave we land, free and instant. At zero the
+wording becomes `You need further promotion of you Title`, meaning the camp is ready and only
+the capturer's wave is missing.
+
+**Capture from a CLOSE city.** 15 miles is ~25-30 minutes for these accounts; 2 miles is 4m28s.
+A camp at zero loyalty regenerates while a wave is in the air. Reinforce a near city and send
+from there rather than marching across the map, and re-point a taker whenever a nearer city is
+freed by its own capture.

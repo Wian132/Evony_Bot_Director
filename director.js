@@ -1725,6 +1725,8 @@ http.createServer(async (req, res) => {
     return send(200, 'application/json', JSON.stringify({
       ok: true,
       autoWake: WAKE.isOn(req.org && req.org.id),
+      // open each wake as a Remote Control session (on by default) or the hidden -p run
+      remote: WAKE.isRemote(req.org && req.org.id),
       cap: WAKE.cap(), lastHour: WAKE.wakesLastHour(), running: WAKE.running(),
       perms: P.PERMS.map((k, i) => ({ key: k, n: i + 1, label: P.LABELS[k], help: P.HELP[k] })),
       accounts: accounts.map((a) => ({ id: a.id, label: a.label, enabled: a.enabled !== false, perms: P.get(a.id) })),
@@ -1753,7 +1755,8 @@ http.createServer(async (req, res) => {
     const b = await body(req);
     if (b.on !== undefined) { WAKE.setOn(req.org && req.org.id, !!b.on); note(`Claude auto-wake on attack: ${b.on ? 'ON' : 'off'}`); }
     if (b.cap !== undefined) { WAKE.setCap(b.cap); note(`Claude auto-wake cap: ${WAKE.cap()} an hour, fleet-wide`); }
-    return send(200, 'application/json', JSON.stringify({ ok: true, autoWake: WAKE.isOn(req.org && req.org.id), cap: WAKE.cap() }));
+    if (b.remote !== undefined) { WAKE.setRemote(req.org && req.org.id, !!b.remote); note(`Claude wakes open as ${b.remote ? 'a Remote Control session' : 'a hidden run'}`); }
+    return send(200, 'application/json', JSON.stringify({ ok: true, autoWake: WAKE.isOn(req.org && req.org.id), remote: WAKE.isRemote(req.org && req.org.id), cap: WAKE.cap() }));
   }
 
   // ---- per-account history for the fleet charts ----

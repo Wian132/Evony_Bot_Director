@@ -56,7 +56,14 @@ const STEPS = [
   // never crosses', because at 1 both sides are also on the same price and it crosses fine.
   // 1 is the user's own starting figure and it is known to work; 3 is only safe as a step UP
   // from a price that is already moving, which is how the stone pass reached it.
-  { name: 'stone', res: 'stone', price: 1, banks: 'sell' },
+  // 2026-09-28 the user: "make stone cheaper than 1 ... 0.01 or 0.001 initially and then
+  // ramp it up when we drop under 60%". Starting cheap and RAISING on a capture drop is the
+  // opposite of the 2026-09-27 reading (0.001 returned 41%, 3 returned 92%) — the point is to
+  // buy back as much as possible while the book is ours and only pay up once other players'
+  // bots have found it. WATCH THE BOOKS ON EVERY RAMP: a price change makes both sides cancel
+  // and re-list, and on 2026-09-23 the banks re-listed while our bids stayed at the old price,
+  // so the two books de-synchronised and nothing crossed at all.
+  { name: 'stone', res: 'stone', price: 0.001, banks: 'sell' },
   { name: 'food', res: 'food', price: 1, banks: 'sell' },
   { name: 'wood', res: 'wood', price: 1, banks: 'sell' },
   { name: 'iron', res: 'iron', price: 1, banks: 'sell' },
@@ -84,8 +91,14 @@ const BANKS = ['a2', 'a3', 'a17', 'a20', 'a21'];
 // and Lord25 have ~600m of gold a town, thousands of orders' worth at 0.001 — and then
 // carry that stone into the closing sweep. Their 28 near-empty towns are the fleet's best
 // gold room, so it is worth having them in from the start.
+// 2026-09-28 the user: "add these accounts to the trading aswell please, I just want them to
+// get some gold in now when we move the gold so they can participate in buying throughout the
+// day and actually scale up tomorrow". The six that were just brought to 10 cities join OURS:
+// they SELL stone at 150 for the banks' gold. Their stone floor is lifted to 0 in
+// glitch-res-control.txt (they hold ~0.8b a town, so the standard 1b floor would sit them out).
 const OURS = ['a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12', 'a13', 'a14', 'a15',
-  'a16', 'a18', 'a19', 'a23', 'a24', 'a25'];
+  'a16', 'a18', 'a19', 'a23', 'a24', 'a25',
+  'a26', 'a27', 'a28', 'a29', 'a30', 'a31'];
 const CAP = { food: 900e9, wood: 800e9, stone: 2000e9, iron: 800e9 };
 const T = 1e12;
 

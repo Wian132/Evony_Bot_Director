@@ -15,7 +15,7 @@ function buildSnapshot(g, extra = {}) {
   const wantedHero = new Set((trainingHeroNames || []).map((x) => String(x).toLowerCase()));
   const p = g.player || {};
   const info = p.playerInfo || {};
-  const totals = { food: 0, wood: 0, stone: 0, iron: 0, gold: 0, population: 0, maxPopulation: 0 };
+  const totals = { food: 0, wood: 0, stone: 0, iron: 0, gold: 0, population: 0, maxPopulation: 0, idlePopulation: 0 };
   let troops = 0, heroes = 0, walls = 0;
   for (const c of g.castles || []) {
     const r = c.resource || {};
@@ -23,6 +23,7 @@ function buildSnapshot(g, extra = {}) {
     totals.stone += n(r.stone && r.stone.amount); totals.iron += n(r.iron && r.iron.amount);
     totals.gold += n(r.gold);
     totals.population += n(r.curPopulation); totals.maxPopulation += n(r.maxPopulation);
+    totals.idlePopulation += idleOf(r);
     troops += Object.values(c.troop || {}).reduce((s, v) => s + n(v), 0);
     heroes += (c.heros || []).length;
     walls += Object.values(c.fortification || {}).reduce((s, v) => s + n(v), 0);
@@ -64,6 +65,9 @@ function buildSnapshot(g, extra = {}) {
         // cannot get in). Prisoners hold slots but are not ours, so they are
         // counted apart.
         heroes: roster.length,
+        // Idle population: what the barracks would draw on. A city whose idle
+        // stays near its maximum is not training (the Director's Idle pop column).
+        population: n(r.curPopulation), maxPopulation: n(r.maxPopulation), idle: idleOf(r),
         captives: roster.filter((h) => n(h.status) === CAPTIVE).length,
         // A city packed to ten still isn't a bottleneck if one of the ten can
         // insta-train anything anyway (1526+ attack), or if the traininghero
@@ -83,6 +87,10 @@ function buildSnapshot(g, extra = {}) {
     ...rest,
   };
 }
+
+// Population not on the fields (workPeople) and not tied up in construction
+// (buildPeople) -- the same sum as session.city() and game.js's requirement check.
+const idleOf = (r) => Math.max(0, n(r.curPopulation) - n(r.workPeople) - n(r.buildPeople));
 
 // HeroConstants.as: 4 = a hero WE hold prisoner.
 const CAPTIVE = 4;

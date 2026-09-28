@@ -1823,6 +1823,35 @@ prestige. **Read both `alliance` fields before assuming the 10% is due.**
 *Unverified:* whether an alliance ALLY or NAP relation blocks an attack the way shared
 membership does. Check the relation, not just the name, before marching.
 
+### A TRUCE IS ACCOUNT-WIDE and blocks every attack — never let a capturing account auto-truce (2026-09-28)
+
+`truce` spends a Truce Agreement **for the whole account**, not for one city. So an account
+under truce cannot attack from ANY of its cities: every wave is refused with
+
+    FAILED (ok=-83) - Your city is now in Truce status.
+
+**The fleet prepend auto-truces.** Line 4 of `goals-backup-a15-prepend-2026-09-20.txt` is
+`defensepolicy /usetruce:79 ...`, so any account running it will truce itself when pressed —
+and then silently stop being able to capture anything.
+
+That is exactly what happened on 2026-09-28: the six new accounts were put on the fleet
+prepend overnight, and next morning **all four of Lord26's capture waves on 699,128 were
+refused** while its drain was already landing. The camp was taken only because another
+account was switched in at the last minute. Nothing in the capture machinery noticed — the
+waves simply reported `failed`.
+
+**The user's rule:** *"we dont want to truce ourselves the whole time so the cities capturing
+shouldnt have truce applied until we know all waves are recalled and fixed etc".*
+
+**What to do:** point a capturing account at **`goals-prepend-capturing.txt`** for the run —
+identical to the fleet prepend but with `/usetruce` removed — and put it back on the fleet
+prepend once its waves are home and the capture is confirmed. Set it the same way as any
+goal file (`goalFile:prepend:<id>` in the org settings; the Director syncs within 15 s).
+
+**And check before dispatching.** A refused capture wave costs the whole run, because the
+drain lands anyway and can destroy the camp. `ok=-83` in a taker's log means the ACCOUNT is
+truced, not that city — switching to a different city of the same account will not help.
+
 ### NEVER attack with a hero over level 1800 (2026-09-28, the user)
 
 > "As a rule of thumb never attack anything with a hero over lv1800, these are big heroes
@@ -2438,58 +2467,37 @@ waves in total**, against ~150,000 burned for nothing on 2026-09-26; and a taker
 its cavalry at exactly `takeWave` a wave, so **30,000 cavalry is 20 waves and then the city
 goes silent** (a26 @697,124 did precisely that, 30,000 → 0).
 
-### THE DRAIN CAN DESTROY THE TARGET: a camp taken to zero loyalty with no taker present becomes a FLAT (2026-09-27)
+### RETRACTED: a drain CANNOT destroy a camp — the "flat" was a captured city teleporting away (corrected by the user, 2026-09-28)
 
-The costliest lesson of the run, and it inverts the `takeDelay` rule. **696,123 was lost, not
-captured.** Dated precisely, because one `map_cache` sweep wrote all three targets at the same
-instant, 22:34:08 SAST (`seen` 20:34:08Z on all three to within 100 ms):
+This section previously claimed that taking an NPC 10's loyalty to zero with no taker present
+destroys it into a flat, and built a two-sided `takeDelay` risk on top of that. **It is wrong.**
+The user, 2026-09-28: *"you cant 'over drain' into a flat, thats not real"* and *"you can drain
+as much as you want. you can overkill a city with 10000 extra waves. the overdrain youre talking
+of is a city that was captured and teleported, after the teleport it became a flat."*
 
-| tile | at 22:34:08 | truth |
-|---|---|---|
-| 711,121 | `kind=player, user=Lord26` | captured 22:33:30 — sweep 38 s later, right |
-| 716,111 | `kind=npc, npc=1` | captured 22:36:25 — sweep 2 min earlier, so cache lag |
-| **696,123** | **`kind=flat, npc=0, typeName=Flat`** | `npc=1, level=10` in a probe at 19:0x |
+**What actually happened at 696,123.** The tile was captured — by someone — and that city was
+then **teleported away**. A tile a city teleports off becomes a **flat**. That is the whole
+mechanism, and it has nothing to do with our drain. The `map_cache` row reading
+`kind=flat, npc=0, typeName=Flat` at 22:34:08 was a correct reading of a tile whose owner had
+just left it, mis-attributed by me to over-draining. (Confirmed 2026-09-28: 696,123 is now a
+level-10 player city named `1` belonging to a24 Lord24 — a hub teleport landed on that flat.)
 
-So it went from NPC 10 to flat **inside our own drain window and before the takers' first wave
-at 22:30:32 could convert it.** Between 22:22:44 and 22:30:32 the only things hitting it were
-**a16 Lord16's five cities** — 500,000 cavalry and 0.9–1.3m cataphracts each, only 4.5–11 tiles
-out, so the highest wave rate of the three targets — plus two 115k-cataphract clearing hits.
-**a16 is at 10 cities and cannot capture.** The loyalty reached zero with no taker wave in
-flight, and the city ceased to exist. (Mechanism *inferred*: NPC battle reports are not kept,
-so the killing blow cannot be read. What is certain is the tile was an NPC 10 before our drain
-and a flat 12 minutes into it.)
+**What this means for how a capture is run:**
 
-Corroboration, all consistent with an empty tile afterwards: a26 @691,128's cavalry **stopped
-falling and rose** (29,999 → 16,649 at 22:38 → 16,799 at 22:42), because waves against an
-empty flat come home whereas waves against a live L10 garrison are annihilated; and the wave
-composition kept flickering as troops cycled back. `capture` still answered `-> null`, which
-means only that the march was accepted.
+- **Drain is free. Over-killing costs nothing.** There is no upper limit on waves, no window to
+  respect, and no reason to hold takers back or to hurry them. Send as many loyalty waves as
+  there are heroes to carry them.
+- **`takeDelay` is one-sided again, as originally understood.** Too short is the only failure:
+  the taker's wave meets a live garrison and dies (2026-09-18, 60k troops). There is no "too
+  long". Set it comfortably clear of the killing waves.
+- A target that stays an NPC 10 through a failed attempt has **lost nothing** and can simply be
+  attacked again.
 
-**So `takeDelay` is a two-sided risk, and only one side was known:**
-
-- too short → the taker's wave meets the full garrison and dies (2026-09-18, 60k troops)
-- **too long → the drain takes loyalty to zero with nobody able to take it, and the camp is
-  destroyed** (2026-09-27, one extra city lost)
-
-Since 716,111 proved five heavy drainers flatten a garrison with no clearing hit at all, **the
-clearing hit is not worth waiting five minutes for.** Set `takeDelay` to the *smallest* value
-that clears the clearing march — 35–58 for that run's 165–226 s marches, not 60 — and **with a
-very heavy drain, start the takers first and set it to zero**: a taker wave that dies costs
-1,500 cavalry, a destroyed camp costs the whole city.
-
-Nothing in the machinery notices. The `capture` path in `deploy-loops.js` has **no "its city is
-gone" guard** (only the scout path does), `job-take.txt` never reads `doneTargets`, and
-`npc-taken-watch.js` only ever matches `TAKEN` — so a *destroyed* target is never recorded and
-every drainer and taker keeps firing at bare ground. Until that is fixed, the manual stop is to
-**add the tile to `doneTargets` by hand**: `job-drain-big.txt` re-reads `glitch-done.txt` every
-loop, so the drainers stop and recall within seconds with **no console restart**.
-
-**What the flat is worth afterwards.** An Advanced Teleporter onto it only *moves* an existing
-city, so the account's count does not grow and the tile's real value is forfeited. If it
-re-seeds as a Barbarian's city (§5e: hours, not days) it can be **captured for +1 city**. So
-where the goal is city count, waiting for the re-seed beats teleporting; the only cost of
-waiting is leaving the tile open to an outsider meanwhile. That is an item spend either way and
-the fleet owner's call alone.
+The still-true operational point from the original entry: nothing in the machinery notices a
+target that is already dealt with. `job-take.txt` reads `doneTargets` (added 2026-09-27) but the
+`capture` path in `deploy-loops.js` has no "its city is gone" guard, so a tile that is finished
+is stopped by **adding it to `doneTargets` by hand** — `job-drain-big.txt` re-reads
+`glitch-done.txt` every loop, so drainers stop and recall within seconds with no restart.
 
 ### A hero whose name is only digits breaks every clearing hit (2026-09-27)
 
@@ -4358,6 +4366,13 @@ standing in for** — test the contract between the two files, not the stub.
   holds) and end the one the probe list does NOT name. Ports also shift between checks, so
   re-map immediately before ending anything — on 2026-09-26 the four orphan ports had all
   moved between the first look and the kill.
+  - **Again 2026-09-28:** Lord11 kicked at 11:22:56 right after the 11:18 fleet restart. Six
+    orphan consoles from 2026-09-27 17:49–18:55 (parents gone, nothing supervising them) had
+    survived the Director restart (09:20) and the fleet-wide console restart: Lord11 on 8723
+    beside its tracked 8779, Lord02 8757/8777, Lord03 8759/8773, Lord17 8745/8771, and
+    Lord21 on THREE ports (8729, 8775, 8781). `botctl list` and `fleet()` showed every
+    account healthy with one port each — only the `/api/session` port map showed them.
+    Restarting the fleet does not clear orphans; it adds a fresh console beside each one.
 - **"It doesn't open" — a bot tab was stuck on a dead port** (the user, 2026-09-26,
   Lord19). `openBotTab` in director.html only navigated the named tab when it could
   READ its location and found it blank; a console is on another PORT, so reading it throws
@@ -4403,3 +4418,505 @@ add it to the right section with the date and how it was observed. Mark anything
 as *unverified*. When an entry turns out to be wrong, fix it or delete it; don't leave a
 contradiction for the next session. Keep it about the game and about operating it safely;
 how the code works belongs in MANUAL.md and SCRIPTS.md.
+
+### Only the FIRST attack needs a good hero (the user, 2026-09-28)
+
+*"for draining you dont need 500 attack heroes only the first attack needs to be a good hero
+the rest can be any hero"*. So a city with no hero over 500 attack is still a perfectly good
+**grinder** — it just cannot be the **killer**. The split in `npc-drive.js`:
+
+- killing waves: `any:attack>500,level<1800` with `cata:90000,c:5000,s:5000` (exactly the
+  100,000 march cap), three of them, because lag makes a wave stick.
+- every wave after that: `any:level<1800` with `cata:20000,c:10000,s:20000`.
+
+Measured on the fleet 2026-09-28: of 30 drainer cities, **14 had no idle hero over 500
+attack** — nearly half. Filtering the whole drive on `attack>500` would have thrown away half
+the grinding capacity, and on 2026-09-27 a filter of `attack>500,level<1500` matched no hero
+at all in the chosen city and stopped the waves dead.
+
+### A per-city `state` read gives hero ATTACK; the account-level one does not (2026-09-28)
+
+`state(account)` lists each city's heroes as name + level + status only. `state(account, city)`
+gives `queenkush L1847 atk 66 mayor, cptkush L1592 atk 1655 marching, …` — level, **attack**
+and status. Attack is the number the killing wave's filter selects on, so the pre-flight must
+use the per-city read (or `/api/debug/city?roster=1`, remembering it DROPS the troop object).
+
+### `state`'s march list is truncated at 15 lines (2026-09-28)
+
+`a16: 0 attack marches out` looked like nine killing waves had failed to send. The account-level
+read prints `marches out: 32` and then only the first 15, which were all transports. The
+per-city read settled it: `300,000 out on marches` and three heroes `marching`. **Never read
+absence from that list** — check the count, or the city.
+
+### `repeat N` repeats ONE LINE, and a bad loop reports success while sending nothing (2026-09-28)
+
+`repeat N` repeats **the last line that ran**, until it has run N times in all (SCRIPTS.md
+line 173). There is **no block form and no `endrepeat`**. A script written as
+
+```
+repeat 40
+  if city.checkFeastingHallSpace getspamhero
+  attack 706,127 any:level<1800 cata:20000,c:10000,s:20000
+  echo "LOYAL -> " + $error
+endrepeat
+```
+
+is accepted, parses, starts, ends immediately and **sends nothing** — while the dispatch
+reply says `started` and `parsed 6 action(s)`. On 2026-09-28 that left **23 cities idle**
+across nine targets with every log line reading like success. The working shape is:
+
+```
+if city.checkFeastingHallSpace getspamhero
+attack 706,127 any:level<1800 cata:20000,c:10000,s:20000
+repeat 10
+```
+
+repeated as several groups back to back. Repeating the *attack* line is also what keeps the
+grind paced: the wave resends the moment a hero is home.
+
+**The general rule this cost us: "dispatched" is not "attacking".** A script tool's `started`
+means the text was accepted, nothing more. Always go back and read the city's own output for
+`attack ->` / `-> ok` before believing a wave left. `npc-drive.js grind` now does this and
+prints `N cities confirmed sending waves`.
+
+### Live NPC loyalty comes from the SYSTEM chat channel (the user, 2026-09-28)
+
+The question "what is this camp's loyalty right now" has three answers, and only one is cheap:
+
+| source | gives | cost |
+|---|---|---|
+| battle report / its XML | the loyalty **CHANGE** only (`民心变化`) — and NPC attacks do not always file one | a read per report |
+| **scout report** | the absolute level (`Info: Loyalty: 35`) plus the surviving fortifications | a scout march, ~2 min |
+| **SYSTEM chat channel** | the absolute level, **live, for every wave we land** | nothing |
+
+The user: *"Within the 'system' section it does give you brief reports, which does display the
+current loyalty ... so perhaps pulling it from here is easier, coz npc attack reports dont
+always go to reports."* The line looks like:
+
+```
+<02:57:21> Defeat  Barbarian's city(717,117),  Prestige: 0. Hero Queen gains experience
+14404. Troops Casualty: 148. Conquered unsuccessfully, The Loyalty of this city is 2.
+Loyalty Trend: -4.
+```
+
+- `Loyalty Trend: -4` is the drop per wave, so ~25 landed waves take a camp from 100 to 0.
+- At zero the wording changes to **"You need further promotion of you Title"** — the attacker
+  won and the camp is takeable, but *that* account cannot hold another city. For a drainer
+  at 10 cities this is the signal that the camp is **ready and only the capturer's wave is
+  missing**.
+
+Read it at `GET /api/chat?channel=system` on the account's console. **That endpoint refuses
+the internal token** (`{"ok":false,"error":"not signed in"}`) — it needs a real Director
+session cookie (`auth.newSession` → `otto_sid`). A token failure parses as zero lines and
+looks exactly like an empty channel. `node npc-drive.js loyalty` prints the whole board.
+
+### An attack whose troop spec cannot be filled WAITS — it does not fail (2026-09-28)
+
+`not yet: 3,648 of 5,000 Cavalry at home — waiting`, once a minute, for 18 minutes, holding
+the city's one script slot the whole time. Two live costs on 2026-09-28:
+
+- the killing waves for 706,127 never went, because that city was 1,352 light cavalry short;
+- every capture loop stalled, because the capturing accounts hold ~180,000 archers and
+  ~120,000 scouts per city but often **under 1,000 light cavalry**, and the wave asked for
+  1,500. 717,117 sat at ZERO loyalty with nothing able to convert it.
+
+So **compose waves from what the city actually has in bulk**:
+
+- killing wave: `cata:100000` (exactly the march cap, one troop type, never short)
+- capture wave: `a:10000,s:10000` — the user, *"thats fast-ish and strong enough"*
+
+Check the stock before dispatch, not the plan's assumptions. A city short by two cavalry
+stalls exactly as hard as a city short by a thousand.
+
+### Send from a CLOSE town — move the troops there first if you have to (the user, 2026-09-28)
+
+*"I see some of your arch/scout waves take upto 30minutes to reach their destination, its
+always better to move the troops closer and send from a closer town (for future reference)
+because of the relief station decrease on time, having things marching for 30minutes is a
+pain."*
+
+March time is not a fixed cost to accept: a **Relief Station** cuts it, and the distance is
+chosen, not given. A 15-mile capture march from a27/a28/a29 (young accounts, little march
+research) runs ~25-30 minutes; the same wave from 2 miles out lands in **4m 28s** — measured
+live on 2026-09-28 when 692,125's capturer was moved from Lord28' city 3 @691,110 (15.0mi)
+to its city 2 @691,127 (2.2mi).
+
+Why it matters more than it looks: a camp at ZERO loyalty **regenerates** while a wave is in
+the air, so a 30-minute march can arrive after the work has undone itself, and every retry
+costs another 30 minutes. It also means a capturer 15 miles out effectively gets one or two
+attempts an hour.
+
+So, in order of preference:
+
+1. capture from the account's **nearest** city that has troops and a free hero;
+2. if the nearest city is empty, **reinforce it first** (troops + a hero) and send from there
+   — a captured NPC 10 comes with every building at level 10, Rally Spot and Feasting Hall
+   included, so it can send marches as soon as it has something to send;
+3. only then fall back to a far city.
+
+A city freed by its own capture is immediately the best candidate for the next target near
+it — `npc-drive.js rearm` re-spreads grinders this way, and takers should be re-pointed by
+hand when a nearer city frees up.
+
+### Which source tells the truth about who owns a tile (2026-09-28)
+
+Three sources disagreed about 692,125 inside one minute, and acting on the wrong one sent 36
+marches at our own city:
+
+| source | verdict | truth |
+|---|---|---|
+| `/api/session` city list | 10 cities, **692,125 among them** | **right** |
+| `state(account)` city listing | 9 cities, no 692,125 | lagging |
+| `map_cache` | `npc=1, level=10` | lagging (the sweep is minutes behind) |
+
+**`/api/session` is authoritative for what an account owns** — it is the account's own city
+list off the console's live data. `map_cache` is a map sweep and is stale by construction (a
+snapshot's age is not its freshness). The `state` tool's city listing lagged here too, so
+**never conclude "not captured" from it**.
+
+What it cost: reading `map_cache` and `state` as proof the ninth camp was untaken, I restarted
+ten grinder cities and a capturer **onto our own new city**. Caught three minutes later by
+reading `/api/session` raw; 36 marches recalled before any landed.
+
+**Before re-attacking any tile the drive has touched, read `/api/session` for the owning
+account and believe it.** When two sources disagree about ownership, settle it before sending
+anything — attacking our own city is the one mistake that is expensive in both directions.
+
+Belt and braces in `npc-drive.js`: a capture must survive a second look 20 s later before the
+watcher stands the grinders down, so one transient read cannot throw away a deep grind either.
+
+### The resource chests give 10m, not 100m (measured 2026-09-28)
+
+`player.box.gambling.stone.10000000` — and its wood, iron, food and gold twins — give
+**10,000,000**, exactly what the id says. Measured exactly, not by eye: a27's 716,111 went
+`205,241,407 -> 305,241,407` on ten boxes.
+
+Two earlier readings said 100m a box and both were wrong, for reasons worth remembering:
+
+- **A city's resources move on their own.** The fleet prepend carries
+  `requestresources any stone 400b 400b 100m * t`, so towns ship stone to each other in
+  **100m batches** — exactly the size being measured. A +100m jump after using one box was a
+  transport landing, not the box.
+- **`state` rounds to three significant figures.** Summing ten cities to get an account total
+  carries ±500m of noise, which swamps the thing being measured.
+
+**So measure a resource change with exact numbers from `/api/city?id=<cityId>`** — the
+parameter is `id`, *not* `city` (`?city=` is ignored and silently returns the open city, which
+looks like "nothing changed"). It returns `resources: {food, wood, stone, iron, gold, ...}` as
+plain integers.
+
+Practical consequence: ~100 chests an account is ~1b of a resource **per account**, not per
+town. Topping 58 towns to 1b each would need ~5,800 chests.
+
+### `/api/items` and `/api/chat` refuse the internal token (2026-09-28)
+
+Both answer `{"ok":false,"error":"not signed in"}` to `x-otto-internal`, and that parses
+cleanly — so `j.items` or `j.lines` is `undefined` and reads as **an empty inventory or an
+empty channel** rather than an error. It cost two wrong conclusions in one morning ("this
+account holds no chests", "the system channel is empty"). Use a real Director session cookie:
+`auth.newSession(userId, orgId, ip, 'label')` -> `otto_sid=<id>`. `/api/session`,
+`/api/debug/city` and `/api/marches` do take the token.
+
+### The trading day's "one cycle a day" guard should key off MAINTENANCE, not the date
+
+`trade-advance.js` marks the day done with `day: <YYYY-MM-DD>` and refuses to start another
+cycle that calendar day. But the cycle's real boundary is **maintenance**, which is what puts
+the banks' resources back. On 2026-09-28 the previous cycle finished at **03:04** and
+maintenance ran at **09:15**; at 11:20 the scheduler still said *"the day's passes are done —
+nothing to do until tomorrow"* although the banks had been refilled six hours earlier and a
+fresh gold pass was already running. Worked around by hand (setting the state to the running
+pass); the guard wants changing to "done since the last maintenance", not "done today".
+
+### A second restart inside 10 minutes leaves the account IDLE — autorun is throttled (2026-09-28)
+
+`autorun: not started — it already started 8 minute(s) ago (11:50:20), and it waits 10 minutes
+between starts, so a console that keeps restarting does not run it again each time.`
+
+The console comes up, logs in, says `autorun: on (AUTOSCRIPTS)` — and then runs **nothing**.
+The Director shows the account up and healthy; only `scripts 0` gives it away.
+
+It bit a live pass on 2026-09-28. `trade-advance.js` restarted the banks at 11:50 for the gold
+pass; the gold finished two minutes later and the stone pass restarted them at 11:53 and again
+by hand at 11:57 — both inside the window, so **all five banks sat idle with no sell script**
+while our side happily bid at 0.001 against an empty book. Nothing crossed and nothing
+complained.
+
+- After ANY restart, confirm `scripts N` is non-zero on the Director or in `fleet()` — a
+  restart that "succeeded" is not a pass that is running.
+- When a pass flips sides within ten minutes of the last restart, **wait out the throttle**
+  before restarting, or dispatch the script to each city by hand.
+- The same rule is in the evony-timed-waves skill for a different reason; it is a property of
+  the console, not of any one task.
+
+### A cheap resource pass moved NOTHING; price 1 moved 12.5t in 15 minutes (2026-09-28)
+
+The user asked to start a stone buy-back cheap and raise it when capture fell: *"0.01 or 0.001
+initially and then ramp it up when we drop under 60%"*. The ladder ran 0.001 -> 0.01 -> 0.1 ->
+1, measured on OUR stone arriving (the only honest figure — see below):
+
+| price | time at it | stone that reached us |
+|---|---|---|
+| 0.001 | 9 min | **+0.01t** |
+| 0.01 | 13 min | **+0.00t** |
+| 0.1 | 5 min | **+0.07t** |
+| **1** | 15 min | **+12.5t** |
+
+Twenty-seven minutes at the cheap prices bought essentially **nothing**. This is the same
+direction as the 2026-09-27 reading (0.001 returned 41%, 3 returned 92%) but far starker — at
+0.001 the buy-back did not work at all. **Start a resource pass at 1, not below.**
+
+### NEVER measure capture from the SELLING side's totals — they are escrow, not sales
+
+The obvious denominator (how much the banks lost) is wrong, and wrong in a way that looks
+plausible. **A resource leaves a city's total when an order is LISTED and comes back when it is
+cancelled.** With `recycleAfter = 2` every city cancels and re-lists every couple of seconds,
+so on 2026-09-28 the banks' stone swung 65.7t -> 83.6t -> 33.3t -> 74.3t inside twelve minutes
+while nothing whatever was selling. Capture came out as **-0%, then 322%, then 560%**.
+
+What we GAIN is real, because it is goods delivered. So:
+
+- measure a pass by the RECEIVING side's total, over a window;
+- a receiving side's figure still lags by the travel time of bought goods (they land minutes
+  after the gold leaves), so give it a few minutes before judging;
+- the selling side's total is good for one thing only — whether there is any left at all.
+
+`capture-ramp.js` now ramps on our arrival RATE against the best rate seen, not on a
+banks-versus-us ratio.
+
+### What actually caps a pass: the SELLING side's accounts, not the price (measured 2026-09-28)
+
+The user, watching a bank sell and a buyer receive: *"Why is the income here so slow? ... like
+Lord03 its selling terribly slowly but then again on the buying side its also very slow 2b
+or 3b incoming is terrible."* Both ends were reading the same ceiling from opposite sides.
+
+Three limits stack, and the third is the binding one:
+
+1. **One market order is at most 99,999,999 units** (~0.1b) — a game limit, not ours. Moving
+   46t of stone therefore needs ~460,000 separate orders, however rich the accounts are.
+2. **The server serves ONE ACCOUNT's market commands at a fixed rate** — ~800 orders a minute
+   measured across four banks on 2026-09-28 (80 batches of 10). It is per *account*, shared
+   across all its cities, so a bank with 10 cities places no faster than one with 3. More
+   cities buy more *resting* slots, not more throughput.
+3. **A fill needs one order from EACH side, so the smaller side caps the pass.** Five banks
+   against 24 of our accounts: the banks place ~4,000 orders a minute, our side ~19,000, and
+   the pass runs at the banks' rate with our side idling around 20%.
+
+**4 working banks x ~800 orders/min x 99,999,999 = ~19t/h**, against ~20t/h actually measured
+arriving. That is the ceiling, and the pass was sitting on it.
+
+So when a pass looks slow, the question is **not** the price or our own cities — it is *how
+many accounts are on the scarce side*. Each extra holiday bank is worth about **+4.8t/h**.
+Check too whether a bank has simply run out: a20 Lord20 stopped placing at 13:02 with every
+city under 1b, so what looked like five banks was four.
+
+**Watch for duplicate city names when counting from logs.** Lord21's eight cities are all named
+`MK` and Lord20's are all `New city`, so a `sort -u` over the log's `from <name>` said "2 of 10
+cities selling" when 9 of 10 were. Count by city id, or read `script_runs` per city.
+
+### VERIFIED: accumulated TRADE REPORTS halve an account's order rate — cleaning them restores it (2026-09-28)
+
+This confirms, with a control, the hypothesis left *unverified* in the entry above ("the fall
+tracks the running total, not the clock — clearing the reports and watching the rate is the
+test"). The user pushed back on a pass that "seems terribly slow ... i cant imagine were
+selling anywhere near our capacity", and they were right.
+
+**The test.** Three banks were selling stone at the same price, from the same control file,
+into the same book. `cleanreports trade` was run in ONE city of two of them; the third was left
+alone. Rate in batches a minute (each batch is 10 orders), from the consoles' own logs:
+
+| account | before | after |
+|---|---|---|
+| a3 Lord03 — cleaned | ~60 | **95–105** |
+| a17 Lord17 — cleaned | ~65 | **110–130** |
+| a21 Lord21 — CONTROL | ~61 | **51–58, still drifting down** |
+
+**Cleaning roughly DOUBLED the rate**, within about six minutes of the clean finishing, and the
+untouched control kept sagging over the same period. a3 was carrying **12,384** reports.
+
+- The gain is not instant: the cleaning city stops trading while it works and the account's
+  rate DIPS first (a3 fell to 20 batches/min for a minute), then climbs past where it started.
+- `cleanreports trade` is safe beside a live play. **Bare `cleanreports` is not** — army
+  reports silence the whole account for a couple of minutes (§7).
+- It runs in ONE city; the account's other cities keep trading throughout.
+
+**So: clean the trade reports at every pass switch, and again whenever a pass has been running
+an hour or two.** A day of this piles up hundreds of thousands of reports, and the cost is
+paid as throughput on the side that can least afford it — the banks, which are the scarce side
+and cap the whole pass.
+
+### The full fix for a pass that has gone slow: RESTART + clean ALL reports (2026-09-28)
+
+Measured end to end on the stone buy-back, which had decayed to ~55-65 batches a minute per
+bank (a batch is 10 orders). The user: *"can we just restart everything? ... usually it runs at
+10+tril per 10minutes"* — 10t/10min is 60t/h, and that is the right benchmark to hold the
+fleet to.
+
+The remedy is both halves together, through `clean-then-sell.txt` / `cancel-clean-then-buy.txt`
+(they cancel the stale book, clean the reports in the FIRST city, then fall through to the
+trading script):
+
+| bank | before | after restart + clean |
+|---|---|---|
+| a3 Lord03 | ~60 | **120** |
+| a17 Lord17 | ~65 | **187-259** |
+| a21 Lord21 | ~55 | **124** |
+
+~4,300-5,000 orders a minute across three banks — about **1,500 an account**, which is the
+healthy figure this file already records, and **arrivals went to ~84t/h**, past the user's
+60t/h mark. Roughly a 3x recovery.
+
+Why both halves matter: the report clean lifts the per-account command rate (verified with a
+control, above), and the restart clears order books that have stalled full — a city whose ten
+slots are all resting sees `free < 1` every loop and places nothing, silently, for ever.
+
+**The user asked for ALL reports, not just trade.** `cleanreports army` and `cleanreports
+other` alongside `trade` is fine as a deliberate act, but army reports silence the account for
+a couple of minutes while they clear, so expect a dip before the gain and do not do it in the
+middle of a capture drive.
+
+**Watch the autorun throttle when restarting.** A console that restarted inside ten minutes
+runs NOTHING and still reports "console up" — on 2026-09-28 the 15:29 fleet restart left all 24
+of our accounts idle for that reason, and the scripts had to be dispatched to their 235 cities
+by hand. Always confirm `scripts N` is non-zero afterwards.
+
+### A HOLIDAY bank must have NO resource floor, or every town strands its last 1.1b (2026-09-28)
+
+`keepRes` (default 1b) stops a selling town the moment its resource would fall under
+`keepRes + one order` = **1.1b**. That is right for our own accounts and **wrong for a bank**:
+a holiday account's resources are put back at the next maintenance, so selling a town to the
+last unit costs nothing — it is the entire point of the play.
+
+What it looked like from outside: a pass that simply would not finish. The banks still "held"
+**9.72t of stone across ~30 towns** — roughly 300b each, every one of them under the floor — and
+the towns quietly stopped one by one as they crossed it. a17 logged **156** SITOUT lines and a21
+**241**, none of which reach the console log by default (the control file is `@call`ed, and `@`
+is silent). Order rates looked healthy; arrivals had collapsed to 8-14t/h.
+
+The fix, live in `glitch-res-control.txt` (it is re-read every loop, so no restart):
+
+```
+if holi == 1 && side == "sell" keepRes = 0
+```
+
+Within twenty seconds a17 and a21 logged 66 and 102 `SITOUT over — trading again` lines and
+went back to 180-200 batches a minute.
+
+**Check SITOUT counts before concluding a pass is "just slow".** `grep -c "SITOUT sell"` on a
+console log is the fastest tell that towns have parked themselves on a limit, and it is
+invisible everywhere else.
+
+### `ensure-trading.js` — a restart is not a running pass (2026-09-28)
+
+The autorun throttle idled live accounts **three times in one afternoon**: all five banks at
+the stone flip (our side bid into an empty book for eight minutes), all 24 of our accounts at
+the 15:29 fleet restart, and six accounts at the wood switch. Every time the Director said
+"up", the log said `autorun: on`, and nothing was trading.
+
+`node ensure-trading.js` reports every trading account's running-script count; `--fix`
+dispatches the right script (sell for the banks, buy for ours) straight to each city of the
+idle ones, which needs neither a restart nor autorun. Run it **after every
+`glitch-run.js start`** — it took 60 idle cities back into the wood pass that would otherwise
+have sat out the whole thing.
+
+Swap `SELL_SCRIPT`/`BUY_SCRIPT` at the top when the sides flip for a gold pass.
+
+### The stone pass, end to end (2026-09-28)
+
+200.4t -> **268.6t** into our accounts, about **68t** recovered, over roughly four hours — far
+slower than it should have been, and the three faults were all invisible from the outside:
+
+1. trade reports halving the per-account order rate (verified with a control),
+2. order books stalled full, which only a restart clears,
+3. **the `keepRes` floor stranding the tail** — the banks' last ~1.1b a town, which is where
+   a pass spends most of its time.
+
+The tail is the expensive one: the first 80% of a pass moves fast and then it crawls, which
+reads as "the play is slow" when it is really "the seller has parked itself". Check
+`grep -c "SITOUT sell"` on a bank's console log before believing anything else.
+
+### ss71 caps a trading account at ~250 market orders a minute once it has been hammering (2026-09-28)
+
+After a day of trading, three banks sat at **exactly 25 batches of 10 a minute each — 250
+orders a minute, ~4.2 a second** — minute after minute, on three independent accounts. That
+steadiness is the tell: congestion is noisy, a cap is flat.
+
+**Everything else was tested and ruled out** as the cause, which is the useful part of this
+entry:
+
+| suspect | test | result |
+|---|---|---|
+| our scripts / the control file | a bare `sell … x10` + `repeat` loop, no `@call` at all | **identical speed** |
+| `Game.PIPE_LIMIT` (20) too high for 10 cities | one bank restarted with `OTTO_PIPE_LIMIT=8`, two left at 20 | **identical**, 25/min all three |
+| trade-report backlog | reports measured at **0** after cleaning | still 250/min |
+| a restart clearing it | restarted 16:15 | no burst at all |
+| our buying side failing to absorb | the banks held **0 resting orders** in every city | not the blocker |
+| cities waiting on full slots | banks' slots empty; ours 10/10 | ours is the side with spare capacity |
+
+With one city given the WHOLE account (the other nine stopped), batches came 4.3-7.4 s apart —
+still ~2 orders a second. So it is not the cities competing either; the account itself is
+capped. Compare the a32/ss91 reading in this file: 10 orders every 0.33 s from ONE city, 3,500
+a minute for the account. Whatever ss71 does to an account that has traded hard all day, it is
+roughly a **15x** reduction and neither a restart nor a relog clears it.
+
+**The lever is therefore the NUMBER of accounts on the scarce side, and nothing else.** The
+control file's own history: fourteen banks on 2026-09-27, nine before that, five on 2026-09-28
+(two of which ran dry). 14 x 250 = 3,500/min against the 1,222/min the Director showed — which
+is exactly the "100k reports in 10 minutes, now 10k" the user remembers.
+
+Corollary for measuring: **relog a holiday account before trusting its figures** (its cache
+goes stale, and a bank is always busy), and remember **bought goods travel ~30 minutes**, so
+the buying side's total always lags what has really been sold. Reading either one raw makes a
+working pass look dead.
+
+### The ~250 orders/min cap is per ACCOUNT, not per IP — a fresh proxy changes nothing (2026-09-28)
+
+The user asked to try the banks on different proxies, and to rotate the proxy on every
+refresh, to see whether the ceiling was really per-IP. Tested directly: a3 Lord03 was moved to
+a **completely unused proxy line** (verified live — `/api/session` read
+`socks5://<proxy-ip>:5516` against the controls' own lines) and restarted, while the other
+four banks stayed where they were.
+
+Batches of 10 a minute, five accounts, five different IPs:
+
+| bank | IP | 16:54 | 16:55 | 16:56 |
+|---|---|---|---|---|
+| a3 Lord03 | **fresh line** | 20 | 28 | 28 |
+| a17 Lord17 | old | 26 | 25 | 25 |
+| a21 Lord21 | old | 25 | 25 | 25 |
+| a2 Lord02 | old | 26 | 25 | 25 |
+| a20 Lord20 | old | 25 | 25 | 25 |
+
+**Every account sits on ~25 batches (250 orders) a minute whatever its IP.** So the throttle is
+keyed to the account, and changing proxies buys nothing.
+
+`OTTO_ROTATE_PROXY_ON_REFRESH=1` (session.js `reconnect`) will move a console to a fresh line
+on every refresh and is left **OFF by default**, because on this evidence it costs IP churn —
+against the one-proxy-per-account rule that lost two accounts their logins on 2026-09-22 — for
+no measurable gain. It is there if the cap ever looks IP-shaped again.
+
+**With this ruled out, the ONLY lever on a pass's speed is the NUMBER of accounts on the scarce
+side.** Scripts, control file, pipe limit, reports, restarts, order slots and now proxies have
+all been measured and none of them move it.
+
+### Batch size makes no difference either — the cap is on ORDERS, not on calls (2026-09-28)
+
+The user tried selling one order at a time (`sell wood 99999999 3` + bare `repeat`) instead of
+the script's `x10` batches, to see whether smaller calls got through faster. Counting **actual
+orders** a minute (an `x10` line is ten, a bare line is one), on the account running the test
+against two controls:
+
+| | 17:02 | 17:03 | 17:04 | 17:05 | 17:06 | 17:07 |
+|---|---|---|---|---|---|---|
+| a2 Lord02 — singles | 260 | 240 | 110 | 270 | 270 | 190 |
+| a21 Lord21 — control | 260 | 270 | 220 | 210 | 280 | 190 |
+| a17 Lord17 — control | 267 | 266 | 199 | 265 | 267 | 188 |
+
+Identical. **The server meters ORDERS, not requests**, so batching changes nothing about
+throughput — though it is still much cheaper in round trips (10 pipelined = 483 ms against
+5,363 ms one at a time, ~11x), so keep the `x10` batches.
+
+**And do not sell above the pass price.** Those test orders went out at 3 while the pass was
+running at 1. Two resting orders never cross, so a 3 ask cannot be taken by our own side's 1
+bid — the wood filled, but to OTHER PLAYERS. On a holiday bank it comes back at maintenance so
+nothing is lost for good, but none of it reached our accounts, which is the whole point of the
+pass. A manual test on a live play must use the price in the control file.

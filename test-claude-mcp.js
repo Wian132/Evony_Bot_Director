@@ -62,7 +62,7 @@ const fake = http.createServer((req, res) => {
         incoming: [{ hostile: true, mission: 'attack', king: 'Raider', myCity: 'Home', scouted: false, reachTime: Date.now() + 120000 }], count: 1, incomingCount: 1 });
       case '/api/city': return json({ id: 11, name: 'Home', x: 10, y: 20, tax: 20, resources: { food: 1e9, gold: 5e10, population: 5000, maxPopulation: 6000, idle: 100 },
         troops: [{ key: 'archer', count: 1000 }, { key: 'scout', count: 0 }], fortifications: { trap: 500 }, general: { gates: 'Closed', loyalty: 88, complaint: 0 },
-        heroes: [{ name: 'OTTO', level: 300, status: 0, levelsReady: 2 }], construction: [], incoming: {} });
+        heroes: [{ name: 'OTTO', level: 300, attack: 1211, attackEff: 1211, status: 0, levelsReady: 2 }, { name: 'Buffy', level: 90, attack: 400, attackEff: 480, status: 3 }], construction: [], incoming: {} });
       case '/api/engine/report': return json({ report: { city: 'Home', notes: ['all good'] } });
       case '/api/script/inline': return json({ ok: true, error: null, lines: [`who: ${body.text} in ${body.city}`], result: { n: 1 } });
       case '/api/script': return json({ ok: true, started: true, city: String(body.city), log: ['parsed 1 action(s)', 'started'] });
@@ -182,7 +182,8 @@ test('state: summary with cities; one city in depth', async () => {
   const one = await M.tool('state', { account: a1.id, city: 'home' });
   assert.match(one.text, /Home \(11\) 10,20 — gate Closed · loyalty 88/);
   assert.match(one.text, /troops: archer 1k/);
-  assert.match(one.text, /OTTO L300 idle \+2lv/);
+  assert.match(one.text, /OTTO L300 atk 1211 idle \+2lv/, 'the hero line carries the attack the march filter selects on');
+  assert.match(one.text, /Buffy L90 atk 400 \(480 buffed\) marching/,'a buff that moves attack is shown beside it');
   assert.match(one.text, /engine: .*all good/);
   const bad = await M.tool('state', { account: a1.id, city: 'Nowhere' });
   assert.ok(bad.isError);

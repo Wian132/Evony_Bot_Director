@@ -791,6 +791,7 @@
     </div>
     <div class="mon-row">
       <label><input type="checkbox" id="clOn" style="width:auto"> Wake Claude on a real attack</label>
+      <label title="On: a console window of its own on this PC, named e.g. &quot;Attack a2 Lord02 14:32&quot;, that you can watch and answer from claude.ai or the phone, and that stays until you close it. Off: a hidden run that is stopped after 10 minutes."><input type="checkbox" id="clRemote" style="width:auto"> Open as a Remote Control session</label>
       <label>at most <input type="number" id="clCap" min="0" max="60" style="width:64px"> wakes an hour, fleet-wide</label>
       <span class="tr-muted" id="clStat">&mdash;</span>
     </div>
@@ -1327,6 +1328,23 @@ const COLS = [
       return bits.join(' · ');
     },
     sort: (a) => { const t = cityHeroTrouble(a); return t.empty.length * 100 + t.full.length; } },
+  // Idle population, the pool the barracks draws from: a city that trains keeps
+  // it low, one that has stopped fills back up toward its maximum. Snapshots from
+  // before 2026-09-28 do not carry it (the console needs a restart), hence the dash.
+  { key: 'idlePop', head: 'Idle pop', align: 'c', tot: short,
+    render: (a) => {
+      const x = t(a);
+      if (x.idlePopulation === undefined) return '<span style="color:var(--dim)" title="not reported yet: the console of this account predates the column and needs a restart">—</span>';
+      const hi = idleHigh(a);
+      const tip = `idle ${fmt(Math.round(x.idlePopulation))} · population ${fmt(Math.round(x.population))} of ${fmt(Math.round(x.maxPopulation))}`
+        + (hi.length ? '\nidle at half its maximum or more (not training?):\n'
+          + hi.map((c) => `${c.name}: ${fmt(Math.round(c.idle))} of ${fmt(Math.round(c.maxPopulation))}`).join('\n') : '');
+      return `<span ${hi.length ? 'style="color:var(--warn)"' : ''} title="${escq(tip)}">${short(x.idlePopulation)}${hi.length ? ` · ${hi.length} high` : ''}</span>`;
+    },
+    sort: (a) => Number(t(a).idlePopulation || 0) },
+  { key: 'population', head: 'Population', align: 'c', tot: short,
+    render: (a) => `<span title="${escq('of a maximum of ' + fmt(Math.round(t(a).maxPopulation || 0)))}">${short(t(a).population)}</span>`,
+    sort: (a) => Number(t(a).population || 0) },
   { key: 'food', head: 'Food', align: 'c', render: (a) => short(t(a).food), tot: short },
   { key: 'wood', head: 'Wood', align: 'c', render: (a) => short(t(a).wood), tot: short },
   { key: 'stone', head: 'Stone', align: 'c', render: (a) => short(t(a).stone), tot: short },
@@ -1363,7 +1381,7 @@ const COLS = [
 
 // which columns are on screen (persisted)
 const DEFAULT_VISIBLE = ['_edit', 'pos', 'keepOn', 'label', 'status', 'mem', 'coins', 'server', 'lord', 'alliance', 'cities',
-  'prestige', 'honor', 'rank', 'incoming', 'marching', 'troops', 'heroes', 'captives', 'heroGaps',
+  'prestige', 'honor', 'rank', 'incoming', 'marching', 'troops', 'heroes', 'captives', 'heroGaps', 'idlePop',
   'food', 'wood', 'stone', 'iron', 'gold', 'maintRole', 'autoscripts', 'glitch', 'lastPolled'];
 let VISIBLE = (() => {
   try { const v = JSON.parse(localStorage.getItem('director_cols') || 'null'); return new Set(v && v.length ? v : DEFAULT_VISIBLE); }
@@ -1373,7 +1391,7 @@ let VISIBLE = (() => {
 // that, unticking one sticks.
 try {
   const seen = new Set(JSON.parse(localStorage.getItem('director_cols_seen') || '[]'));
-  for (const k of ['autoscripts', 'captives', 'heroGaps']) if (!seen.has(k)) { VISIBLE.add(k); seen.add(k); }
+  for (const k of ['autoscripts', 'captives', 'heroGaps', 'idlePop']) if (!seen.has(k)) { VISIBLE.add(k); seen.add(k); }
   localStorage.setItem('director_cols_seen', JSON.stringify([...seen]));
 } catch { /* no storage: the defaults stand */ }
 const saveCols = () => localStorage.setItem('director_cols', JSON.stringify([...VISIBLE]));
@@ -1420,6 +1438,14 @@ function capText(list) {
   for (const c of list) { if (!by.has(c.city)) by.set(c.city, []); by.get(c.city).push(`${c.name} L${c.level}`); }
   return [...by].map(([city, who]) => `${city}: ${who.join(', ')}`).join(' · ');
 }
+// Cities whose idle population is at half their maximum or more: the barracks
+// is not drawing on it, so troops are probably not training there.
+function idleHigh(a) {
+  const list = (a.snapshot && a.snapshot.cityList) || [];
+  return list.filter((c) => c.idle !== undefined && Number(c.maxPopulation) > 0 && c.idle >= c.maxPopulation / 2)
+    .sort((x, y) => y.idle - x.idle);
+}
+
 // Cities of this account with no heroes at all, or packed to ten — the two
 // states that stop the training hero getting in (cityList, snapshot.js). A
 // city packed to ten doesn't count if one of the ten has 1526+ attack (it
@@ -2245,7 +2271,7 @@ $('#proxySave').onclick = async () => {
 //  (/api/claude; claude-perms.js, claude-wake.js; 2026-09-28)
 // ======================================================================
 let CL = null;
-const CL_STATUS = { running: ['maint', 'running'], done: ['ok', 'done'], error: ['err', 'error'], timeout: ['err', 'stopped at the time limit'],
+const CL_STATUS = { open: ['maint', 'session open'], closed: ['ok', 'session closed'], running: ['maint', 'running'], done: ['ok', 'done'], error: ['err', 'error'], timeout: ['err', 'stopped at the time limit'],
   capped: ['warn', 'not woken (cap)'], joined: ['stale', 'left to the running Claude'], lost: ['stale', 'lost'] };
 async function loadClaude() {
   let j = null;
@@ -2261,6 +2287,7 @@ function paintClaude() {
   const j = CL; if (!j) return;
   if (document.activeElement !== $('#clOn')) $('#clOn').checked = !!j.autoWake;
   if (document.activeElement !== $('#clCap')) $('#clCap').value = j.cap;
+  $('#clRemote').checked = j.remote !== false;
   $('#clStat').textContent = (j.autoWake ? 'on' : 'off — nothing wakes') + ` · ${j.lastHour} wake(s) in the last hour${j.running ? ` · ${j.running} running now` : ''}`;
   $('#clGrid thead').innerHTML = '<tr><th>Account</th>' + j.perms.map((p) => `<th title="${escq(p.help)}">${p.n}. ${esc(p.label)}`
     + `<span class="cl-all"><a href="#" data-all="${p.key}" data-v="1">all</a> · <a href="#" data-all="${p.key}" data-v="0">none</a></span></th>`).join('') + '</tr>';
@@ -2272,8 +2299,9 @@ function paintClaude() {
     const st = CL_STATUS[w.status] || ['stale', w.status];
     return `<details class="cl-wake"><summary><b>${when(w.at)}</b> <span>${esc(w.accountId)} ${esc(w.label)}</span>`
       + `<span class="pill ${st[0]}">${esc(st[1])}${w.exitCode !== null && w.exitCode !== undefined ? ` · exit ${w.exitCode}` : ''}</span>`
+      + (w.sessionName ? `<span title="the Remote Control session's name on claude.ai">&#128241; ${esc(w.sessionName)}</span>` : '')
       + `<span class="tr-muted">${esc(w.attacker)} → ${esc((w.cities || []).join(', '))}</span></summary>`
-      + `<h4>Claude's report</h4><pre>${esc(w.output || (w.status === 'running' ? 'still running…' : '—'))}</pre>`
+      + `<h4>Claude's report</h4><pre>${esc(w.output || (w.status === 'running' ? 'still running…' : w.status === 'open' ? 'waiting for its first report (read from the session transcript)…' : '—'))}</pre>`
       + (w.prompt ? `<h4>The prompt</h4><pre>${esc(w.prompt)}</pre>` : '')
       + `<h4>Attack</h4><pre>key ${esc(w.key)}\narmies ${esc((w.keys || []).join(', '))}${w.endedAt ? `\nended ${when(w.endedAt)}` : ''}</pre></details>`;
   }).join('') : 'No wakes yet.';
@@ -2284,6 +2312,11 @@ $('#clOn').onchange = async (e) => {
     detail: 'Each new attack at or above the city’s /junktroop runs Claude once, on your own Claude login, with only the OTTObot tools. It can act only through the ticked permissions.' })) { e.target.checked = false; return; }
   const r = await post('/api/claude/autowake', { on });
   if (!r.ok) { e.target.checked = !on; return tell(r.error || 'could not be saved', { title: 'Claude' }); }
+  loadClaude();
+};
+$('#clRemote').onchange = async (e) => {
+  const r = await post('/api/claude/autowake', { remote: e.target.checked });
+  if (!r.ok) { e.target.checked = !e.target.checked; tell(r.error || 'could not be saved', { title: 'Claude' }); }
   loadClaude();
 };
 $('#clCap').onchange = async (e) => {
@@ -4557,7 +4590,7 @@ async function loadMonEvents() {
     stillMin: meStillMin() || '',
     q: $('#meQ').value.trim(), sort: ME.sort, dir: ME.dir, limit: ME.limit, offset: ME.offset });
   if (!r || !r.ok) { $('#meMeta').textContent = (r && r.error) || 'could not read the changes'; return; }
-  $('#meMeta').textContent = `${fmt(r.total)} change(s)`
+  $('#meMeta').textContent = `${fmt(r.total)} lord(s), newest change each`
     + (r.capped ? ' — too many to order by hero at once; narrow it first' : '');
   const cols = [['at', 'When'], ['userName', 'Lord'], ['hero', 'Best hero'], ['still', 'Still for'], ['kind', 'What'], ['detail', 'Detail']];
   const head = cols.map(([k, h]) => (k === 'still'
@@ -4568,7 +4601,9 @@ async function loadMonEvents() {
     + `${new Date(Number(e.at)).toLocaleString()}</td><td>${who(e.userName)}</td>`
     + `<td style="white-space:nowrap">${bestHeroCell(e.hero, e.userName)}</td>`
     + `<td style="white-space:nowrap">${stillFor(e.movedAt)}</td>`
-    + `<td>${esc(EVENT_WORD[e.kind] || e.kind)}</td><td>${esc(e.detail)}</td></tr>`).join('')
+    + `<td>${esc(EVENT_WORD[e.kind] || e.kind)}`
+    + (e.times > 1 ? ` <span class="tr-muted" title="${e.times} matching changes for this lord; the newest is shown">×${e.times}</span>` : '')
+    + `</td><td>${esc(e.detail)}</td></tr>`).join('')
     : `<tr><td colspan="${cols.length}" class="tr-muted">nothing matched — changes are noticed from the second sweep onwards</td></tr>`;
   $('#meTbl').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
   $('#mePage').textContent = r.rows.length ? `${fmt(ME.offset + 1)}–${fmt(ME.offset + r.rows.length)}` : '—';

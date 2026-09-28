@@ -245,7 +245,12 @@ async function toolState(args) {
     out.push(`troops: ${troops.join(', ') || 'none'}`);
     const forts = Object.entries(city.fortifications || {}).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${fmt(v)}`);
     if (forts.length) out.push(`walls: ${forts.join(', ')}`);
-    const heroes = (city.heroes || []).map((h) => `${h.name} L${h.level} ${['idle', 'mayor', 'defending', 'marching', 'prisoner'][Number(h.status)] || 's' + h.status}${h.levelsReady ? ' +' + h.levelsReady + 'lv' : ''}`);
+    // atk is the number march hero strings select on (any:attack>=N, strongest
+    // first): the attack with spent points, before buffs. The buffed figure
+    // follows only when a buff moves it (2026-09-28: an npc10 plan had to fall
+    // back to a debug roster because state gave no attack at all).
+    const atk = (h) => (h.attack == null ? '' : ` atk ${h.attack}${h.attackEff && h.attackEff !== h.attack ? ' (' + h.attackEff + ' buffed)' : ''}`);
+    const heroes = (city.heroes || []).map((h) => `${h.name} L${h.level}${atk(h)} ${['idle', 'mayor', 'defending', 'marching', 'prisoner'][Number(h.status)] || 's' + h.status}${h.levelsReady ? ' +' + h.levelsReady + 'lv' : ''}`);
     out.push(`heroes (${heroes.length}): ${heroes.join(', ') || 'none'}`);
     const cons = (city.construction || []).map((b) => `${b.name} ${b.kind === 'demolish' ? 'v' : '^'}L${b.to}${b.secsLeft ? ' ' + inWords(b.secsLeft * 1000) : ' queued'}`);
     if (cons.length) out.push(`building: ${cons.join(', ')}`);

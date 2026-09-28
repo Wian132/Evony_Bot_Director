@@ -752,6 +752,17 @@ t('the changes table searches, sorts and pages', () => {
 
   // events() itself is untouched: still a plain array of the matching rows
   assert.strictEqual(M.events(SERVER, {}).length, 3);
+
+  // one line per lord: a lord who stalled again shows once, the newest, with a count
+  add(500, 'sunbather', 'stalled', 'Sunbather has not moved prestige for 50 min');
+  const once = M.eventPage(SERVER, {});
+  assert.strictEqual(once.total, 3, 'still three lords');
+  assert.deepStrictEqual(once.rows.map((e) => e.detail.slice(-6)), ['50 min', 'a city', 'Wolves']);
+  assert.strictEqual(once.rows[0].times, 2);
+  // the count is of the rows that matched, not of everything the lord ever did
+  assert.strictEqual(M.eventPage(SERVER, { q: '90 min' }).rows[0].times, 1);
+  assert.strictEqual(M.eventPage(SERVER, { sort: 'hero' }).total, 3);
+  assert.strictEqual(M.events(SERVER, {}).length, 4, 'events() still sees every row');
 });
 
 // A reading is always kept when the prestige MOVED. Between moves a heartbeat is

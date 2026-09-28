@@ -1594,23 +1594,58 @@ everything.
 ### Waking Claude on an attack
 
 `claude-wake.js`, run by the Director from its once-a-minute look at every console
-(`sampleUptime`). For a **new real attack** it runs, in the repo folder,
+(`sampleUptime`). For a **new real attack** it starts Claude in the repo folder, on the
+user's own Claude login (the Max subscription — `ANTHROPIC_API_KEY` is taken out of the
+child's environment), in one of two ways, chosen on the Claude tab ("Open as a Remote
+Control session", `claudeWakeRemote`, per organization, **on** by default):
+
+**As a Remote Control session** (the default) — an interactive Claude in a console window of
+its own on this PC, named on claude.ai so the user can watch and answer it from the phone:
 
 ```
-claude -p "<prompt>" --mcp-config '{"mcpServers":{"otto":{"type":"stdio","command":"<node>",
-  "args":["<repo>/otto-mcp.js"],"env":{"OTTO_CLAUDE_MODE":"auto","OTTO_WAKE_ACCOUNT":"<id>"}}}}'
+claude.exe --remote-control "Attack a2 Lord02 14:32"
+  --mcp-config '{"mcpServers":{"otto":{"type":"stdio","command":"<node>",
+    "args":["<repo>/otto-mcp.js"],"env":{"OTTO_CLAUDE_MODE":"auto","OTTO_WAKE_ACCOUNT":"<id>"}}}}'
   --strict-mcp-config --tools "" --allowedTools mcp__otto --permission-mode dontAsk
-  --output-format json --no-session-persistence
+  --session-id <new uuid> "<prompt>"
 ```
 
-on the user's own Claude login (the Max subscription — `ANTHROPIC_API_KEY` is taken out of
-the child's environment). No built-in tools at all: no shell, no files; only the otto tools,
-in auto scope. On Windows it spawns the `claude.exe` behind the npm `claude.cmd` shim
-(`OTTO_CLAUDE_BIN` overrides). The prompt gives the account (id, alias, lord), the
-attacker, each city hit with its loyalty and junk line, every real army's troops and landing
-time (server and local), which switches are on, and the job: **keep things alive** — no
-counter-attacks — act only through the act tool within those switches, and end with a short
-report of what it saw and did.
+The name carries the account's id and **alias**, never its lord name (it is shown on
+claude.ai). `claude.exe` is spawned straight (detached, its own window, not waited for —
+no `cmd /c start`, which would have to quote a multi-line prompt). It stays open until the
+user closes it; nothing kills it. The prompt goes last, after `--session-id`: the options
+before it take several values and would swallow it. Claude's **first report** is read from
+the session's transcript, `%USERPROFILE%\.claude\projects\<cwd with every non-letter/digit
+made "-", e.g. C--EvonyTool>\<session-id>.jsonl` (any project folder holding that file is
+looked in if the name guess misses): the text of the first assistant turn that ends
+(`stop_reason: end_turn`). It is watched every 20 s for up to 30 minutes.
+
+**As a hidden run** (the switch off) — `claude -p "<prompt>" …the same restrictions…
+--output-format json --no-session-persistence`, no window, killed after 10 minutes
+(`OTTO_WAKE_TIMEOUT_MS`), process tree and all; its answer is its stdout.
+
+Either way there are no built-in tools at all: no shell, no files, only the otto tools, in
+auto scope. On Windows the `claude.exe` behind the npm `claude.cmd` shim is what runs
+(`OTTO_CLAUDE_BIN` overrides).
+
+**The opening message.** The console adds the detail to `underAttackView`
+(`attack-brief.js`), so the Director can pass it on:
+
+```
+2 incoming armies on a2 (Lord02), server ss71 (attack group: alliance Foes). Now: server 00:26:40 UTC, local 02:26:40.
+1. -> Fort: 35000 troops (a:30000 c:5000), attack, hero Grim L77, lord Brutus [Foes] from Raider City (150,250), lands server 00:30:40 / local 02:30:40 (in 4m00s) [key 801]
+2. -> Fort: unknown troops (a:? cp:?), attack, hero Brute, lord Brutus [Foes] from Raider City (150,250), lands … [key 802]
+City Fort (210,305) has 52500 troops (p:10000 a:40000 c:2500), wall defence (Walls L8): trap 3000, abatis 1500, rolling logs 200 = 4700, loyalty 88, junk line 1000; best attack hero Otto L120 (atk 300, pol 40, int 20; idle); best politics hero Mayo L90 (atk 60, pol 250, int 30; mayor); nearest other city Home (200,300) 11.2 tiles away.
+Permissions … / the job: keep things alive, no counter-attacks, act only through the act tool, end with a short report.
+```
+
+Per army: troops by type (`?` = not scouted), mission, the attacking hero's name and level —
+**the game sends no stats for an enemy hero** (ArmyBean has only `hero` and `heroLevel`) —
+the lord, alliance, the tile it comes from and its landing time. Per city: home troops by
+type, fortifications by type and the Walls level, the best attack (highest `power`) and best
+politics (highest `management`) hero with their status (prisoners left out), and the
+account's nearest other city, measured the short way round the wrapping map
+(`C.mapDistance`, as marches are). The account's own lord name is not in the prompt.
 
 - **One wake per attack.** An attack is one attacker against one account: its alliance when
   it has one, else the lord, else the tile it comes from. More waves of that attacker landing
@@ -1619,26 +1654,30 @@ report of what it saw and did.
   attack groups are per city and 6 s apart, and live inside the console; this grouping is the
   waker's own.) Army keys and groups are kept for a day in `claudeWakeSeen`, so a Director
   restart does not wake again.
-- **Caps.** At most `claudeWakeCap` wakes an hour fleet-wide (default 6, set on the tab), at
-  most 3 Claudes at once, and one per account: an attack while that account's Claude runs is
-  logged as left to it. Over the cap an attack is logged as *capped* and not woken later.
+- **Caps.** At most `claudeWakeCap` wakes an hour fleet-wide (default 6, set on the tab), and
+  one Claude per account: a wake holds its account while its process is alive — a Remote
+  Control session until its window is closed — and an attack meanwhile is logged as left to
+  it. Hidden runs are also held to 3 at once. Over the cap an attack is logged as *capped*
+  and not woken later.
 - **Off by default.** The tab's "Wake Claude on a real attack" (`claudeAutoWake`, per
   organization) must be switched on. While it is off nothing is noted, so switching it on
   during an attack wakes for that attack. With every permission off it still wakes: Claude
   looks and advises.
-- Each run is killed after 10 minutes (`OTTO_WAKE_TIMEOUT_MS`), process tree and all. The
-  Director never waits on it; the answer is filed when the child ends.
 - **The wake log** (`claudeWakes`, the newest 200): time, account, attacker, cities, attack
-  key and army keys, the prompt, the exit code and Claude's final answer — shown on the
-  Claude tab. A run the Director was waiting on when it restarted is marked *lost*.
+  key and army keys, the session's name and state (*session open* / *session closed*) or
+  the run's (*running* / *done* / *error* / *stopped at the time limit*), the prompt, the
+  exit code and Claude's (first) report — shown on the Claude tab. After a Director restart a
+  session whose process is still there keeps its account; a hidden run it was waiting on is
+  marked *lost*.
 
 The Director only sees what a console reports once a minute, so a wake can come up to a
 minute after an attack appears.
 
 **What needs a restart.** The junk rule in the city tabs, the General chip and
-`underAttackView` — and `/api/claude/perms` — live in each console: a console shows them
-after its next restart (until then it still lights up for junk, and the Settings tab says
-the console is running older code). The Claude tab, its routes and the waker live in the
+`underAttackView` with its attack detail — and `/api/claude/perms` — live in each console: a
+console shows them after its next restart (until then it still lights up for junk, the
+opening message has no per-army or per-city detail, and the Settings tab says the console is
+running older code). The Claude tab, its routes and the waker live in the
 Director: they need a Director restart. The page files are read fresh, so the new tab
 appears at once but answers "older code" until then. Tests: `test-claude-perms.js`,
 `test-claude-wake.js`, and the updated `test-incoming.js` (all offline).

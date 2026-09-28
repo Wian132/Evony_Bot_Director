@@ -149,6 +149,9 @@ SESSION.runNewCityScript = async (castleId, src, log) => {
 };
 
 function body(req) {
+  // A Claude request's body was already read by its gate (claude-guard.js), which
+  // had to see the script text before letting it through; the stream is spent.
+  if (req._rawBody !== undefined) { try { return Promise.resolve(JSON.parse(req._rawBody || '{}')); } catch { return Promise.resolve({}); } }
   return new Promise((resolve) => {
     let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
   });
@@ -191,9 +194,9 @@ async function runScan({ names }, log) {
   return rows;   // shared session stays open
 }
 
-const rawBody = (req) => new Promise((resolve) => {
+const rawBody = (req) => (req._rawBody !== undefined ? Promise.resolve(req._rawBody) : new Promise((resolve) => {
   let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b));
-});
+}));
 
 // ---- script runs: what every run the console starts shares -----------------
 // The Run button and NEAT's autorun both start a city's script through
@@ -370,7 +373,10 @@ async function runCityScript(key, actions, o = {}) {
   if (SCRIPT_RUNS.has(key)) return { ok: false, busy: true };
   const lines = o.lines || [];
   const running = { stop: false, startedAt: Date.now(), lines, dropped: 0, paused: null, source: o.source || null };
+  // a run id for the events feed (claude-events.js): city and start, unique per console
+  running.runId = `${key}-${running.startedAt.toString(36)}`;
   SCRIPT_RUNS.set(key, running);
+  SESSION.emitEvent('script_started', { runId: running.runId, cityId: key, city: cityNameOf(key), source: running.source, dryRun: o.dryRun === true });
   let done = { ok: false, error: 'the run did not finish' };
   const log = stamped((m) => {
     lines.push(m);
@@ -397,10 +403,41 @@ async function runCityScript(key, actions, o = {}) {
     running.paused = null;
     SCRIPT_RUNS.delete(key);
     SCRIPT_DONE.delete(key);         // re-inserted last: the Map keeps insertion order
-    SCRIPT_DONE.set(key, { at: Date.now(), startedAt: running.startedAt, lines: running.lines, dropped: running.dropped,
+    SCRIPT_DONE.set(key, { at: Date.now(), runId: running.runId, startedAt: running.startedAt, lines: running.lines, dropped: running.dropped,
       stopped: running.stop, source: running.source || null, n: done.n || 0, error: done.error || null });
     while (SCRIPT_DONE.size > SCRIPT_DONE_KEEP) SCRIPT_DONE.delete(SCRIPT_DONE.keys().next().value);
+    // the last few lines ride along, so a waiting Claude need not fetch the run
+    const failed = running.lines.filter((l) => /(^|·) *FAILED: /.test(l));
+    SESSION.emitEvent(done.ok ? 'script_finished' : 'script_error', {
+      runId: running.runId, cityId: key, city: cityNameOf(key), source: running.source, stopped: running.stop,
+      n: done.n || 0, error: done.error || null, secs: Math.round((Date.now() - running.startedAt) / 1000),
+      failedLines: failed.length, tail: running.lines.slice(-3).map((l) => String(l).replace(STAMP_RE, '').slice(0, 200)),
+    });
   }
+}
+
+// One in-line command (NEAT's `\who Bob`, as `command "who Bob"` runs it) in a
+// city, and its output. The chat box's `\` and a Claude's /api/claude/act share
+// it. -> { ok, error, lines, result }
+async function runInline(text, city) {
+  const S = require('./script');
+  const lines = [];
+  let result, error = null;
+  try {
+    const game = await SESSION.connect();
+    // the text rides in as a value, so no quote in it can change the line
+    const globals = { ottoInlineText: text, ottoInlineDone: (r, e) => { result = r; error = e || null; } };
+    const view = S.parse('command ottoInlineText\nottoInlineDone($result, $error)', { globals });
+    const bad = view.find((a) => a.cmd === 'error');
+    if (bad) throw new Error(bad.error);
+    await S.run(game, view, (m) => lines.push(m), {
+      castle: city, session: SESSION, accountId: (SESSION.account && SESSION.account.id) || null,
+      cityId: String(city ?? ''), globals, shouldStop: () => false,
+    });
+  } catch (e) { error = e.message; }
+  const out = lines.filter((l) => !/^line 1: /.test(l)).map((l) => l.replace(/^ {2}/, ''));
+  try { JSON.stringify(result); } catch { result = String(result); }
+  return { ok: !error, error, lines: out, result: result === undefined ? null : result };
 }
 
 // NEAT's autorun (AutorunScripts, AutoRunScript.txt, CmdParms -autoscripts and
@@ -508,6 +545,25 @@ const server = http.createServer(async (req, res) => {
   }
   const ORG = SESSION.org;
 
+  // A Claude key (claude-guard.js): never a login to answer it, and an audit line
+  // for everything it changes, written when the route has answered.
+  if (req.claude) {
+    const CG = require('./claude-guard');
+    const p = new URL(req.url, 'http://x').pathname;
+    if (CG.needsLive(req.method, p) && !SESSION.connected) {
+      res.writeHead(409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({ ok: false, claude: true,
+        error: `not logged in (${SESSION.state || 'offline'}) — a Claude never makes the console log in; wait for it to reconnect` }));
+    }
+    if (CG.mutating(req.method, p)) {
+      const end = res.end.bind(res);
+      res.end = (data, ...rest) => {
+        try { CG.auditDone(req, p, SESSION.account && SESSION.account.id, res.statusCode, data); } catch { /* the answer goes out regardless */ }
+        return end(data, ...rest);
+      };
+    }
+  }
+
   const send = (code, type, data) => { res.writeHead(code, {
     // never let a browser hold on to a stale page or a stale account list
     'Cache-Control': 'no-store, must-revalidate', 'Content-Type': type.includes('charset') ? type : type + '; charset=utf-8' }); res.end(data); };
@@ -567,6 +623,27 @@ const server = http.createServer(async (req, res) => {
   // watching. It is WRITE-ONLY over this API — the page is told whether one is
   // stored, never what it is, so a stored code cannot be read back out of a
   // signed-in tab or a proxy log.
+  // What Claude may do to THIS account on its own when the Director wakes it
+  // for an attack (claude-perms.js; Settings -> Claude permissions). A Claude
+  // key may read this (claude-guard READ_GET) but never change it: no Claude
+  // scope lists it among the routes it may POST to, so a woken Claude cannot
+  // grant itself anything (2026-09-28).
+  if (url.pathname === '/api/claude/perms') {
+    const P = require('./claude-perms');
+    const acct = SESSION.account && SESSION.account.id;
+    if (!acct) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'this console is not bound to an account' }));
+    if (req.method === 'POST') {
+      if (req.claude) return send(403, 'application/json', JSON.stringify({ ok: false, error: 'refused: a Claude may not change its own permissions' }));
+      const b = await body(req);
+      const next = P.set(acct, b.perms || {});
+      SESSION.note(`Claude permissions: ${P.PERMS.filter((p) => next[p]).map((p) => P.LABELS[p]).join(', ') || 'none'}`, { kind: 'sys' });
+      return send(200, 'application/json', JSON.stringify({ ok: true, perms: next }));
+    }
+    return send(200, 'application/json', JSON.stringify({
+      ok: true, account: acct, perms: P.get(acct),
+      list: P.PERMS.map((k, i) => ({ key: k, n: i + 1, label: P.LABELS[k], help: P.HELP[k] })),
+    }));
+  }
   if (url.pathname === '/api/settings' && req.method === 'GET') {
     const SEC = require('./security');
     const acc = SESSION.account ? ORG.accounts.get(SESSION.account.id) : null;
@@ -1609,11 +1686,11 @@ const server = http.createServer(async (req, res) => {
     const tail = lines ? lines.slice(-400) : null;
     const held = running || over;
     return send(200, 'application/json', JSON.stringify({
-      runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, startedAt: r.startedAt, stopping: r.stop,
+      runs: [...SCRIPT_RUNS].map(([city, r]) => ({ city, runId: r.runId || null, startedAt: r.startedAt, stopping: r.stop,
         paused: r.paused ? { line: r.paused.line, next: r.paused.next, since: r.paused.since } : null, source: r.source || null })),
       lines: tail,
       dropped: held ? held.dropped + lines.length - tail.length : 0,
-      ended: over ? { at: over.at, startedAt: over.startedAt, n: over.n, stopped: over.stopped, error: over.error, source: over.source } : null,
+      ended: over ? { at: over.at, runId: over.runId || null, startedAt: over.startedAt, n: over.n, stopped: over.stopped, error: over.error, source: over.source } : null,
     }));
   }
 
@@ -1654,25 +1731,55 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     const text = String(b.text || '').trim().replace(/^\\/, '').trim();
     if (!text) return send(200, 'application/json', JSON.stringify({ ok: false, error: 'type \\ and an in-line command, e.g. \\who Bob' }));
-    const S = require('./script');
-    const lines = [];
-    let result, error = null;
+    return send(200, 'application/json', JSON.stringify(await runInline(text, b.city)));
+  }
+
+  // ---- Claude (claude-guard.js, claude-events.js; 2026-09-28) -------------
+  // The events feed: what happened after `since`, held open up to `wait`
+  // seconds (60 at most) until something does. ?types=a,b narrows it.
+  if (url.pathname === '/api/events' && req.method === 'GET') {
+    const CE = require('./claude-events');
+    const feed = SESSION.eventFeed();
+    const types = CE.typeSet(q.get('types'));
+    const limit = Math.max(1, Math.min(500, Number(q.get('limit')) || 200));
+    const waitMs = Math.max(0, Math.min(CE.MAX_WAIT_MS, (Number(q.get('wait')) || 0) * 1000));
+    // res, not req: a request's own 'close' fires as soon as its (empty) body is
+    // read, which would read as "gone" before the wait began.
+    let gone = false;
+    res.on('close', () => { gone = true; });
+    const events = await feed.wait(q.get('since'), types, waitMs, limit);
+    if (gone) return;
+    return send(200, 'application/json', JSON.stringify(feed.view(events)));
+  }
+  // What a Claude may do by itself. In auto scope only what the account's
+  // permissions allow (claude-perms.js via claude-guard checkAct); the gate
+  // through Session.setGate, a command through the same in-line runner as `\`.
+  //   {city, action:'gate', mode:'open'|'closed'|'auto'}  |  {city, command:'<script line>'}
+  if (url.pathname === '/api/claude/act' && req.method === 'POST') {
+    const b = await body(req);
+    const CG = require('./claude-guard');
+    const acct = (SESSION.account && SESSION.account.id) || null;
+    const scope = (req.claude && req.claude.scope) || 'interactive';     // a signed-in person counts as present
+    const ok = CG.checkAct(scope, acct, b);
+    if (!ok.ok) return send(403, 'application/json', JSON.stringify({ ok: false, error: ok.error }));
+    // a city by id or by name
+    const g = SESSION.game;
+    const castle = g && (g.castles || []).find((c) => String(g.castleId(c)) === String(b.city)
+      || String(c.name || '').toLowerCase() === String(b.city || '').toLowerCase());
+    if (!castle) return send(200, 'application/json', JSON.stringify({ ok: false, error: `no city ${b.city} on this account` }));
+    const cid = g.castleId(castle);
+    const who = `Claude (${scope})`;
     try {
-      const game = await SESSION.connect();
-      // the text rides in as a value, so no quote in it can change the line
-      const globals = { ottoInlineText: text, ottoInlineDone: (r, e) => { result = r; error = e || null; } };
-      const view = S.parse('command ottoInlineText\nottoInlineDone($result, $error)', { globals });
-      const bad = view.find((a) => a.cmd === 'error');
-      if (bad) throw new Error(bad.error);
-      await S.run(game, view, (m) => lines.push(m), {
-        castle: b.city, session: SESSION, accountId: (SESSION.account && SESSION.account.id) || null,
-        cityId: String(b.city ?? ''), globals, shouldStop: () => false,
-      });
-    } catch (e) { error = e.message; }
-    const out = lines.filter((l) => !/^line 1: /.test(l)).map((l) => l.replace(/^ {2}/, ''));
-    try { JSON.stringify(result); } catch { result = String(result); }
-    return send(200, 'application/json', JSON.stringify({ ok: !error, error, lines: out,
-      result: result === undefined ? null : result }));
+      if (ok.kind === 'gate') {
+        const r = await SESSION.setGate(cid, String(b.mode));
+        SESSION.note(`${who}: gate ${b.mode}`, { city: castle.name, kind: 'act' });
+        return send(200, 'application/json', JSON.stringify({ ok: true, perm: ok.perm, gateOpen: r.gateOpen }));
+      }
+      const command = String(b.command).trim().replace(/^\\/, '').trim();
+      const r = await runInline(command, cid);
+      SESSION.note(`${who}: ${command.slice(0, 120)} -> ${r.ok ? 'ok' : r.error}`, { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ...r, perm: ok.perm }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
 
   // Script loadouts: numbered slots per CITY, so a city's Load 1 is its own and

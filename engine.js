@@ -1776,10 +1776,11 @@ function defenceLines(goals) {
   const sw = g.switches || {};
   const lines = ['usetruce', 'usespeech'].filter((k) => sw[k] !== undefined).map((k) => Number(sw[k]));
   if (!lines.length) return null;
-  return { top: Math.max(...lines), junk: sw.junktroop !== undefined ? n(sw.junktroop) : 1000 };
+  return { top: Math.max(...lines), junk: require('./attacks').junkLineOf(goals) };
 }
 // an inbound army that counts as an attack under those lines (size unknown counts)
-const realAttack = (a, lines) => a.troops === null || a.troops === undefined || n(a.troops) >= lines.junk;
+// (attacks.js: the one junk rule, 2026-09-28 — a partly scouted army is unknown, so real)
+const realAttack = (a, lines) => require('./attacks').isRealAttack(a, lines.junk);
 // server time as hh:mm:ss (UTC), for the wave log
 const clock = (ms) => new Date(ms).toISOString().slice(11, 19);
 

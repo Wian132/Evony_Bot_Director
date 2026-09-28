@@ -268,11 +268,10 @@ function classify(army, opts) {
 // defensepolicy's /junktroop, which the wiki says keeps a junk attack from
 // triggering "the attack warning, gatepolicy, hiding, defensepolicy, or other
 // defensive measures" (DefensePolicy). NEAT's default is 1000.
+// (attacks.js holds the rule, shared with the console's and the Director's
+// attack warnings since 2026-09-28.)
 function defaultJunk(ctx) {
-  const dp = (ctx.goals || []).find((x) => x.name === 'defensepolicy');
-  const v = dp && dp.switches ? dp.switches.junktroop : undefined;
-  const j = v === undefined || v === null || v === true ? NaN : Number(v);
-  return Number.isFinite(j) && j >= 0 ? j : 1000;
+  return require('./attacks').junkLineOf(ctx.goals);
 }
 
 // Every plan starts here: the inbound armies worth reacting to, soonest first.
@@ -284,7 +283,8 @@ function threatsOf(ctx, opts = {}) {
   const list = (ctx.incoming || [])
     .map((a) => classify(normalizeArmy(a, nowMs), opts))
     .filter((a) => a.msUntil === null || a.msUntil > -60000);   // drop stale entries
-  const real = list.filter((a) => a.total === null || a.total >= junk);
+  // per army, size unknown (or only partly readable) counting as real (attacks.js)
+  const real = list.filter((a) => require('./attacks').isRealAttack(a.raw || { troops: a.total, known: a.known }, junk));
   real.sort((a, b) => (a.msUntil ?? Infinity) - (b.msUntil ?? Infinity));
   return { now: nowMs, all: list, real, junk: list.length - real.length };
 }
@@ -1611,6 +1611,8 @@ const executors = {
         gs.gate = gs.gate || {};
         gs.gate.lastAt = at; gs.gate.want = !!a.open;
       }
+      // Claude's events feed (session.js installs game.emitEvent at login, 2026-09-28)
+      try { if (typeof game.emitEvent === 'function') game.emitEvent('gate_changed', { cityId: game.castleId(castle), city: castle.name, open: !!a.open, by: 'engine' }); } catch { /* never in the gate's way */ }
     }
     return r;
   },

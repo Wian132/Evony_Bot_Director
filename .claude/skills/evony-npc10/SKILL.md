@@ -229,6 +229,143 @@ Set up in ~15 minutes for 21 targets and 13 accounts:
   `buy`/`sell`/`ours`/`banks` (read back three times, it held), so the Director's watchdog
   leaves the capture consoles alone. Holiday sellers that stop run `cancel-sells-idle.txt`.
 
+## Check the TAKER SLOTS before anything else (2026-09-27)
+
+**The first thing to read is not the map, it is the city counts.** A 10-city account cannot
+capture, and on 2026-09-27 **every one of a1–a25 was title 9 with 10 cities** — so the
+whole fleet had 0 taker slots and a drive was impossible however many troops were free.
+One query settles it:
+
+```
+node -e "const q=require('./db').db||require('./db');
+for(const r of q.prepare('select accountId,json from account_latest').all()){
+ const j=JSON.parse(r.json); console.log(r.accountId, j.lord, 'title'+j.title, j.cities+'/'+(j.title+1));}"
+```
+
+Free slots on that date: a26 Lord26 5, a27 Lord27 3, a28 Lord28 6, a29 Lord29 5,
+a30 Lord30 2, a31 Lord31 1 — and those same accounts were the buy side of a live food
+play (`tradingRun`), so **a capture drive and a market pass compete for the same
+accounts. Ask the user which one wins before touching them.**
+
+**Per-city troop TYPES are not in the database** — `account_latest.cityList` carries only a
+`troops` total. Read them without running a script or restarting anything, off the console
+that already holds the session:
+
+```
+node -e "const A=require('./auth'),h=require('http');
+h.get({host:'localhost',port:8737,path:'/api/debug/city?id=<castleId>',
+ headers:{'x-otto-internal':A.internalToken()}},s=>{let b='';s.on('data',d=>b+=d);
+ s.on('end',()=>{const t=JSON.parse(b).castle.troop;console.log(t.lightCavalry,t.heavyCavalry,t.scouter);});});"
+```
+
+`/api/debug/city` is on the internal allowlist (`auth.js INTERNAL_OK`) and is read-only —
+it sends nothing to the game. `castleId` is `cityList[i].id`.
+
+**a6 Lord06's drain capability, read this way 2026-09-27 18:5x** (cav / cata / scouts):
+707,110 500k/1.25m/4.9m · 704,111 500k/547k/14.0m · 708,109 500k/920k/3.7m ·
+709,112 500k/1.28m/4.9m · 710,110 500k/1.06m/4.9m · 712,115 500k/**9.2m**/4.2m ·
+710,117 771k/1.5m/**165m** · 711,116 500k/1.5m/2.0m. Its other two cities are NOT clearing
+cities: 700,120 holds only 10,265 cava and 10,265 cataphracts, 706,110 53k/82k. All eight
+heavy cities sit at y109–117, which is **14–21 tiles from the hub's southern camps** and
+4–7 from 711,121 and 716,111 — so prove the loop on the eastern camps first.
+
+**The taker census, read live 2026-09-27 19:1x** (cavalry → waves at `takeWave = 1500`, since
+`job-take` sends `min(1500, cav/3)`; "idle" = status 0 at level ≤ 1000, one hero per wave):
+
+| account | free slots | cavalry a city | waves a city | idle heroes a city |
+|---|---|---|---|---|
+| a26 Lord26 | 5 | 30,000–49,937 | 20–33 | 8 |
+| a27 Lord27 | 3 | 30,000 | 20 | 6–8 |
+| a28 Lord28 | 6 | 30,000–49,987 | 20–33 | 7–8 |
+| a29 Lord29 | 5 | 30,000 | 20 | 5–8 |
+| a30 Lord30 | 2 | 30,000–50,000 | 20–33 | **1–2** |
+| a31 Lord31 | 1 | 30,000 | 20 | 5–8 |
+
+Cataphracts are 0–2,000 a city, so a wave is about `c:1500, cata:666, s:1500`. Lord05 took its
+camp on the **28th** wave, so a 30,000-cavalry city (20 waves) can plausibly run dry before a
+camp falls: give each target **two or three taker cities of the same account**, and keep
+`reinforce <x,y> none c:15000` from a sister city (via `glitch-oneoff.txt`) as the contingency.
+
+**a30 Lord30 makes a poor taker** despite its position: only **1–2 idle heroes at level
+≤ 1000 per city**, which caps its wave rate however much cavalry it holds, and it is **kicked
+by a scheduled job every hour at :26–:28**, so never give it a role that cannot survive losing
+its login for 30 minutes. Note also that its 716,127/716,128 are 1–2 tiles from **716,129**
+but **16–17** from 716,111 — it is 717,116 that sits 5.1 tiles from 716,111.
+
+**One account per target** (2026-09-27, EVONY-RULES.md): several taker cities per target is
+right, but they must all belong to one account, because `job-take.txt` never reads
+`doneTargets` and the losing account would keep hitting the winner's new city — as an enemy,
+since the drainers are in 0utCasts and the takers in 1112.
+
+**`spareTargets = ""` is a blank target, not "no spares"** — use the `"none"` sentinel with
+`doneTargets = " none "` (EVONY-RULES.md, same date).
+
+**Size `takeDelay` from the clearing city's march, not from the settled 60.** See
+EVONY-RULES.md (2026-09-27): `takeDelay >= (clearing march s + 60) / 5`. 60 is right for a
+clearing city 4–7 tiles out and far too short for one 14–21 tiles out.
+
+**Fleet Feet is the biggest lever, and it is safe here.** Capture waves carry no camp (they
+are paced by the console's naps), so the camp-shortening rule does not touch them; what the
+buff cuts is the hero's round trip, and one hero per wave is the bottleneck — two charges
+(factor 0.3) means ~3.3× the waves an hour from the same city. Beware that
+`C.armyTimeFactor` returns **0** above 8 h of buff left, so a march time computed for a
+`takeDelay` can come back as 0 s.
+
+## Result on 2026-09-27 (the hub clean-up, and what it settled)
+
+Two of three targets captured in **11 and 14 minutes** with a6 lord06 + a16 Lord16 draining and
+a26 Lord26 + a27 lord27 taking. Full detail in EVONY-RULES.md; what to carry forward:
+
+- **711,121** → a26, clearing hits landed, **taken 3 minutes after the first capture wave**.
+- **716,111** → a27, **taken with NO clearing hit ever landing** — five cities' plain
+  20k/20k/20k waves flattened a full L10 garrison in 14 minutes on their own. The clearing hit
+  is cost, not necessity, at five-plus heavy drainers.
+- Both captures together cost about **81,000 cavalry** of capture waves.
+- **`doneTargets`/watcher path verified live**: `npc-taken-watch.js` appended each capture
+  within 5 s, drainers stopped and recalled 1–5 s later, and the `"none"` sentinel produced
+  **zero blank-target marches**. Use the sentinel, always.
+- **A 30,000-cavalry taker city is exactly 20 waves and then goes silent** — a26 @697,124 went
+  30,000 → 0. Plan `cavalry ÷ takeWave` per city and add sister cities *before* it runs dry,
+  not after.
+- **Check the clearing city's best idle hero name first** — a hero named only of digits breaks
+  every hit (see the rules file). Two of lord06's ten cities have no idle hero ≤L1500 at all.
+- **A taker cannot retarget itself.** After a capture its remaining cavalry is stranded and it
+  logs `is your own city` every 2 minutes. Give each taker city several of its own account's
+  targets in `takeTargets` from the start, or expect to edit and restart.
+- **Freed drainers are reusable at once; freed takers are not.** That asymmetry is the main
+  thing that slows a multi-target drive.
+- **696,123 was DESTROYED, not captured** — the third target became a **Flat** inside the drain
+  window because the heaviest drain reached zero loyalty while the takers were still held back
+  by `takeDelay = 60`, and a16 (10 cities) cannot capture. Full timestamps in EVONY-RULES.md.
+
+### `takeDelay` is a two-sided risk — bias it SHORT (2026-09-27)
+
+- too short → the taker's wave meets the full garrison and dies (1,500 cavalry)
+- **too long → the drain destroys the camp and the extra city is gone for good**
+
+Set it to the *smallest* value that clears the clearing city's march, `(clearing march s + 60) / 5`,
+and **with five or more heavy drainers set it to 0 and start the takers first** — the clearing
+hit is only an efficiency measure at that scale (716,111 fell without one), so it is never worth
+a five-minute head start for the drain. Match drain weight to taker presence: do not point five
+500k-cavalry cities at a tile whose taker will not fire for minutes.
+
+### Nothing detects a destroyed target — stop it by hand
+
+The `capture` path in `deploy-loops.js` has no "its city is gone" guard, `job-take.txt` never
+reads `doneTargets`, and `npc-taken-watch.js` only matches `TAKEN`. So when a target is
+destroyed, every drainer and taker keeps firing at bare ground. **Add the tile to `doneTargets`
+by hand** — `job-drain-big.txt` re-reads `glitch-done.txt` every loop, so the drainers stop and
+recall in seconds with no restart. Watch the target's `kind` in `map_cache`, not just its
+garrison.
+
+The proposed patch so the takers stop too (four lines, reviewed 2026-09-27): `@call
+"glitch-done.txt"` at the top beside the existing `glitch-oneoff.txt` call, and in the dispatch
+loop `if doneTargets.includes(" " + tl[k] + " ") goto tkn` with a `label tkn` before `k = k + 1`.
+That also lets each taker city carry **two or three of its own account's** targets in
+`takeTargets` in priority order and concentrate on whichever are left — but note a multi-target
+list on its own **dilutes**: each target gets its own background task competing for the same idle
+heroes and cavalry, so 30,000 cavalry across 3 targets is ~7 waves each instead of 20 on one.
+
 ## Result on 2026-09-18
 
 Lord05 (689,112, 18:46), then with the generic jobs and many drainers: Lord10 698,120

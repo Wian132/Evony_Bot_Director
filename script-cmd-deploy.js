@@ -245,9 +245,23 @@ function markSent(game, heroId, sentHeroes) {
   recentOf(game).set(heroId, Date.now());
   if (sentHeroes) sentHeroes.set(heroId, Date.now());
 }
+// A sent hero is skipped until the server has shown it away (game.heroAwayAt,
+// from server.HeroUpdate): idle after that means home again, ready to go. The
+// minute stays only as the fallback for a push that never comes. It used to be
+// the minute alone, and an attack that came home inside it sat idle up to a
+// minute before a `repeat` sent it again (2026-09-28, the user's attack waves).
+// SENT_SLACK: the away push can land just before the send's own reply.
+const SENT_SLACK = 2000;
 function recentSkip(game, sentHeroes) {
   const skip = new Set();
-  for (const m of [recentOf(game), sentHeroes || new Map()]) for (const [id, at] of m) if (Date.now() - at < 60000) skip.add(id);
+  const away = (game && game.heroAwayAt) || new Map();
+  for (const m of [recentOf(game), sentHeroes || new Map()]) {
+    for (const [id, at] of m) {
+      if (Date.now() - at >= 60000) continue;
+      if ((away.get(id) || 0) >= at - SENT_SLACK) continue;
+      skip.add(id);
+    }
+  }
   return skip;
 }
 
@@ -467,7 +481,22 @@ async function paramsFor(game, castle) {
 // defaultMs: how long a march with no /wait= of its own waits. null is forever
 // — the point of the whole thing — and the tests set it low so a wait that can
 // never end finishes the suite instead of hanging it.
-const WAIT = { pollMs: 5000, sayEveryMs: 60000, defaultMs: null };
+// A wait wakes on the pushes that can end it (a hero, troops or resources home,
+// the army list changing), and looks again every pollMs anyway. It was a flat
+// 5 s poll, and with the minute's hero skip a `repeat` of attacks sat 10–30 s
+// after its waves came home (2026-09-28).
+const WAIT = { pollMs: 1000, sayEveryMs: 60000, defaultMs: null };
+const WAKE_ON = new Set(['server.HeroUpdate', 'server.TroopUpdate', 'server.SelfArmysUpdate',
+  'server.ResourceUpdate', 'server.CastleUpdate']);
+// Resolves on the first push in WAKE_ON or after ms, whichever is first. The
+// session applies a push in its own listener, so the look waits a turn after it.
+function nextPush(env, ms) {
+  const c = env.game && env.game.c;
+  if (!c || typeof c.on !== 'function') return env.pause(ms);
+  let on;
+  const push = new Promise((r) => { on = (cmd) => { if (WAKE_ON.has(cmd)) setImmediate(r); }; c.on('cmd', on); });
+  return Promise.race([push, env.pause(ms)]).finally(() => c.removeListener('cmd', on));
+}
 
 // TroopStrBean counts come through as strings; "?" and a missing field are
 // unknown, never 0 (goal-war.js count()).
@@ -570,7 +599,7 @@ async function waitReady(a, env) {
     }
     if (until && Date.now() >= until) throw new Error(`still not ready after ${D(Date.now() - started)} — ${text}`);
     if (env.stopped()) return { stopped: true };
-    await env.pause(Math.min(WAIT.pollMs, until ? Math.max(250, until - Date.now()) : WAIT.pollMs));
+    await nextPush(env, Math.min(WAIT.pollMs, until ? Math.max(250, until - Date.now()) : WAIT.pollMs));
     if (env.stopped()) return { stopped: true };
   }
 }
@@ -1079,7 +1108,7 @@ const commands = {
         if (env.dryRun) { env.log(`  no hero in ${castle.name} matching ${a.hero} is free now — [dry run] not waiting`); return {}; }
         if (!said) { env.log(`  waiting for ${a.hero} to be in ${castle.name} and free...`); said = true; }
         if (env.stopped()) return { ok: false, error: 'stopped', end: true };
-        await env.pause(TIMING.heroPollMs);
+        await nextPush(env, TIMING.heroPollMs);
         if (env.stopped()) return { ok: false, error: 'stopped', end: true };
       }
     },
@@ -1117,7 +1146,7 @@ const commands = {
           }
         }
         if (env.stopped()) return { ok: false, error: 'stopped', end: true };
-        await env.pause(TIMING.heroPollMs);
+        await nextPush(env, TIMING.heroPollMs);
         if (env.stopped()) return { ok: false, error: 'stopped', end: true };
       }
     },

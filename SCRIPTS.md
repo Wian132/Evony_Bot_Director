@@ -436,9 +436,12 @@ It waits on the four things that come right by themselves:
 - **the resources it carries** — `food 1,204,000 of 999,000,000`
 - **a free rally slot** — `rally spot L10: 10/10 busy`; a city may have as many marches
   out as its Rally Spot level, going, camped or coming home
-- **the hero** — busy, out, or sent by this script less than a minute ago
+- **the hero** — busy, out, or sent by this script a moment ago and not yet shown away
+  by the server (a hero the server has shown away and then idle again is home, and goes)
 
-Every reason it is short of is said at once, and said again every minute while it holds,
+The wait wakes the moment one of those pushes arrives (a hero, troops or resources
+home, the army list changing) and looks again every second anyway, so a `repeat` sends
+the next wave as soon as a hero and its troops are back. Every reason it is short of is said at once, and said again every minute while it holds,
 so a long wait leaves a trail without filling the Output tab. **Stop** ends a wait, and
 the rest of the script does not run. The counts come from the pushes the server sends by
 itself, so they are live; marches this run has sent that the server has not listed back

@@ -63,3 +63,6 @@ prepend-goals.txt
 prepend-capture-*.txt
 *.bak-*
 *.pid
+# What a Claude key did to the consoles (claude-guard.js audit, logs/claude-actions.jsonl):
+# account names and script text, so it stays on this machine.
+/logs/

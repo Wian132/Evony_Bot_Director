@@ -22,7 +22,10 @@ const fs = require('fs');
 const D = require('C:/EvonyTool/db');
 
 // the banks by account id; their names come from the accounts table, never from the repo
-const BANK_IDS = ['a4', 'a5', 'a8', 'a9', 'a11', 'a13', 'a14', 'a15', 'a16'];
+// 2026-09-27: the rotation — the nine older banks came out of holiday and are receivers
+// now; these five are the banks. Keep in step with BANKS in trade-advance.js and the
+// holi list in scripts/glitch-res-control.txt — a rotation changes all three.
+const BANK_IDS = ['a2', 'a3', 'a17', 'a20', 'a21'];
 const BANKS = Object.fromEntries(BANK_IDS.map((id) => [id, (D.all('SELECT label FROM accounts WHERE id = ?', id)[0] || {}).label || id]));
 const RES = ['food', 'wood', 'stone', 'iron', 'gold'];
 const T = 1e12;

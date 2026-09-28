@@ -1473,6 +1473,176 @@ recovers on a 5-minute ladder — probing with a bare **TCP handshake**, never a
 Reachability costs a handshake; a login is a scarce, account-scoped resource, and
 spending them against a server in maintenance is believed to be what earns a block.
 
+## Claude integration
+
+Claude Code gets its own terminal into the fleet (2026-09-28): an MCP server,
+`otto-mcp.js`, registered in `.mcp.json` as `otto`. It talks HTTP to the consoles already
+running on this machine — found the way `botctl.js` finds them, from the account's `bots`
+record or its probe entry — and **never logs in to the game itself**. Its answers are short
+summaries, so one call replaces a round of curls, a grep through `console-<id>.log` and a
+sleep.
+
+| Tool | What it gives |
+|---|---|
+| `fleet()` | every account in one call: port, up/down, protection or holiday, kick hold, maintenance, running scripts, any real attack inbound |
+| `state(account, city?)` | totals and every city on one line each, or one city in depth (resources, troops, walls, heroes, building, loyalty, gate, engine report); marches out and inbound |
+| `log(account, kind, since, grep, city, limit)` | a console log (`activity`, `engine`, `reports`, `debug`) filtered by the console; the tail of the console's log file when it is down |
+| `events(account\|all, since_seq?, types?)` | what the events feed has that this server has not shown yet |
+| `wait(account\|all, pattern?, types?, timeout_s)` | blocks until a matching event arrives (up to 600 s) — instead of polling with sleeps |
+| `cmd(account, city, text)` | one in-line command, as `\who Bob` in the chat box |
+| `script`, `script_stop`, `script_runs` | start (with a run id), stop, and follow a city's script |
+| `act(account, city, action, …)` | the gate (`open`/`closed`/`auto`) or one command line, through `/api/claude/act` |
+
+An account is named by id (`a2`), alias (`Lord02`) or name; a city by id or name.
+Output over `OTTO_MCP_MAX_CHARS` (6000) is cut with a note to narrow the question.
+
+**The events feed.** Each console keeps the last 2000 events in memory
+(`claude-events.js`), each with a rising `seq`: `connected`, `disconnected` (who closed it,
+the reason, kick hold), `kicked`, `attack_incoming` (only a real attack — under the city's
+`defensepolicy /junktroop`, 1000 by default, it is `attack_junk`), `scout_incoming`,
+`attack_landed` / `junk_landed` / `attack_turned_back`, `march_started` / `march_arrived` /
+`march_returned`, `script_started` / `script_finished` / `script_error` (with the run id and
+the last lines), `gate_changed` (by hand or by the engine), and `maintenance` (announced,
+down, up). `GET /api/events?since=<seq>&wait=<s>&types=a,b` answers at once when there is
+something newer and otherwise holds the request open up to 60 s. A restart starts the feed
+over; `boot` in the answer changes so a reader can tell. A hero being captured is not an
+event yet — nothing in the pushes says so directly.
+
+**Claude's keys** (`claude-guard.js`). Two tokens kept in the settings table like the
+internal one, sent as the header `x-otto-claude`, and **accepted only from loopback**:
+
+- `claudeToken` — *interactive*, the user is there. Every read route, the events feed,
+  `/api/script/inline`, `/api/script` (+ stop, resume, runs), `/api/gate`,
+  `/api/army/recall` and `/api/claude/act`.
+- `claudeAutoToken` — *auto*, a Claude woken by an attack with nobody watching. Reads, the
+  events feed and **only** `/api/claude/act`, which lets through just what the account's
+  Claude permissions allow (`claude-perms.js`: gate, troops, teleport, truce, dreamtruce,
+  holiday — set in the Director's Claude tab or the console's Settings → Claude permissions).
+
+`otto-mcp.js` reads the token it needs from the database (`EVONY_DB` respected) and picks
+the scope from `OTTO_CLAUDE_MODE=auto|interactive` (default interactive).
+
+**Refused in every scope, with the reason:** anything that logs in, relogs or reconnects
+(`/api/connect`, `/api/reconnect`, `/api/switch`, `/api/snapshot/refresh`, and `logout` in a
+script), `/api/settings` and the security code, `/api/maintenance`, `/api/pause`, the hero
+buttons, valley give-up, goal edits, item use, the market probe — and, anywhere in a script
+or command line, `release` (loses our hero), `fire`, `disband`, `resetplayer`, `abandon` /
+`abandontown` / `allowabandon`, ending a holiday (`holiday /exit`), `securitycode`,
+`changeplayername`, `resign` and `quitalliance`. A GET that would log in to answer
+(`/api/map`, `/api/inn`, `/api/market`) is not on the read list, and an acting request that
+arrives while the console is offline is answered 409 rather than letting it log in. A
+script that `call`s another file is not looked inside — the interactive scope trusts the
+user who is present; auto mode cannot start scripts at all.
+
+**Audit.** Every Claude-key request that changes something — and every refusal of one — is
+a line in `logs/claude-actions.jsonl` (gitignored): time, account, scope, route, the
+request (city, command or script text) and the result.
+
+**What needs a restart.** The routes, the key check and the events feed live in each
+console's process: a console answers Claude only after it has been restarted. The Director
+serves none of them and needs no restart for this. Until then `fleet()` still works through the internal token's
+`/api/session`, `log()` falls back to the log file, and everything else says the console
+needs a restart. Tests: `test-claude-guard.js`, `test-claude-events.js`,
+`test-claude-mcp.js` (all offline).
+
+### Claude permissions
+
+Six switches per account say what a Claude woken by an attack may do there **by itself**
+(`claude-perms.js`, 2026-09-28). All start **off**.
+
+| # | Switch | Lets through (in auto scope, via `/api/claude/act`) |
+|---|---|---|
+| 1 | Control gate | `gate open` / `closed` / `auto` |
+| 2 | Move troops in/out | `recall`, `recallall`, `reinforce`, `evacuatetown`, `dumptroop` |
+| 3 | Teleport city | `teleport`, `warteleport` |
+| 4 | Use Truce Agreement | `truce` |
+| 5 | Use Dream Truce (item) | `dreamtruce …`, and `dreamtruce /cancel` too (same item, same decision) |
+| 6 | Holiday account | `holiday <days> confirm` — **never** `holiday /exit` or `/autoextend`, whatever is ticked |
+
+Anything else is refused in auto scope. They are ticked in two places that write the same
+row: the console's **Settings** (the cog) → **Claude permissions** tab, and the
+Director's **Claude** tab (a grid of accounts × switches, with *all* / *none* per column).
+Stored as `claudePerms:<accountId>` in the settings of the organization that owns the
+account (install-wide settings for an account with no organization); the Director and every
+console read the same `evony.db` (or `EVONY_DB`) and nothing is cached, so a tick applies at
+once. A Claude key can read them (`GET /api/claude/perms`) but can never change them.
+
+Routes: console `GET/POST /api/claude/perms` (`{perms:{gate:true,…}}`); Director
+`GET /api/claude`, `POST /api/claude/perms` (`{id, perms}` or `{all:true, perms}`),
+`POST /api/claude/autowake` (`{on}` / `{cap}`).
+
+### What counts as an attack: /junktroop
+
+One rule, in `attacks.js`, for the defence goals **and** every warning: an inbound army is
+an attack when it has at least the city's `defensepolicy /junktroop` troops — **1000** when
+the city has no such line, `/junktroop:0` makes every army count — and it is applied **to
+each army on its own**, never to a city's total (two armies of 600 against 1000 are both
+junk). An army whose size is unknown (not scouted, `?` per type, or only some types
+readable) **counts as real**: unknown is not small.
+
+A junk army shows nothing: the console's city tab does not turn red, the Incoming icon does
+not flash, the General tab has no "under attack" chip (the server's `hasEnemy` flag is set
+for junk too, so it no longer decides), the Director's "under attack" stays off, and no
+Claude is woken. The city tab's tooltip still says how many junk armies were ignored.
+`underAttackView` (in `/api/session`) lists per city `inbound` (real only), `junk`,
+`junkLine`, `lastWaveAt` (the last **real** wave that landed) and `real: [{ key, armyId,
+troops (null = unknown), from, fromFieldId, king, alliance, reachTime }]`; `key` is the
+armyId, else `from@reachTime`. The Director's fallback for an account whose console is not
+answering is the snapshot's inbound count, which cannot tell sizes and still counts
+everything.
+
+### Waking Claude on an attack
+
+`claude-wake.js`, run by the Director from its once-a-minute look at every console
+(`sampleUptime`). For a **new real attack** it runs, in the repo folder,
+
+```
+claude -p "<prompt>" --mcp-config '{"mcpServers":{"otto":{"type":"stdio","command":"<node>",
+  "args":["<repo>/otto-mcp.js"],"env":{"OTTO_CLAUDE_MODE":"auto","OTTO_WAKE_ACCOUNT":"<id>"}}}}'
+  --strict-mcp-config --tools "" --allowedTools mcp__otto --permission-mode dontAsk
+  --output-format json --no-session-persistence
+```
+
+on the user's own Claude login (the Max subscription — `ANTHROPIC_API_KEY` is taken out of
+the child's environment). No built-in tools at all: no shell, no files; only the otto tools,
+in auto scope. On Windows it spawns the `claude.exe` behind the npm `claude.cmd` shim
+(`OTTO_CLAUDE_BIN` overrides). The prompt gives the account (id, alias, lord), the
+attacker, each city hit with its loyalty and junk line, every real army's troops and landing
+time (server and local), which switches are on, and the job: **keep things alive** — no
+counter-attacks — act only through the act tool within those switches, and end with a short
+report of what it saw and did.
+
+- **One wake per attack.** An attack is one attacker against one account: its alliance when
+  it has one, else the lord, else the tile it comes from. More waves of that attacker landing
+  within 15 minutes of the attack's waves — on any of the account's cities — wake nobody. A
+  new attacker, or the same one landing more than 15 minutes out, is a new attack. (goal-war's
+  attack groups are per city and 6 s apart, and live inside the console; this grouping is the
+  waker's own.) Army keys and groups are kept for a day in `claudeWakeSeen`, so a Director
+  restart does not wake again.
+- **Caps.** At most `claudeWakeCap` wakes an hour fleet-wide (default 6, set on the tab), at
+  most 3 Claudes at once, and one per account: an attack while that account's Claude runs is
+  logged as left to it. Over the cap an attack is logged as *capped* and not woken later.
+- **Off by default.** The tab's "Wake Claude on a real attack" (`claudeAutoWake`, per
+  organization) must be switched on. While it is off nothing is noted, so switching it on
+  during an attack wakes for that attack. With every permission off it still wakes: Claude
+  looks and advises.
+- Each run is killed after 10 minutes (`OTTO_WAKE_TIMEOUT_MS`), process tree and all. The
+  Director never waits on it; the answer is filed when the child ends.
+- **The wake log** (`claudeWakes`, the newest 200): time, account, attacker, cities, attack
+  key and army keys, the prompt, the exit code and Claude's final answer — shown on the
+  Claude tab. A run the Director was waiting on when it restarted is marked *lost*.
+
+The Director only sees what a console reports once a minute, so a wake can come up to a
+minute after an attack appears.
+
+**What needs a restart.** The junk rule in the city tabs, the General chip and
+`underAttackView` — and `/api/claude/perms` — live in each console: a console shows them
+after its next restart (until then it still lights up for junk, and the Settings tab says
+the console is running older code). The Claude tab, its routes and the waker live in the
+Director: they need a Director restart. The page files are read fresh, so the new tab
+appears at once but answers "older code" until then. Tests: `test-claude-perms.js`,
+`test-claude-wake.js`, and the updated `test-incoming.js` (all offline).
+
 ## Organizations
 
 Every user belongs to one or more organizations, and **all customer data is scoped to

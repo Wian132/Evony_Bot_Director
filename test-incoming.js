@@ -247,14 +247,19 @@ t('the console tells the Director which cities are under attack, and a loyalty p
   const { e, lines } = engineFor(w, { 101: 'defensepolicy /usetruce:79 /usespeech:2' });
   s.engine = e;
   await e.focus(home);
-  w.push([army(home, { inMs: 5000 })]);
+  const a1 = army(home, { inMs: 5000 });
+  w.push([a1]);
   let v = s.underAttackView();
   assert.strictEqual(v.on, true);
-  assert.deepStrictEqual(v.cities, [{ name: 'Home', inbound: 1, firstLandsAt: NOW0 + 5000, lastWaveAt: null, loyalty: 100 }]);
+  // (2026-09-28: each city also carries its real attacks, with a key, and the
+  // junk line it was judged by — attacks.js)
+  assert.deepStrictEqual(v.cities, [{ id: 101, name: 'Home', inbound: 1, junk: 0, junkLine: 1000, firstLandsAt: NOW0 + 5000, lastWaveAt: null, loyalty: 100,
+    real: [{ key: String(a1.armyId), armyId: a1.armyId, troops: 200000, from: 'Raider City', fromFieldId: a1.startFieldId,
+      king: 'Raider', alliance: 'Foes', reachTime: NOW0 + 5000 }] }]);
   clock.t += 6000;
   w.push([]);
   v = s.underAttackView();
-  assert.deepStrictEqual(v.cities, [{ name: 'Home', inbound: 0, firstLandsAt: null, lastWaveAt: NOW0 + 5000, loyalty: 100 }],
+  assert.deepStrictEqual(v.cities, [{ id: 101, name: 'Home', inbound: 0, junk: 0, junkLine: 1000, firstLandsAt: null, lastWaveAt: NOW0 + 5000, loyalty: 100, real: [] }],
     'a wave landed in the last 30 min still counts');
   let woke = 0;
   s.armWake = () => { woke++; };

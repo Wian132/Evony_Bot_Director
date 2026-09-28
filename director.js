@@ -67,6 +67,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = [];
 const note = (m) => { log.push({ t: Date.now(), m: String(m) }); if (log.length > 500) log.shift(); console.log(new Date().toLocaleTimeString(), m); };
 
+// Claude, woken once per real attack (claude-wake.js; the Claude tab). It
+// reads each console's underAttack from the uptime sweep below and never
+// blocks it: a wake is a child process whose answer is filed when it ends.
+// Off until the user switches it on (2026-09-28).
+const WAKE = require('./claude-wake').create({ D, note });
+
 // First-run setup belongs to migrate-tenancy.js: an account has to land in
 // SOMEONE's organization, and this process serves many.
 
@@ -720,6 +726,11 @@ async function sampleUptime() {
         // its command line's start-up parameters; none on a console older than them
         startupArgs: Array.isArray(h.startupArgs) ? h.startupArgs : [],
       });
+      // a new real attack (junk is already left out by the console) wakes Claude once
+      if (h.connected && h.underAttack && h.underAttack.on && org && org.ownsAccount(h.account.id)) {
+        try { WAKE.observe({ orgId: pr.orgId, account: acc || h.account, underAttack: h.underAttack }); }
+        catch (e) { note(`claude wake: ${e.message}`); }
+      }
       if (h.connected) {
         HOLI_SEEN.set(h.account.id, { at, holiday: !!h.holiday, hours: h.holiday ? Number(h.holiday.hours) || 0 : 0,
           text: h.holiday ? h.holiday.text || null : null, lord: h.lord || null });
@@ -1702,6 +1713,47 @@ http.createServer(async (req, res) => {
       note(`uptime probes updated: ${probeList(ORG).map((p) => p.probe).join(', ')}`);
     }
     return send(200, 'application/json', JSON.stringify({ ok: true, probes: probeList(ORG) }));
+  }
+
+  // ---- Claude: what it may do per account, auto-wake, and the wake log ----
+  // (claude-perms.js, claude-wake.js; the Claude tab, 2026-09-28). The same
+  // switches as each console's Settings -> Claude permissions. A Claude key
+  // never changes any of this: a woken Claude cannot grant itself anything.
+  if (url.pathname === '/api/claude' && req.method === 'GET') {
+    const P = require('./claude-perms');
+    const accounts = ORG.accounts.all();
+    return send(200, 'application/json', JSON.stringify({
+      ok: true,
+      autoWake: WAKE.isOn(req.org && req.org.id),
+      cap: WAKE.cap(), lastHour: WAKE.wakesLastHour(), running: WAKE.running(),
+      perms: P.PERMS.map((k, i) => ({ key: k, n: i + 1, label: P.LABELS[k], help: P.HELP[k] })),
+      accounts: accounts.map((a) => ({ id: a.id, label: a.label, enabled: a.enabled !== false, perms: P.get(a.id) })),
+      wakes: WAKE.wakes(req.org && req.org.id, 50),
+    }));
+  }
+  if (url.pathname.startsWith('/api/claude/') && req.method === 'POST' && req.claude) {
+    return send(403, 'application/json', JSON.stringify({ ok: false, error: 'refused: a Claude may not change the Claude settings' }));
+  }
+  if (url.pathname === '/api/claude/perms' && req.method === 'POST') {
+    const P = require('./claude-perms');
+    const b = await body(req);
+    // { id, perms: {gate:true,...} } for one account, or { all: true, perms } for
+    // every account of this org (the column's set-all)
+    const ids = b.all ? ORG.accounts.all().map((a) => a.id) : [String(b.id || '')];
+    for (const id of ids) {
+      if (!ORG.ownsAccount(id)) return send(200, 'application/json', JSON.stringify({ ok: false, error: `no account ${id}` }));
+    }
+    const out = {};
+    for (const id of ids) out[id] = P.set(id, b.perms || {});
+    note(`Claude permissions changed for ${ids.length === 1 ? ((ORG.accounts.get(ids[0]) || {}).label || ids[0]) : `${ids.length} accounts`}: `
+      + Object.entries(b.perms || {}).map(([k, v]) => `${k} ${v ? 'on' : 'off'}`).join(', '));
+    return send(200, 'application/json', JSON.stringify({ ok: true, perms: out }));
+  }
+  if (url.pathname === '/api/claude/autowake' && req.method === 'POST') {
+    const b = await body(req);
+    if (b.on !== undefined) { WAKE.setOn(req.org && req.org.id, !!b.on); note(`Claude auto-wake on attack: ${b.on ? 'ON' : 'off'}`); }
+    if (b.cap !== undefined) { WAKE.setCap(b.cap); note(`Claude auto-wake cap: ${WAKE.cap()} an hour, fleet-wide`); }
+    return send(200, 'application/json', JSON.stringify({ ok: true, autoWake: WAKE.isOn(req.org && req.org.id), cap: WAKE.cap() }));
   }
 
   // ---- per-account history for the fleet charts ----

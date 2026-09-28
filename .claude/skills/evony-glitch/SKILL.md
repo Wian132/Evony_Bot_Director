@@ -86,17 +86,33 @@ not what it reads. Let the tab write that list.
 
 ### Walking all four resources to the end, unattended
 
-**WHEN DRAINING THE BANKS RIGHT DOWN, RUN GOLD LAST** (the user, 2026-09-26: *"clear up
-stone food and wood and then repass through gold else we need to run through gold after wood
-again and after food again"*): **stone → food → wood → iron → gold**. Every resource pass
+**GOLD RUNS FIRST *AND* LAST — that is the user's order in full** (2026-09-27, and it is
+what `trade-advance.js` now does):
+
+> **gold → stone → food → wood → iron → gold sweep**
+
+Both halves come from the user: *"1. Gold 2. Stone 3. food 4. wood 5. iron"* (2026-09-26) and
+then *"clear up stone food and wood and then repass through gold else we need to run through
+gold after wood again and after food again"* (2026-09-26). Gold first because it is the prize
+and it dwarfs the rest — on 2026-09-27 the five banks held **4,380t of gold against ~150t of
+all four resources put together** — and because **capture is highest in the half hour after
+maintenance**, before the other players' bots have loaded. That window is worth spending on
+gold, not on iron.
+
+**WHY THE CLOSING SWEEP STILL EARNS ITS PLACE:** every resource pass
 begins with `canceltrade`, and cancelling a bank's resting BUY orders **refunds the gold**
-locked in them, so gold reappears after each one — sweep it once at the end instead of
-chasing it four times. A gold reading taken while bids are resting is meaningless: the
+locked in them, so gold keeps reappearing behind us — sweep it once at the end instead of
+chasing it after every step. A gold reading taken while bids are resting is meaningless: the
 banks read 0.77t and looked finished, then **8.64t** the moment the stone pass cancelled
 their books (our own gold unchanged, so it was their refund, not our payment).
 
-**THE DAY'S ORDER (the user, 2026-09-26): 1. gold  2. stone  3. food  4. wood  5. iron**
-— and **gold moves THROUGH STONE, never food**. A gold pass ends when the side receiving the
+**The two gold steps are indistinguishable from the control file** — both are stone at 150 —
+so `trade-advance.js` keeps the step's **index** in its saved state and that is what tells
+the opening pass from the closing sweep. Without it, finishing the sweep reads as finishing
+the opening pass and the day loops back to stone for ever. If you add or reorder steps, keep
+the index in the state.
+
+**Gold moves THROUGH STONE, never food.** A gold pass ends when the side receiving the
 carrier runs out of ROOM, and food caps at 950b a town (1t resets a city to 0) while stone
 caps at 2,000b. Carried by food on 2026-09-26 the pass jammed with Lord08 holding 364t of gold
 against 0.9t of food room; switched to stone the same banks had 97.8t of room for the ~5t the
@@ -111,6 +127,96 @@ on and starts the next resource when the current one is finished, in the order
 **food → wood → stone → iron**, then stops the play and cleans the reports.
 
 It drives the Trading tab's own endpoints, so every guard above still applies.
+
+**Check the holiday set against `BANKS` before every start, in code, and refuse if they
+differ.** The roster changes daily and both lists go stale the moment the user moves an
+account. The cheap version, worth pasting into any start script:
+
+```js
+const onHol = (setup.accounts || []).filter((a) => a.holiday === true).map((a) => a.id).sort().join(',');
+if (onHol !== BANKS.slice().sort().join(',')) { console.log('REFUSING — holiday set does not match BANKS'); return; }
+```
+
+When the rotation happens, **FOUR places change in one edit** and none of them may be
+forgotten:
+
+1. `BANKS` in `trade-advance.js`
+2. `OURS` in `trade-advance.js`
+3. the `holi` list in `scripts/glitch-res-control.txt` (comment the old lines out rather
+   than deleting them — that roster comes back next time those accounts are the banks)
+4. `BANK_IDS` in `bank-truth.js`
+
+Miss the fourth and `bank-truth.js` silently relogs the *wrong* accounts — on 2026-09-27 it
+reconnected nine accounts that were mid-pass on our side while telling us nothing about the
+banks we actually wanted.
+
+### START A RESOURCE PASS AT 1, and judge it on FILLS not placements
+
+On 2026-09-27 the food pass was started cold at price 3 and **deadlocked for 20 minutes**:
+both sides placing ~17,000 orders every 3 minutes and **zero fills**. Relogs confirmed no
+food moved and no gold left us, so it was not leakage — nothing crossed at all. Price 1
+crossed within seconds (1,643 fills in 2.5 min).
+
+- **Start at 1.** Step up to 2 or 3 only on a pass that is ALREADY crossing, checking fills
+  after each step. Stone reached 3 by being walked up while trading, and was fine.
+- **Judge on fills, never placements.** The tell is `ok=-97` ("this order is closed or
+  nonexistent") when cancelling — it means the bid matched first. Both sides can look
+  perfectly busy and achieve nothing.
+- The mechanism is not understood and is NOT 'same price never crosses' — at 1 both sides
+  are also on the same price. See EVONY-RULES.md.
+
+### A pass slows because CITIES RETIRE — count them before diagnosing anything
+
+A selling city whose stock falls under `keepRes + order` (1b + 0.1b = **1.1b**) goes quiet
+**silently**. The account stays connected, prints no hold and no refusal, and nothing on the
+Trading tab says the selling side has shrunk. So when volume drops, measure this FIRST:
+
+```js
+cityList.filter((c) => (c[res] || 0) >= 1.1e9).length   // live cities on the draining side
+```
+
+On 2026-09-27 the stone pass had **25 of 50** bank cities still able to sell — Lord20 0/10,
+Lord21 1/10, Lord02 5/10, Lord03 9/10, Lord17 10/10 — so the order rate had halved
+with nothing wrong. **A spot check lies**, because the last of the stock concentrates: one
+Lord03 city showed ~709b while four of Lord02's held 0.01-0.14b. Print the
+distribution, never the account total divided by ten.
+
+Diagnose in this order: **live cities -> the tab's Return (leakage, and has the ladder walked
+the price down?) -> the scripts.** Doing it backwards that day cost two wrong changes.
+
+### The price ladder will undo a price you set by hand (2026-09-27)
+
+`res-ladder.js` judges our share on **raw orders placed**, which our own cancel-and-replace
+churn inflates 10-20x, so in a resource play it reads 400-1,000% every round and steps
+**cheaper every time** until it bottoms out at 0.001. A price set by hand lasts about two
+minutes: on 2026-09-27 a hand-set 3 went `3 -> 2` at 13:07 and `2 -> 1` at 13:17.
+
+Before setting a price by hand, **turn the ladder off**:
+
+```
+POST /api/trading/setup {"ladder": false}
+```
+
+(or pick a price that is not one of its rungs — res 0.001/0.01/0.1/0.5/1/2/3 — which it
+leaves alone.) And judge capture on the tab's **Return**, which nets cancelled bids off, not
+on the ladder's percentage. See EVONY-RULES.md for the measurements.
+
+### When the tab says 0 orders a minute but the scheduler says there is plenty left
+
+**Believe the tab and relog.** `trade-advance.js` measures both sides from `account_latest`,
+which lags ~20 minutes on a busy account. On 2026-09-27 it logged `gold: banks 1194.2t` and
+kept the pass running; the banks had actually been empty since 10:12 and every bank city was
+printing `SITOUT` and `canceltrade … has no open bids to cancel`. A relog put the truth at
+**0.44t**, and the very next scheduled run called gold finished and started stone by itself.
+
+    node bank-truth.js      # reconnects the banks, waits for a fresh snapshot, prints the truth
+
+Do not force the next pass by hand — refresh the figures and let the schedule act on them.
+
+**The other tell, on the bank's own console:** `FAILED (ok=-1) - Insufficient resources.
+Required Gold 2147483647`. That number is INT_MAX (2^31-1), clamped into the error's int32
+field — not an overflow bug and not the real requirement. It means the bank is **out of
+gold**, and it shows up ~25 minutes before the snapshots admit it.
 
 **"Finished" means any of three things**, because only one of them is "the banks are empty"
 and all three mean *move on*:

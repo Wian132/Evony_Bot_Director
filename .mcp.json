@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "otto": {
+      "command": "node",
+      "args": ["otto-mcp.js"]
+    }
+  }
+}

@@ -167,6 +167,11 @@ file (see the end).
 - **Holiday in and out is the user's alone** (the user, 2026-09-18). Never put an account
   on holiday and never take one off it — not by request, script, `holiday /exit` or the
   game's own prompt, whatever a plan says. Plans say *when the user* will do it.
+  The one exception is the user's own (2026-09-28): an account's **Claude permission 6,
+  "Holiday account"** (`claude-perms.js`, off by default) lets a Claude woken for an attack
+  put THAT account on holiday (`holiday <days> confirm`). Ticking it is the user's decision
+  made in advance. Nothing lets a Claude end a holiday (`holiday /exit`) or set one to renew
+  itself (`/autoextend` spends coins).
 - **What ends a holiday:** only the explicit request `furlough.cancelFurlought {playerId}`
   (the client sends it from HolidayTips.as:205; in OTTObot only `holiday /exit` sends it).
   Market orders don't end one: the glitch trades thousands of them on holiday accounts.
@@ -304,6 +309,45 @@ file (see the end).
   So a second kick inside half an hour is never NEAT — it is **our own fleet**. Read a
   rapid series of kicks as ours until proved otherwise, and go looking for the second
   login on this machine.
+  **The half-hour test is not sharp at the boundary — take several samples, not one**
+  (2026-09-27, a30 Lord30). Four kicks in one afternoon, measured from *our* login
+  (which is the moment the other client is kicked and starts its own pause) to the next
+  kick of us: 11:23:16 -> 11:54:01 = **30m45s**, 11:59:31 -> 12:30:22 = **30m51s**,
+  13:00:32 -> 13:29:05 = **28m33s**. Three of four sit just over 30 minutes; the fourth sits
+  a minute and a half *under* it and by the letter of the test above would have been read as
+  our own fleet. It was not: a port sweep of every listening console found 30 accounts served
+  and none duplicated. So a single gap near 30 minutes proves nothing either way — collect
+  three or four, and confirm with a duplicate-console check before blaming our own fleet.
+  A contested account is also simply unusable for anything that must not be interrupted: a30
+  never held a login longer than half an hour all afternoon, so its eight cities were left
+  out of the 2026-09-27 hub move rather than teleported inside a window that might close
+  mid-operation.
+  **The kicker was on an HOURLY CLOCK, not a pause-after-kick rhythm** (a30, 2026-09-27, and
+  this is what the 30-minute test misreads). Eleven kicks: 11:22:52, 11:54:01, 12:30:22,
+  13:29:05, 14:28:20, 15:27:39, 16:27:29, 17:26:20, 18:26:37, 19:28:11, 20:26:53. From 13:29
+  on, every one lands at **:26-:29 past the hour, about 59-60 minutes apart**, whatever we do
+  in between. That is a scheduled job, and it explains the gaps that looked like NEAT's
+  31-minute pause: our own 30-minute kick hold puts our login back at :56-:58, so we survive
+  the ~28 minutes to the next hourly tick and the *apparent* gap is an artefact of OUR hold
+  length, not of the other client's behaviour. **So measure kick-to-kick, not login-to-kick.**
+  Kick-to-kick lands on a round number when a scheduler is behind it; login-to-kick just
+  measures our own hold. Neither a29 (12:56, 13:55, 14:54 — 59 min apart) nor a31 (13:12,
+  14:11 — 59 min) was pausing either; all three were on the same hourly clock.
+- **"kick hold ended early — Connect" does NOT mean anybody pressed Connect** (2026-09-27 —
+  this cost a wrong accusation, so read it carefully). `Session.clearKickHold()` emits that
+  one line whoever calls it (session.js ~488, `if (had) this.note(...)`), and **`reconnect()`
+  calls it** (session.js 1581) — so does `/api/connect` (server.js 616) and a maintenance
+  close. Therefore **every `/api/reconnect` silently ends a kick hold and retakes the
+  account.** A verification relog is not a read-only act on a contested account.
+  I reported an unexplained "automatic Connect" on a31 at 14:33:06 during the hub move and
+  was wrong: it was my own verification relog of a31, seconds earlier, wearing that label.
+  Nothing in the codebase POSTs `/api/connect` — the only two call sites are onclick handlers
+  in `public/app.html` — so when the line appears with no relog of ours behind it, it really
+  was a person clicking the red bar's *Take it back now* (a30, 20:27:12).
+  Two consequences: don't blame our own fleet for a retake until you have ruled out your own
+  relogs; and **on a contested account, treat a verification relog as a deliberate retake** —
+  it is fine when the kicker is a scheduler (it does not escalate), and it is exactly what
+  must not happen when the kicker is a client that fights back.
   **It is not only Lord02:** a18 Lord18 was kicked the same way at 22:21:54 that day,
   the console said so in capitals and stood down its 30 minutes — nobody had known. Every
   other account shows 10–14 `server.ConnectionLost` in a day's log, which is what a
@@ -673,6 +717,21 @@ file (see the end).
   pass does not clear it (its output is silenced by `@call`, so the log shows nothing).
   **A restart clears it at once** — all three were back to 1,400-1,600 orders a minute from
   9-10 towns within a minute. Watch for an account whose log is only `sleep 0.3`.
+- **One account tops out near 3,500 market orders a minute, however many cities it has**
+  (2026-09-27, a32 Lord32 on ss91, 33 cities, holiday; `sell wood 1 0.001 x{free}` on
+  loop, every order filled at once by a deep 0.1 bid). **One city alone did ~1,800 a
+  minute** (10 orders every ~0.33 s); **all 33 together did 3,500–3,640 a minute**, the
+  same from minute to minute, with 0 refusals. So the account, not the city count, is the
+  ceiling — 20 writes in flight (`Game.PIPE_LIMIT`) at ~240 ms a round trip is about that
+  (*unverified* whether the pipe or the server is the tighter limit). A relog at 20:25
+  cost every city its batch in flight ("connection closed before it was sent") and two
+  cities got "rate limited" 30 s later; all 33 were back to full rate the next minute.
+  **The rate did not hold: it fell steadily, 3,600 → 2,000 (20:40) → 1,250 a minute
+  (21:09)**, still 33 cities, 0 refusals, connected throughout, the console idle (28 s
+  CPU in 55 min). Each order's reply went from ~0.33 s to ~1 s (one city's 10-order batch
+  from 0.33 s to 16 s). *Unverified* cause: the ~97k trade reports the account had piled
+  up by then — the fall tracks the running total, not the clock. Clearing the reports and
+  watching the rate is the test.
 - **Other players' bots watch for big market moves and piggyback** — under-cutting our
   asks and over-bidding our bids within minutes (~3 minutes after maintenance on
   2026-09-18). Normal stone/food/wood/iron prices are around 10–30 gold.
@@ -1335,6 +1394,520 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   - `bank-truth.js` relogs the banks for a true figure, but a relog does NOT cancel orders,
     so it does not cure this one. Only a cancel does.
 
+### What the 2026-09-27 maintenance put back, and the rotation around it
+
+- **The put-back is PARTIAL, and it can miss one resource completely.** The nine banks
+  (Lord04, Lord05, Lord08, Lord09, Lord11, Lord13, Lord14, Lord15, Lord16) had been drained
+  to ~0.1t of gold each the day before; the 08:58 maintenance put **2,610t of gold** back
+  into them — 235-472t each — plus their food, wood, stone and iron. That is roughly 86% of
+  the ~3,039t taken out of them, so **do not plan on a full restore**.
+  **Lord14 got every resource back and NO GOLD AT ALL** (0.1t before, 0.1t after, while its
+  food/wood/stone/iron all returned). One account's gold missing entirely, with its
+  resources intact, is a shape worth knowing: it is not a failed poll, and it is not
+  something we did. *One observation — watch whether it repeats on the same account.*
+- **An account holidayed the evening before is glitch-ready the very next morning.** The
+  five put in on 2026-09-26 evening (Lord02, Lord03, Lord17, Lord20, Lord21) came through
+  this one maintenance and the Director showed all five `holiday=ready` at 09:19, each
+  holding the ~837-916t of gold they carried in. One maintenance is all "across a
+  maintenance" needs.
+
+### A `capGold` can park an ENTIRE account, from the first second of the next pass (2026-09-27)
+
+Every one of Lord01's ten towns read **99.2-100.1t of gold** against a `capGold` of 100t:
+they had each filled to the cap during the previous day's pass and stopped there. So at the
+next start Lord01 was on the sitout in all ten towns — a tenth of the selling side, and the
+12.3t of stone it held, silently out of the play with nothing in any log to say so.
+
+**The total room figure will not show you this.** Room summed over all towns looked healthy;
+it was one account's towns all sitting exactly at the ceiling. Before a pass, print the
+**per-town** holdings against the cap and count how many towns are actually under it — not
+just the total. (The related rule above, "size it on where the towns END", is what stops
+towns reaching the cap mid-pass; this one is about towns that are already there when you
+start.) The user's call on the day was to let that account sit out rather than raise the cap.
+
+### Stopping the play and starting it again is a ~20-minute round trip (2026-09-27)
+
+The Trading tab's stop is not instant, and neither is the next start. Measured:
+
+- Stop issued **09:27:3x**. `drain` first — "waiting for every city to finish its last batch
+  and end its run", 20 s to 2.5 min. Then `clean`, which **restarts every console onto
+  `clean-reports.txt`**, and each restarted console must then wait out its own **10-minute
+  autorun gate**. The status text names the gate expiry per account. State reached
+  `stopped` at **09:38:29** — **11 minutes**.
+- The next start, issued at 09:42, then put all five banks in `waiting` until **09:48:3x** —
+  the *same* gate again, because the clean had just restarted them — with the selling side
+  60 s behind that.
+
+So: **never stop a running pass for a change that the control file can make live.** Price,
+the caps, the runways, the `holi` list and the sitout rules all apply within a second of
+being edited (`@call`ed every loop). Stop only to change which accounts are on which SIDE,
+or to end the day. And when a stop has just run, expect the next start to idle ~10 minutes
+before a single order is placed — that is the gate, not a fault.
+
+### A hand-run script STOPS that city's trading run, and the watchdog will not put it back (2026-09-27)
+
+The user ran a `useitem aries amulet` loop by hand in one of Lord24's cities while the gold
+pass was on. The city's trading run ended on the spot — `stopped — the rest of the script was
+not run` — and stayed dead. **One city runs one script**: starting anything in a city kills
+what was already running there.
+
+Worse, **the Trading tab's watchdog deliberately leaves it alone.** Its rules skip an account
+that is "sitting out on a cap" or whose run "ended on its first loop", and a near-empty
+account reads exactly like that — so nothing restarts it and nothing complains. Lord24 sat
+doing nothing and the only trace was the absence of its name in `glitch-run.js flow`.
+
+**So: after running anything by hand in an account that is in the play, put it back**
+(`node glitch-run.js start --sell <id> --sell-script clean-then-sell.txt`, or `--buy` /
+`clean-then-buy.txt` for a bank). A hand-run in a trading account is a silent withdrawal from
+the pass.
+
+- Tell the two apart in the log by the prefix: `[autorun <city>]` is the play's own script,
+  `[script]` is an ad-hoc run from the console's box.
+
+### Before restarting a console, READ its autorun stamp — the gate is per account (2026-09-27)
+
+Restarted Lord24 at 09:59:25 to put it back on the play. It logged in and ran **nothing**: its
+last autorun was 09:51:04 and the gate is 10 minutes, so the restart fell 1m39s inside it. The
+tell is exactly as documented — the log ends at `reconnected` with no `[autorun …]` line after
+it — and the console does **not** retry once the gate lifts. The restart is simply wasted.
+
+**The stamp is readable, so read it instead of guessing:** the org settings key
+`autorunLastStart` is a map of accountId -> ms. Gate lifts at that + 10 min
+(`AUTORUN_GAP_MS`, `script-console.js`). Wait for it (plus a few seconds) and restart again.
+
+```js
+const last = org.settings.get('autorunLastStart', {})['a24'];   // ms, per account
+// restart only after last + 10*60000
+```
+
+Note the stamp only advances when autorun actually STARTS scripts — a login that was gated
+does not move it, so the gate does not creep forward each time you retry.
+
+### A start that is stopped part-way can leave an ORPHAN console (2026-09-27)
+
+A gold pass was started at 09:25 and stopped at 09:27, while it was still restarting the
+banks' consoles one by one. Half an hour later Lord04 was serving **two** consoles — 8731
+(pid 19824, the current one) and 8747 (pid 8904, started 09:26:55, from the interrupted
+start). Both were logged in, which is the endless login war the game reports as "ANOTHER USER
+HAS LOGGED INTO THIS ACCOUNT".
+
+**After any interrupted start or stop, map the ports before trusting the fleet.** `botctl.js
+list` prints the port and pid the Director *tracks*; anything else answering on a console port
+for the same account is the orphan, and `botctl` cannot clear it because it does not know it
+exists — kill that pid directly (`Stop-Process -Id <pid> -Force`). `C:\tmp\portmap.js`
+asks every port which account it holds and names the duplicates.
+
+### The market fee is 0.5% of the order's VALUE, in gold — which limits a poor account (2026-09-27)
+
+A sell of 99,999,999 stone at 150 logs `a 74,999,999 gold fee (0.5%) each`: 0.5% of the
+1.5e10 the order is worth, taken **in gold, per order, at placement** (and a cancelled SELL
+keeps its fee — only an unfilled BID is refunded). At the gold-pass price of 150 that is
+**~75m gold an order**.
+
+This is nothing to a town holding 50t, but it is the binding limit on bootstrapping an empty
+account: Lord24 and Lord25 hold ~600m of gold a town, which is **eight sell orders** before
+the 20m runway stops them. It is still richly worth it — one filled order returns 15b — but
+an empty account cannot open a full book of 10, and if its offers do not fill the fee is gone.
+Give such an account resources first (or let a resource pass fill it) rather than expecting it
+to trade its way up from nothing in one pass.
+
+### "Insufficient resources. Required Gold 2147483647" means the account is simply OUT of gold (2026-09-27)
+
+A bank refusing every buy with
+
+    FAILED (ok=-1) - Insufficient resources. Required Gold 2147483647.
+
+looks like a 32-bit overflow bug, because **2,147,483,647 is exactly 2^31-1**. It is not a
+bug to work around: the *required* figure in the error is clamped to INT_MAX by the server's
+int32 field, while the real requirement was the 15,074,999,849 gold the console had just
+printed on the same line. The refusal itself is honest — **the city had no gold left.**
+
+It is in fact the most reliable tell that a gold pass has drained the banks, and it arrives
+long before the snapshots admit it: Lord02 began refusing at **10:12**, and its cached
+snapshot still read 337t of gold (1,194t across the five banks) at **10:38**. A relog put the
+true figure at **0.44t**.
+
+**So: a bank refusing with Required Gold 2147483647 is finished. Do not read the number.**
+
+### The scheduler judges "finished" on CACHED figures, which lag ~20 minutes (2026-09-27)
+
+`trade-advance.js` measures both sides from `account_latest`, and on a busy account that
+table lags badly. At 10:23:59 it logged `gold: banks 1194.2t` and — correctly, by its own
+rule — kept the gold pass running. The banks had actually been empty since about 10:12, and
+every city had been printing `SITOUT` and `canceltrade … has no open bids to cancel` for
+twenty minutes. Nothing was wrong with the scheduler's logic; its *input* was stale.
+
+**The signature: the Trading tab shows 0 orders a minute while the scheduler says there is
+plenty left.** When those two disagree, the tab is right and the cache is wrong.
+
+**The fix is a relog, and it is quick.** `node bank-truth.js` reconnects each bank and waits
+for a snapshot newer than the relog, which rewrites `account_latest`. Once it had run at
+10:43:05, the very next scheduled run (10:43:59) read `banks 0.4t`, called gold finished and
+started the stone pass by itself — no forcing, no hand-started pass.
+
+- Keep `BANK_IDS` in `bank-truth.js` in step with the roster; it is the **fourth** place a
+  rotation has to be changed, after `BANKS`/`OURS` in `trade-advance.js` and the `holi` list.
+  Run against the wrong list it silently relogs the wrong accounts — here it relogged nine
+  accounts that were mid-pass on our side.
+- Worth considering: have `trade-advance.js` relog the draining side itself before it
+  declares a pass finished, rather than trusting the cache.
+
+### The price ladder measures our share on RAW order counts, so in a resource play it always drives to the cheapest rung (2026-09-27)
+
+`res-ladder.js` (in `trading-setup.js`, `ladder()`) decides which way to step the price with
+
+    const pct = b.placed ? Math.round(100 * o.placed / b.placed) : null;
+
+— the **raw** count of orders placed by our side over the banks'. Our buying side cancels and
+re-places its whole book to keep its slots turning over, so `o.placed` counts the same ten
+bids again and again and comes out **ten to twenty times** the real figure. Measured
+2026-09-27 13:21-13:25: ours 103,452 placed against the banks' 10,198 — a raw 1,014%.
+
+In a resource play `better = -1` (cheaper), and the step fires whenever `pct > 80`. Since the
+raw ratio is *never* below 80, **the ladder steps cheaper every single round until it hits the
+bottom rung and stops**. Observed that morning: 0.01 -> 0.001 at 12:37, then "0.001 is the end
+of the ladder" at 12:47 and 12:57; and when the price was raised to 3 by hand it walked it
+straight back, **3 -> 2 at 13:07 and 2 -> 1 at 13:17**, quoting 466% and 734%.
+
+**The Trading tab's own "Return" does not have this bug** — it nets cancelled bids off our
+count, and its note says why: *"without that the return read 1072% on a day the banks had
+already run dry (2026-09-24)"*. So the dashboard read **50%** over the same window the ladder
+read 466-1,014%. The dashboard was fixed for this and the ladder never was.
+
+**Why it matters:** cheaper is not automatically better. Cheap stone is what other players'
+bots lock onto. Our own intake fell as the ladder drove the price down — 185.1t -> 194.2t
+(+9.1t) in the 20 minutes to 12:47, then only +5.3t in the 20 minutes to 13:07 — while the
+banks' stock kept draining, i.e. the extra volume was going to strangers.
+
+**CONFIRMED by pinning the price.** With the ladder off and the price held at 3, the share
+of what left the banks that actually reached us went:
+
+| window | price | left the banks | reached us | our share |
+|---|---|---|---|---|
+| 12:47-13:07 | 0.001 | 12.79t | +5.3t | **41%** |
+| 13:07-13:27 | 1 -> 3 | 5.31t | +4.4t | 83% |
+| 13:27-13:47 | 3 | 5.00t | +4.6t | **92%** |
+
+Same fleet, same scripts, same 20-minute windows: **41% -> 92% on the price alone.** At
+0.001 the banks drained more than twice as fast and over half of it went to strangers.
+Note the cost of price 3 is paid to a HOLIDAY account, so it returns in that bank's restore
+baseline and the next gold pass sweeps it out again — a dear buy-back price is close to
+free, and a cheap one is what actually costs.
+
+**What to do until it is fixed:**
+- **Turn the ladder off** before setting a price by hand: `POST /api/trading/setup {"ladder": false}`.
+  Otherwise your price lasts about two minutes.
+- Or set a price that is **not one of the rungs** (res: 0.001, 0.01, 0.1, 0.5, 1, 2, 3; e.g.
+  use 2.5). The ladder has a guard — *"price N is not one of … (set by hand), left alone"* —
+  and will not touch it.
+- **Judge capture on the tab's Return, never on the ladder's percentage.**
+
+*The fix, when someone writes it:* count a cancelled bid off `o.placed` in `count()`, the same
+way the tab does, or judge the ladder on filled orders rather than placed ones.
+
+### A pass slows because CITIES RETIRE, not because the scripts slow down — count them first (2026-09-27)
+
+**When throughput falls, the first thing to measure is how many cities on the draining side
+can still place an order.** Not the price, not the order rate, not the cancel churn — the
+count of live cities. A city whose stock drops under `keepRes + order` (1b + 0.1b = **1.1b**
+for the sell side) goes quiet **silently**: it prints `SITOUT` at most, the account stays
+connected and "healthy", and nothing in the Trading tab says the selling side has shrunk.
+
+Measured at 13:39 on the stone pass, with the banks' totals still reading 12.81t:
+
+| bank | stone | cities able to sell |
+|---|---|---|
+| Lord17 | 8.69t | 10/10 |
+| Lord03 | 2.94t | 9/10 |
+| Lord02 | 0.74t | 5/10 |
+| Lord21 | 0.44t | 1/10 |
+| Lord20 | **0.00t** | **0/10** |
+| | | **25 of 50** |
+
+Half the selling side had retired, so the order rate had roughly halved — 3,993/min against
+~7,300/min an hour earlier — with **no sitout, hold or refusal** on the accounts still
+working. Nothing was broken.
+
+**The trap is that the remaining stock is CONCENTRATED, so a spot check lies.** Looking at one
+of Lord03's cities showed ~709b of stone and the reasonable conclusion "we still have
+almost a trillion per city, why is it so slow?" — while four of Lord02's cities held
+0.01-0.14b and every one of Lord20's was under 0.94b. An account total divided by ten is
+not the per-city figure; print the distribution.
+
+```js
+// the number that actually explains the throughput
+const FLOOR = 1.1e9;                       // keepRes 1b + one order 0.1b
+cityList.filter((c) => (c.stone || 0) >= FLOOR).length
+```
+
+**Diagnostic order when a pass slows:**
+1. **Count the live cities on the draining side** (above the runway). Half gone = half speed.
+2. Only then look at the tab's **Return** for leakage to other players (and check whether the
+   price ladder has walked the price down — see the entry above).
+3. Only then look at the scripts.
+
+Doing this the other way round on 2026-09-27 cost two wrong changes: backing the cancel
+recycle off from 2 to 8 (measured no better, reverted) and reading the whole slowdown as
+leakage. Both of those were real findings in their own right — the ladder bug is genuine and
+pinning the price took our share from 41% to 83% — but neither was the main cause, which was
+simply that the pass was 88% finished and the banks were emptying out.
+
+### A resource pass can DEADLOCK at price 3 from a cold start — 1 crosses, 3 does not (2026-09-27, mechanism unexplained)
+
+The food pass was started fresh at **price 3** (after price 3 had worked well on stone). For
+**20 minutes** both sides placed hard and **nothing whatsoever crossed**:
+
+- banks placed ~17,400 food sell orders in 3 minutes, our side ~17,900 buy orders;
+- **zero fills** — not one `ok=-97` ("this order is closed or nonexistent", the tell that a
+  bid matched before we could cancel it) across all eighteen of our accounts;
+- a relog of the banks showed food still at **45.0t**, unchanged from before the pass began;
+- a relog of two of OUR accounts showed food unchanged (8.44t, 9.00t) and gold flat
+  (-1.3t, just order fees) — **so it was not leaking to other players either**. Nothing was
+  moving in any direction.
+
+Dropping the price to **1** crossed within seconds: **1,643 fills in the next 2.5 minutes.**
+
+**What this is NOT.** It is tempting to explain it with the note in `glitch-res-buy.txt` that
+"orders at the same price never cross" — but that cannot be it, because at price 1 both sides
+are *also* on the same price and it crosses perfectly well. The same-price explanation is
+disproved by the fix. (The gold pass also runs both sides at 150 and moved 4,150t.)
+
+**What we actually know:** food, cold start, price 3 = deadlock; price 1 = fine. Stone reached
+price 3 by being walked *up* from 0.001 while already trading, and kept moving. So the safe
+rule is:
+
+> **Start a resource pass at 1 (the user's own starting figure). Only step UP to 2 or 3 on a
+> pass that is already crossing, and check fills after each step.**
+
+Do not start cold at 3. And when a pass reads zero movement, **count `ok=-97` fills** before
+anything else — placements prove nothing, and both sides can look perfectly busy while
+achieving literally nothing.
+
+**CONFIRMED on wood the same afternoon: stepping UP works, and it is worth doing.** Wood was
+started at 1, verified crossing, then stepped 1 -> 2 -> 3, measuring fills over 2.5 minutes
+at each rung:
+
+| wood price | fills / 2.5 min |
+|---|---|
+| 1 | ~1,960 |
+| 2 | 5,767 |
+| 3 | 5,640 |
+
+**Price 3 did NOT deadlock here** — the same price that froze food from a cold start was
+perfectly fine as a step up from a pass already crossing, which is exactly what the rule
+above predicts. 2 and 3 are equivalent on throughput; prefer 3, because a dearer price is
+what deters the other players' bots (stone went 41% -> 92% on that alone) and the gold is
+paid to a holiday account, so the closing gold sweep takes it back.
+
+**And the corollary, learned by getting it wrong on food:** a pass left at 1 leaks badly.
+Food ran at 1 and captured only **31%** — the banks lost 27.0t and our side gained 8.5t, the
+rest going to strangers. It should have been stepped up to 2 as soon as it was crossing.
+*Do not leave a crossing pass sitting at 1.*
+
+*Unverified:* why 3 fails cold. Worth testing whether it is the price level itself, the
+resource, or the absence of a backlog of cheaper resting offers to cross against.
+
+### A snapshot's AGE is not its freshness — the row can be minutes old and its contents much older (2026-09-27)
+
+`account_latest.at` records when the row was WRITTEN, not when the game data in it was
+current. A console that has not re-read a city still writes its old figures into a brand new
+row.
+
+Caught the hard way after the hub move: a27's snapshot was **4 minutes old** and reported
+city 4 still at its origin 257,547 **and** 272 War Teleporters. Both were wrong. A
+`/api/reconnect` and re-read gave city 4 at **717,110** and **271** teleporters — which
+reconciles exactly with 278 at the start less 7 moves. The stale row even made the item
+count agree with the wrong story (one teleporter unspent for one city unmoved), so the two
+figures corroborated each other and both were stale.
+
+**Consequences to avoid repeating:**
+- A teleport is verified by **relog only** — never by a snapshot, however recent the row
+  looks. This is already the rule in the city-swap skill; the reason is here.
+- **Do not use a snapshot to contradict a relog-verified report.** That inverts the order of
+  authority. It was done here, and a correct report was wrongly called an over-report.
+- Two stale numbers agreeing is not corroboration — they came from the same stale read.
+
+### Three ways to measure a pass, and only one of them is trustworthy (2026-09-27)
+
+All three were used on the same passes that afternoon and they disagreed badly. In order of
+how much they can be believed, worst first:
+
+1. **`ok=-97` fill counts — OVER-REPORT.** The code means "this order is closed or
+   nonexistent" when we try to cancel it, which catches a bid that *filled* but equally one
+   that expired or had already gone. On wood it implied ~4.5t moving per 20 minutes while the
+   banks' own total fell 0.55t. Useful only as a yes/no that *something* is crossing — which
+   is genuinely valuable (it is what proved the price-3 food deadlock), but never as a volume.
+2. **The draining side's resource total — CONFOUNDED.** It falls when goods are listed as
+   well as when they sell, it is subject to snapshot timing, and on a holiday bank it says
+   nothing about where the goods went. Food read "moved 7.16t" while our side gained 0.4t.
+3. **A BUYING side's city totals HIDE what is still travelling.** Goods bought on the market
+   travel to the city: the gold leaves when the order fills, the goods land minutes later.
+   So a relog of a BUYER can read "nothing gained" while food is pouring in — the owner
+   could see it as `Incoming` in the city view when the totals said zero. Twice on
+   2026-09-27 this produced a confident wrong conclusion ("none of them is getting food")
+   about accounts that were working perfectly.
+   **For a buying side, read `Incoming` / in-transit, or watch GOLD falling as the proof of
+   fills.** Totals alone are a lagging measure and understate a working pass.
+4. **RELOG OUR OWN SIDE AND READ THE TOTALS — the best measure, with that caveat.** It is the one
+   number that answers the actual question, "how much did we get?", and it also catches the
+   failure that matters most: if our GOLD is falling while the resource is not arriving, we
+   are buying from strangers rather than from our banks.
+
+```
+node bank-truth.js          # the banks, after a fresh login
+# and the same /api/reconnect + wait-for-newer-snapshot trick on 3-4 of OUR accounts
+```
+
+**Always read gold alongside the resource.** Gold flat (bar order fees) plus resource rising
+= the glitch is working. Gold falling with the resource rising = we are paying real players.
+That single check ruled out a leak twice on 2026-09-27 in seconds.
+
+Note `trade-advance.js` relogs the BANKS before judging but still reads our side from
+`account_latest`, so its "we hold" figure can be twenty minutes stale — it once read 82.8t
+unchanged across two runs while four relogged accounts had just gained 0.70t between them.
+
+### A verification RELOG ends a kick hold — `/api/reconnect` clears it silently (2026-09-27)
+
+`Session.reconnect()` (server.js `/api/reconnect`, the page's Refresh) calls
+`clearKickHold()` before it logs in. So **every relog we do to check a figure also takes a
+kicked account straight back**, restarting the login war with whatever kicked it — and
+manufacturing the very "kicked again inside half an hour" signature that §1's test reads as
+our own fleet. `bank-truth.js` and every ad-hoc relog do this.
+
+**Read the log carefully — the message lies about which call it was.** `clearKickHold()`
+always prints `kick hold ended early — Connect`, whoever called it. Tell them apart by what
+follows:
+
+| log | what really happened |
+|---|---|
+| `kick hold ended early — Connect` **followed by** `refresh — logging in afresh` | `/api/reconnect` — a RELOG (ours, almost certainly) |
+| `kick hold ended early — Connect` **alone** | `/api/connect` — the Connect button or the kick banner's "Take it back now" |
+
+Measured the same day: a31 14:33:06 had both lines (our own relog); a30 20:27:12 had only
+the first (a human click, 19 s after the kick). Nothing in the codebase POSTs `/api/connect`
+— both call sites in `public/app.html` are `.onclick` handlers — so a bare Connect line is
+always a person.
+
+**So: never relog an account that is in a kick hold** unless you mean to take it back. If a
+figure is needed from a contested account, wait for the hold to run out, or accept the
+cached one and say it is cached.
+
+*Worth fixing:* a relog that does not clear the hold (a flag on `/api/reconnect`, or a
+separate read-only refresh), so verification cannot start a fight.
+
+### An account with no `keepherobuff` goal needs a hero that clears 1526 NAKED (2026-09-27)
+
+The instant-catapult bar is **1526 attack**, or **1221 while an Excalibur's +25% runs**. The
+1221 figure is only safe on an account whose goals carry
+`keepherobuff OTTO excalibur /below:1526`, because that is what renews the buff.
+
+**On an account with no goals at all, an Excalibur-dependent hero silently stops being an
+insta-pult hero in 7 days** when the buff expires, and nothing says so. a26-a31 have no
+`goalFile:prepend:` setting and not one row in the `goals` table, so every hero sent to them
+must clear **1526 on its own**.
+
+This also changes what counts as a spare. Counting the donors at the 1221 bar gives a6 17,
+a7 8, a16 4; counting at **1526 naked** gives a6 **3**, a7 **7**, a16 **4** — six usable
+spares once each account's own OTTO is excluded. **State which bar you are counting at.**
+
+### No `quitalliance` when the two sides are already in different alliances (2026-09-27)
+
+The 2026-09-23 hero move paid **10% of a lord's prestige** to `quitalliance` before the
+attack. That cost was avoidable and is not always needed: it was paid because both sides
+were in the **same** alliance. Where they already differ, no one has to leave.
+
+Measured today: donors a6/a16 `0utCasts` and a7 `Nbk`; receivers a26/a27/a30/a31 `1112` and
+a28/a29 `1111`. Every pairing crosses an alliance boundary, so the whole plan costs no
+prestige. **Read both `alliance` fields before assuming the 10% is due.**
+
+*Unverified:* whether an alliance ALLY or NAP relation blocks an attack the way shared
+membership does. Check the relation, not just the name, before marching.
+
+### NEVER attack with a hero over level 1800 (2026-09-28, the user)
+
+> "As a rule of thumb never attack anything with a hero over lv1800, these are big heroes
+> and its easy to lose a good hero if someone warports on to a npc10 or maybe theres a typo
+> in the coords or something so never use >1800 but anything else can be used."
+
+A lost battle can lose the hero (§5b). The risk is not the NPC — it is a tile that stopped
+being an NPC between planning and landing (someone war-teleports onto it; we proved a War
+Teleporter is accepted onto an L10 on 2026-09-27), or a mistyped coordinate. So every attack
+filter in an NPC drive carries `level<1800`, killing waves included.
+
+### `getspamhero` is what actually raises the wave rate (2026-09-28, the user)
+
+**Every attack needs its own hero, and heroes — not troops — are the binding constraint.**
+The user: *"often a city has 1mil prax but only 3 heroes, then the spam heroes help because
+each attack needs a hero and any level hero will suffice for capturing npc10s."*
+
+    if city.checkFeastingHallSpace getspamhero
+
+`getspamhero` is `hire best` from the inn. `city.checkFeastingHallSpace` is the right guard
+because it already **reserves one slot for the training hero when it is away**
+(script-objects.js), which is the user's rule: *"we want to always keep 1 feastinghall space
+so training hero can move around"*. Call it before each wave, not once.
+
+This is why runs kept stalling with plenty of troops: cities logged "no idle hero ... is
+marching, is marching, is marching — waiting" while holding millions of cataphracts.
+
+### Rally Spot sets BOTH the wave size and the number of waves (2026-09-28)
+
+> "lvl of rally spot x 10000 = max troops per wave and waves per city = rally spot level so
+> you can use 100k x 10 in almost all cases (since our cities are usually maxed) with a
+> haunted castle or halloween or christmas castle they automatically add +25% so we get that
+> extra"
+
+So a maxed city is **100,000 a wave x 10 waves = 1m troops in the air**, and a festive castle
+raises both by 25%. That is the ceiling a single town can contribute, whatever it holds in
+garrison — which is why a town with 9.2m cataphracts is no better than one with 1m, and why
+the answer is to reinforce a NEARER town rather than attack from the deep one.
+
+### A march carries at most 100,000 troops — 10,000 per Rally Spot level (2026-09-28)
+
+`reinforce 700,120 any:attack>500 cata:312500` is refused outright:
+
+    FAILED (ok=0) - a march from 3 takes at most 100,000 troops (10,000 per Rally Spot
+    level), not 312,500 — /nolimit sends it anyway
+
+So a level-10 Rally Spot caps every march at 100k, and with 10 march slots a city can have
+about **1m troops in the air at once**. That is what the user means by "we can use at most
+1.25mil prax in a set", and it is why the killing wave is **90k prax** — just under the cap.
+
+**The consequence for an NPC10 drive:** a town holding far more than ~1m prax cannot use it.
+lord06's 712,115 held **9,223,701 cataphracts** and could still only throw 100k a march, while
+the town nearest the camp (700,120, d6) held 10,265 and no heroes at all. The answer is to
+REINFORCE the near town from the deep one — 8 marches x 100k moves 800k plus heroes — and let
+the near town do the killing, because distance is what sets the wave rate.
+
+### Only wave 1 needs a big hero; waves 2+ are loyalty grind (2026-09-28, the user)
+
+> "A town only has 8-9 heroes, so wave 1 kills the troops (big hero big attack), waves 2
+> onwards are just to clear the remaining abatis, as they dont disappear with first wave, and
+> to get the loyalty going to 0, so wave 2 onwards can be scrappy heroes, its just wave 1
+> that needs to be proper." And: **"500+ attack is big enough."**
+
+So `any:level<1500` on the follow-up waves is correct and deliberate — do not 'improve' it to
+demand attack. Doing that on 2026-09-28 matched NO heroes at all (`no hero in 2 matches
+any:attack>500,level<1500`) and stopped the waves dead.
+
+**STICKY WAVES.** The user: *"there do exist sticky waves in the game due to lag ... that the
+90k prax wave gets stuck and never kills the troops (its a lag-type glitch) not a game
+feature, but often its better to send 2 big waves at the front or even 3 and then start the
+loyalty waves."* If the killing wave sticks, every scrappy wave behind it dies against live
+troops instead of grinding loyalty — which is exactly what 659 waves into 701,126 did.
+**Send 3 killing waves, not 1.**
+
+### Capturing an NPC city is a PLAIN ATTACK, and it can be timed (2026-09-28)
+
+The user: *"its just a regular attack and it can be timed. just send a regular attack! and
+time it! make it 3 or 4 regular attacks for a worst case."*
+
+`capture` / `loyaltyattack` are only a convenience wrapper that loops waves in the background
+(`/waves=100 /hours=12`) and cannot take an `@:` time. Reading them as the *only* way to take
+a city is what made the sequence depend on march length and hero availability. The whole
+drive — killing waves, loyalty waves and the capturing town's waves — is plain `attack` lines
+with `@:hh:mm:ss.mmm /within=1s`, which fixes the order by the clock.
+
 ## 5. Heroes, items, cities
 
 - **Never `release` a captured hero from the captor's side** — that loses the hero. The
@@ -1816,6 +2389,212 @@ A named play the user runs; when they say "glitch <resource>", this is what they
   - The `attack` line's "march N s" is not the one-way time; `marchcheck` and
     `travelinfo` give the server's figure. Returns are fast with Relief Stations.
 
+### The fleet has NO taker for an NPC 10 left on ss71 — a1–a25 are all at their cap (2026-09-27)
+
+Read straight out of `account_latest` at 18:45 UTC: **every one of a1–a25 is title 9 with
+exactly 10 cities**, and the cap is titleId + 1 (§7), so not one of them can capture. The
+capture side of the `evony-npc10` method needs an account **under** its cap; a 10-city
+account can only drain. So a drive on the hub's remaining L10 camps is limited by taker
+slots, not by troops — Lord06 alone holds 472m troops and eight cities with 500k+ cavalry.
+
+The only ss71 accounts with room are the six new ones moved into the hub the same day:
+
+| account | cities | free slots |
+|---|---|---|
+| a26 Lord26 | 5 | 5 |
+| a27 Lord27 | 7 | 3 |
+| a28 Lord28 | 4 | 6 |
+| a29 Lord29 | 5 | 5 |
+| a30 Lord30 | 8 | 2 |
+| a31 Lord31 | 9 | 1 |
+
+**22 free slots against the 19 open L10 camps inside r12 of 704,119** — the arithmetic works
+almost exactly, and each of those accounts already has a city 1–4 tiles from several camps.
+But those same five (a26–a29, a31) are the **buy side of the live food play** (`tradingRun`
+`muk623b7`, started 20:43 SAST), so a capture drive and a market pass compete for the same
+accounts. Pick one.
+
+**a32 ShardBearer's 33 cities are not a precedent for beating the cap** — that account is on
+**ss91**, a different server, and its cities are at x303–317 / y528–555.
+
+### An NPC 10 falls to plain 20k waves with NO clearing hit at all (2026-09-27, measured)
+
+Settled by accident, live. **716,111 was captured by a27 lord27 at 22:36:25 without a
+single clearing hit ever landing on it.** Lord06's clearing city 712,115 was refused every
+attempt for ten minutes (the hero-name bug below), so the tile met nothing but plain
+`capture` waves of **20,000 cavalry + 20,000 cataphracts + 20,000 scouts** from five drainer
+cities (a6 710,110 · 709,112 · 707,110 · 708,109 and a16 713,103) on a 30 s cadence. A full
+level-10 garrison — ~400k warriors behind full 5K forts — was ground down in **14 minutes**,
+and the three taker cities finished it about 6 minutes after their first 1,500-cavalry wave.
+
+So the "clearing hit MUST land first" rule (§5, 2026-09-18) is about **cost, not
+possibility**: it stops individual waves being thrown away, but with five or more heavy
+drainers on one tile the mass alone is enough. Compare the same run's 711,121, which *did*
+get its two hits (CptKush att 1515 and Peter att 1190) and fell in **11 minutes end to end,
+3 minutes after the first capture wave** — faster, and without the wave losses.
+
+Two figures worth keeping from that run: **both targets cost about 81,000 cavalry of capture
+waves in total**, against ~150,000 burned for nothing on 2026-09-26; and a taker city spends
+its cavalry at exactly `takeWave` a wave, so **30,000 cavalry is 20 waves and then the city
+goes silent** (a26 @697,124 did precisely that, 30,000 → 0).
+
+### THE DRAIN CAN DESTROY THE TARGET: a camp taken to zero loyalty with no taker present becomes a FLAT (2026-09-27)
+
+The costliest lesson of the run, and it inverts the `takeDelay` rule. **696,123 was lost, not
+captured.** Dated precisely, because one `map_cache` sweep wrote all three targets at the same
+instant, 22:34:08 SAST (`seen` 20:34:08Z on all three to within 100 ms):
+
+| tile | at 22:34:08 | truth |
+|---|---|---|
+| 711,121 | `kind=player, user=Lord26` | captured 22:33:30 — sweep 38 s later, right |
+| 716,111 | `kind=npc, npc=1` | captured 22:36:25 — sweep 2 min earlier, so cache lag |
+| **696,123** | **`kind=flat, npc=0, typeName=Flat`** | `npc=1, level=10` in a probe at 19:0x |
+
+So it went from NPC 10 to flat **inside our own drain window and before the takers' first wave
+at 22:30:32 could convert it.** Between 22:22:44 and 22:30:32 the only things hitting it were
+**a16 Lord16's five cities** — 500,000 cavalry and 0.9–1.3m cataphracts each, only 4.5–11 tiles
+out, so the highest wave rate of the three targets — plus two 115k-cataphract clearing hits.
+**a16 is at 10 cities and cannot capture.** The loyalty reached zero with no taker wave in
+flight, and the city ceased to exist. (Mechanism *inferred*: NPC battle reports are not kept,
+so the killing blow cannot be read. What is certain is the tile was an NPC 10 before our drain
+and a flat 12 minutes into it.)
+
+Corroboration, all consistent with an empty tile afterwards: a26 @691,128's cavalry **stopped
+falling and rose** (29,999 → 16,649 at 22:38 → 16,799 at 22:42), because waves against an
+empty flat come home whereas waves against a live L10 garrison are annihilated; and the wave
+composition kept flickering as troops cycled back. `capture` still answered `-> null`, which
+means only that the march was accepted.
+
+**So `takeDelay` is a two-sided risk, and only one side was known:**
+
+- too short → the taker's wave meets the full garrison and dies (2026-09-18, 60k troops)
+- **too long → the drain takes loyalty to zero with nobody able to take it, and the camp is
+  destroyed** (2026-09-27, one extra city lost)
+
+Since 716,111 proved five heavy drainers flatten a garrison with no clearing hit at all, **the
+clearing hit is not worth waiting five minutes for.** Set `takeDelay` to the *smallest* value
+that clears the clearing march — 35–58 for that run's 165–226 s marches, not 60 — and **with a
+very heavy drain, start the takers first and set it to zero**: a taker wave that dies costs
+1,500 cavalry, a destroyed camp costs the whole city.
+
+Nothing in the machinery notices. The `capture` path in `deploy-loops.js` has **no "its city is
+gone" guard** (only the scout path does), `job-take.txt` never reads `doneTargets`, and
+`npc-taken-watch.js` only ever matches `TAKEN` — so a *destroyed* target is never recorded and
+every drainer and taker keeps firing at bare ground. Until that is fixed, the manual stop is to
+**add the tile to `doneTargets` by hand**: `job-drain-big.txt` re-reads `glitch-done.txt` every
+loop, so the drainers stop and recall within seconds with **no console restart**.
+
+**What the flat is worth afterwards.** An Advanced Teleporter onto it only *moves* an existing
+city, so the account's count does not grow and the tile's real value is forfeited. If it
+re-seeds as a Barbarian's city (§5e: hours, not days) it can be **captured for +1 city**. So
+where the goal is city count, waiting for the re-seed beats teleporting; the only cost of
+waiting is leaving the tile open to an outsider meanwhile. That is an item spend either way and
+the fleet owner's call alone.
+
+### A hero whose name is only digits breaks every clearing hit (2026-09-27)
+
+`attack <x,y> <hero> …` **refuses a purely numeric hero name**:
+
+    attack: hero string "123" — "123" is just a number — write it as a filter,
+    e.g. any:level>=123
+
+Lord06's city 712,115 has a hero literally named **"123"** (att 1457, L1369) and it is that
+city's best idle hero, so `job-drain-big.txt` picked it every time and the clearing hit was
+refused once a minute for ten minutes. Worse, the job does `if $error return` after hit 1, so
+**a refused hit 1 blocks hit 2 and never falls back to waves** — `dbstage` stays 0 and the
+city contributes *nothing*. The fleet's heaviest northern city, 9.2m cataphracts, sat idle
+through an entire capture.
+
+The guard, in the hero-picking loop straight after the `level > 1500` test:
+
+    if dbx.name * 1 > 0 goto db_hn
+
+`"123" * 1` is 123 so it is skipped; `"CptKush" * 1` is NaN and `NaN > 0` is false, so real
+heroes are kept. **Check the clearing city's best idle hero before trusting a plan**, and note
+two of Lord06's ten cities (700,120 and 704,111) have **no idle hero ≤L1500 at all** — a
+clearing city there would print "no idle hero" for ever.
+
+### A taker cannot retarget itself, so every capture strands its cavalry (2026-09-27)
+
+`job-drain-big.txt` has `db_retarget` and moves a freed drainer to the next spare.
+**`job-take.txt` has no equivalent and never reads `doneTargets`.** Once its target is
+captured it simply loops on `capture` and logs, every two minutes:
+
+    FAILED: 716,111 is your own city New city
+
+Harmless — but the city's remaining cavalry is stranded until the plan is edited and that
+console restarted. Minutes after the two captures above, a27's three taker cities held
+**79,808 cavalry with no target** and a26's 713,124 held **48,470**: about 85 waves of
+capacity idling. On a multi-target drive this is the main efficiency loss. Either give
+`job-take.txt` a `doneTargets`-aware retarget, or set each taker city's `takeTargets` to
+**several** of its account's targets from the start — the job already loops over every entry
+and merely errors on the ones already taken.
+
+### One account per target: two DIFFERENT accounts taking one camp attack each other (2026-09-27)
+
+`job-take.txt` never reads `doneTargets` — only the drainers do. So if two taker cities of
+**different** accounts are aimed at the same camp, the moment one of them captures it the
+other keeps sending capture waves at what is now a **fleet city**, and nothing stops it until
+someone edits the plan. With the hub's drainers in **0utCasts** and the new takers in
+**1112**, those waves land as an *enemy* attack on our own account, not as an ally's.
+
+Two taker cities of the **same** account on one camp are safe and are what the method wants
+(more takers = more waves): a capture attempt on a city you already own just answers
+"x,y is your own city". **So: several taker cities per target, but all from one account.**
+
+### `spareTargets = ""` is a BLANK target, not "no spares" (2026-09-27)
+
+`"".split(" ")` is `[""]`, not `[]`. So `job-drain-big.txt`'s `db_retarget` finds exactly one
+"spare", finds `doneTargets.includes("  ")` false, and sets **`jobTarget = ""`** — every
+drainer whose target has just fallen then marches at nothing, once a minute, for ever. This
+is the same failure the 2026-09-22 leading-space bug caused, reached by the opposite route.
+
+**Use a sentinel when there are genuinely no spares:**
+
+    doneTargets = " none "
+    spareTargets = "none"
+
+`db_retarget` then finds its one spare already done and simply stops. This is safe across
+captures because **`npc-taken-watch.js` appends** to `doneTargets`
+(`doneTargets = "${cur}${target} "`), so the sentinel is never overwritten.
+
+### Fleet Feet does not change capture-wave spacing; it multiplies the wave RATE (2026-09-27)
+
+`capture` / `loyaltyattack` waves are paced by the **console's own naps**
+(`deploy-loops.js` TIMING, `spamGapMs`/`tickMs`) and carry **no camp at all**, so the
+2026-09-27 camp-shortening rule above does not touch them. What Fleet Feet cuts is the
+march out and the march home, i.e. the **hero's round trip** — and one hero per wave is the
+bottleneck (§5, above). Two charges (factor 0.3) therefore means roughly **3.3× the waves an
+hour out of the same city with the same heroes**. Since wave COUNT is what takes an NPC 10
+and wave size is not, **Fleet Feet on the drainers is the biggest single lever in the
+method.** (Worked out from the code 2026-09-27; *unverified* live against a measured wave
+count.)
+
+**`takeDelay` is wall-clock and does NOT scale with the buffs.** It is a count of 5-second
+dispatch ticks in `job-take.txt`, so a Fleet Feet that shortens the clearing hit leaves the
+delay where it was — safe in that direction, but a plan whose clearing city is far away needs
+the delay sized from that city's real march time:
+
+    takeDelay >= (clearing city's one-way march in seconds + 60) / 5
+
+The settled `takeDelay = 60` (300 s) was set when the drainers were 1–2 tiles out. a6 Lord06's
+eight heavy cities sit at y109–117 and are **14–21 tiles** from the hub's southern camps
+(`marchTimeMs` at cataphract pace: 577–860 s unbuffed, 173–258 s with two Fleet Feet), where
+60 would send the taker's wave into a full garrison. Its eastern camps (711,121 and 716,111)
+are 4–7 tiles out — 165–243 s unbuffed — where 60 is ample.
+
+### `armyTimeFactor` predicts a march of 0 s when a Fleet Feet has over 8 h left (2026-09-27)
+
+Measured off `constants.js` the same day: the client's band is −35% under 4 h left, −70%
+between 4 and 8 h, and **−105% above 8 h**, so `armyTimeFactor` returns `0.65`, `0.30` and
+then **0** — and `marchTimeMs` multiplies by it, so every predicted march time becomes **0 s**
+once three charges are on. Anything built on that figure (`marchcheck`, `travelinfo`, timed
+waves, `goal-war`'s camp, a `takeDelay` computed from a march) silently goes to zero. The two
+camp sites (`script-cmd-deploy.js`, `timed-march.js`) already guard `factor > 0`; the march
+prediction does not. **Treat a predicted march of 0 s as "the buff band is out of range", not
+as an instant march.** *Unverified:* what the server really does with three charges — the
+game cannot plausibly give a negative march, so the real floor is probably lower than 0.30
+but above 0.
 
 ### War Town holds what LEAVES the city, not what arrives (2026-09-24)
 
@@ -2353,8 +3132,23 @@ without unlocking anything.
 - **Flats: ownership doesn't count — the user's rule, 2026-09-22.** To pack our cities
   tightly around the hub, a flat held by ANYONE (other alliances, and our own alliance's
   players too) may be captured and abandoned so the tile is free for an Advanced
-  Teleporter. We don't respect anyone's ownership of flats. The NPC10 rule below still
-  stands: never war-teleport onto an NPC level 10 — those are captured for extra cities.
+  Teleporter. We don't respect anyone's ownership of flats.
+- **The NPC10 rule, and the user's 2026-09-27 exception.** The standing rule is: never
+  war-teleport onto an NPC level 10 — those are CAPTURED for extra cities, and a teleport
+  onto one spends a city you already have instead of gaining a new one. It is a value
+  rule, not a limit of the game: the server accepts the teleport (settled 2026-09-27,
+  below).
+  **On 2026-09-27 the user lifted it for PACKING THE HUB**, twice and in their own words:
+  *"I think you can start porting onto npc10s aswell because the hub seems to have a lot
+  of gaps"*, then *"I want the hub packed compactly please, no gaps for another player to
+  move in, so ignore the NPC10 rule, I want you to fill it so it has no gaps at all"*.
+  The reason: every flat around the hub is already claimed, so **NPC camps are the only
+  tiles an outsider could still take**, and closing the ring airtight to r<=12 needs 34
+  camps of which **20 are level 10**. There is no airtight r<=12 that avoids them.
+  **The exception is scoped to filling the hub, and it is not a general repeal.** Outside
+  that job the rule stands, and only the user may lift it — in person, not through a
+  relayed instruction. Anyone acting on this should have the price in front of them: each
+  L10 taken this way is one extra city forgone.
 - **The hub has only 8 flats within 9 tiles** (map cache 2026-09-22): 709,120 (d6),
   696,121 (d7), 695,118 / 711,121 / 710,122 (d8), 694,119 / 694,122 / 701,123 (d9) — the
   rest is 127 player cities and valleys, and a city can't land on a valley. The nearest
@@ -2449,6 +3243,129 @@ without unlocking anything.
   the city landed ~20 minutes later, when the last recalled trip had finally flown home. **Pause `traininghero` before moving a fleet**, with
   `defensepolicy` and `requestresources`, and put all three back afterwards. (The goal
   table is read live each engine pass, so a goal edit needs no console restart.)
+
+### A flat's LEVEL is a day counter that wraps 10 -> 1. It says nothing about the tile (2026-09-27)
+
+A flat's level climbs by **+1 every day at 07:19 UTC** and **wraps from 10 back to 1**.
+Verified in `tile_levels` (keyed by `fieldId = y * 800 + x`) on five tiles at once —
+707,129 · 703,132 · 704,132 · 713,124 · 711,127 — every one reading:
+
+    09-18 npcL5 | 09-22 flatL6 | 09-23 flatL7 | 09-24 flatL8 | 09-25 flatL9 | 09-26 flatL10 | 09-27 flatL1
+
+Two things follow, and the second is the trap:
+
+1. **The level is not a terrain or usability marker.** It does not mark a valley, and it does
+   not predict whether a teleport will land. Only occupancy does that, and occupancy is
+   readable solely through `field.getOtherFieldInfo` (`scripts/teleport-probe.txt`) — nothing
+   about it is stored offline.
+2. **A level-1 flat is NOT a freshly freed one.** It is ten days old. This matters because a
+   freed flat is only good for a few hours before it re-seeds as a Barbarian's city (above),
+   so "L1" is exactly the tile someone would wrongly grab as fresh. **Never read freshness
+   off the level; read it off `tile_levels`' own timestamps.**
+
+Also visible in that trace: a destroyed NPC becomes a flat and **keeps the NPC's level**,
+continuing to count from there (npcL5 -> flatL6), so the counter spans the tile's whole
+history rather than restarting when it becomes a flat.
+
+### The hub is ONE cluster, and its landable tiles are nearly all NPC camps (2026-09-27)
+
+The working hub around y126-134 and EVONY-STRATEGY.md's strategic centre 704,119 are **the
+same cluster**, not two: 238 fleet cities sit within 22 tiles of 704,119 (bbox x687-716,
+y103-134), the density peaks at y119, and y126-134 is simply its southern expansion frontier.
+
+**Inside r=8 of 704,119 there is not one flat and not one non-L10 NPC** — the core is
+entirely ours plus foreign cities, which is why the strategy doc's plan is 14 internal swaps
+and no captures. All the room is south and on the rim.
+
+From a full 640,000-tile map sweep (2026-09-27 09:31-10:08 UTC), inside x693-715 / y126-134:
+
+| | count |
+|---|---|
+| ours | 45 |
+| **valley — permanently unusable** | **111 (69% of the gaps)** |
+| NPC L10 (capture for an extra city, never teleport onto) | 24 |
+| NPC L1-9 (a War Teleporter lands directly) | 10 |
+| flats (terrain-landable, ownership UNKNOWN) | 15 |
+| foreign player cities | 2 |
+
+**So that box holds only ~25 landable tiles — 38 cities cannot fit in it.** A plan for 38 has
+to reach to r≈15-16 of 704,119 or push south of y134. Within r=20 there are **93 NPC L1-9
+camps**, which is ample.
+
+**Prefer NPC camps over flats as teleport targets.** 11 of 13 war teleports onto NPC camps
+landed first try (2026-09-22, confirmed by relog), whereas a probe of **51 flats** across
+x670-735 / y90-150 on 2026-09-25 answered `ok=-84` on **every single one**, including tiles a
+fresh scan had just called empty. Treat any flat list as a probe queue, never as a plan.
+
+### The server accepts a War Teleporter onto an NPC level 10 (settled 2026-09-27)
+
+Whether the server allows this was marked unverified for five days. It does. Observed live:
+a26 Lord26's city 6 went `590,129 (North March) -> 697,124 (Bohemia)` onto a **level-10
+Barbarian's city** at 12:37:50 SAST 2026-09-27; the reply was
+`ok — 6 is now at 697,124, 355 War Teleporter left` (one item spent, from 356), and a **fresh
+login** read the city at 697,124. No special reply code, no refusal — to `city.WarMoveCastle`
+an L10 camp is just an NPC camp, and the camp is gone afterwards.
+
+The earlier refusal at 694,122 that read "is an NPC camp (level 10)" was **our own console**
+refusing locally, not the server: `teleport.js judge()` blocks an *Advanced* Teleporter on any
+non-flat. It never said anything about War Teleporters.
+
+**This does not change the standing rule "never war-teleport onto an NPC level 10."** That rule
+is about value, not about what the server permits: an L10 camp is worth an extra city to
+whoever captures it (§5e1, the `evony-npc10` skill), and landing on it destroys that. Only the
+fleet owner, in person, can decide to spend L10 camps that way.
+
+### What counts as a "gap" in the hub: valleys and claimed flats are not gaps (2026-09-27)
+
+Of the non-city tiles, only some are holes an outsider can drop a city into:
+
+| tile | can an outsider land a city on it? |
+|---|---|
+| valley (desert/forest/grassland/hill/lake/swamp) | **never** — permanently safe, do not try to fill |
+| flat **already claimed by a player** | **no** — `ok=-84` while he holds it |
+| flat nobody holds | yes, with an Advanced Teleporter |
+| NPC camp, any level 1-10 | yes, with a War Teleporter |
+
+A live `field.getOtherFieldInfo` probe of every landable tile within r=12 of 704,119
+(2026-09-27 12:35 SAST, the `scripts/teleport-probe.txt` idiom, 57 tiles) found **not one free
+flat**: all 22 flats in that radius are held — JackylBlue and Karnage (**We3Kings, our own
+alliance**), Phrac (0utCasts), KingCool (GANG), Lord18016314 (1513). Every NPC camp read back
+`npc=true canOccupy=true` and unowned. So around this hub a teleport plan is a
+**War-Teleporter-only** plan; a flat becomes a target only after somebody captures and abandons
+it (§5e flats rule), and it re-seeds as a camp within hours.
+
+Counted by Chebyshev ring from 704,119 (sweep 2026-09-27 10:08 UTC): **r<=6 holds zero landable
+tiles at all** — that core is already airtight. NPC camps by ring: 3 at r7, 2 at r8, 5 at r9,
+3 at r10, 9 at r11, 12 at r12, 25 at r13. So 22 cities would close the hub out to r=11 and 34
+out to r=12. That ring count is the honest measure of "no gaps", not a tile count inside a box.
+
+### A new account's own transports pin its cities for hours (2026-09-27)
+
+a26-a31 had each sent a mission-1 transport to the hub (703,111 / 702,111) from nearly every
+city *before* the move began. A homebound transport **cannot be recalled** (§5e), so `recallall`
+answered `ok` and the city still could not teleport: 21 of 30 cities were blocked, landing
+**1 to 3.8 hours** out (worst: a27 city 4, 257,547 -> 703,111, 13,582 s). Only 9 of 30 could
+move at once. **Read the `city.selfArmies` reach stamps before promising a fleet move a time**
+(`scripts/army-list.txt`), and ship resources to the hub *after* the cities move, not before.
+
+**`ok=-77` outlives the reach stamp — keep retrying, don't reschedule.** a29 city 2's transport
+was due home at 14:54; the city still answered -77 at 15:53 and 15:54 and only went through at
+15:55:09, by which time `city.selfArmies` read 0. So the stamp is a lower bound, not a
+deadline, and the honest test remains "try it again in a minute". Nothing is lost by trying:
+the move logged **1,645 `ok=-77` refusals and not one other refusal code** — no -84, -81 or
+-90 anywhere — and the War Teleporter stock proves every refusal was free. Each account's
+final count is its start minus exactly one per city moved: a26 356->351 (5), a27 278->271 (7),
+a28 264->260 (4), a29 319->314 (5), a30 289->281 (8), a31 249->240 (9). So **a refused teleport
+spends nothing, confirmed by arithmetic over 1,757 of them**, and a one-try-a-minute loop is the
+right tool: **38 of 38 cities landed, 0 failed, 0 retargeted**, every one verified by relog.
+
+**The outcome, for reference: every NPC camp of level 1-9 within r=12 of 704,119 is now ours.**
+a26-a31's 38 cities took them all. What is left open inside r=12 is 19 level-10 camps and
+nothing else — the 23 flats there are all held by other players (blocked, not open), and the
+328 valleys can never be built on. Closing those last 19 is a capture job (`evony-npc10`),
+which fills the tile *and* gains a city, rather than a teleport job, which fills it and spends
+one. The move took ~8 hours wall-clock for 30 cities because of the transport pinning above,
+and 11 minutes for the last 8 once their marches were home.
 
 ## 5e1. Smashing an NPC10 for an ally
 
@@ -2883,6 +3800,14 @@ without unlocking anything.
   Check these lines after the first real attack. The truce waits until no army is
   marching at any of our cities; the item's text says the game refuses it otherwise
   (*unverified live*). A paused engine never truces.
+- **An attack under the city's `/junktroop` is not an attack — for the warnings too** (the
+  user, 2026-09-28: "if junktroop is 1000 and 999 troops are incoming, no animation nothing
+  should display … junktroop applies per attack"). Until then the red city tab, the
+  flashing Incoming icon and the Director's "under attack" lit up for ANY hostile army,
+  because they read the server's `castle.hasEnemy`, which the game sets for a 1-troop scout
+  as well. The rule now lives once in `attacks.js`: per army, at or above the city's
+  `defensepolicy /junktroop` (1000 when unset, `/junktroop:0` = everything), size unknown
+  counting as real. The Claude waker uses the same rule. Consoles show it after a restart.
 - **Before an account attacks anything, check EVERY goal row it has — not just prepend.**
   (Lord02, 2026-09-20.) An account's effective goals are prepend plus either its own
   city row or `default`, so a line commented out of prepend alone still runs from the

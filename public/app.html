@@ -135,6 +135,15 @@
   .protlist li { padding:1px 0; }
   .protlist .on { color:var(--ok); }
   .protlist .off { color:var(--dim); }
+  /* the Settings dialog's tabs: the account's own settings, and what Claude may do */
+  .settabs { display:flex; gap:3px; border-bottom:1px solid var(--th-edge); margin:0 0 10px; white-space:normal; }
+  .settabs button { border-radius:4px 4px 0 0; border-bottom:none; padding:3px 12px; margin-bottom:-1px; }
+  .settabs button.on { background:var(--win); font-weight:bold; border-bottom:1px solid var(--win); }
+  [data-sp][hidden] { display:none !important; }     /* .setgrid's display:grid would beat [hidden] */
+  .cplist { display:grid; gap:6px; margin:4px 0 0; white-space:normal; }
+  .cplist label { display:grid; grid-template-columns:auto 1fr; gap:0 8px; align-items:start; cursor:pointer; }
+  .cplist label input { margin-top:3px; }
+  .cplist label i { grid-column:2; color:var(--dim); font-style:normal; font-size:var(--fs-sm); }
   .connbox { display:flex; align-items:center; gap:6px; margin-left:6px; max-width:420px; }
   .dot { width:11px; height:11px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
   .dot.on { background:var(--ok); }
@@ -1055,8 +1064,16 @@ const tell = (text, o = {}) => modal({ title: 'OTTObot', ...o, text }).then(() =
 // a city, disbanding troops, dismissing a hero, changing the tax rate or
 // restarting the lord. It is never shown back: the box says whether one is
 // stored, and typing replaces it.
+//
+// A second tab, Claude permissions (2026-09-28), holds the six things a Claude
+// woken by the Director for an attack may do to this account by itself
+// (claude-perms.js). All start off; the same boxes are on the Director's
+// Claude tab, and both save to the same place.
 async function openSettings() {
-  const cur = await getJSON('/api/settings') || {};
+  const [cur0, cp] = await Promise.all([getJSON('/api/settings'), getJSON('/api/claude/perms')]);
+  const cur = cur0 || {};
+  // an older console has no /api/claude/perms: the tab says so instead
+  const cpOk = !!(cp && cp.ok && Array.isArray(cp.list));
   const dlg = document.createElement('dialog');
   dlg.className = 'ask';
   const rows = (p) => {
@@ -1073,7 +1090,19 @@ async function openSettings() {
   dlg.innerHTML = '<div class="ask-cap">Settings</div>'
     + '<div class="ask-body">'
     + `<div class="ask-q">${esc(cur.label || 'This account')}</div>`
-    + '<div class="setgrid">'
+    + '<div class="settabs" role="tablist"><button type="button" class="on" data-st="acct" role="tab">Account</button>'
+    + '<button type="button" data-st="claude" role="tab">Claude permissions</button></div>'
+    + '<div data-sp="claude" hidden>'
+    + (cpOk
+      ? '<div class="setnote">What Claude may do to this account <b>by itself</b> when the Director wakes it for an attack '
+        + '(only attacks at or above the city&rsquo;s <b>/junktroop</b> wake it). Its job is only to keep the account alive &mdash; '
+        + 'no counter-attacks. With every box off it still looks and reports, but acts on nothing. '
+        + 'The same boxes are on the Director&rsquo;s Claude tab.</div>'
+        + '<div class="cplist">' + cp.list.map((p) => `<label><input type="checkbox" data-perm="${esc(p.key)}"${cp.perms[p.key] ? ' checked' : ''}>`
+          + `<span>${p.n}. ${esc(p.label)}</span><i>${esc(p.help || '')}</i></label>`).join('') + '</div>'
+      : '<div class="setnote">This console is running older code with no Claude permissions yet &mdash; restart it to load the change.</div>')
+    + '</div>'
+    + '<div class="setgrid" data-sp="acct">'
     + '<label for="setSec">Security code</label>'
     + `<input id="setSec" type="password" autocomplete="off" placeholder="${cur.hasSecurityCode ? 'stored — type to replace it' : 'not set'}">`
     + '<div class="setnote">The game&rsquo;s second password. The bot sends a protected command plainly; '
@@ -1085,13 +1114,35 @@ async function openSettings() {
     + '</div></div>'
     + '<form method="dialog" class="ask-btns"><button value="ok" autofocus>Save</button><button value="no">Cancel</button></form>';
   document.body.appendChild(dlg);
+  dlg.querySelector('.settabs').onclick = (e) => {
+    const b = e.target.closest('[data-st]'); if (!b) return;
+    dlg.querySelectorAll('.settabs [data-st]').forEach((x) => x.classList.toggle('on', x === b));
+    dlg.querySelectorAll('[data-sp]').forEach((x) => { x.hidden = x.dataset.sp !== b.dataset.st; });
+  };
   dlg.addEventListener('close', async () => {
     const code = dlg.querySelector('#setSec').value;
+    // the Claude boxes, saved only when one of them changed
+    let perms = null;
+    if (cpOk) {
+      const now = {};
+      dlg.querySelectorAll('[data-perm]').forEach((x) => { now[x.dataset.perm] = x.checked; });
+      if (Object.keys(now).some((k) => !!now[k] !== !!cp.perms[k])) perms = now;
+    }
     dlg.remove();
-    if (dlg.returnValue !== 'ok' || !code) return;      // blank leaves whatever is stored alone
-    const r = await post('/api/settings', { securityCode: code });
-    if (!r.ok) return tell(r.error || 'could not be saved', { title: 'Settings' });
-    tell('The security code is stored for this account.', { title: 'Settings' });
+    if (dlg.returnValue !== 'ok') return;
+    const said = [];
+    if (perms) {
+      const r = await post('/api/claude/perms', { perms });
+      if (!r.ok) return tell(r.error || 'the Claude permissions could not be saved', { title: 'Settings' });
+      const on = cp.list.filter((p) => r.perms && r.perms[p.key]).map((p) => p.label);
+      said.push(`Claude may now: ${on.length ? on.join(', ') : 'nothing (every box is off)'}.`);
+    }
+    if (code) {                                         // blank leaves whatever is stored alone
+      const r = await post('/api/settings', { securityCode: code });
+      if (!r.ok) return tell(r.error || 'could not be saved', { title: 'Settings' });
+      said.push('The security code is stored for this account.');
+    }
+    if (said.length) tell(said.join('\n'), { title: 'Settings' });
   });
   const clear = dlg.querySelector('#setSecClear');
   if (clear) clear.onclick = async (e) => {
@@ -1319,6 +1370,9 @@ function paintCities() {
       ...th.map((t) => `traininghero ${t.name} ${t.status === 'Marching' ? `is marching${t.to ? ' to ' + t.to : ''}`
         : t.status === 'Returning' ? 'is on its way back here' : 'is here'}`),
       atk ? `UNDER ATTACK — ${c.incoming} hostile army(ies) inbound` : null,
+      // the console counts only attacks at or above the city's /junktroop
+      // (attacks.js, 2026-09-28); smaller ones are named here and nothing more
+      c.junkIncoming ? `${c.junkIncoming} junk army(ies) under ${c.junkLine} troops inbound — ignored` : null,
       low ? `food runs out in ${timeLeft(c.foodHours)}` : null,
       `gate ${c.gateOpen ? 'OPEN' : 'closed'}${c.gate && c.gate !== 'auto' ? ' (held by hand)' : ''}`,
       c.wartown !== undefined && c.wartown !== 'auto' ? `war town mode set by hand: ${c.wartown}` : null,
@@ -1330,7 +1384,9 @@ function paintCities() {
   paintIncomingAlert(list);
 }
 // The Incoming icon (top right) flashes red/white while any city of this
-// account has a hostile army inbound; its tooltip names the cities.
+// account has a real attack inbound — one at or above that city's defensepolicy
+// /junktroop, 1000 by default, size unknown counting (the console decides, in
+// session.js cities(); 2026-09-28) — and its tooltip names the cities.
 function paintIncomingAlert(list) {
   const ib = $('monTabs').querySelector('.ib[data-k="incoming"]');
   if (!ib) return;
@@ -3936,15 +3992,21 @@ $('monBody').addEventListener('mousemove', (ev) => {
   }
   const c = S.cityData;
   const row = (k, v) => `<div><span class="k">${k}</span>${v}</div>`;
-  let html = `<b>${esc(t.typeName || t.kind)}${t.level != null && !t.userName ? ' level ' + t.level : ''}</b>`
-    + `<div class="muted">${t.x},${t.y}${c ? ` · ${mapDist(c.x, c.y, t.x, t.y)} from ${esc(c.name)}` : ''}</div>`
-    + row('State', esc(mapZone(t.x, t.y)));
+  const where = `<div class="muted">${t.x},${t.y}${c ? ` · ${mapDist(c.x, c.y, t.x, t.y)} from ${esc(c.name)}` : ''}</div>`;
+  // A player's city reads in the user's order: city, lord and prestige,
+  // alliance, war state, then the state it lies in (2026-09-28).
   if (t.userName) {
-    html += row('Player', esc(t.userName) + (t.mine ? ' (you)' : '')) + row('City', esc(t.name || '—'))
-      + row('Alliance', esc(t.allianceName || '—')) + row('Standing', MAP_CAT[mapCat(t)][0])
-      + row('Prestige', fmt(t.prestige)) + row('Honor', fmt(t.honor));
-    if (t.state !== undefined) html += row('War state', t.state === 1 ? 'peace' : (t.furlough ? 'furlough' : 'at war'));
-  } else if (t.npc) html += row('NPC', 'level ' + (t.level ?? '?') + ' camp');
+    const war = t.state === undefined ? '—' : t.state === 1 ? 'peace' : (t.furlough ? 'furlough' : 'at war');
+    return showTipHtml(ev, `<b>${esc(t.name || t.typeName || t.kind)}</b>`
+      + row('Lord', esc(t.userName) + (t.mine ? ' (you)' : '') + ` · ${fmt(t.prestige)} prestige`)
+      + row('Alliance', esc(t.allianceName || '—') + ` <span class="muted">(${MAP_CAT[mapCat(t)][0]})</span>`)
+      + row('War state', war)
+      + row('State', esc(mapZone(t.x, t.y)))
+      + row('Honor', fmt(t.honor)) + where);
+  }
+  let html = `<b>${esc(t.typeName || t.kind)}${t.level != null && !t.userName ? ' level ' + t.level : ''}</b>`
+    + where + row('State', esc(mapZone(t.x, t.y)));
+  if (t.npc) html += row('NPC', 'level ' + (t.level ?? '?') + ' camp');
   else if (t.desc) html += row('Bonus', esc(t.desc));
   showTipHtml(ev, html);
 });

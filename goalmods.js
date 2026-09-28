@@ -37,7 +37,7 @@ const { comfortPlan } = require('./goal-upkeep');
 // does not send another. Nothing is used that is not held, nothing whose buff
 // is already running, and a use only counts once the server has said ok — the
 // engine's executor stamps state.defence.used, never this plan.
-const DEF_JUNK = 1000;
+const DEF_JUNK = require('./attacks').DEF_JUNK;
 const DEF_RETRY_MS = 2 * 60000;        // after a refusal or a lost reply
 const DEF_SPEECH_MS = 2 * 60000;       // after a Speech Text, until the city shows loyalty 100
 const DEF_BUFF_GROUPS = [              // items that make the same buff: the first held is used
@@ -46,25 +46,9 @@ const DEF_BUFF_GROUPS = [              // items that make the same buff: the fir
   [['usepenicillin', 'penicillin']],
 ];
 
-// An inbound army's size, from the engine's flat total or a raw TroopStrBean.
-// An unscouted army sends "?" per type, so its size is UNKNOWN (null), and
-// unknown counts as a real threat — assuming junk would be the dangerous default.
-function armySize(a) {
-  if (!a) return null;
-  const t = a.troops !== undefined ? a.troops : a.troop;
-  if (t === null || t === undefined) return null;
-  if (typeof t === 'object') {
-    let sum = 0, any = false;
-    for (const v of Object.values(t)) {
-      const s = String(v ?? '').trim().replace(/[,\s]/g, '');
-      if (/^\d+$/.test(s)) { sum += parseInt(s, 10); any = true; } else if (v !== undefined && v !== null) return null;
-    }
-    return any ? sum : null;
-  }
-  if (a.known === false) return null;   // a partial total: some types were "?"
-  const s = String(t).trim().replace(/[,\s]/g, '');
-  return /^\d+$/.test(s) ? parseInt(s, 10) : null;
-}
+// An inbound army's size (null = unknown, which counts as a real threat) and
+// the junk line: one rule for the defence goals and the warnings (attacks.js).
+const { armySize, junkLineOf } = require('./attacks');
 
 // How many of an item the account holds; null when no inventory was loaded.
 function heldCount(game, itemId) {
@@ -106,7 +90,7 @@ function defensePlan(ctx, state) {
   const game = ctx.game || {};
   const now = Date.now();
   const serverNow = typeof game.now === 'function' ? game.now() : now;
-  const junk = sw.junktroop !== undefined ? n(sw.junktroop) : DEF_JUNK;
+  const junk = junkLineOf(ctx.goals);
   const sup = (ctx.castle.resource || {}).support;
   // No loyalty on the castle bean is "unknown", never 0 — 0 would fire the truce.
   const loyalty = sup === undefined || sup === null || sup === '' || !isFinite(Number(sup)) ? null : Number(sup);

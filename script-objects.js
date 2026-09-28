@@ -975,11 +975,13 @@ class CityView {
     return this.#with((c, g, ctx) => {
       const parsed = cityGoals(ctx, c);
       const dp = parsed && (parsed.goals || []).find((x) => x.name === 'defensepolicy');
-      const junk = dp && dp.switches && num(dp.switches.junktroop) > 0 ? num(dp.switches.junktroop) : 1000;
+      // the one junk rule (attacks.js, 2026-09-28): /junktroop:0 now counts
+      // every attack, as defensepolicy documents, where 0 used to mean 1000
+      const A = require('./attacks');
+      const junk = A.junkLineOf(dp ? [dp] : []);
       return enemyOf(ctx, c).map(raw).filter((a) => {
         if (num(a.missionType) !== C.MISSION.attack || num(a.direction) === 2) return false;
-        const vals = Object.values(a.troop || a.troops || {});
-        return vals.some(isUnknown) || vals.reduce((s, v) => s + num(v), 0) >= junk;
+        return A.isRealAttack({ troop: a.troop || a.troops || {} }, junk);
       }).length;
     }, 0);
   }

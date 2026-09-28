@@ -221,6 +221,9 @@ class Game {
     const i = c.heros.findIndex((h) => h.id === data.hero.id);
     if (Number(data.updateType) === 1) { if (i >= 0) c.heros.splice(i, 1); return; }
     if (i >= 0) c.heros[i] = data.hero; else c.heros.push(data.hero);
+    // When the server last showed this hero away: a hero a script sent that is
+    // idle again AFTER this is home, not "not yet marked away" (recentSkip).
+    if (Number(data.hero.status || 0) !== 0) (this.heroAwayAt = this.heroAwayAt || new Map()).set(data.hero.id, Date.now());
   }
 
   castleId(c) { return c.castleId ?? c.id; }

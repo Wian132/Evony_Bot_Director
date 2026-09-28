@@ -528,7 +528,13 @@ const mapCache = {
     // also holds every flat and valley the background map scan reads, and that
     // scan writes a few blocks every minute.
     const prevStmt = db.prepare('SELECT level FROM map_cache WHERE id = ? AND level IS NOT NULL');
-    db.exec('BEGIN');
+    // IMMEDIATE, not a plain BEGIN: the loop reads (prevStmt) before it writes, and
+    // in WAL a deferred transaction that has read cannot upgrade to a writer once
+    // another connection has committed — SQLite answers SQLITE_BUSY_SNAPSHOT (517,
+    // "database is locked") at once, without waiting out busy_timeout. With ~20
+    // consoles writing, that was "map cache write failed: database is locked"
+    // several times a minute (2026-09-27, reproduced in 0 ms with two connections).
+    db.exec('BEGIN IMMEDIATE');
     try {
       for (const t of tiles) {
         if (t == null || t.id === undefined || t.id === null) continue;

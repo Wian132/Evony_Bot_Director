@@ -361,6 +361,18 @@
   .ask-more { color:var(--dim); margin-top:9px; font-size:var(--fs-sm); }
   .ask-btns { display:flex; justify-content:flex-end; gap:9px; padding:13px 18px 16px; }
   .ask-btns button { min-width:90px; }
+  /* ---- claude (the Claude tab: permissions, auto-wake, the wake log) ---- */
+  #pageClaude { padding:var(--pad); overflow:auto; flex:1; }
+  #clGrid td, #clGrid th { text-align:center; }
+  #clGrid td:first-child, #clGrid th:first-child { text-align:left; }
+  #clGrid th { cursor:default; text-transform:none; letter-spacing:0; white-space:normal; vertical-align:bottom; }
+  #clGrid th .cl-all { display:block; margin-top:4px; font-weight:400; }
+  #clGrid input[type=checkbox] { width:auto; cursor:pointer; }
+  #clGrid tr.off td:first-child { color:var(--faint); }
+  .cl-wake { border:1px solid var(--line); border-radius:8px; margin:8px 0; background:var(--panel); }
+  .cl-wake summary { padding:8px 12px; cursor:pointer; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .cl-wake pre { margin:0; padding:10px 12px; border-top:1px solid var(--line-soft); white-space:pre-wrap; word-break:break-word; font-size:var(--fs-sm); max-height:420px; overflow:auto; }
+  .cl-wake h4 { margin:10px 12px 0; font-size:var(--fs-sm); color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
   /* ---- monitor ---- */
   #pageMonitor { padding:var(--pad); overflow:auto; flex:1; }
   .mon-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
@@ -467,6 +479,7 @@
     <div class="tab" data-p="resources">Resources</div>
     <div class="tab" data-p="accounts" title="Every field of every account in one grid">Accounts</div>
     <div class="tab" data-p="monitor" title="One watcher over the whole server: the map, the rankings, and who has stopped moving">Monitor</div>
+    <div class="tab" data-p="claude" title="What Claude may do to each account by itself, waking it on an attack, and what it did">Claude</div>
   </div>
   <input id="q" placeholder="filter…" style="width:170px">
   <button id="colsBtn">Columns</button>
@@ -760,6 +773,40 @@
     <div class="tr-muted" id="glMeta" style="margin:10px 0">reading the log&hellip;</div>
     <div id="glDays"></div>
     <div class="bandwrap" id="glDetail" hidden></div>
+  </div>
+</div>
+
+<div id="pageClaude" hidden>
+  <!-- The Claude tab (claude-perms.js, claude-wake.js; 2026-09-28): what a Claude
+       woken for an attack may do to each account by itself, the switch that lets
+       the Director wake it, and every wake with Claude's own report. -->
+  <div class="bandwrap">
+    <h3>Wake Claude on an attack</h3>
+    <div class="tr-muted" style="margin-bottom:8px">
+      When an account gets a <b>real</b> attack &mdash; one at or above the city&rsquo;s <b>defensepolicy /junktroop</b>
+      (1000 when not set; an army of unknown size counts) &mdash; the Director runs Claude once for that attack,
+      on your own Claude login, with only the OTTObot tools. Its job is only to keep the account alive, and it can act
+      only through the boxes below; with all of them off it still looks and reports. Waves of the same attacker within
+      15 minutes are one attack. The Director checks the consoles once a minute.
+    </div>
+    <div class="mon-row">
+      <label><input type="checkbox" id="clOn" style="width:auto"> Wake Claude on a real attack</label>
+      <label>at most <input type="number" id="clCap" min="0" max="60" style="width:64px"> wakes an hour, fleet-wide</label>
+      <span class="tr-muted" id="clStat">&mdash;</span>
+    </div>
+  </div>
+  <div class="bandwrap">
+    <h3>Claude permissions</h3>
+    <div class="tr-muted" style="margin-bottom:8px">
+      Ticked = Claude may do this to that account by itself. Each box saves at once; the column&rsquo;s
+      <i>all</i> / <i>none</i> sets every account. The same boxes are in each console&rsquo;s Settings &rarr; Claude permissions.
+      A holiday is never ended by Claude, and never set to renew itself, whatever is ticked.
+    </div>
+    <div style="overflow:auto"><table id="clGrid"><thead></thead><tbody></tbody></table></div>
+  </div>
+  <div class="bandwrap">
+    <h3>Wakes</h3>
+    <div id="clWakes" class="tr-muted">&mdash;</div>
   </div>
 </div>
 
@@ -1387,9 +1434,13 @@ function cityHeroTrouble(a) {
   };
 }
 
-// Under attack: the console's live word (session.js underAttackView) — hostile
-// armies marching at a city now, or a wave landed in the last 30 min — else
-// the snapshot's count of inbound armies, which can be minutes old.
+// Under attack: the console's live word (session.js underAttackView) — REAL
+// attacks marching at a city now, or a real wave landed in the last 30 min —
+// else the snapshot's count of inbound armies, which can be minutes old. Real
+// means at or above that city's defensepolicy /junktroop (1000 by default, an
+// army of unknown size counting); the console leaves junk out, so an account
+// with only junk inbound shows nothing here (attacks.js, 2026-09-28). The
+// snapshot's count cannot tell sizes, so it still counts every army.
 function warOf(a) {
   const U = a.live && Date.now() - a.live.at < 5 * 60000 ? a.live.underAttack : null;
   if (U) return { on: !!U.on, cities: U.cities || [], at: U.at || Date.now() };
@@ -2190,6 +2241,74 @@ $('#proxySave').onclick = async () => {
 };
 
 // ======================================================================
+//  Claude — permissions per account, auto-wake on attack, the wake log
+//  (/api/claude; claude-perms.js, claude-wake.js; 2026-09-28)
+// ======================================================================
+let CL = null;
+const CL_STATUS = { running: ['maint', 'running'], done: ['ok', 'done'], error: ['err', 'error'], timeout: ['err', 'stopped at the time limit'],
+  capped: ['warn', 'not woken (cap)'], joined: ['stale', 'left to the running Claude'], lost: ['stale', 'lost'] };
+async function loadClaude() {
+  let j = null;
+  try { j = await fetch('/api/claude').then((r) => r.json()); } catch { j = null; }
+  if (!j || !j.ok) {
+    $('#clStat').textContent = 'this Director is running older code with no Claude tab yet — it needs a restart to load it';
+    return;
+  }
+  CL = j;
+  paintClaude();
+}
+function paintClaude() {
+  const j = CL; if (!j) return;
+  if (document.activeElement !== $('#clOn')) $('#clOn').checked = !!j.autoWake;
+  if (document.activeElement !== $('#clCap')) $('#clCap').value = j.cap;
+  $('#clStat').textContent = (j.autoWake ? 'on' : 'off — nothing wakes') + ` · ${j.lastHour} wake(s) in the last hour${j.running ? ` · ${j.running} running now` : ''}`;
+  $('#clGrid thead').innerHTML = '<tr><th>Account</th>' + j.perms.map((p) => `<th title="${escq(p.help)}">${p.n}. ${esc(p.label)}`
+    + `<span class="cl-all"><a href="#" data-all="${p.key}" data-v="1">all</a> · <a href="#" data-all="${p.key}" data-v="0">none</a></span></th>`).join('') + '</tr>';
+  $('#clGrid tbody').innerHTML = j.accounts.map((a) => `<tr class="${a.enabled ? '' : 'off'}"><td>${esc(a.id)} ${esc(a.label)}</td>`
+    + j.perms.map((p) => `<td><input type="checkbox" data-acc="${escq(a.id)}" data-perm="${p.key}"${a.perms[p.key] ? ' checked' : ''} title="${escq(a.label + ': ' + p.label)}"></td>`).join('') + '</tr>').join('')
+    || '<tr><td colspan="7" class="tr-muted">no accounts</td></tr>';
+  const when = (t) => t ? new Date(t).toLocaleString() : '—';
+  $('#clWakes').innerHTML = j.wakes.length ? j.wakes.map((w) => {
+    const st = CL_STATUS[w.status] || ['stale', w.status];
+    return `<details class="cl-wake"><summary><b>${when(w.at)}</b> <span>${esc(w.accountId)} ${esc(w.label)}</span>`
+      + `<span class="pill ${st[0]}">${esc(st[1])}${w.exitCode !== null && w.exitCode !== undefined ? ` · exit ${w.exitCode}` : ''}</span>`
+      + `<span class="tr-muted">${esc(w.attacker)} → ${esc((w.cities || []).join(', '))}</span></summary>`
+      + `<h4>Claude's report</h4><pre>${esc(w.output || (w.status === 'running' ? 'still running…' : '—'))}</pre>`
+      + (w.prompt ? `<h4>The prompt</h4><pre>${esc(w.prompt)}</pre>` : '')
+      + `<h4>Attack</h4><pre>key ${esc(w.key)}\narmies ${esc((w.keys || []).join(', '))}${w.endedAt ? `\nended ${when(w.endedAt)}` : ''}</pre></details>`;
+  }).join('') : 'No wakes yet.';
+}
+$('#clOn').onchange = async (e) => {
+  const on = e.target.checked;
+  if (on && !await ask('Let the Director wake Claude on every real attack?', { title: 'Claude', ok: 'Turn it on',
+    detail: 'Each new attack at or above the city’s /junktroop runs Claude once, on your own Claude login, with only the OTTObot tools. It can act only through the ticked permissions.' })) { e.target.checked = false; return; }
+  const r = await post('/api/claude/autowake', { on });
+  if (!r.ok) { e.target.checked = !on; return tell(r.error || 'could not be saved', { title: 'Claude' }); }
+  loadClaude();
+};
+$('#clCap').onchange = async (e) => {
+  const r = await post('/api/claude/autowake', { cap: Number(e.target.value) });
+  if (!r.ok) tell(r.error || 'could not be saved', { title: 'Claude' });
+  loadClaude();
+};
+$('#clGrid').addEventListener('change', async (e) => {
+  const x = e.target.closest('input[data-perm]'); if (!x) return;
+  const r = await post('/api/claude/perms', { id: x.dataset.acc, perms: { [x.dataset.perm]: x.checked } });
+  if (!r.ok) { x.checked = !x.checked; tell(r.error || 'could not be saved', { title: 'Claude permissions' }); }
+});
+$('#clGrid').addEventListener('click', async (e) => {
+  const a = e.target.closest('a[data-all]'); if (!a) return;
+  e.preventDefault();
+  const on = a.dataset.v === '1';
+  const p = (CL && CL.perms.find((x) => x.key === a.dataset.all)) || { label: a.dataset.all };
+  if (on && !await ask(`Let Claude "${p.label}" on EVERY account?`, { title: 'Claude permissions', ok: 'Tick all' })) return;
+  const r = await post('/api/claude/perms', { all: true, perms: { [a.dataset.all]: on } });
+  if (!r.ok) tell(r.error || 'could not be saved', { title: 'Claude permissions' });
+  loadClaude();
+});
+setInterval(() => { if (PAGE === 'claude' && !document.hidden) loadClaude(); }, 15000);
+
+// ======================================================================
 //  Uptime
 // ======================================================================
 let PAGE = 'fleet', UP = null, UP_HOURS = 12;
@@ -2204,6 +2323,8 @@ document.querySelectorAll('.tab').forEach((t) => {
     $('#pageResources').hidden = PAGE !== 'resources';
     $('#pageAccounts').hidden = PAGE !== 'accounts';
     $('#pageMonitor').hidden = PAGE !== 'monitor';
+    $('#pageClaude').hidden = PAGE !== 'claude';
+    if (PAGE === 'claude') loadClaude();
     if (PAGE === 'accounts') { amRepaint(); $('#amWrap').focus({ preventScroll: true }); }
     if (PAGE === 'monitor') showMonSub(MON_SUB);
     if (PAGE === 'resources') loadResources();

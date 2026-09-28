@@ -457,6 +457,7 @@ class Session {
       + `staying out ${mins !== null ? `${mins} min, until ` : 'until '}${new Date(hold.until).toLocaleTimeString()}`
       + `${step > 1 ? ` — refused ${step} times in a row now, so the wait grew` : ''} — Connect takes it back now`;
     this.note(this.disconnectReason);
+    this.emitEvent('kicked', { source, ip: ip || null, minutes: mins, until: hold.until, step });
     return hold;
   }
 
@@ -864,10 +865,12 @@ class Session {
       this.note(`server looks down — ${this.maint.reason}`
         + (this.maint.override ? ' — override is ON, still trying' : ' — pausing, will retry once a minute'));
       this.armRaceFromServer();
+      this.emitEvent('maintenance', { phase: 'down', reason: this.maint.reason });
     } else if (!this.maint.active && was) {
       const mins = Math.round((Date.now() - (this.maint.since || Date.now())) / 60000);
       this.maint.since = null;
       this.note(`server is back after about ${mins} minute(s) — resuming`);
+      this.emitEvent('maintenance', { phase: 'up', minutes: mins });
       this.noteMaintenanceEnded();
     }
     return this.maint;
@@ -1150,6 +1153,7 @@ class Session {
     this.note(`maintenance announced ("${text.slice(0, 80)}") — standing down in `
       + `${Math.max(0, Math.round((pauseAt - Date.now()) / 60000))}m, back about `
       + `${new Date(resumeAt).toLocaleTimeString()}`);
+    this.emitEvent('maintenance', { phase: 'announced', text: text.slice(0, 200), startsAt, pauseAt, resumeAt });
     return this.maint.plan;
   }
 
@@ -1727,6 +1731,10 @@ class Session {
             this.nextTryAt = Date.now() + 2000;      // first retry is quick
             this.note('socket closed — supervisor will reconnect');
           }
+          this.emitEvent('disconnected', {
+            by: g.c.closedByUs ? 'us' : g.c.closedHadError ? 'error' : 'server', state: this.state,
+            reason: this.disconnectReason || null, kickHold: !!this.kickHold(), lastCmds: last,
+          });
         }
         if (/ignoring this account/.test(m)) {
           this.disconnectReason = 'server is ignoring this account (rate limited) — backing off';
@@ -1758,6 +1766,12 @@ class Session {
         try { g.close(); } catch {}
       });
       this.note('session ready');
+      // Claude's events feed: the login, then the army lists it came with, so an
+      // attack already on its way is announced at once rather than at the next push.
+      this.emitEvent('connected', { cities: g.castles.length, proxy: (g.proxy && g.proxy.label) || null });
+      g.emitEvent = (type, data) => { if (this.game === g) this.emitEvent(type, data); };
+      this.trackArmies('enemy', g, (g.player && g.player.enemyArmys) || []);
+      this.trackArmies('self', g, (g.player && g.player.selfArmys) || []);
       return g;
     })().catch((e) => { this.lastError = e.message; this.note('connect failed: ' + e.message); throw e; })
       .finally(() => { this.connecting = null; });
@@ -1836,9 +1850,11 @@ class Session {
         // which counts busy rally slots from this very list, counted stale marches.
         case 'server.SelfArmysUpdate':
           if (g.player) g.player.selfArmys = data.armys || [];
+          if (this.game === g) this.trackArmies('self', g, data.armys || []);      // Claude's events feed
           break;
         case 'server.EnemyArmysUpdate':
           if (g.player) g.player.enemyArmys = data.armys || [];
+          if (this.game === g) this.trackArmies('enemy', g, data.armys || []);
           break;
         case 'server.FriendArmysUpdate':
           if (g.player) g.player.friendArmys = data.armys || [];
@@ -1954,8 +1970,8 @@ class Session {
   cities() {
     if (!this.game) return [];
     const g = this.game;
-    const hostile = (g.player && g.player.enemyArmys) || [];
     const training = this.trainingHeroes();
+    const atk = this.attacksByCity();
     return g.castles.map((c) => {
       const xy = g.castleXY(c) || { x: 0, y: 0 };
       const id = g.castleId(c);
@@ -1963,10 +1979,17 @@ class Session {
       const food = Number((res.food && res.food.amount) || 0);
       const foodRate = Number((res.food && res.food.increaseRate) || 0) - Number(res.troopCostFood || 0);
       const ctl = this.controls(id);
+      const A = atk[id] || { real: [], junk: [], junkLine: null };
       return {
         id, name: c.name, x: xy.x, y: xy.y,
-        incoming: hostile.filter((a) => Number(a.targetFieldId) === Number(c.fieldId)).length,
-        underAttack: !!c.hasEnemy,
+        // Only attacks at or above the city's /junktroop are an attack (the user,
+        // 2026-09-28: 999 troops against junktroop 1000 shows nothing). The
+        // server's c.hasEnemy is set for junk too, so it no longer lights the
+        // tab on its own; junkIncoming says what was left out.
+        incoming: A.real.length,
+        junkIncoming: A.junk.length,
+        junkLine: A.junkLine,
+        underAttack: A.real.length > 0,
         gateOpen: !!c.goOutForBattle,
         foodHours: foodRate < 0 ? food / -foodRate : null,
         gate: ctl.gate, wartown: ctl.wartown,
@@ -2049,6 +2072,7 @@ class Session {
       ? 'gate control: Auto — the goals decide the gate again'
       : `gate control: ${mode === 'open' ? 'OPENED' : 'CLOSED'} by hand, the engine will hold it`,
     { city: castle.name, kind: 'act' });
+    this.emitEvent('gate_changed', { cityId: g.castleId(castle), city: castle.name, mode, open: !!castle.goOutForBattle, by: 'console' });
     return { ok: true, controls: ctl, gateOpen: !!castle.goOutForBattle };
   }
 
@@ -2127,7 +2151,12 @@ class Session {
             ? `${prot.label}${prot.left && prot.left !== 'expired' ? ` (${prot.left} left)` : ''}`
             : own,
           protection: prot ? { kind: prot.kind, label: prot.label, left: prot.left, msLeft: prot.msLeft } : null,
-          hasEnemy: !!c.hasEnemy,
+          // the red "under attack" chip: a real attack only (attacks.js — the
+          // server's c.hasEnemy is set for junk too; 2026-09-28)
+          hasEnemy: (() => {
+            try { const v = this.attacksByCity()[this.game.castleId(c)]; return !!(v && v.real.length); }
+            catch { return !!c.hasEnemy; }
+          })(),
           gates: c.goOutForBattle ? 'Open' : 'Closed',
           allowAlliance: !!c.allowAlliance,
           population: Math.round(Number(res.curPopulation || 0)),
@@ -2627,32 +2656,133 @@ class Session {
 
   marches() { return this.connected ? marches(this.game) : []; }
 
-  // Under attack, for the Director: { on, cities: [{ name, inbound, firstLandsAt,
-  // lastWaveAt, loyalty }] } — each city with hostile armies marching at it now
-  // (the engine's push-fed list, or the login's before the first tick), or a
-  // wave landed in the last 30 min. Null while not logged in.
-  underAttackView() {
+  // ---- Claude's events feed (claude-events.js, 2026-09-28) ----
+  // A short in-memory ring of what is worth reacting to, read by /api/events.
+  // Every hook that feeds it is one call wrapped so it can never throw into the
+  // push handler or the login it sits in: these are live consoles.
+  eventFeed() {
+    if (!this._events) this._events = new (require('./claude-events').EventRing)();
+    return this._events;
+  }
+  emitEvent(type, data = {}) {
+    try { return this.eventFeed().emit(type, { account: (this.account && this.account.id) || null, ...data }); }
+    catch { return null; }
+  }
+  // The army lists arrive whole on every push; what changed becomes events.
+  // The previous list is kept across reconnects (army ids are the server's), so
+  // a relog does not announce the same attack twice. Hostile armies already on
+  // their way at the first look ARE announced — that is exactly what a waking
+  // Claude needs to hear; our own marches at the first look are only the start.
+  trackArmies(which, g, armies) {
+    try {
+      const CE = require('./claude-events');
+      if (which === 'self') {
+        const r = CE.diffSelf(this._selfPrev || null, armies, { now: g.now ? g.now() : Date.now() });
+        this._selfPrev = r.next;
+        for (const e of r.events) this.emitEvent(e.type, e);
+        return r.events;
+      }
+      const castles = (g.castles || []).map((c) => ({ id: g.castleId(c), name: c.name, fieldId: c.fieldId }));
+      // the junk line is the city's own defensepolicy /junktroop (attacks.js,
+      // part B of this work) when that module is there; 1000 otherwise
+      let isReal = null;
+      try {
+        const A = require('./attacks');
+        const goalsOf = (cid) => (this.engine && this.engine.goalsSeen && this.engine.goalsSeen[cid] || {}).goals || [];
+        isReal = (s, cid) => A.isRealAttack({ troops: s.troops }, A.junkLineOf(goalsOf(cid)));
+      } catch { /* not there yet: the default line */ }
+      const r = CE.diffEnemy(this._enemyPrev || new Map(), armies, castles, { now: g.now ? g.now() : Date.now(), isReal });
+      this._enemyPrev = r.next;
+      for (const e of r.events) this.emitEvent(e.type, e);
+      return r.events;
+    } catch { return []; }
+  }
+
+  // castleId -> { junkLine, real, junk } — each city's inbound hostile armies
+  // split by its own defensepolicy /junktroop, army by army (attacks.js; the
+  // user, 2026-09-28: "junktroop applies per attack"). Armies whose landing
+  // time is more than a minute past are dropped, as threatsOf does. {} while
+  // there is no game or the list cannot be read.
+  attacksByCity() {
     const g = this.game, e = this.engine;
-    if (!this.connected || !g || !Array.isArray(g.castles)) return null;
+    if (!g || !Array.isArray(g.castles)) return {};
+    const A = require('./attacks');
     let incoming = {};
     try {
       incoming = e && e.game === g ? e.incomingFor()
         : require('./engine').incomingByCity(g, (g.player && g.player.enemyArmys) || []);
-    } catch { return null; }
+    } catch { return {}; }
     const now = g.now ? g.now() : Date.now();
-    const waves = (e && e.game === g && e.lastWaveAt) || {};
+    const out = {};
+    for (const c of g.castles) {
+      const id = g.castleId(c);
+      const list = (incoming[id] || []).filter((a) => { const rt = Number(a && a.reachTime); return !(rt > 1e12 && rt < now - 60000); });
+      let goals = null;
+      try { goals = (this.goalsOf(c) || {}).goals || null; } catch { goals = null; }
+      out[id] = A.realAttacks(list, goals);
+    }
+    this.noteRealWaves(out, now);
+    return out;
+  }
+
+  // When a REAL attack last landed in each city. The engine's lastWaveAt counts
+  // junk waves too, so the Director's "hit N min ago" would light up for a
+  // 10-troop scout; this remembers each real army seen and, once it leaves the
+  // list at or after its landing time, files that time. It only knows what it
+  // was shown, which is every poll of cities() and underAttackView() — the
+  // console page and the Director ask every few seconds / every minute.
+  noteRealWaves(byCity, now) {
+    const m = (this._realWave = this._realWave || { seen: new Map(), lastAt: {} });
+    const A = require('./attacks');
+    const still = new Set();
+    for (const [id, v] of Object.entries(byCity)) {
+      for (const a of v.real) {
+        const k = id + '|' + A.attackKey(a);
+        still.add(k);
+        m.seen.set(k, { id, reachTime: Number(a.reachTime) || 0 });
+      }
+    }
+    for (const [k, s] of m.seen) {
+      if (still.has(k)) continue;
+      m.seen.delete(k);
+      if (s.reachTime > 0 && s.reachTime <= now + 2000) m.lastAt[s.id] = Math.max(Number(m.lastAt[s.id] || 0), s.reachTime);
+    }
+  }
+
+  // Under attack, for the Director, the Claude waker (claude-wake.js) and the
+  // events feed: { on, at, cities: [{ id, name, inbound, junk, junkLine,
+  // firstLandsAt, lastWaveAt, loyalty, real: [{ key, armyId, troops, from,
+  // fromFieldId, king, alliance, reachTime }] }] } — each city with a REAL
+  // attack marching at it now (at or above its /junktroop; troops null = size
+  // unknown, which counts), or a real wave landed in the last 30 min. A city
+  // with only junk inbound is left out: junk shows nothing and wakes nobody
+  // (the user, 2026-09-28). `key` is stable across polls: the armyId, else
+  // from@reachTime. Null while not logged in.
+  underAttackView() {
+    const g = this.game;
+    if (!this.connected || !g || !Array.isArray(g.castles)) return null;
+    const byCity = this.attacksByCity();
+    const A = require('./attacks');
+    const now = g.now ? g.now() : Date.now();
+    const waves = (this._realWave && this._realWave.lastAt) || {};
     const cities = [];
     for (const c of g.castles) {
       const id = g.castleId(c);
-      const list = incoming[id] || [];
+      const v = byCity[id] || { real: [], junk: [], junkLine: A.DEF_JUNK };
+      const list = v.real;
       const last = Number(waves[id] || 0);
       const recent = last && now - last < 30 * 60000;
       if (!list.length && !recent) continue;
       const lands = list.map((a) => Number(a.reachTime) || Infinity);
       cities.push({
-        name: c.name, inbound: list.length,
+        id, name: c.name, inbound: list.length, junk: v.junk.length, junkLine: v.junkLine,
         firstLandsAt: list.length && Number.isFinite(Math.min(...lands)) ? Math.min(...lands) : null,
         lastWaveAt: last || null, loyalty: (c.resource || {}).support ?? null,
+        real: list.map((a) => ({
+          key: A.attackKey(a), armyId: a.armyId ?? null, troops: A.armySize(a),
+          from: a.from || null, fromFieldId: a.startFieldId ?? null,
+          king: a.king || null, alliance: a.alliance || null, reachTime: Number(a.reachTime) || null,
+        })),
       });
     }
     return { on: cities.length > 0, at: now, cities };

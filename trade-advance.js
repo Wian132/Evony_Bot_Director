@@ -30,24 +30,62 @@ const D = require('C:/EvonyTool/db');
 // pass cancelled their books. Draining the resources first and sweeping gold at the end
 // collects all of it in one pass instead of chasing it four times.
 // Gold is carried by STONE, never food (food caps at 950b a town and jams).
+// 2026-09-27: GOLD RUNS FIRST AS WELL AS LAST, which is the user's order in full — "1. Gold
+// 2. Stone 3. food 4. wood 5. iron" and then "repass through gold". Gold is the prize and it
+// dwarfs the rest: the five banks hold 4,380t of gold against ~150t of food/wood/stone/iron
+// between them. Capture is also at its highest in the half hour after maintenance, before the
+// other players' bots have loaded, so the valuable pass belongs in that window and not five
+// passes later. The closing sweep still earns its place: every resource pass opens with
+// canceltrade, and cancelling a bank's resting BUY orders REFUNDS the gold locked in them, so
+// gold keeps reappearing behind us (measured 2026-09-26: the banks read 0.77t and looked
+// finished, then 8.64t the moment the stone pass cancelled their books).
+// Gold is carried by STONE, never food (food caps at 950b a town and jams).
 const STEPS = [
-  { name: 'stone', res: 'stone', price: 0.001, banks: 'sell' },
-  { name: 'food', res: 'food', price: 0.001, banks: 'sell' },
-  { name: 'wood', res: 'wood', price: 0.001, banks: 'sell' },
-  { name: 'iron', res: 'iron', price: 0.001, banks: 'sell' },
-  { name: 'gold', res: 'stone', price: 150, banks: 'buy' },   // last: sweeps every refund
+  { name: 'gold', res: 'stone', price: 150, banks: 'buy' },     // first: the post-maintenance window
+  // 2026-09-27: the resource passes buy at 3, not 0.001. Measured that day on stone, same
+  // fleet and scripts, 20-minute windows: at 0.001 only 41% of what left the banks reached
+  // us, at 3 it was 92%. Cheap is what other players' bots lock onto, and the gold we pay
+  // goes to a HOLIDAY account, so it returns in that bank's restore baseline and the closing
+  // gold sweep takes it back — a dear buy-back is close to free. (Turn the price ladder OFF
+  // or it walks this straight back down to 0.001: EVONY-RULES, the ladder's raw-count bug.)
+  // 2026-09-27, CORRECTED same day: 1, not 3. Price 3 DEADLOCKED the food pass from a cold
+  // start — 20 minutes, ~17,400 sell orders and ~17,900 of our bids placed, and ZERO fills
+  // on either side (verified by relogging both a bank and two of ours: no food moved and no
+  // gold left us, so it was not leakage either). Dropping to 1 crossed immediately: 1,643
+  // fills in the next 2.5 minutes. The mechanism is NOT understood — it is not 'same price
+  // never crosses', because at 1 both sides are also on the same price and it crosses fine.
+  // 1 is the user's own starting figure and it is known to work; 3 is only safe as a step UP
+  // from a price that is already moving, which is how the stone pass reached it.
+  { name: 'stone', res: 'stone', price: 1, banks: 'sell' },
+  { name: 'food', res: 'food', price: 1, banks: 'sell' },
+  { name: 'wood', res: 'wood', price: 1, banks: 'sell' },
+  { name: 'iron', res: 'iron', price: 1, banks: 'sell' },
+  { name: 'gold sweep', res: 'stone', price: 150, banks: 'buy' },  // last: every refund
 ];
 
-const BANKS = ['a4', 'a5', 'a8', 'a9', 'a11', 'a13', 'a14', 'a15', 'a16'];
-// a23 Lord23 joined the fleet on 2026-09-25 (moved into the hub, not on holiday), so it
-// trades on OUR side like the rest (the user: "you can also add Lord23 to the trading so
-// it starts adding res").
-// a7 Lord07 is OUT of the trading (the user, 2026-09-26) — they use it by hand.
-// 2026-09-26 19:2x: Lord02 (a2), Lord17 (a17), Lord03 (a3), Lord21 (a21) and
-// Lord20 (a20) went ON HOLIDAY, so they are no longer our side. a7 Lord07 is out of
-// the trading by the user's choice. TOMORROW the user takes the nine current banks OUT of
-// holiday and these five become the banks — BANKS and OURS both have to be swapped then.
-const OURS = ['a1', 'a6', 'a10', 'a12', 'a18', 'a19', 'a23'];
+// 2026-09-27 09:4x — FIVE banks, the rotation done. The user took the nine older banks OUT
+// of holiday after this morning's maintenance and left in the five they holidayed last night,
+// which came through it and so are glitch-ready: a2 Lord02, a3 Lord03, a17 Lord17,
+// a20 Lord20, a21 Lord21. They hold 4,380t of gold between them.
+// The nine are RECEIVERS now and are in OURS below. Check the Director's holiday column
+// against this list before every start — out of holiday there is no put-back, so a cheap sale
+// or a dear buy from one of them is a real loss (the skill, and EVONY-RULES §4).
+const BANKS = ['a2', 'a3', 'a17', 'a20', 'a21'];
+// OURS is everything out of holiday, which is what the user asked for on 2026-09-27:
+// "5 banks (moving off side) onto everything", naming a24, a25 and a23 to be brought in.
+// a7 Lord07 is back IN — it was held out on 2026-09-26 only ("keep lord07 out of
+// trading for TODAY please ill be using it myself"), and that day is over.
+// 178 towns, 156.8t of stone
+// between them — enough to carry 23,526t of gold against the 4,380t there is to move.
+// a1 Lord01 is LEFT OUT at the user's word ("yes Lord01 can sit out"): all ten of its
+// towns hold 99.2-100.1t of gold, so at the 100t cap it would sit on the sitout anyway.
+// a24 Lord24, a25 Lord25 and a23 Lord23 hold almost no stone (0, 0 and 0.3t), so they sit
+// the opening GOLD pass out with nothing to sell. They come alive at the stone pass — Lord24
+// and Lord25 have ~600m of gold a town, thousands of orders' worth at 0.001 — and then
+// carry that stone into the closing sweep. Their 28 near-empty towns are the fleet's best
+// gold room, so it is worth having them in from the start.
+const OURS = ['a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12', 'a13', 'a14', 'a15',
+  'a16', 'a18', 'a19', 'a23', 'a24', 'a25'];
 const CAP = { food: 900e9, wood: 800e9, stone: 2000e9, iron: 800e9 };
 const T = 1e12;
 
@@ -86,17 +124,20 @@ function sid() {
   return typeof s === 'string' ? s : (s.id || s.sid);
 }
 
-function call(path, method, body, cookie) {
+function call(path, method, body, cookie, port = 8712) {
   return new Promise((resolve, reject) => {
     const data = body === null ? null : JSON.stringify(body);
     const req = http.request({
-      host: 'localhost', port: 8712, path, method,
+      host: 'localhost', port, path, method,
       headers: { Cookie: 'otto_sid=' + cookie, ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) },
       timeout: 180000,
     }, (res) => {
       let s = '';
       res.on('data', (d) => (s += d));
-      res.on('end', () => { try { resolve(JSON.parse(s)); } catch { reject(new Error('bad reply: ' + s.slice(0, 200))); } });
+      res.on('end', () => {
+        if (!s.trim()) return resolve({ ok: res.statusCode < 400 });   // /api/reconnect answers empty
+        try { resolve(JSON.parse(s)); } catch { reject(new Error('bad reply: ' + s.slice(0, 200))); }
+      });
     });
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('timed out')));
@@ -106,7 +147,48 @@ function call(path, method, body, cookie) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const stepOf = (res, price) => STEPS.find((s) => s.res === res && (Number(price) >= 50) === (s.price >= 50));
+
+// the port a console is really on, from its own log header (ports move on every restart)
+function portOf(id) {
+  try {
+    const log = require('fs').readFileSync('C:/EvonyTool/console-' + id + '.log', 'utf8');
+    const m = [...log.matchAll(/port:\s*(\d+)/g)];
+    return m.length ? m[m.length - 1][1] : null;
+  } catch { return null; }
+}
+
+// Reconnect every bank and wait until each one's snapshot is newer than the relog, so the
+// figures the run judges on are from AFTER a fresh login. Never fatal: if a bank will not
+// come back in time we carry on with what we have rather than skipping the run entirely.
+async function relogBanks(cookie) {
+  const at = Date.now();
+  for (const id of BANKS) {
+    const port = portOf(id);
+    if (!port) continue;
+    try { await call('/api/reconnect', 'POST', {}, cookie, port); } catch { /* try the rest */ }
+  }
+  for (let i = 0; i < 12; i++) {
+    const stale = BANKS.filter((id) => {
+      const r = D.all('SELECT at FROM account_latest WHERE accountId = ?', id)[0];
+      return !r || r.at < at;
+    });
+    if (!stale.length) return true;
+    await sleep(10000);
+  }
+  return false;
+}
+
+// THE TWO GOLD STEPS LOOK IDENTICAL from the control file — both are stone at 150 — so
+// res+price cannot tell the opening pass from the closing sweep. The saved state carries the
+// step's INDEX and that is what picks between them. Without it, finishing the sweep would
+// read as finishing the opening pass and the day would loop back round to stone for ever.
+// Returns { s, i }, or null when the file is set to something that is not one of mine.
+const stepOf = (res, price, idx) => {
+  const c = STEPS.map((s, i) => ({ s, i }))
+    .filter(({ s }) => s.res === res && (Number(price) >= 50) === (s.price >= 50));
+  if (!c.length) return null;
+  return c.find((x) => x.i === idx) || c[0];
+};
 
 async function startStep(step, cookie, say) {
   const st = await call('/api/trading/setup', 'GET', null, cookie);
@@ -167,23 +249,57 @@ async function main() {
   try { st = D.settings.get(STATE_KEY, null); } catch { /* first run */ }
   st = st || { name: null, since: now, seen: null };
 
+  // ONE CYCLE A DAY. When the last step finishes the state is marked done WITH THE DATE, and
+  // every later run that same day stops here. Without this the day loops: `idx: null` matches
+  // no step, so stepOf() fell back to the FIRST one, read the finished gold sweep as the
+  // opening gold pass and set off through stone/food/wood/iron again — observed 2026-09-27,
+  // "ALL PASSES DONE" at 18:06 and a fresh stone pass at 18:26.
+  // A new day (after maintenance puts the banks' resources back) starts the cycle again.
+  const today = new Date().toISOString().slice(0, 10);
+  if (st.name === 'done' && st.day === today) {
+    say(`the day's passes are done (finished ${new Date(st.since).toLocaleTimeString()}) — nothing to do until tomorrow`);
+    return;
+  }
+
+  // RELOG THE BANKS BEFORE JUDGING. `account_latest` lags badly on a busy account and this
+  // script's whole job is deciding "is this pass finished?" from it. On 2026-09-27 that cost
+  // time in BOTH directions in one morning:
+  //   - gold: the cache read 1,194t left when the banks had been empty for 25 minutes, so the
+  //     pass sat doing nothing until a hand relog;
+  //   - stone: the cache read no movement while ~1.2t every 5 min was really filling, so the
+  //     stall rule below fired and restarted a perfectly healthy pass, costing ~10 minutes to
+  //     the autorun gate.
+  // A reconnect is cheap and keeps each console's autorun script up (see bank-truth.js), so
+  // do it every run and judge on figures from after it.
+  await relogBanks(cookie);
   const view = await call('/api/trading/setup', 'GET', null, cookie);
   const ctl = view.control || {};              // `control` IS the parsed control file
   // the caps the user has set, so the room arithmetic matches what the play will obey
   LIVE = ctl.caps || ((view.setup && view.setup.play && view.setup.play.caps) || null);
   const running = !!(view.run && view.run.state !== 'stopped' && view.run.state !== 'idle');
-  const step = stepOf(ctl.res, ctl.price);
-  if (!step) { say(`control file says res="${ctl.res}" price=${ctl.price} — not one of mine, leaving it alone`); return; }
+  const hit = stepOf(ctl.res, ctl.price, st.idx);
+  if (!hit) { say(`control file says res="${ctl.res}" price=${ctl.price} — not one of mine, leaving it alone`); return; }
+  const step = hit.s, idx = hit.i;
+  // the same step we were watching last run? by INDEX, so the two gold passes stay apart
+  const same = st.idx === idx;
 
   // What we are draining, and where it has to land.
-  const gold = step.name === 'gold';
+  // A GOLD STEP IS ONE PRICED >= 50 — never `name === 'gold'`. The closing sweep is called
+  // 'gold sweep', so a name test silently made it measure the banks' STONE instead of their
+  // GOLD and misjudge itself (introduced and caught 2026-09-27). Same signature the control
+  // file uses for `kind`.
+  const gold = Number(step.price) >= 50;
   const left = gold ? totals(BANKS, 'gold') : totals(BANKS, step.res);
   const room = gold ? roomFor(BANKS, step.res)          // the banks must have room for the carrier
     : roomFor(OURS, step.res);                          // we must have room for what they sell
   const ours = totals(OURS, gold ? 'gold' : step.res);  // measured on our side: it updates first
 
-  const moved = st.name === step.name && st.seen !== null ? ours - st.seen : null;
-  const stalled = st.name === step.name && moved !== null && Math.abs(moved) < 0.2 * T && (now - st.since) > STALL_MS;
+  // MOVEMENT IS MEASURED ON THE BANKS, because they are the side relogBanks() just
+  // refreshed. It used to be measured on ours ("it updates first"), which was not true: our
+  // eighteen accounts are exactly the busy ones whose snapshots lag, and a false "nothing
+  // moved" is what restarted a healthy stone pass on 2026-09-27.
+  const moved = same && st.seenLeft !== undefined && st.seenLeft !== null ? st.seenLeft - left : null;
+  const stalled = same && moved !== null && Math.abs(moved) < 0.2 * T && (now - st.since) > STALL_MS;
 
   const roomTxt = Number.isFinite(room) ? (room / T).toFixed(1) + 't' : 'uncapped';
   say(`${step.name}: banks ${(left / T).toFixed(1)}t · receiving room ${roomTxt} · we hold ${(ours / T).toFixed(1)}t`
@@ -202,27 +318,32 @@ async function main() {
     say(`STALLED with ${(left / T).toFixed(1)}t still there and ${(room / T).toFixed(1)}t of room `
       + '— that is a fault, not the end of the pass; starting it again');
     await startStep(step, cookie, say);
-    D.settings.set(STATE_KEY, { name: step.name, since: now, seen: ours });
+    D.settings.set(STATE_KEY, { name: step.name, idx, since: now, seen: ours, seenLeft: left });
     return;
   }
 
   if (!done) {
     if (!running) { say('not running — starting ' + step.name + ' again'); await startStep(step, cookie, say); }
-    D.settings.set(STATE_KEY, { name: step.name, since: st.name === step.name ? st.since : now, seen: ours });
+    D.settings.set(STATE_KEY, { name: step.name, idx, since: same ? st.since : now, seen: ours, seenLeft: left });
     return;
   }
 
   say(`${step.name} is finished (${done})`);
-  const next = STEPS[STEPS.indexOf(step) + 1];
+  const next = STEPS[idx + 1];
   if (!next) {
-    say('iron was the last one — stopping the play and cleaning the reports');
+    say(`${step.name} was the last one — stopping the play and cleaning the reports`);
     await call('/api/trading/stop', 'POST', { clean: true }, cookie);
-    D.settings.set(STATE_KEY, { name: 'done', since: now, seen: null });
+    D.settings.set(STATE_KEY, { name: 'done', idx: null, day: today, since: now, seen: null });
     say('ALL PASSES DONE');
     return;
   }
   if (await startStep(next, cookie, say)) {
-    D.settings.set(STATE_KEY, { name: next.name, since: Date.now(), seen: totals(OURS, next.name === 'gold' ? 'gold' : next.res) });
+    const nextIsGold = Number(next.price) >= 50;
+    D.settings.set(STATE_KEY, {
+      name: next.name, idx: idx + 1, since: Date.now(),
+      seen: totals(OURS, nextIsGold ? 'gold' : next.res),
+      seenLeft: nextIsGold ? totals(BANKS, 'gold') : totals(BANKS, next.res),
+    });
   }
 }
 

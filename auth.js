@@ -226,6 +226,13 @@ async function guard(req, res, { readBody }) {
     '/api/stats', '/api/stats/refresh', '/api/snapshot/refresh']);
   if (isInternal(req) && INTERNAL_OK.has(url.pathname)) return false;
 
+  // Claude's own keys (claude-guard.js, 2026-09-28): loopback only, each with its
+  // own short list of routes, a denylist in every scope, and an audit line for
+  // anything that changes something. A request with no Claude header goes on
+  // exactly as before.
+  const claude = await require('./claude-guard').gate(req, res, url, { readBody });
+  if (claude !== null) return claude;
+
   const cookies = cookiesOf(req);
   const ip = ipOf(req);
 

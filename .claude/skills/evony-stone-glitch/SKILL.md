@@ -195,3 +195,42 @@ both pick it up without another edit.
   captures. Lord16's heroes went to towns with 5-9 free slots, 5-9 tiles away.
 - Live figures, three heroes from Lord16 698,118: **captured after 2, 5 and 8+ attacks**
   with the hero + 1 scout against towns holding 60k-260k troops.
+
+## Planning a move: the four numbers, and the one read-only way to get them (2026-09-27)
+
+Planning the moves onto the six new accounts needed four figures per city, and only one of
+them is in the database. Getting them wrong costs a hero, so take them from here:
+
+- **`/api/debug/city?roster=1&id=<castleId>` on the account's own console** is the whole
+  answer in one GET: every hero's `id`, `name`, `level`, **base** `att`/`pol`/`int`,
+  `statusWord` (idle / mayor / marching / returning / **a prisoner**), `loyalty`, plus the
+  city's **Feasting Hall `capacity`** and its scout count. It reads the session already in
+  memory — **it sends nothing to the game** — and it needs the `x-otto-internal` header
+  (`auth.internalToken()`; the route is in `INTERNAL_OK`). Check `/api/session` first and
+  **skip any console that is not `connected`**, because `SESSION.connect()` on a
+  disconnected console would LOG IN.
+- **The database cannot answer this.** `account_latest` holds only a hero *count*;
+  `fleet_heroes` has id/name/level but no attack and no city; `stat_heroes` has attack but
+  **no hero id**, and its attack is the DISPLAYED number. Nothing stored holds hall
+  capacity, free slots or which heroes sit in which city.
+- **Guard the read against a short roster** (§5, "a console that has just logged in
+  lies"): add up the rosters and check the total equals `account_latest.heroes` and
+  roughly `fleet_heroes` for that account. All nine accounts matched on 2026-09-27.
+- **base vs displayed, the x1.25 test.** Roster `att` is base; `stat_heroes.attack` is
+  what the game shows. a6's `Wian` #46100 read **1642 base / 2053 displayed** —
+  2053/1642 = 1.2503, so an Excalibur was running. Every other hero checked matched
+  exactly. Quote base when deciding whether a hero clears 1526 on its own.
+
+**Two findings that changed the plan:**
+
+- **"Insta-pult-capable" counted with Excaliburs is a much bigger pool than the naked
+  one.** a6 Lord06 has 17 heroes at/above 1221 base but only **3** at/above 1526, one of
+  which is its own OTTO. A receiving account with **no goals** has no
+  `keepherobuff OTTO excalibur /below:1526` to renew the buff, so send it a hero that
+  clears **1526 naked** or the account silently drops out of insta catapult in 7 days.
+- **No `quitalliance` when the two sides are already in different alliances.** The
+  2026-09-23 note above cost 10% of a lord's prestige because sender and receiver shared
+  one. Check both sides' `alliance` in `account_latest` first: on 2026-09-27 the donors
+  (a6/a16 `0utCasts`, a7 `Nbk`) and the six new accounts (`1111`/`1112`) were already
+  apart, so the whole prestige cost was avoidable. *Unverified:* whether an alliance
+  **ally/NAP** relation blocks an attack the way membership does — check before marching.

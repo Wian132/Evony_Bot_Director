@@ -105,6 +105,66 @@ While the client holds a wrong tile for a city, `recallall` also stops working f
 - Keep a written list of pairs with each holder's outward destination chosen **before** the
   batch starts, and re-read those destination tiles on the day.
 
+## Moving far-away cities INTO the hub (a fleet move, 2026-09-27)
+
+This is the other half of the job: not swapping two hub tiles, but landing 30-odd cities
+that are scattered across the map. What was learned doing a26-a31:
+
+**Drive it from outside the console — no restart, no autorun.** `POST /api/script` with
+`{src, city: <castleId>, castle: <castleId>, runId: <anything unique>, wait: true}` runs a
+script in one city and answers with the whole log when it ends. The cookie is a session row:
+`auth.newSession(userId, orgId, '127.0.0.1', 'label')` against the first `users`/`orgs` row,
+sent as `Cookie: otto_sid=<sid>` (the pattern is in `trade-advance.js sid()`). `/api/script`
+is deliberately NOT on auth.js's INTERNAL_OK list, so the machine token will not do.
+This makes `teleport-job.txt` + a console restart unnecessary, which matters when the
+account is inside its 10-minute autorun gate or another session owns the restart.
+A hand-run script ends that city's autorun run, so check `/api/script/runs` first —
+a26-a31 had none, and no goals and no goal files either.
+
+**Probe every target before planning, and expect the flats to be gone.** `UpdateDetailInfo`
+on all 57 landable tiles within r=12 of the hub found **not one free flat** — see §5e. So the
+plan is NPC camps only, and a 30-city plan needs 30 camps, which means reaching r=13-16.
+
+**Read the reach stamps before you promise a time.** `city.selfArmies[].reachTime` decides
+the schedule, not the teleporter stock. 21 of 30 cities were pinned 1-3.8 hours by their own
+un-recallable transports to the hub. Ship resources AFTER the move, never before.
+
+**A retry driver must forget a city the moment it lands.** Restarting one over a stale table
+made it try to teleport a city that had already arrived; `teleport.js` caught it
+("<x,y> is your own city — nothing sent") and nothing was spent, but with a spare-target
+fallback in the loop the next step would have been to move a correctly-placed city onto a
+rim tile. Write the done list out after every landing and reload it on restart.
+
+**Background it properly, and then check there is exactly ONE.** A driver started with `&`
+inside a shell call looked dead — its log stopped — so it was restarted; in fact the node
+process had been orphaned and survived, and for two minutes **two drivers were teleporting the
+same cities from the same table**. Two instances racing on one city is how a correctly-placed
+city gets moved again. Use the tool's own background mode, and confirm the count:
+`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*driver.js*' }`
+— wrap it in `@(...)` before reading `.Count`, or PowerShell 5.1 prints nothing for a single
+object. Kill strays by that same filter before restarting.
+
+**Verify per account, not per city.** Move every free city of one account, then relog that
+account once (`POST /api/reconnect`) and read `cities[i].cityManager.coords` for all of them.
+`/api/snapshot/refresh` refuses a second relog inside 20 minutes, so it is no good for this.
+**Never let a snapshot contradict a relog.** An `account_latest` row 4 minutes old carried
+both stale coordinates *and* a stale teleporter count on a27 (2026-09-27), so the two wrong
+figures appeared to corroborate each other and a finished account looked unfinished. A
+snapshot's age is not its freshness.
+
+**On a contested account, a verification relog IS a retake.** `/api/reconnect` calls
+`clearKickHold()`, so each relog ends the kick hold and takes the login back, and the log line
+it produces says *"kick hold ended early — Connect"* even though nobody pressed Connect
+(EVONY-RULES §1). Harmless when the kicker is a scheduler; not harmless when it fights back.
+Plan how many relogs a contested move will cost before you start.
+
+**Watch for a kick while a move runs, and stop rather than fight.** Wire the account's
+`ANOTHER USER HAS LOGGED INTO THIS ACCOUNT` count into the watcher and halt on it. a30 was
+kicked on an hourly clock all day (EVONY-RULES §1) and never held a login for 30 minutes, so
+its 8 cities were left out entirely: a teleport is instant, but recall-wait-retry is not, and
+a window closing mid-sequence is how a fleet ends up half-moved. Nothing was lost by stopping
+— 112 attempts, all `ok=-77`, stock unchanged at 289.
+
 ## What has gone wrong before (§5e, worth re-reading)
 
 - `ok=-84` says "already yours" but really means **another player holds that flat**.

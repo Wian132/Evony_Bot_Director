@@ -336,6 +336,18 @@ t('the any skip holds even before the server says the hero is away', async () =>
   await runIn(w, 'attack 111,222 any a:1\nattack 111,222 any a:1\nreinforce 111,222 Biggy a:1');
   assert.deepStrictEqual(w.sends().map((s) => s.bean.heroId), [12, 11]);
 });
+t('a sent hero the server showed away and then idle again is home: it goes again inside the minute', async () => {
+  const w = world();
+  const orig = w.g.newArmy;
+  // the HeroUpdate pushes: away as it leaves, idle as it comes home
+  w.g.newArmy = async (cid, bean) => {
+    const h = heroOf(w, bean.heroId); const r = await orig(cid, bean);
+    if (h) { (w.g.heroAwayAt = w.g.heroAwayAt || new Map()).set(h.id, Date.now()); h.status = 0; }
+    return r;
+  };
+  await runIn(w, 'attack 111,222 any a:1\nattack 111,222 any a:1');
+  assert.deepStrictEqual(w.sends().map((s) => s.bean.heroId), [12, 12]);
+});
 
 // ---------------------------------------------------------------------------
 section('what a march sends');

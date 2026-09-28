@@ -4084,6 +4084,27 @@ account marked "keep on", which is how the fleet comes back without 21 logins at
   `director-keep.pid`, stop whatever is on 8712, then `Start-ScheduledTask -TaskName
   "OTTObot Director"`. Verified live 2026-09-24 23:46.
 
+### `botctl list` does not see every console, so check the processes too (2026-09-28)
+
+Stopping the laptop fleet to move it to another machine: `botctl stop` took down all 30
+consoles it had on record, yet **seven more `server.js` processes were still running**,
+started between 2026-09-27 and 18:38 that day by hand or by other sessions, and never
+recorded. Six held live proxy connections to the game. One was a **second console for a30
+Lord30** on :8767, started 18:38:20. At 18:38:53 it and the recorded a30 console began
+kicking each other ("another user has logged into this account"), which looked like
+someone else taking the account. And `capture-ramp.js` came back under `nohup` a minute
+after it was killed, because another Claude session was keeping it alive.
+
+- **To stop a fleet completely**, first disable the "OTTObot Director" and "OTTObot Trade
+  Advance" tasks and stop `director-keep`. Then `botctl stop` every account, then list
+  `node.exe` processes by command line (`server.js`, `director*.js`, `monitor.js`,
+  `npc-taken-watch.js`, `capture-ramp.js`, `trade-advance.js` …) and stop what is left.
+  Message the peer Claude sessions so none of them restarts anything.
+- **An a-kick right after a console start is usually our own second console**, not the
+  owner. Check for a duplicate `server.js` before blaming anyone.
+- Stopping a console only kills the process. It sends the game nothing, so **holiday
+  accounts stay on holiday** (verified in `botctl.js`: `stopNow` is `process.kill`).
+
 ### "Turn off" on the Director page leaves nothing to turn it back on with (2026-09-25)
 
 The switch top-right writes `director-stop.flag` and then **exits the process that serves

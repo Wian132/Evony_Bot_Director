@@ -1258,6 +1258,11 @@ let DATA = { accounts: [], log: [] };
 let view = 'all', sortKey = 'pos', sortDir = 1, editing = null;
 
 const CONSOLE_URL = localStorage.getItem('consoleUrl') || 'http://localhost:8711';
+// Opened from another machine (the server over Tailscale, 2026-09-28), a console's own
+// http://localhost:87xx is that machine's localhost, not the server's. Then every
+// console goes through the Director instead: /console/<id>/ (console-proxy.js).
+const REMOTE = !['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname);
+const consoleHref = (a) => (REMOTE ? '/console/' + encodeURIComponent(a.id) : a.consoleUrl);
 // Item ids come from the client's own <itemEum> table.
 const ITEM_COLS = [
   { key: 'i_stone',    head: 'Stone of Finding', id: 'player.item.stoneoffinding' },
@@ -1294,7 +1299,7 @@ const COLS = [
   // another.
   { key: 'label', head: 'Account', align: 'l', fixed: true,
     render: (a) => (a.consoleUrl
-      ? `<a class="focus" href="${esc(a.consoleUrl)}/" target="${esc(botTabName(a.id))}"
+      ? `<a class="focus" href="${esc(consoleHref(a))}/" target="${esc(botTabName(a.id))}"
             title="Open ${esc(a.label)} — ${esc(a.consoleUrl)}">${esc(a.label)}</a>`
       : `<span class="focus noconsole" title="No console is running for this account">${esc(a.label)}</span>`) },
   { key: 'status', head: 'Status', align: 'c', render: (a) => statusPill(a) },
@@ -1885,7 +1890,7 @@ function focusBot(acc) {
       + `<span style="color:var(--dim)">— it logs into the game as this account `
       + `and runs its goals from the start.</span>`, 60000);
   }
-  if (openBotTab(acc.consoleUrl + '/', botTabName(acc.id))) {
+  if (openBotTab(consoleHref(acc) + '/', botTabName(acc.id))) {
     say(`${esc(acc.label)} -> ${esc(acc.consoleUrl)}`, 6000);
   } else {
     say(`Your browser blocked the pop-up. Click the account name `
@@ -1910,7 +1915,7 @@ async function setEnabled(acc, on, box) {
       + `switched off. Clear that box (✎, or the Keep on column) to let it stay off.`, 60000);
     return;
   }
-  if (on) return reportBot(acc.label, r.bot);
+  if (on) return reportBot(acc.label, r.bot, acc.id);
   if (r.bot && r.bot.stillRunning) {
     return say(`<b>${esc(acc.label)}</b> is switched off and will not be polled — but the console on `
       + `<a href="${esc(r.bot.stillRunning)}/" target="otto_bot_${esc(acc.id)}">${esc(r.bot.stillRunning)}</a> `
@@ -1941,7 +1946,7 @@ async function startBot(acc, btn) {
   if (btn) btn.disabled = true;
   say(`Starting a console for <b>${esc(acc.label)}</b> — logging in, this takes a few seconds…`, 120000);
   const r = await post('/api/bot', { id: acc.id, action: 'start' });
-  reportBot(acc.label, r);
+  reportBot(acc.label, r, acc.id);
   refresh();
 }
 $('#status').addEventListener('click', (e) => {
@@ -1949,10 +1954,11 @@ $('#status').addEventListener('click', (e) => {
   if (b) startBot(DATA.accounts.find((a) => a.id === b.dataset.id), b);
 });
 
-function reportBot(label, r) {
+function reportBot(label, r, id) {
   if (!r) return;
   if (!r.ok) return say(`<b>${esc(label)}</b>: no console — ${esc(r.error)}`, 60000);
-  say(`<b>${esc(label)}</b>: console on <a href="${esc(r.url)}/" target="otto_bot_${esc(r.port)}">${esc(r.url)}</a>`
+  const href = REMOTE ? (id ? '/console/' + encodeURIComponent(id) : null) : r.url;
+  say(`<b>${esc(label)}</b>: console ${href ? `on <a href="${esc(href)}/" target="${id ? esc(botTabName(id)) : 'otto_bot_' + esc(r.port)}">${esc(href)}</a>` : 'started'}`
     + (r.adopted ? ' (it was already running)' : '')
     + (r.ready ? '' : ' — up, still logging in; watch it on the Uptime tab')
     + (r.paused ? ' · engine PAUSED until you press Resume there' : ''), 60000);

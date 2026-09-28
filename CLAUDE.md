@@ -30,7 +30,7 @@ Everything is flat at the repo root.
 | `amf0.js`, `amf3.js`, `evony.js`, `game.js` | the wire protocol and the game client (socket, commands, replies) |
 | `session.js` | one logged-in account: login, reconnect, kick hold, proxies, maintenance |
 | `server.js` | the **console** (one per account, HTTP + page `public/app.html`) |
-| `director.js`, `botctl.js` | the **Director** (fleet view, `public/director.html`) and console start/stop |
+| `director.js`, `botctl.js`, `console-proxy.js` | the **Director** (fleet view, `public/director.html`), console start/stop, and `/console/<id>/` (a console through the Director, for remote use) |
 | `engine.js`, `goals.js`, `goal-*.js`, `goalmods.js`, `goallayers.js` | the goal engine: parse goal lines, plan per city, act |
 | `script*.js`, `script-cmd-*.js` | the script language: parser, expressions, one file per command family |
 | `monitor.js`, `statistics.js`, `mapscan.js` | the server-wide watcher, rankings, map |

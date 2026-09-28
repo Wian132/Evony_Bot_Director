@@ -1731,6 +1731,36 @@ travel in clear text. Terminate TLS at Caddy or nginx, or reach it through an SS
 (`ssh -L 8712:localhost:8712 host`) and leave it bound to loopback — the tunnel needs no
 password at all and exposes nothing.
 
+### Working the fleet from another machine (Tailscale)
+
+Leave the Director bound to loopback and let Tailscale hand its port to your own
+devices: on the server, `tailscale serve --bg --http=8712 http://127.0.0.1:8712`, then
+open `http://<server's tailscale name or 100.x address>:8712` from the laptop or the
+phone. Never `tailscale funnel`: that is the public internet.
+
+Only the Director's port is served, and each console is on a port of its own
+(`localhost:87xx`), which from another machine means *that* machine. So the Director
+also passes every console through itself: **`/console/<accountId>/`** is that account's
+console, behind the Director's sign-in (the same cookie; the consoles share the
+sessions table). When the Director page is opened from anywhere but `localhost`, the
+account links use it on their own. On the server itself they still go straight to the
+port.
+
+How (`console-proxy.js`): the target is the port the Director already knows for that
+account, never anything in the request, and only accounts of your own organization.
+The console page asks for its data at absolute paths (`/api/…`), so a page passed
+through gets a small script at the top of `<head>` that prefixes any absolute path
+it fetches, opens or clicks. Its `href`/`src`/`action` attributes and the console's
+redirects are rewritten the same way. The internal token and Claude-key headers are
+never passed on, because the console would see the request as coming from its own
+machine. Tests: `test-console-proxy.js`.
+
+One thing `tailscale serve` changes: requests it hands on arrive from `127.0.0.1`.
+A Claude key (`x-otto-claude`) is only honoured from loopback, so over Tailscale it
+is no longer "this machine only", just "whoever holds the key". The keys stay
+secret in the database, so this is safe as long as they are never copied off the
+server.
+
 ## Storage
 
 One SQLite file, `evony.db` (see `STORAGE.md`). It holds accounts, **snapshot history**,

@@ -19,6 +19,7 @@ const { buildSnapshot } = require('./snapshot');
 const D = require('./db');
 const AUTH = require('./auth');
 const BOTS = require('./botctl');
+const CP = require('./console-proxy');
 const MAINT = require('./maint');       // the fleet's shared word on maintenance
 // Prepend / Append goals kept in files, synced into each account (goalfiles.js)
 const GF = require('./goalfiles');
@@ -852,6 +853,22 @@ http.createServer(async (req, res) => {
   const send = (code, type, data) => { res.writeHead(code, {
     // never let a browser hold on to a stale page or a stale account list
     'Cache-Control': 'no-store, must-revalidate', 'Content-Type': type + '; charset=utf-8' }); res.end(data); };
+
+  // An account's console through the Director (console-proxy.js, 2026-09-28): from
+  // another machine (Tailscale) a console's own localhost:87xx is not reachable,
+  // this address is. Signed in already (AUTH.guard above); only this org's accounts,
+  // and only the port the Director itself knows for that account's console.
+  const cp = CP.parse(url.pathname);
+  if (cp) {
+    const acc = ORG && ORG.accounts.get(cp.id);
+    if (!acc) return send(404, 'text/plain', 'No such account.');
+    const prefix = '/console/' + cp.id;
+    if (!cp.rest) { res.writeHead(302, { Location: prefix + '/' + url.search }); return res.end(); }
+    const live = liveByAccount.get(cp.id);
+    const port = live && live.url && Number((/:(\d+)$/.exec(live.url) || [])[1]);
+    if (!port) return send(503, 'text/plain', `No console is running for ${acc.label}. Start it from the Director.`);
+    return CP.pass(req, res, { port, prefix, rest: cp.rest, search: url.search });
+  }
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
     return send(200, 'text/html', fs.readFileSync(path.join(__dirname, 'public', 'director.html')));

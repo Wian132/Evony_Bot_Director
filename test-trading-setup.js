@@ -449,6 +449,20 @@ t('the price ladder: over 80% steps cheaper in a resource play, never judged on 
   assert.strictEqual(TS.parseControl(w.read()).price, 0.5, '361 of 300 = 120%: one rung cheaper');
 });
 
+// 2026-09-27: ours 103,452 placed against the banks' 10,198 — a raw 1,014% — because our
+// buyers cancel and re-place their book; the ladder walked 3 -> 2 -> 1 -> 0.001 on it.
+t('the ladder nets our cancelled bids off: a recycling book is not a 1,000% share', async () => {
+  const accounts = [acct('b1', { holiday: true, lord: 'lord04' }), acct('o1')];
+  const w = world({ accounts, sides: { b1: 'sell', o1: 'buy' }, text: SMALL.replace('u == "lord04" || u == "Lord08"', 'u == "lord04"'), play: { price: 1 }, opts: { delaySec: 0, ladder: true, watchdog: false } });
+  w.R.start(); await w.R.tick(); await w.R.tick();
+  w.advance(10 * 60000 + 1000);
+  w.events.set('b1', [{ kind: 'order', t: w.now() - 60000, placed: 100 }]);
+  w.events.set('o1', [{ kind: 'order', t: w.now() - 90000, placed: 1000 }, { kind: 'cancel', t: w.now() - 60000, n: 930 }]);
+  await w.R.tick();
+  assert.strictEqual(TS.parseControl(w.read()).price, 1, '70 of 100 = 70%: holding, not 1,000% and a step cheaper');
+  assert.ok(w.R.run().events.some((e) => /ladder: 70% at 1 — holding/.test(e.m)));
+});
+
 t('the gold ladder walks down from 150 when rivals take the bid', async () => {
   const accounts = [acct('b1', { holiday: true, lord: 'lord04' }), acct('o1')];
   const w = world({ accounts, sides: { b1: 'buy', o1: 'sell' }, text: SMALL.replace('u == "lord04" || u == "Lord08"', 'u == "lord04"'), play: { price: 150 }, opts: { delaySec: 0, ladder: true, watchdog: false } });

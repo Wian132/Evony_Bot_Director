@@ -113,9 +113,20 @@ function signalBack(settings, server, at = Date.now()) {
 //              enough, because a single proxy dying looks exactly like this from
 //              one console (EVONY-RULES.md section 2, 2026-09-20).
 //   null       nothing to say. One account still logged in settles it: the
-//              server is up, whatever happened to the others.
+//              server is up, whatever happened to the others. So does an OPEN GAME
+//              PORT when all we have is drop counts: on 2026-09-25 the whole fleet
+//              wrote itself off the server (20 market writes in flight, heartbeats
+//              timing out, all 21 sockets cycled inside a minute) while ss71 answered
+//              a TCP handshake in ~240 ms throughout, and a false window stood 21
+//              accounts down for 15 minutes. A fleet-wide stall takes every account
+//              at once, so "one still connected" cannot catch it; the port can.
+//              A CLOSED port proves nothing (this machine's own IP has hung in
+//              SYN_SENT while every proxy reached the server, 2026-09-18), and
+//              consoles that SAY the server is down have read it from the game, so
+//              the port only ever vetoes the drop-count verdict.
 //
-// sweep: { connected, dropped, saysDown, back } — counts from one uptime sweep.
+// sweep: { connected, dropped, saysDown, back, portOpen } — counts from one uptime
+// sweep; portOpen is true, false, or undefined when it was not probed.
 const DROPPED_IS_MAINTENANCE = 3;
 const SAYS_DOWN_IS_MAINTENANCE = 2;
 function verdict(sweep, rec) {
@@ -123,7 +134,8 @@ function verdict(sweep, rec) {
   if (sv.back) return rec && rec.phase !== 'over' && rec.phase !== 'before' ? 'back' : null;
   if (rec && rec.phase !== 'over') return null;            // the fleet already knows
   if (sv.connected) return null;
-  if ((sv.saysDown || 0) >= SAYS_DOWN_IS_MAINTENANCE || (sv.dropped || 0) >= DROPPED_IS_MAINTENANCE) return 'down';
+  if ((sv.saysDown || 0) >= SAYS_DOWN_IS_MAINTENANCE) return 'down';
+  if ((sv.dropped || 0) >= DROPPED_IS_MAINTENANCE) return sv.portOpen === true ? null : 'down';
   return null;
 }
 

@@ -97,6 +97,15 @@ t('three consoles losing the socket at once is the server going down', () => {
   assert.strictEqual(MAINT.verdict({ dropped: 2, connected: 0 }, null), null, 'two is not enough');
 });
 
+// 2026-09-25: all 21 consoles cycled their sockets inside a minute from too many
+// market writes in flight, while ss71's port answered in ~240 ms the whole time
+t('drops with the game port OPEN are a stall on our side, not maintenance', () => {
+  assert.strictEqual(MAINT.verdict({ dropped: 21, connected: 0, portOpen: true }, null), null);
+  assert.strictEqual(MAINT.verdict({ dropped: 21, connected: 0, portOpen: false }, null), 'down', 'a closed port still declares');
+  assert.strictEqual(MAINT.verdict({ saysDown: 2, dropped: 21, connected: 0, portOpen: true }, null), 'down',
+    'consoles that read the server down from the game are believed');
+});
+
 t('two consoles reporting the server down is enough', () => {
   assert.strictEqual(MAINT.verdict({ saysDown: 2, connected: 0 }, null), 'down');
   assert.strictEqual(MAINT.verdict({ saysDown: 1, connected: 0 }, null), null);

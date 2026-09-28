@@ -275,6 +275,31 @@ t('a ConnectionLost while the server is going down is maintenance, not a kick', 
   } finally { S.flagged = false; S.refreshMaintenance(); ORG.settings.set('kickHold:' + A.id, null); }
 });
 
+// ConnectionLost.as: 0 kicked by server, 1 starting, 2 shutting down, 3 another user,
+// 4 maintenance, 5 illegal name (read from the client 2026-09-28)
+t('reasonCode 3 is a kick even inside a maintenance window: the game names it', async () => {
+  const S = freshSession();
+  await S.connect();
+  S.planPhase = () => 'standdown';     // as a stand-down looks, without opening a real window
+  try {
+    S.game.c.emit('cmd', 'server.ConnectionLost', { reasonCode: 3 });
+    assert.ok(S.kickHold(), 'somebody took the account — hold');
+    assert.ok(said(S, /reasonCode 3 \(another user logged in\)/));
+  } finally { ORG.settings.set('kickHold:' + A.id, null); ORG.settings.set('lastKick:' + A.id, null); }
+});
+
+t('reasonCode 4 (maintenance) and 0 (the server kicked us) are not a kick: no hold', async () => {
+  for (const code of [4, 0, 2]) {
+    const S = freshSession();
+    await S.connect();
+    S.game.c.emit('cmd', 'server.ConnectionLost', { reasonCode: code });
+    assert.strictEqual(S.kickHold(), null, `reasonCode ${code}: no hold`);
+    assert.notStrictEqual(S.state, 'kicked');
+    assert.ok(said(S, new RegExp(`reasonCode ${code} `)), 'the code is logged');
+    ORG.settings.set('kickHold:' + A.id, null);
+  }
+});
+
 t('the header carries it, so a page can show it', async () => {
   const S = freshSession();
   await S.connect();

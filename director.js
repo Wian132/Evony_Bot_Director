@@ -778,18 +778,44 @@ async function sampleUptime() {
       latencyMs: r.ms, activity: false });
   }
 
-  maintenanceFromFleet(servers, at);
+  await maintenanceFromFleet(servers, at);
+}
+
+// A TCP handshake with the game server from this machine, and nothing more — no
+// version, no login. true when it answers; false on refusal, error or timeout.
+function gamePortOpen(server, timeoutMs = 5000) {
+  return new Promise(async (resolve) => {
+    let host, port;
+    try { ({ host, port } = await require('./evony').getServerConfig(server)); } catch { return resolve(false); }
+    const sock = require('net').connect(port || 443, host);
+    const done = (v) => { try { sock.destroy(); } catch {} resolve(v); };
+    sock.setTimeout(timeoutMs);
+    sock.on('connect', () => done(true));
+    sock.on('error', () => done(false));
+    sock.on('timeout', () => done(false));
+  });
 }
 
 // What the sweep just saw, turned into the fleet's word on maintenance. The
 // reading of it is maint.verdict; this is what the Director does about it.
-function maintenanceFromFleet(servers, now = Date.now()) {
+async function maintenanceFromFleet(servers, now = Date.now()) {
   for (const sv of servers.values()) {
     let org = null;
     try { org = sv.orgId ? D.org(sv.orgId) : null; } catch { org = null; }
     if (!org) continue;
     const rec = MAINT.read(org.settings, sv.server, now);
-    const say = MAINT.verdict(sv, rec);
+    let say = MAINT.verdict(sv, rec);
+    // Drop counts alone are also what a fleet-wide stall looks like (2026-09-25): ask
+    // the game port before telling every account to stand down (maint.js verdict).
+    if (say === 'down' && (sv.saysDown || 0) < MAINT.SAYS_DOWN_IS_MAINTENANCE) {
+      sv.portOpen = await gamePortOpen(sv.server);
+      say = MAINT.verdict(sv, rec);
+      if (say !== 'down') {
+        note(`${sv.server}: ${sv.dropped} consoles lost the game socket at once, but the game port answers — `
+          + 'a stall on our side (rate limit?), not maintenance; no window declared');
+        continue;
+      }
+    }
     if (say === 'back') {
       MAINT.signalBack(org.settings, sv.server, now);
       note(`${sv.server}: ${sv.back} is logged in again — maintenance is over, the fleet can go back in`);

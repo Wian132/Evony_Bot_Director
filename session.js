@@ -1779,9 +1779,26 @@ class Session {
       g.c.on('cmd', (cmd, data) => {
         const kickCmd = cmd === 'server.KickedOut' || cmd === 'gameClient.kickout' || cmd === 'server.ConnectionLost';
         if (!kickCmd || this.game !== g) return;
-        // The server also says ConnectionLost when it is going down for maintenance, and
-        // a stand-down is not somebody stealing the account.
-        if (cmd === 'server.ConnectionLost' && (this.maint.active || ['standdown', 'recovering'].includes(this.planPhase()))) return;
+        // ConnectionLost carries the game's own reason (ConnectionLost.as; the client's
+        // EvonyClient.onConnectionLostResponse picks its message by it): 0 kicked by the
+        // server, 1 server starting, 2 shutting down, 3 ANOTHER USER LOGGED IN, 4
+        // maintenance, 5 illegal name. Only 3 is somebody taking the account. Read from
+        // the client 2026-09-28 after a review of this repo pointed out we read it nowhere
+        // and had to guess maintenance from our own plan instead. When a server sends no
+        // code we fall back to that guess.
+        const code = cmd === 'server.ConnectionLost' && data && data.reasonCode != null ? Number(data.reasonCode) : null;
+        if (cmd === 'server.ConnectionLost') {
+          const why = { 0: 'kicked by the server', 1: 'the server is starting', 2: 'the server is shutting down',
+            3: 'another user logged in', 4: 'server maintenance', 5: 'illegal name' }[code];
+          this.note(`server.ConnectionLost, reasonCode ${code == null ? 'none' : code}${why ? ` (${why})` : ''}${data && data.msg ? ` — ${data.msg}` : ''}`);
+          if (code != null && code !== 3) {
+            this.disconnectReason = `the game dropped us: ${why || 'reasonCode ' + code} — not a kick, no hold`;
+            return;
+          }
+        }
+        // With no code: the server also says ConnectionLost when it is going down for
+        // maintenance, and a stand-down is not somebody stealing the account.
+        if (cmd === 'server.ConnectionLost' && code == null && (this.maint.active || ['standdown', 'recovering'].includes(this.planPhase()))) return;
         this.noteSomebodyElseLoggedIn(data && data.ip, cmd);
         const mins = this.kickHoldMin();
         if (mins === 0) { this.note('another user logged into this account — it is set to come straight back'); return; }

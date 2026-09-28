@@ -751,12 +751,22 @@ class Runner {
     if (c.res !== run.res) { this.say(run, `ladder: the play is ${c.res} now (was ${run.res}) — judging it from here`); run.res = c.res; L.lastChange = now; return; }
     if (c.stopped) return;
     const from = Math.max(L.lastChange + LADDER_SETTLE, now - EVERY);
+    // A CANCELLED BID IS NOT A FILL. Our buying side cancels and re-places its whole book to
+    // keep its slots turning over, so the raw placed count ran 10-20x the real one (ours
+    // 103,452 against the banks' 10,198 on 2026-09-27) and the ladder stepped cheaper every
+    // round down to 0.001, where over half the banks' stock went to strangers. Net the
+    // cancels off, as the Trading tab's Return does (trade-monitor.js). `alive` still counts
+    // any account that sent orders: a busy recycler is alive even when it nets to nothing.
     const count = (ids) => {
       let placed = 0, alive = 0;
       for (const id of ids) {
-        let n = 0;
-        for (const e of this.monitor.events(id)) if (e.kind === 'order' && e.placed && e.t >= from && e.t < now) n += e.placed;
-        placed += n; if (n) alive++;
+        let n = 0, back = 0;
+        for (const e of this.monitor.events(id)) {
+          if (e.t < from || e.t >= now) continue;
+          if (e.kind === 'order' && e.placed) n += e.placed;
+          else if (e.kind === 'cancel' && e.n) back += e.n;
+        }
+        placed += Math.max(0, n - back); if (n) alive++;
       }
       return { placed, alive };
     };

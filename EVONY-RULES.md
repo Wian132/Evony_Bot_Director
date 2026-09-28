@@ -304,6 +304,26 @@ file (see the end).
   bar on the console page with a *Take it back now* button, and a **"someone else logged
   in"** pill in the Director, sorted near the top. It is NOT treated as a kick while the
   server is going down: maintenance sends it too.
+  **ConnectionLost carries the game's own reason, `reasonCode`** (read from the client
+  2026-09-28, `ConnectionLost.as` and `EvonyClient.onConnectionLostResponse`, after a
+  friend's review of this repo pointed out we read it nowhere):
+
+  | reasonCode | client constant | means |
+  |---|---|---|
+  | 0 | `KICK_BY_SERVER` | the server kicked us — not another user |
+  | 1 | `SERVER_START` | the server is starting |
+  | 2 | `SERVER_SHUTDOWN` | the server is shutting down |
+  | 3 | `KICK_BY_OTHER` | **another user logged in** — the only real kick |
+  | 4 | `SERVER_MAINTAIN` | maintenance |
+  | 5 | `ILLEGAL_NAME` | illegal name (`msg` says more) |
+
+  The console now holds only on code 3 (even inside a maintenance window, since the game
+  names it), never on the others, and falls back to the old guess from its maintenance
+  plan when a server sends no code. Every ConnectionLost now logs
+  `server.ConnectionLost, reasonCode N (…)`. *Unverified live:* we never logged the
+  payload before, so whether ss71 actually fills `reasonCode` is only known from the
+  friend's bot, which relies on 3. **Check the first drop's log line after the restart.**
+  If it says `reasonCode none`, nothing has changed.
   **NEAT is not what re-kicks an account** (the user, 2026-09-22 23:05): *"neat waits 30
   minutes after kicking something off"*, and its own log says `Pausing jobs for 31m59s`.
   So a second kick inside half an hour is never NEAT — it is **our own fleet**. Read a
@@ -545,7 +565,14 @@ file (see the end).
   The only route is writing `maintOver:<server>` into the ORG's settings by hand.
   A fake window is not free: 21 accounts stop playing for the 15 minutes to `resumeAt`,
   and every running script stops with them.
-  *Both gaps are unfixed as of 2026-09-25.*
+  **The port probe is FIXED (2026-09-28):** when the only evidence is drop counts,
+  `maintenanceFromFleet` now opens a TCP handshake to the game server first. If it answers,
+  no window is declared and the Director logs *"… but the game port answers — a stall on
+  our side (rate limit?), not maintenance"*. A closed port still declares, because this
+  machine's own IP has hung while the proxies reached the server. Two consoles *saying*
+  the server is down (they read it from the game) are still believed without a probe.
+  *Still unfixed:* there is no way to cancel a false window except writing
+  `maintOver:<server>` by hand.
   **The release worked exactly as designed**, and fast: `maintOver:ss71` = `Date.now()` at
   11:17:18, and 19 of the 21 consoles were logged in by **11:17:52** — 12 to 34 seconds,
   no restart, every running script kept. Each one took the designed path,
@@ -1602,8 +1629,12 @@ free, and a cheap one is what actually costs.
   and will not touch it.
 - **Judge capture on the tab's Return, never on the ladder's percentage.**
 
-*The fix, when someone writes it:* count a cancelled bid off `o.placed` in `count()`, the same
-way the tab does, or judge the ladder on filled orders rather than placed ones.
+**FIXED 2026-09-28:** `count()` now nets each account's cancelled bids off its placed orders
+(clamped at 0), the same way the tab does, so the ladder and the Return read the same
+share. An account that placed orders still counts as *trading* even when it nets to
+nothing. Test: `test-trading-setup.js`, "the ladder nets our cancelled bids off". The
+advice above (ladder off, or an off-rung price) is still how to pin a price by hand. It
+needs a Director restart to go live.
 
 ### A pass slows because CITIES RETIRE, not because the scripts slow down — count them first (2026-09-27)
 
@@ -2761,7 +2792,13 @@ beats Ranged" are The King's Return — a different game. Never mix them in.**
   defence × (1.5 + int/100) × corselet ≥ 500.
 
   The corselet's own item text in the client says **+20%** ("Increase Defence of troops by
-  20%"), and the old guides use 1.2. The user remembered +25%, then (2026-09-22) chose
+  20%"), and the old guides use 1.2. **A friend's buff probe (2026-08-18, on their own
+  account) measured the Corselet as 20% on both ATTACK and defence** (their
+  `docs/buff-probe/README.md`, reported to the user 2026-09-28). That backs 1.2 for
+  defence, and suggests the corselet also lifts attack, which the loss formula above does
+  not model. *Unverified by us.* Note that the Ultra Corselet (`player.defendinc.1.b`)
+  is a separate item, and `defensepolicy` exposes `/usecorselet` and
+  `/useultracorselet` separately, as NEAT does. The user remembered +25%, then (2026-09-22) chose
   1.2 to work with, so trust the +20% column until a war report with a known hero
   intelligence settles it. The intelligence columns (scouts included) were worked out by an agent from
   this formula, not measured (the user, 2026-09-22), so the scout figure is the formula's.
@@ -3585,7 +3622,15 @@ and 11 minutes for the last 8 once their marches were home.
   points and Lord14 all showed `state 5` correctly. **Cause unverified** — the two
   had both been read as `5` in the sweeps before maintenance, so the suspicion is that a
   castle's state comes back wrong for a while after a maintenance, or that the vacation
-  shield and the furlough buff are genuinely two different things. *Until it is
+  shield and the furlough buff are genuinely two different things. **A second opinion
+  (a friend's corpus, 2026-09-28):** treat a map castle's own `furlough == true` as
+  shielded *whatever its state says*. Our 2026-09-23 incident fits that: the buff was
+  right and the map state was wrong. Our §4 "furlough read false" was the account
+  snapshot's player-bean flag, which may not be the same thing as the `furlough` field on
+  a map castle (`mapscan.js` and `script-functions.js` read it off each castle; the
+  Monitor stores only `state`). *Unsettled.* To settle it, read the map castles of our own
+  holiday banks and see whether their `furlough` is true while `state` is 1. If it is,
+  the Monitor should treat `state 5 OR furlough` as holiday. *Until it is
   understood:* treat a single state reading as a rumour. `monitor.js` now believes a state
   only when **two sweeps in a row agree**, which is what stops it announcing a holiday
   ending that has not happened. Where we own the account, the console's live

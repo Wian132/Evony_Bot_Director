@@ -5047,3 +5047,81 @@ running at 1. Two resting orders never cross, so a 3 ask cannot be taken by our 
 bid — the wood filled, but to OTHER PLAYERS. On a holiday bank it comes back at maintenance so
 nothing is lost for good, but none of it reached our accounts, which is the whole point of the
 pass. A manual test on a live play must use the price in the control file.
+
+### Start a play through the DIRECTOR's API, not by dispatching scripts (2026-09-29)
+
+A pass dispatched straight to the cities trades perfectly well and the Director records
+**nothing** — its Trading results tab reads zeros, "0 cities trading", through a pass moving
+12,000t of gold an hour. The user spotted it: *"Why is our trading results still empty? did you
+bypass it again?"* The run record is what the tab, the Glitch log archive and the watchdog all
+read.
+
+The supported route (all under `/api/trading/`, with a Director session cookie):
+
+| | |
+|---|---|
+| `GET setup` | the setup, the current run, and a `check` that resolves the sides itself |
+| `POST setup` | `{ sides: {a4:'sell',…}, play:{res,price,capGold,…}, cleanBefore, cleanAfter }` |
+| `POST control` | `{ play, holi: [lords] }` — **writes the control file live**, holiday list included |
+| `POST start` / `POST stop` | run it; `stop` takes `{clean:true}` and is a drain, not instant |
+
+**So the holiday roster belongs in `POST /api/trading/control`, not in a hand-edit of
+`glitch-res-control.txt`.** Hand-editing works but leaves the Director's own copy stale.
+
+**`check` is a free second opinion on the roster.** Given the sides, it returns `kind`
+(gold/res), `bankSide`, and the banks it resolved from live holiday state, plus `errors` and
+`warnings`. On 2026-09-29 it independently agreed with a hand-built 14-bank list. Refuse to
+start when `errors` is non-empty.
+
+### The Director's stored SIDES go stale with the holiday roster, and stale sides run the play BACKWARDS
+
+On 2026-09-29 the saved sides were the previous rotation: a1, a6-a10, a12, a16, a18 and a19
+were listed `sell` but had since become banks. Pressing Start would have had **ten holiday
+accounts selling stone at 150** — handing over their stone and taking gold IN, the play exactly
+backwards.
+
+Nothing would have caught it. The control file's safety lines are
+`if holi == 0 && side == "sell" && price < 50` and `if holi == 0 && side == "buy" && price >= 50`
+— they guard accounts that are **not** on holiday. A holiday account on the wrong side is
+unguarded, because the file assumes the holiday side is always the one being helped.
+
+**After every rotation, re-POST the sides before starting anything.**
+
+### `glitch-run.js` could not start a play on Linux at all (fixed 2026-09-29, fc9041b)
+
+`pidOn()` shelled out to `netstat -ano -p TCP` unconditionally — a Windows tool. On the VPS
+every call threw `netstat: not found`, so `glitch-run.js start` failed, and with it the
+Director's Start button, which runs it. Now: `netstat` on win32, iproute2's `ss` on
+Linux/macOS, `lsof` as a fallback.
+
+**The general trap:** this repo grew up on Windows, so a shell-out that has always worked may
+be Windows-only. On the VPS, check any `execSync` of a system tool before relying on it.
+
+### Clean the reports at EVERY switch — it is a step in the cycle, not an afterthought (the user, 2026-09-29)
+
+*"After each switch reports need to be cleaned so trade food -> stop -> clean reports -> start
+stone -> stop -> clean reports -> start wood etc etc"*.
+
+So the cycle for each resource is:
+
+```
+stop  ->  wait for the drain  ->  cleanreports (all accounts)  ->  set the sides  ->  start
+```
+
+Why it belongs exactly there: trade reports accumulate through a pass and **halve** the
+account's market order rate (verified with a control on 2026-09-28 — cleaned banks went from
+~60 to ~110 batches a minute while an untouched control kept sagging). Between passes is the
+only free moment to clear them: nothing is trading, so the couple of minutes an account sits
+silent while it clears its army and other reports costs nothing at all. Mid-pass that silence
+is lost throughput.
+
+**Each step has to WAIT for the one before it.**
+
+- A `POST /api/trading/stop` is a drain and a clean, not an instant switch: poll
+  `GET /api/trading/setup` until `run.state` leaves starting/running/stopping.
+- A Start issued over the top of a running clean kills the clean. Poll `fleet()` until no
+  account has a script running before setting up the next pass.
+
+On 2026-09-29 a switch script that did not wait for the stop simply fell out having done
+nothing but the stop, leaving the fleet idle mid-day — the log's last line was
+`waiting for the stop to drain`. `vps-cycle.js` does the whole cycle with both waits.

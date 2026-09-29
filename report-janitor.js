@@ -89,22 +89,33 @@ const turn = {};                       // account -> which city index to hand ov
     ];
     let done = 0, skipped = 0;
     await Promise.all(jobs.map(async ([acct, side]) => {
+      // A `state` call on an account trading flat out often times out, and an account skipped
+      // here keeps its reports and stays slow: on 2026-09-29 a3 was skipped once and sat at
+      // ~70 batches a minute while a8 and a18, cleaned in the same round, ran at ~300. So
+      // retry rather than shrug.
       let cities = [];
-      try {
-        const s = String(await mcp('state', { account: acct }));
-        cities = [...s.matchAll(/^  \S.*?\((\d+)\) \d+,\d+ t/gm)].map((m) => m[1]);
-      } catch { skipped++; return; }
+      for (let t = 0; t < 3 && !cities.length; t++) {
+        if (t) await wait(4000);
+        try {
+          const s = String(await mcp('state', { account: acct }));
+          cities = [...s.matchAll(/^  \S.*?\((\d+)\) \d+,\d+ t/gm)].map((m) => m[1]);
+        } catch { /* busy - try again */ }
+      }
       if (!cities.length) { skipped++; return; }
       const i = (turn[acct] = (turn[acct] || 0) % cities.length);
       turn[acct] = (i + 1) % cities.length;          // rotate, so no city carries it twice running
       const city = cities[i];
       const text = fs.readFileSync(path.join(DIR, `clean-inline-${side}.txt`), 'utf8');
-      try { await mcp('script_stop', { account: acct, city }); } catch { /* idle */ }
-      await wait(800);
-      try {
-        const r = String(await mcp('script', { account: acct, city, text }));
-        if (/started/.test(r) && !/NOT started/.test(r)) done++; else skipped++;
-      } catch { skipped++; }
+      let ok = false;
+      for (let t = 0; t < 3 && !ok; t++) {
+        try { await mcp('script_stop', { account: acct, city }); } catch { /* idle */ }
+        await wait(900 + t * 1200);                  // a stop needs a moment before the start
+        try {
+          const r = String(await mcp('script', { account: acct, city, text }));
+          ok = /started/.test(r) && !/NOT started/.test(r);
+        } catch { /* busy - try again */ }
+      }
+      if (ok) done++; else skipped++;
     }));
     console.log(stamp() + '  ' + sides.res + ' @ ' + sides.price + ': cleaned a city on ' + done + ' account(s)'
       + (skipped ? ', ' + skipped + ' skipped' : ''));

@@ -127,6 +127,14 @@
   .colrow { display:flex; align-items:center; gap:9px; padding:5px 7px; border-radius:5px; font-size:var(--fs-base); cursor:grab; }
   .colrow:hover { background:var(--panel2); }
   .colrow .grip { color:var(--faint); letter-spacing:-2px; }
+  .colgroup { border:1px solid var(--line-soft, var(--line)); border-radius:6px; margin:4px 0; }
+  .colgroup > summary { display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer; font-size:var(--fs-base); }
+  .colgroup > summary .grpCount { color:var(--dim); font-size:var(--fs-xs); margin-left:auto; }
+  .colgroup > summary input { width:auto; cursor:pointer; }
+  .colgroup .grpBody { padding:0 0 4px 18px; }
+  .colgroup .grpArrow { color:var(--dim); transition:transform .12s; display:inline-block; }
+  .colgroup[open] .grpArrow { transform:rotate(90deg); }
+  .colgroup > summary::-webkit-details-marker { display:none; }
   .colrow label { display:flex; align-items:center; gap:8px; margin:0; font-size:var(--fs-base); text-transform:none;
                   letter-spacing:0; color:var(--ink); cursor:pointer; flex:1; }
   .colrow input { width:auto; }
@@ -1265,6 +1273,13 @@ const cssNum = (name, dflt) => {
   } catch { return dflt; }
 };
 const fmt = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-US'));
+// The game's troop types in barracks order: [protocol key, name] (constants.js TROOPS).
+const TROOP_TYPES = [['peasants', 'Workers'], ['militia', 'Warriors'], ['scouter', 'Scouts'], ['pikemen', 'Pikemen'],
+  ['swordsmen', 'Swordsmen'], ['archer', 'Archers'], ['lightCavalry', 'Cavalry'], ['heavyCavalry', 'Cataphracts'],
+  ['carriage', 'Transporters'], ['ballista', 'Ballistas'], ['batteringRam', 'Rams'], ['catapult', 'Catapults']];
+// The groups the Columns dialog folds together, in the order they are listed there.
+const COL_GROUPS = { troops: 'Troops', resources: 'Resources' };
+const resTotal = (a) => ['food', 'wood', 'stone', 'iron'].reduce((sum, k) => sum + Number(((a.snapshot && a.snapshot.totals) || {})[k] || 0), 0);
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const short = (v) => {
   v = Number(v || 0);
@@ -1360,7 +1375,15 @@ const COLS = [
   { key: 'rank', head: 'Rank', align: 'c', render: (a) => fmt(s(a).rank) },
   { key: 'incoming', head: 'Incoming waves', align: 'c', render: (a) => (s(a).incoming ? `<span class="war">${s(a).incoming}</span>` : '0'), tot: fmt },
   { key: 'marching', head: 'Marching', align: 'c', render: (a) => fmt(s(a).marching), tot: fmt },
-  { key: 'troops', head: 'Troops', align: 'c', render: (a) => short(s(a).troops), tot: short },
+  { key: 'troops', head: 'Troops', name: 'Total troops', group: 'troops', align: 'c', render: (a) => short(s(a).troops), tot: short },
+  // One column per troop type (snapshot.js troopTypes: garrison + marching). A
+  // console started before 2026-09-29 does not report them yet: a dash, not a 0.
+  ...TROOP_TYPES.map(([k, name]) => ({
+    key: 'troop:' + k, head: name, group: 'troops', align: 'c', tot: short,
+    render: (a) => (s(a).troopTypes ? short(s(a).troopTypes[k] || 0)
+      : '<span style="color:var(--dim)" title="not reported yet: this account\'s console needs a restart to count troops by type">—</span>'),
+    sort: (a) => Number((s(a).troopTypes || {})[k] || 0),
+  })),
   { key: 'heroes', head: 'Heroes', align: 'c', render: (a) => fmt(s(a).heroes), tot: fmt },
   // Prisoners held. Not ours, but they take hall slots, so they belong beside
   // the hero count rather than buried in a console's log.
@@ -1395,11 +1418,16 @@ const COLS = [
   { key: 'population', head: 'Population', align: 'c', tot: short,
     render: (a) => `<span title="${escq('of a maximum of ' + fmt(Math.round(t(a).maxPopulation || 0)))}">${short(t(a).population)}</span>`,
     sort: (a) => Number(t(a).population || 0) },
-  { key: 'food', head: 'Food', align: 'c', render: (a) => short(t(a).food), tot: short },
-  { key: 'wood', head: 'Wood', align: 'c', render: (a) => short(t(a).wood), tot: short },
-  { key: 'stone', head: 'Stone', align: 'c', render: (a) => short(t(a).stone), tot: short },
-  { key: 'iron', head: 'Iron', align: 'c', render: (a) => short(t(a).iron), tot: short },
-  { key: 'gold', head: 'Gold', align: 'c', render: (a) => short(t(a).gold), tot: short },
+  // Food + wood + stone + iron. Gold is left out: it is money, not a resource you
+  // haul, and at trillions it would drown the other four.
+  { key: 'resTotal', head: 'Resources', name: 'Total resources (excl. gold)', group: 'resources', align: 'c', tot: short,
+    render: (a) => `<span title="food + wood + stone + iron (gold not included)">${short(resTotal(a))}</span>`,
+    sort: (a) => resTotal(a) },
+  { key: 'food', head: 'Food', group: 'resources', align: 'c', render: (a) => short(t(a).food), tot: short },
+  { key: 'wood', head: 'Wood', group: 'resources', align: 'c', render: (a) => short(t(a).wood), tot: short },
+  { key: 'stone', head: 'Stone', group: 'resources', align: 'c', render: (a) => short(t(a).stone), tot: short },
+  { key: 'iron', head: 'Iron', group: 'resources', align: 'c', render: (a) => short(t(a).iron), tot: short },
+  { key: 'gold', head: 'Gold', group: 'resources', align: 'c', render: (a) => short(t(a).gold), tot: short },
   ...ITEM_COLS.map((ic) => ({
     key: ic.key, head: ic.head, align: 'c', itemId: ic.id, tot: fmt,
     render: (a) => { const n = itemCount(a, ic.id); return n ? fmt(n) : '<span style="color:#3d434d">0</span>'; },
@@ -2176,19 +2204,57 @@ $('#browseClose').onclick = () => $('#browseDlg').close();
 // ---------- column chooser ----------
 // Every column, in table order. The ones that are always shown (the switch, ✎,
 // Account) can be moved but not hidden, so their box is ticked and greyed.
-function paintCols() {
-  $('#colsList').innerHTML = orderedCols().map((c) =>
-    `<div class="colrow" draggable="true" data-k="${c.key}">
+// Troops and Resources are folded into a section each (the user, 2026-09-29: pick
+// Catapults or Scouts, or just the total), listed where the group's first column
+// stands. The section's own box shows all / some / none and sets the whole group.
+const openGroups = new Set();
+function colRow(c) {
+  return `<div class="colrow" draggable="true" data-k="${c.key}">
        <span class="grip">⋮⋮</span>
        <label><input type="checkbox" data-k="${c.key}" ${c.fixed || VISIBLE.has(c.key) ? 'checked' : ''} ${c.fixed ? 'disabled' : ''}>
-       <span>${c.head || c.name || c.key}${c.itemId ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">item</span>' : ''}`
+       <span>${c.name || c.head || c.key}${c.itemId ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">item</span>' : ''}`
        + `${c.fixed ? ' <span style="color:var(--dim);font-size:var(--fs-xs)">always shown</span>' : ''}</span></label>
-     </div>`).join('');
-  $('#colsList').querySelectorAll('input').forEach((el) => {
+     </div>`;
+}
+function paintCols() {
+  const cols = orderedCols();
+  const done = new Set();
+  $('#colsList').innerHTML = cols.map((c) => {
+    if (!c.group) return colRow(c);
+    if (done.has(c.group)) return '';
+    done.add(c.group);
+    const members = cols.filter((x) => x.group === c.group);
+    return `<details class="colgroup" data-g="${c.group}" ${openGroups.has(c.group) ? 'open' : ''}>
+      <summary><span class="grpArrow">&#9656;</span><input type="checkbox" class="grpBox" data-g="${c.group}">
+        <b>${COL_GROUPS[c.group] || c.group}</b> <span class="grpCount"></span></summary>
+      <div class="grpBody">${members.map(colRow).join('')}</div></details>`;
+  }).join('');
+  $('#colsList').querySelectorAll('input[data-k]').forEach((el) => {
     el.onchange = () => {
       if (el.checked) VISIBLE.add(el.dataset.k); else VISIBLE.delete(el.dataset.k);
-      saveCols(); render();
+      saveCols(); render(); paintGroupBoxes();
     };
+  });
+  $('#colsList').querySelectorAll('.grpBox').forEach((el) => {
+    // a click on the box ticks it; it must not also fold the section open or shut
+    el.onclick = (e) => e.stopPropagation();
+    el.onchange = () => {
+      COLS.filter((x) => x.group === el.dataset.g).forEach((x) => (el.checked ? VISIBLE.add(x.key) : VISIBLE.delete(x.key)));
+      saveCols(); render(); paintCols();
+    };
+  });
+  $('#colsList').querySelectorAll('details.colgroup').forEach((d) => {
+    d.ontoggle = () => (d.open ? openGroups.add(d.dataset.g) : openGroups.delete(d.dataset.g));
+  });
+  paintGroupBoxes();
+}
+function paintGroupBoxes() {
+  $('#colsList').querySelectorAll('details.colgroup').forEach((d) => {
+    const keys = COLS.filter((x) => x.group === d.dataset.g).map((x) => x.key);
+    const on = keys.filter((k) => VISIBLE.has(k)).length;
+    const box = d.querySelector('.grpBox');
+    box.checked = on === keys.length; box.indeterminate = on > 0 && on < keys.length;
+    d.querySelector('.grpCount').textContent = `${on} of ${keys.length} shown`;
   });
 }
 const colsList = $('#colsList');

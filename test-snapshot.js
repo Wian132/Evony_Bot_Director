@@ -52,6 +52,18 @@ t('attacks, allies\' reinforcements and our own all show, each marked', () => {
 });
 
 let pass = 0, fail = 0;
+// The Director's per-type troop columns (2026-09-29): each type summed over the
+// cities AND the armies out marching, so a farm run does not look like losses.
+t('troops by type: every city and every march added up per type', () => {
+  const { buildSnapshot } = require('./snapshot');
+  const snap = buildSnapshot({
+    castles: [{ name: 'a', troop: { catapult: '100', scouter: 5 } }, { name: 'b', troop: { catapult: 50, archer: 0 } }],
+    player: { selfArmys: [{ troop: { catapult: '25', ballista: 7 } }], enemyArmys: [] },
+  });
+  assert.deepStrictEqual(snap.troopTypes, { catapult: 175, scouter: 5, ballista: 7 });
+  assert.strictEqual(snap.troops, 187, 'and the total still matches their sum');
+});
+
 for (const [name, fn] of tests) {
   try { fn(); pass++; console.log(`  ok    ${name}`); }
   catch (e) { fail++; console.log(`  FAIL  ${name}\n        ${e.message}`); }

@@ -17,7 +17,14 @@ function buildSnapshot(g, extra = {}) {
   const info = p.playerInfo || {};
   const totals = { food: 0, wood: 0, stone: 0, iron: 0, gold: 0, population: 0, maxPopulation: 0, idlePopulation: 0 };
   let troops = 0, heroes = 0, walls = 0;
+  // Each troop type on its own, garrison and marching together (the Director's
+  // per-type columns: the user, 2026-09-29, "Catapults, Scouts or any troop").
+  const troopTypes = {};
+  const addTypes = (t) => {
+    for (const [k, v] of Object.entries(t || {})) { const x = n(v); if (Number.isFinite(x) && x) troopTypes[k] = (troopTypes[k] || 0) + x; }
+  };
   for (const c of g.castles || []) {
+    addTypes(c.troop);
     const r = c.resource || {};
     totals.food += n(r.food && r.food.amount); totals.wood += n(r.wood && r.wood.amount);
     totals.stone += n(r.stone && r.stone.amount); totals.iron += n(r.iron && r.iron.amount);
@@ -36,6 +43,7 @@ function buildSnapshot(g, extra = {}) {
     const t = a.troop || a.troops || {};
     if (t && typeof t === 'object') {
       for (const v of Object.values(t)) { const x = n(v); if (Number.isFinite(x)) marchingTroops += x; }
+      addTypes(t);
     }
   }
 
@@ -46,7 +54,7 @@ function buildSnapshot(g, extra = {}) {
     title: info.title || info.titleId, cities: (g.castles || []).length,
     // the client calls these "cents / game coins"; the protocol field is `medal`
     coins: n(info.medal), lastLoginTime: n(info.lastLoginTime),
-    totals, troops: troops + marchingTroops, garrisonTroops: troops, marchingTroops,
+    totals, troops: troops + marchingTroops, garrisonTroops: troops, marchingTroops, troopTypes,
     heroes, walls,
     incoming: (p.enemyArmys || []).length,      // incoming waves
     marching: (p.selfArmys || []).length,

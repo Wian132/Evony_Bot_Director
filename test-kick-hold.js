@@ -330,6 +330,40 @@ t('reasonCode 4 or 2: the server is down, the fleet hears it, a good connection 
   assert.strictEqual(S.maint.active, false, 'reasonCode 0 (kicked by the server) is not the server going down');
 });
 
+// The Director's hand on maintenance (maint.js, the user 2026-09-29): the override lets a
+// console in during a stand-down, and "Connect all now" makes one that is out log in.
+t('the Director\'s maintenance override lets a login through a stand-down', async () => {
+  const MAINT = require('./maint');
+  Session.FLEET_OVERRIDE_EVERY_MS = 0;               // read the setting on every call
+  const S = freshSession();
+  clearFleetWindow(S);
+  try {
+    MAINT.declare(S.settings(), A.server, { startAt: Date.now() + 60000, text: 'test window' });
+    await assert.rejects(() => S.connect(), /standing down for maintenance/, 'no override: refused');
+    MAINT.setOverride(S.settings(), A.server, true, { by: 'test' });
+    await S.connect();
+    assert.ok(S.connected, 'override on: it logs in');
+    assert.ok(S.header().maintenance.fleetOverrideUntil > Date.now(), 'and the header says so');
+  } finally { MAINT.setOverride(S.settings(), A.server, false); clearFleetWindow(S); Session.FLEET_OVERRIDE_EVERY_MS = 4000; }
+});
+
+t('Connect all now: a console out for a stand-down makes one login, and an old click does nothing', async () => {
+  const MAINT = require('./maint');
+  Session.FLEET_OVERRIDE_EVERY_MS = 0;
+  const S = freshSession();
+  clearFleetWindow(S);
+  MAINT.connectNow(S.settings(), A.server, Date.now() - 1000);   // clicked before it started
+  MAINT.declare(S.settings(), A.server, { startAt: Date.now() + 60000, text: 'test window' });
+  S.startSupervisor({ checkMs: 25 });
+  try {
+    await sleep(250);
+    assert.ok(!S.connected, 'standing down: no login, and the old click is not for this console');
+    MAINT.connectNow(S.settings(), A.server);
+    await until(() => S.connected, 3000, 'the Connect all now login');
+    assert.ok(said(S, /Connect all now \(the Director\)/));
+  } finally { S.stopSupervisor(); clearFleetWindow(S); Session.FLEET_OVERRIDE_EVERY_MS = 4000; }
+});
+
 t('the header carries it, so a page can show it', async () => {
   const S = freshSession();
   await S.connect();

@@ -177,6 +177,25 @@ stand-down is open, whoever asks for it: the supervisor, a page poll, a script, 
 or the Director all get the same refusal, because a login into a maintenance can hold an
 account back for half an hour. The page's **maintenance override** is the way through.
 
+**By hand, for the whole fleet (the Director's header, 2026-09-29).** Two buttons next to
+the account counts:
+
+- **Maint: auto / Maint override.** With the override on, no account stands down early.
+  One that is in stays in until the game drops it. One that is out comes back the way it
+  does after maintenance: it checks the free port every 30 seconds and logs in the moment
+  it answers, even inside the announced window. It ends by itself after three hours
+  (`maint.js` `OVERRIDE_HOURS`) so a forgotten override cannot skip the next day's
+  stand-down, and the button shows until when.
+- **Connect all now.** Every console that is out makes one login attempt within a few
+  seconds, stand-down or not. Accounts held out after another login took them, switched
+  off, or logged out by a script are left alone. A click made before a console started is
+  ignored by it.
+
+Both are records in the organization's settings (`maintOverride:<server>`,
+`maintConnectNow:<server>`), read by every console every few seconds, so a console
+started later obeys the override too. The console page's own *keep working anyway* toggle
+still works for one account; it keeps that account on its reconnect ladder instead.
+
 #### One bot hearing it stands the whole fleet down
 
 Not every account is told. **An account on holiday is sent no system message at all**, so
@@ -431,6 +450,25 @@ seconds so the fleet does not arrive as one burst. No login of any kind is made 
 stand-down is open, whoever asks for it: the supervisor, a page poll, a script, the engine
 or the Director all get the same refusal, because a login into a maintenance can hold an
 account back for half an hour. The page's **maintenance override** is the way through.
+
+**By hand, for the whole fleet (the Director's header, 2026-09-29).** Two buttons next to
+the account counts:
+
+- **Maint: auto / Maint override.** With the override on, no account stands down early.
+  One that is in stays in until the game drops it. One that is out comes back the way it
+  does after maintenance: it checks the free port every 30 seconds and logs in the moment
+  it answers, even inside the announced window. It ends by itself after three hours
+  (`maint.js` `OVERRIDE_HOURS`) so a forgotten override cannot skip the next day's
+  stand-down, and the button shows until when.
+- **Connect all now.** Every console that is out makes one login attempt within a few
+  seconds, stand-down or not. Accounts held out after another login took them, switched
+  off, or logged out by a script are left alone. A click made before a console started is
+  ignored by it.
+
+Both are records in the organization's settings (`maintOverride:<server>`,
+`maintConnectNow:<server>`), read by every console every few seconds, so a console
+started later obeys the override too. The console page's own *keep working anyway* toggle
+still works for one account; it keeps that account on its reconnect ladder instead.
 
 #### One bot hearing it stands the whole fleet down
 

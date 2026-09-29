@@ -32,6 +32,39 @@ const SPAN_MIN = 90;        // how long a record stays meaningful at all
 const winKey = (server) => 'maintWindow:' + (server || 'ss71');
 const overKey = (server) => 'maintOver:' + (server || 'ss71');
 
+// ---- the user's hand on it (the Director's header, 2026-09-29) --------
+// "I want to connect up to the last second before maintenance, still be able to try
+// during it, and log in the moment it is over" (the user). Two fleet-wide controls:
+//
+//   maintOverride:<server>  = { until, by, at }  while it stands, no console stands
+//       down early: one that is in stays in until the game drops it, one that is out
+//       checks the free port every 30 s and logs in the moment it answers. It ends by
+//       itself (OVERRIDE_HOURS) so a forgotten override cannot skip tomorrow's.
+//   maintConnectNow:<server> = ms   a click on "Connect all now": every console that is
+//       out (and not held out after another login took it) makes ONE login attempt,
+//       stand-down or not.
+const OVERRIDE_HOURS = 3;
+const overrideKey = (server) => 'maintOverride:' + (server || 'ss71');
+const connectNowKey = (server) => 'maintConnectNow:' + (server || 'ss71');
+function readOverride(settings, server, now = Date.now()) {
+  try {
+    const o = settings.get(overrideKey(server), null);
+    return o && Number(o.until) > now ? o : null;
+  } catch { return null; }
+}
+function setOverride(settings, server, on, { by = null, hours = OVERRIDE_HOURS } = {}, now = Date.now()) {
+  const rec = on ? { until: now + Math.max(0.1, Math.min(12, Number(hours) || OVERRIDE_HOURS)) * 3600000, by, at: now } : null;
+  settings.set(overrideKey(server), rec);
+  return rec;
+}
+function readConnectNow(settings, server) {
+  try { return Number(settings.get(connectNowKey(server), 0)) || 0; } catch { return 0; }
+}
+function connectNow(settings, server, now = Date.now()) {
+  settings.set(connectNowKey(server), now);
+  return now;
+}
+
 // The record as it stands right now, or null when there is nothing current.
 // `phase` is what a console should be doing about it:
 //   before      carry on as normal, the stand-down has not started
@@ -141,5 +174,6 @@ function verdict(sweep, rec) {
 
 module.exports = {
   read, standingDown, declare, signalBack, verdict, winKey, overKey,
+  readOverride, setOverride, readConnectNow, connectNow, overrideKey, connectNowKey, OVERRIDE_HOURS,
   PRE_PAUSE_MIN, WINDOW_MIN, SPAN_MIN, DROPPED_IS_MAINTENANCE, SAYS_DOWN_IS_MAINTENANCE,
 };

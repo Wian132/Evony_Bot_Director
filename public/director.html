@@ -91,6 +91,8 @@
   .moreMenu button { text-align:left; }
   .more.open .moreMenu { display:flex; }
   .logBtn { padding:2px 10px; font-size:var(--fs-sm); }
+  header #maintOvBtn, header #connectAllBtn { padding:4px 10px; font-size:var(--fs-sm); }
+  #maintOvBtn.on { background:var(--warn, #b7791f); border-color:var(--warn, #b7791f); color:#fff; font-weight:600; }
   h1 { font-size:var(--fs-xl); margin:0; font-weight:600; letter-spacing:-.01em; }
   .badge { background:var(--acc); color:#0c1410; font-size:var(--fs-xs); font-weight:700; letter-spacing:.9px; padding:4px 9px; border-radius:5px; }
   header .sp { flex:1; }
@@ -492,6 +494,9 @@
   <span class="stat"><b id="cOk">0</b> reporting</span>
   <span class="stat"><b id="cWar">0</b> under attack</span>
   <span class="stat" id="offStat" hidden><b id="cOff">0</b> switched off</span>
+  <!-- The user's hand on maintenance (maint.js, 2026-09-29) -->
+  <button id="maintOvBtn" class="maintOv" title="Maintenance override: while it is on, no account stands down early. One that is in stays in until the game drops it; one that is out logs in the moment the game's port answers. Ends by itself after a few hours.">Maint: auto</button>
+  <button id="connectAllBtn" title="Every account that is out makes one login attempt right now, stand-down or not. Accounts held out after another login took them are left alone.">Connect all now</button>
   <span class="sp"></span>
   <div class="tabs">
     <div class="tab on" data-p="fleet">Fleet</div>
@@ -1308,6 +1313,42 @@ const consoleHref = (a) => (REMOTE ? '/console/' + encodeURIComponent(a.id) : a.
   document.addEventListener('click', (e) => { if (!more.contains(e.target)) more.classList.remove('open'); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') more.classList.remove('open'); });
 })();
+
+// Maintenance by hand (maint.js, /api/maint/*): the override and Connect all now.
+let MAINTST = null;
+async function loadMaint() {
+  try { MAINTST = await (await fetch('/api/maint/state')).json(); } catch { return; }
+  const ov = (MAINTST.servers || []).map((s) => s.override).find(Boolean);
+  const b = document.getElementById('maintOvBtn');
+  b.classList.toggle('on', !!ov);
+  b.textContent = ov ? `Maint override · until ${new Date(ov.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Maint: auto';
+}
+document.getElementById('maintOvBtn').addEventListener('click', async () => {
+  const on = !(MAINTST && (MAINTST.servers || []).some((s) => s.override));
+  const ok = await ask(on ? 'Switch the maintenance override on?' : 'Back to the usual stand-down?', on ? {
+    title: 'Maintenance override', ok: 'Override on (3 hours)', danger: true,
+    detail: 'No account stands down before maintenance. Those that are in stay in until the game drops them; those that are out check the game port every 30 seconds and log in the moment it answers. '
+      + 'Logins into a server that is still in maintenance can hold an account back for about half an hour, which is why the fleet normally stands down 5 minutes early. The override ends by itself after 3 hours.',
+  } : { title: 'Maintenance override', ok: 'Override off',
+    detail: 'The fleet goes back to standing down 5 minutes before an announced maintenance and waiting for the port afterwards.' });
+  if (!ok) return;
+  await post('/api/maint/override', { on });
+  loadMaint();
+});
+document.getElementById('connectAllBtn').addEventListener('click', async () => {
+  const w = MAINTST && (MAINTST.servers || []).map((s) => s.window).find((x) => x && ['standdown', 'recovering'].includes(x.phase));
+  const ok = await ask('Every account that is out makes one login attempt now?', {
+    title: 'Connect all now', ok: 'Connect all now', danger: !!w,
+    detail: (w ? `The fleet is standing down for maintenance right now (${w.phase === 'standdown' ? 'the window is open' : 'waiting for the server to come back'}). A login into a server that is still down can hold an account back for about half an hour. ` : '')
+      + 'Accounts held out after another login took them, switched-off accounts, and accounts a script logged out are left alone. Each console tries once, within a few seconds.',
+  });
+  if (!ok) return;
+  await post('/api/maint/connect-now', {});
+  say('Connect all now sent — each console that is out tries one login within a few seconds.', 8000);
+  loadMaint();
+});
+loadMaint();
+setInterval(loadMaint, 15000);
 
 // The log stays folded away until asked for, so the table has the page; the choice
 // is remembered in this browser.

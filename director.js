@@ -896,6 +896,32 @@ http.createServer(async (req, res) => {
     return CP.pass(req, res, { port, prefix, rest: cp.rest, search: url.search });
   }
 
+  // The user's hand on maintenance (maint.js, 2026-09-29): the override (no early
+  // stand-down; out means back the moment the port answers) and Connect all now (one
+  // login attempt per console, stand-down or not). Every server this org's accounts
+  // play on; the consoles pick it up within a few seconds.
+  if (url.pathname.startsWith('/api/maint/') && ORG) {
+    const servers = [...new Set(ORG.accounts.all().map((a) => a.server || 'ss71'))];
+    const state = () => ({ ok: true, servers: servers.map((sv) => {
+      const rec = MAINT.read(ORG.settings, sv);
+      return { server: sv, override: MAINT.readOverride(ORG.settings, sv), connectNowAt: MAINT.readConnectNow(ORG.settings, sv) || null,
+        window: rec ? { phase: rec.phase, startAt: rec.startAt, pauseAt: rec.pauseAt, resumeAt: rec.resumeAt, text: rec.text || null } : null };
+    }) });
+    const by = (req.user && (req.user.email || req.user.name)) || null;
+    if (url.pathname === '/api/maint/state') return send(200, 'application/json', JSON.stringify(state()));
+    if (url.pathname === '/api/maint/override' && req.method === 'POST') {
+      const b = await body(req);
+      for (const sv of servers) MAINT.setOverride(ORG.settings, sv, !!b.on, { by, hours: b.hours });
+      note(`maintenance override ${b.on ? `ON for ${b.hours || MAINT.OVERRIDE_HOURS}h — no account stands down early` : 'OFF — the usual stand-down applies'}${by ? ` (${by})` : ''}`);
+      return send(200, 'application/json', JSON.stringify(state()));
+    }
+    if (url.pathname === '/api/maint/connect-now' && req.method === 'POST') {
+      for (const sv of servers) MAINT.connectNow(ORG.settings, sv);
+      note(`Connect all now${by ? ` (${by})` : ''} — every console that is out makes one login attempt`);
+      return send(200, 'application/json', JSON.stringify(state()));
+    }
+  }
+
   if (url.pathname === '/' || url.pathname === '/index.html') {
     return send(200, 'text/html', fs.readFileSync(path.join(__dirname, 'public', 'director.html')));
   }

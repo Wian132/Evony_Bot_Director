@@ -144,6 +144,8 @@ class Session {
       override: process.env.MAINT_OVERRIDE === '1',   // keep running regardless
     };
     this.lastError = null;
+    // A "Connect all now" click from before this console started is not for it.
+    this._connectNowSeen = Date.now();
   }
 
   // logSeq is monotonic; this.log is a 400-entry ring, so its length plateaus
@@ -665,7 +667,29 @@ class Session {
         // A script's logout (logout.js) was asked for, so the maintenance
         // override does not cancel it; Connect does.
         const loggedOut = !!(this.maint.plan && this.maint.plan.source === 'logout');
-        if (phase === 'standdown' && (!this.maint.override || loggedOut)) {
+
+        // "Connect all now" in the Director (maint.js): one login attempt, now, whatever
+        // the stand-down says. Only a click made after this console started counts, and
+        // an account held out after another login took it is left alone (returned above).
+        const cn = loggedOut || this.connected ? 0 : this.fleetConnectNow();
+        if (cn && cn > (this._connectNowSeen || 0)) {
+          this._connectNowSeen = cn;
+          this.note('Connect all now (the Director) — one login attempt, maintenance or not');
+          this._forceConnect = true;
+          try { await this.connect(); this.noteConnectOk(); } catch (e) {
+            this.note(`Connect all now: ${e.message}`);
+            this.noteConnectError(e);
+          } finally { this._forceConnect = false; }
+          return;
+        }
+
+        // The override (this console's toggle, or the Director's for the fleet) means
+        // no early stand-down. The Director's goes further: a console that is OUT comes
+        // back the way it does after maintenance, checking the free port every 30 s and
+        // logging in the moment it answers (below), not hammering a closed server.
+        const fleetOv = !loggedOut && !!this.fleetOverride();
+        const ownOv = !loggedOut && this.maint.override;
+        if (phase === 'standdown' && !fleetOv && !ownOv) {
           const back = new Date(this.maint.plan.resumeAt).toLocaleTimeString();
           if (this.connected) { this.note(loggedOut ? `logging out until ${back}, as the script asked` : 'standing down for maintenance'); try { this.game.close(); } catch {} }
           this.state = loggedOut ? 'loggedout' : 'maintenance';
@@ -676,7 +700,8 @@ class Session {
           this.clearTrouble();          // it is not trying to get in — it is told not to
           return;
         }
-        if (phase === 'recovering' && !this.connected && (!this.maint.override || loggedOut)) {
+        const probeBack = (phase === 'recovering' && !ownOv) || (phase === 'standdown' && fleetOv && !ownOv);
+        if (probeBack && !this.connected) {
           this.clearTrouble();          // waiting for the server, not stuck on a proxy
           this.state = loggedOut ? 'loggedout' : 'maintenance';
           this.disconnectReason = loggedOut ? 'logging back in after the script\'s logout' : 'waiting for the server to come back';
@@ -1243,6 +1268,38 @@ class Session {
     return rec;
   }
 
+  // The Director's maintenance override (maint.js), read at most every few seconds so
+  // a click reaches every console quickly. Switching on forgets any login wait this
+  // console was sitting out, so an account that is already out probes at once.
+  static FLEET_OVERRIDE_EVERY_MS = 4000;
+  fleetOverride(now = Date.now()) {
+    const cached = this._fleetOv;
+    if (cached && now - cached.at < Session.FLEET_OVERRIDE_EVERY_MS) return cached.rec;
+    const server = (this.account && this.account.server) || 'ss71';
+    const rec = MAINT.readOverride(this.settings(), server, now);
+    const was = cached ? cached.rec : null;
+    this._fleetOv = { at: now, rec };
+    if (rec && !was) {
+      this.maint.nextLoginAt = 0; this.maint.nextProbeAt = 0;
+      this.note(`maintenance override ON from the Director${rec.by ? ` (${rec.by})` : ''} until ${new Date(rec.until).toLocaleTimeString()}`
+        + ' — no early stand-down; if the game drops us, back in the moment its port answers');
+    } else if (!rec && was) {
+      this.note('maintenance override OFF — the usual stand-down before maintenance applies again');
+    }
+    return rec;
+  }
+  // Either override: this console's own toggle, or the Director's for the fleet.
+  overrideOn(now = Date.now()) { return !!(this.maint.override || this.fleetOverride(now)); }
+  // The Director's "Connect all now" (maint.js): the time of the last click, or 0.
+  fleetConnectNow(now = Date.now()) {
+    const cached = this._fleetCn;
+    if (cached && now - cached.at < Session.FLEET_OVERRIDE_EVERY_MS) return cached.at0;
+    const server = (this.account && this.account.server) || 'ss71';
+    const at0 = MAINT.readConnectNow(this.settings(), server);
+    this._fleetCn = { at: now, at0 };
+    return at0;
+  }
+
   // Take on a window another console (or the Director) put up. A plan of this
   // console's own — the announcement it heard itself, one set by hand, or a
   // script's logout — always wins, and is left alone.
@@ -1476,7 +1533,7 @@ class Session {
   }
 
   // True when we should hold off entirely.
-  get paused() { return this.maint.active && !this.maint.override; }
+  get paused() { return this.maint.active && !this.overrideOn(); }
 
   setMaintenanceOverride(on) {
     this.maint.override = !!on;
@@ -1665,7 +1722,7 @@ class Session {
     if (!this.maint.plan) this.adoptFleetMaintenance();
     const lo = this.maint.plan;
     if (lo && this.planPhase() === 'standdown'
-        && (lo.source === 'logout' || !this.maint.override) && !this._raceGo) {
+        && (lo.source === 'logout' || !this.overrideOn()) && !this._raceGo && !this._forceConnect) {
       throw new Error(lo.source === 'logout'
         ? `logged out by a script until ${new Date(lo.resumeAt).toLocaleTimeString()} — press Connect to end that early`
         : `standing down for maintenance until ${new Date(lo.resumeAt).toLocaleTimeString()} — `
@@ -1675,7 +1732,7 @@ class Session {
     // A follower in a maintenance race logs in only once the monitor is in: a page
     // poll or a script must not spend its login into the maintenance either.
     const race = this.maintRaceState();
-    if (race && race.role === 'follow' && !race.over && !this._raceGo) {
+    if (race && race.role === 'follow' && !race.over && !this._raceGo && !this._forceConnect) {
       throw new Error(`waiting for the maintenance monitor to find the end of maintenance (${race.server}) — then this logs in at once`);
     }
     this.connecting = (async () => {
@@ -2941,6 +2998,8 @@ class Session {
         active: this.maint.active,
         paused: this.paused,
         override: this.maint.override,
+        // the Director's override for the whole fleet: until when, or null
+        fleetOverrideUntil: (() => { const o = this.fleetOverride(); return o ? Number(o.until) : null; })(),
         state: this.maint.state,
         why: this.maint.reason,
         portDown: this.maint.portDown,

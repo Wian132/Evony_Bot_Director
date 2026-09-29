@@ -48,6 +48,23 @@ t('an announced window: before, standing down, recovering', () => {
   assert.strictEqual(MAINT.read(st, 'ss71', now + 31 * MIN).phase, 'recovering', 'the 15-minute window is over');
 });
 
+// The Director's override (2026-09-29): it ends by itself, so a forgotten one cannot
+// skip tomorrow's early stand-down; and Connect all now is just the time of the click.
+t('the maintenance override ends by itself; off clears it; Connect all now is a timestamp', () => {
+  const s = store();
+  const now = Date.now();
+  const o = MAINT.setOverride(s, 'ss71', true, { by: 'me' }, now);
+  assert.strictEqual(o.until, now + MAINT.OVERRIDE_HOURS * 3600000);
+  assert.ok(MAINT.readOverride(s, 'ss71', now + 60000), 'on a minute later');
+  assert.strictEqual(MAINT.readOverride(s, 'ss71', o.until + 1), null, 'gone once its hours are up');
+  assert.strictEqual(MAINT.readOverride(s, 'ss72', now), null, 'one server only');
+  MAINT.setOverride(s, 'ss71', false);
+  assert.strictEqual(MAINT.readOverride(s, 'ss71', now), null, 'off clears it');
+  assert.strictEqual(MAINT.readConnectNow(s, 'ss71'), 0);
+  assert.strictEqual(MAINT.connectNow(s, 'ss71', now), now);
+  assert.strictEqual(MAINT.readConnectNow(s, 'ss71'), now);
+});
+
 t('it says who saw it, and what they saw', () => {
   const st = store();
   MAINT.declare(st, 'ss71', { startAt: now, text: 'Evony Server ss71 will be taken offline', by: 'a2' }, now);

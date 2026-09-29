@@ -1336,6 +1336,7 @@ city = m_city = m_city.cityManager         the run's city
   transitAmount(res) restingAmount(res[, tradeType])   the sums a loop over those two would make
   buffs hasBuff(t) buff(t) brokenGates
   PRFactor comfortingNeeds(1-4) getConfig(key) CityHasGoalErrors GateControl
+  goals                                    the goal lines the engine runs here, as text (below)
   compareByDistanceToCastle(a, b) setCityTimer(key) cityTimingAllowed(key, sec[, test])
 cities[i].cityManager                      every city, in login order (the same view)
 player = m_context.Player                  the PlayerBean: playerInfo, friends, blocked...
@@ -1350,6 +1351,14 @@ GetTroops("a:30k,b:40k")  TroopBeanToString(bean[, sep])  GetFortifications(str)
 ItemCount(idOrName)  GetItem(idOrName)  IsHeroInCastle(heroString)  AnyIdleHero(heroString)
 GetTechLevel(type)  is_researching  HeroLevel(level, exp)  HeroExperience(end[, start[, exp]])
 ```
+
+`echo city.goals` prints what the engine actually works in the city: the city's own
+lines, the Prepend and Append goals and any goal lines a script set there, merged the
+way the engine merges them. The merged `config` comes first, then one goal a line with
+the layer and line number it came from (`prepend 23: troop b:5k,t:5k`), then the lines
+the parser skipped. A singleton the city's own text already sets (`defensepolicy`, say)
+is listed once, from the layer that wins. `getConfig`, `trainingHeroName` and
+`cityHasGoalErrors` read the same merged goals, so a prepend-only city has goals.
 
 The beans in those lists:
 

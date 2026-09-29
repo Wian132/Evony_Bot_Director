@@ -3953,6 +3953,20 @@ and 11 minutes for the last 8 once their marches were home.
     `requestresources any <res> 400b 400b 100m * t /steps:10b,100b`. A level waits while any
     town with the line is still under a lower level that some town can fill; donors never go
     below the level; the richest free town sends. Offline-tested only.
+  - **A town under the FIRST step gets nothing when no town is over it** (2026-09-29, a30
+    Lord30, seen live in the engine report). Both new cities sat at ~500k wood for over a
+    day, with 17b stone, 5.7b food and 35t gold, and so never finished `troop b:5k,t:5k`
+    (a transporter costs 1,500 wood, a ballista 3,000). The other eight towns held 1.3–4.9b
+    wood, all under the 10b first step, so the stepped wood line said *"nothing to even
+    out — no city holds over 10b to give"*. The only wood that came was the older
+    `requestresources any wood 2000000 2000000 * 500000 /below:100000`: 500k after the
+    town fell under 100k, which is about 333 transporters or 166 ballista a refill. So the
+    first step must be one the account's middling towns clear: an account whose towns all
+    sit under it moves nothing at all. The engine report's troop note says *"then waiting
+    on resources"* while OTTO is present, and the transfer note names the step. Changed
+    the same day, the user's choice: the fleet prepend's food, wood, stone and iron lines
+    read `/steps:1b,10b,100b` (gold unchanged); the file before is
+    `goals-backup-a15-prepend-2026-09-20.before-1b-step-2026-09-29.txt` on the VPS.
   - **Food never past 950b** is now enforced in goal-transfer.js itself (requests and
     keep/send lines), counting what is on its way — not only by the lines' amounts.
   - **How fast the steps can move anything** (worked out 2026-09-19, offline from the

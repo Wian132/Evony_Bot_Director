@@ -52,7 +52,7 @@
 //   transitAmount(res) restingAmount(res[, tradeType])   sums over those two lists, for loops
 //                                       that would otherwise walk thousands of trades a pass
 //   buffs hasBuff(t) buff(t) brokenGates
-//   PRFactor comfortingNeeds(1-4) getConfig(key) cityHasGoalErrors CityHasGoalErrors GateControl
+//   PRFactor comfortingNeeds(1-4) goals getConfig(key) cityHasGoalErrors CityHasGoalErrors GateControl
 //   compareByDistanceToCastle(a, b) setCityTimer(key) cityTimingAllowed(key, sec[, test])
 //   (* = one cached server read; the value is a Promise)
 //
@@ -621,17 +621,53 @@ async function troopParams(g, cid) {
   }
 }
 
-// The city's goals as goals.js reads them, or null with no goal store (tests,
-// a bare run). goals.js is loaded only here: it opens the database.
+// The goals the engine runs in the city, or null with no goal store (tests, a
+// bare run): the city's own, the prepend, the append and a script's goal layer,
+// merged as the engine merges them (goallayers.runningGoals, session.goalsOf).
+// Reading the city's own row alone missed the prepend — on an account whose
+// goals are all prepend (a30 Lord30, 2026-09-29) every city read as having no
+// goals and no traininghero. A store with no layers() (older test doubles)
+// still gives the city's own. goals.js is loaded only here: it opens the database.
 function cityGoals(ctx, c) {
   const s = ctx && ctx.session;
   const store = s && s.org && s.org.goals;
-  if (!store || typeof store.own !== 'function') return null;
+  const acct = s && s.account && s.account.id;
+  const none = { goals: [], config: {}, errors: [], none: true };
   try {
-    const entry = store.own(s.account && s.account.id, idOf(gameOf(ctx), c), c.name, 'goal');
-    if (!entry || !String(entry.src || '').trim()) return { goals: [], config: {}, errors: [], none: true };
+    if (store && typeof store.layers === 'function') {
+      return require('./goallayers').runningGoals(store, acct, idOf(gameOf(ctx), c), c.name) || none;
+    }
+    if (!store || typeof store.own !== 'function') return null;
+    const entry = store.own(acct, idOf(gameOf(ctx), c), c.name, 'goal');
+    if (!entry || !String(entry.src || '').trim()) return none;
     return require('./goals').parseGoals(entry.src);
   } catch { return { goals: [], config: {}, errors: [], failed: true }; }
+}
+
+// `echo city.goals`: the lines the engine works in the city, one a line, each
+// with the layer and line number it came from; the merged config first, the
+// lines the parser skipped last. A goal the city's own text already set (a
+// singleton such as defensepolicy, or a config key) is not listed twice: the
+// merge keeps the earlier layer's, as the engine does.
+function goalsText(parsed, name) {
+  if (!parsed) return null;
+  if (parsed.failed) return `${name}: its goals could not be read`;
+  const where = (source, line) => (source === 'city' ? `city ${line}` : `${source} ${line}`);
+  const out = [];
+  const layers = Object.entries(parsed.layers || {}).map(([k, v]) => `${k} ${v.lines}`);
+  const cfg = Object.entries(parsed.config || {}).map(([k, v]) => `${k}:${isPlain(v) ? v : JSON.stringify(v)}`);
+  if (!(parsed.goals || []).length && !cfg.length) return `${name} has no goals — the engine leaves it alone`;
+  out.push(`${name} runs ${(parsed.goals || []).length} goal(s)${layers.length ? ` (lines: ${layers.join(', ')})` : ''}`);
+  if (cfg.length) out.push(`config ${cfg.join(',')}`);
+  const shown = new Set();
+  for (const g of parsed.goals || []) {
+    const key = `${g.source || 'city'}:${g.line}`;          // an obsolete goal read as several is one line
+    if (shown.has(key)) continue;
+    shown.add(key);
+    out.push(`${where(g.source || 'city', g.line)}: ${g.raw}`);
+  }
+  for (const e of parsed.errors || []) out.push(`skipped ${e.where || `line ${e.line}`}: ${e.error}`);
+  return out.join('\n');
 }
 function controlsOf(ctx, c) {
   const s = ctx && ctx.session;
@@ -1034,9 +1070,11 @@ class CityView {
   }
 
   // ---- goals and controls ----
-  // A config value from the city's goals (0 when unset). The console's War Town
-  // control wins over config wartown, as it does for the engine. Script config
-  // lines are not seen here yet.
+  // The goals the engine runs here, as text: `echo city.goals` (goalsText).
+  get goals() { return this.#with((c, g, ctx) => goalsText(cityGoals(ctx, c), c.name), null); }
+  // A config value from the city's goals (0 when unset), prepend and append
+  // and a script's goal layer included. The console's War Town control wins
+  // over config wartown, as it does for the engine.
   get getConfig() {
     return (key) => this.#with((c, g, ctx) => {
       const k = lc(key);

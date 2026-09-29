@@ -49,6 +49,25 @@ entry on training stopping fleet-wide). Worked out live on Lord02 (a2), 2026-09-
    Ask the user before restarting any console in a play (glitch accounts), and tell the
    other sessions (ListAgents + SendMessage). A restart loads everyone's uncommitted edits.
 
+## "Cities aren't training" when OTTO is fine (2026-09-29, a30 Lord30)
+
+"waiting for it" in nine of ten cities is the normal state between OTTO's visits, not the
+fault. With `traininghero OTTO 30 60` it spends ~1 minute per city, and an insta OTTO
+(`troopGoal.times.otto` all 0) puts in all it can in one go. So ask what limits the city
+**while OTTO is there**, and read these first:
+
+- `GET /api/city?id=<castleId>` -> `troopStage.note` is the plan without the trainer
+  wait: *"then waiting on resources"* or *"waiting on population (N)"*.
+- The engine report's `transfer` note (`GET /api/engine/report?city=<id>`) says why no
+  resource is coming: *"nothing to even out — no city holds over 10b to give"* is the
+  `/steps` first step being above every town (EVONY-RULES, resource-spread layer).
+- The **fleet audit** (2026-09-29): all 298 cities had goals and a troop plan. 267 were
+  waiting for OTTO and 31 on population. Old cities on stage 5 (`r:100k`, 10 pop each)
+  are population-bound by the game, not by goals.
+- `echo city.goals` in a city's editor prints the merged goals the engine runs (the
+  prepend included). Before 2026-09-29 it printed `undefined`: the script objects read
+  only the city's own row.
+
 ## The two ways a city stops the round (2026-09-22)
 
 The training hero can only enter a city with a free Feasting Hall slot, and it can only

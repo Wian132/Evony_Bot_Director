@@ -395,6 +395,47 @@ t('goals and console controls: getConfig, GateControl, goal errors, training her
   assert.strictEqual(G.city.TrainingHeroIsHere, false, 'out marching');
   assert.strictEqual(G.cities[1].trainingHeroName, '');
 });
+t('city.goals prints the lines the engine runs; the prepend counts everywhere (Lord30, 2026-09-29)', () => {
+  // An account whose goals are all prepend: `echo city.goals` said undefined,
+  // and getConfig / trainingHeroName saw none of the prepend's lines.
+  const w = world();
+  const s = fakeSession(w);
+  const texts = {
+    prepend: '// the fleet prepend\nconfig hero:1\ntraininghero OTTO 30 60\ntroop b:5k,t:5k\ndefensepolicy /junktroop:5000\nbogus line',
+    city: { 1: 'defensepolicy /junktroop:100\ntroop a:1k' },
+  };
+  s.org.goals.layers = (acct, cid) => ({ prepend: texts.prepend, city: texts.city[cid] || null, append: null });
+  const { G } = context(w, { session: s });
+  assert.strictEqual(G.cities[1].trainingHeroName, 'OTTO', 'a prepend-only city has the prepend traininghero');
+  assert.strictEqual(G.cities[1].getConfig('hero'), 1);
+  assert.strictEqual(G.cities[1].cityHasGoalErrors, false, 'the prepend is goals');
+  assert.strictEqual(G.cities[1].goals, [
+    'Fla runs 3 goal(s) (lines: prepend 5)',
+    'config hero:1',
+    'prepend 3: traininghero OTTO 30 60',
+    'prepend 4: troop b:5k,t:5k',
+    'prepend 5: defensepolicy /junktroop:5000',
+    'skipped prepend line 6: unknown goal "bogus"',
+  ].join('\n'));
+  // the city's own lines come first, and its defensepolicy beats the prepend's
+  assert.strictEqual(G.city.goals, [
+    '9 runs 4 goal(s) (lines: city 2, prepend 5)',
+    'config hero:1',
+    'city 1: defensepolicy /junktroop:100',
+    'city 2: troop a:1k',
+    'prepend 3: traininghero OTTO 30 60',
+    'prepend 4: troop b:5k,t:5k',
+    'skipped prepend line 6: unknown goal "bogus"',
+  ].join('\n'));
+  texts.prepend = '';
+  assert.strictEqual(G.cities[1].goals, 'Fla has no goals — the engine leaves it alone');
+  assert.strictEqual(G.cities[1].cityHasGoalErrors, true);
+  // a store with only own() (no layers) still reads the city's own text
+  const w2 = world();
+  const { G: G2 } = context(w2, { session: fakeSession(w2, { 9: 'troop a:5' }) });
+  assert.strictEqual(G2.city.goals, '9 runs 1 goal(s)\ncity 1: troop a:5');
+  assert.strictEqual(context(world()).G.city.goals, null, 'no goal store, no goals to show');
+});
 t('checkFeastingHallSpace keeps a slot for a training hero who is elsewhere', () => {
   const w = world();
   assert.strictEqual(context(w, { session: fakeSession(w, { 9: GOALS }) }).G.city.checkFeastingHallSpace, true, 'hall L6, five heroes, QUEEN is here');
@@ -926,13 +967,15 @@ t('a NEAT script through script.run', async () => {
     'echo "We have " + current + " trebs, and need " + (11000 - current) + " more"',
     'if city.NumberOfRealAttacks == 1 echo "one real attack"',
     'city.troop.archer = 1',
+    'echo city.goals',
   ].join('\n');
   const acts = S.parse(src);
   assert.deepStrictEqual(acts.filter((a) => a.cmd === 'error').map((a) => a.error), []);
   const out = [];
   await S.run(w.g, acts, (m) => out.push(m), { castle: '9', repeatGapMs: 0, session: s });
   const text = out.join('\n');
-  for (const want of [/Trebber is home/, /incoming from Bad/, /I have archery level 8/, /f:30000/, /We have 11 trebs, and need 10989 more/, /one real attack/]) {
+  for (const want of [/Trebber is home/, /incoming from Bad/, /I have archery level 8/, /f:30000/, /We have 11 trebs, and need 10989 more/, /one real attack/,
+    /9 runs 4 goal\(s\)\n +config hero:10,wartown:1\n +city 2: traininghero QUEEN 3600/]) {
     assert.match(text, want);
   }
   assert.strictEqual(w.g.castles[0].troop.archer, 120000, 'the copy changed, not the city');

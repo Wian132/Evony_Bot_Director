@@ -272,6 +272,12 @@ file (see the end).
   runs (claude-guard.js). So in the middle of a play, set the override and let the
   account pick it up at its next login (a play switch, or maintenance), rather than
   relogging it on the spot.
+  Seen when a14 was restarted onto its US line (15:58:29, the user asked): the first login
+  got no reply, then two logins were dropped ~4 s after "logged in", then the third held
+  (16:01:04). The log gave no close reason. a14 had been answering "server is ignoring
+  this account — rate limited" at 15:39 and 15:50, so the likely cause is the per-account
+  throttle from heavy trading, not the new line (*unverified*). Give a freshly restarted
+  trader ~3 minutes before you blame its proxy.
 - **Rate limiting is per ACCOUNT, not per IP.** Lord06 kept being ignored while trading hard
   even on its own proxy IP (2026-09-18).
 - **Two accounts on ONE proxy both lost their logins** (2026-09-22). Lord14 (a14) and

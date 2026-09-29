@@ -139,7 +139,7 @@ class Session {
     // costs nothing and cannot trip the rate limiter.
     this.maint = {
       active: false, since: null, state: null, checkedAt: 0, error: null,
-      portDown: false, netFails: 0, reason: null,
+      portDown: false, netFails: 0, reason: null, saidDown: null,
       plan: null, nextLoginAt: 0, loginTries: 0, nextProbeAt: 0, notedClosedAt: 0,
       override: process.env.MAINT_OVERRIDE === '1',   // keep running regardless
     };
@@ -856,11 +856,13 @@ class Session {
   refreshMaintenance() {
     const was = this.maint.active;
     const portDown = this.maint.netFails >= 2;
+    const said = this.maint.saidDown;
     this.maint.portDown = portDown;
-    this.maint.active = !!(this.flagged || portDown);
+    this.maint.active = !!(this.flagged || portDown || said);
     this.maint.reason = this.flagged
       ? `the server reports ServerState=${this.maint.state}`
-      : (portDown ? `the game port stopped accepting connections (${this.maint.lastNetError || 'refused'})` : null);
+      : said ? `the game closed us with reasonCode ${said.code} (${said.why})`
+        : (portDown ? `the game port stopped accepting connections (${this.maint.lastNetError || 'refused'})` : null);
 
     if (this.maint.active && !was) {
       this.maint.since = Date.now();
@@ -1454,9 +1456,16 @@ class Session {
     this.refreshMaintenance();
   }
 
+  // The game's own ConnectionLost reason 2 or 4: down until a connection works again.
+  serverSaidDown(code, why) {
+    this.maint.saidDown = { code, why: why || 'server down', at: Date.now() };
+    this.refreshMaintenance();
+  }
+
   noteConnectOk() {
     if (this.maint.netFails || this.maint.active) {
       this.maint.netFails = 0;
+      this.maint.saidDown = null;
       this.refreshMaintenance();
     }
     // Every way in ends here, so this is where "if a bot logs in it should check
@@ -1793,6 +1802,12 @@ class Session {
           this.note(`server.ConnectionLost, reasonCode ${code == null ? 'none' : code}${why ? ` (${why})` : ''}${data && data.msg ? ` — ${data.msg}` : ''}`);
           if (code != null && code !== 3) {
             this.disconnectReason = `the game dropped us: ${why || 'reasonCode ' + code} — not a kick, no hold`;
+            // 2 (shutting down) and 4 (maintenance) are the game itself saying the server
+            // is going away: the same verdict as a refused port, only certain. It is the
+            // backstop for a window nobody announced — normally the chat notice has stood
+            // the fleet down minutes before the game would send this (2026-09-29: every
+            // console left at 08:54 and none ever received a code).
+            if (code === 2 || code === 4) this.serverSaidDown(code, why);
             return;
           }
         }

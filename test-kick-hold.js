@@ -49,6 +49,12 @@ async function until(f, ms = 5000, what = 'condition') {
   }
 }
 const said = (S, re) => S.log.some((l) => re.test(l.text || l.m || ''));
+// A reasonCode 2 or 4 declares a fleet-wide maintenance window (maint.js), which every
+// later session in this file would then stand down for.
+const clearFleetWindow = (S) => {
+  const M = require('./maint');
+  S.settings().set(M.winKey(A.server), null); S.settings().set(M.overKey(A.server), null);
+};
 const freshSession = () => {
   ORG.settings.set('kickHold:' + A.id, null);
   return new Session(A.id);
@@ -291,6 +297,7 @@ t('reasonCode 3 is a kick even inside a maintenance window: the game names it', 
 t('reasonCode 4 (maintenance) and 0 (the server kicked us) are not a kick: no hold', async () => {
   for (const code of [4, 0, 2]) {
     const S = freshSession();
+    clearFleetWindow(S);               // 4 and 2 now put a fleet-wide window up
     await S.connect();
     S.game.c.emit('cmd', 'server.ConnectionLost', { reasonCode: code });
     assert.strictEqual(S.kickHold(), null, `reasonCode ${code}: no hold`);
@@ -298,6 +305,29 @@ t('reasonCode 4 (maintenance) and 0 (the server kicked us) are not a kick: no ho
     assert.ok(said(S, new RegExp(`reasonCode ${code} `)), 'the code is logged');
     ORG.settings.set('kickHold:' + A.id, null);
   }
+});
+
+// The backstop for a window nobody announced (2026-09-29): 2 and 4 are the game saying
+// the server is going away, so the console counts it down, tells the fleet, and is
+// cleared by the next connection that works. 0 (kicked by the server) is not that.
+t('reasonCode 4 or 2: the server is down, the fleet hears it, a good connection clears it', async () => {
+  const MAINT = require('./maint');
+  for (const code of [4, 2]) {
+    const S = freshSession();
+    clearFleetWindow(S);
+    await S.connect();
+    S.game.c.emit('cmd', 'server.ConnectionLost', { reasonCode: code });
+    assert.strictEqual(S.maint.active, true, `reasonCode ${code}: down`);
+    assert.match(S.maint.reason, new RegExp(`reasonCode ${code}`));
+    assert.ok(MAINT.read(S.settings(), A.server), `reasonCode ${code}: a fleet-wide window is up`);
+    S.noteConnectOk();
+    assert.strictEqual(S.maint.active, false, 'the next good connection clears it');
+    assert.strictEqual(S.maint.saidDown, null);
+  }
+  const S = freshSession();
+  await S.connect();
+  S.game.c.emit('cmd', 'server.ConnectionLost', { reasonCode: 0 });
+  assert.strictEqual(S.maint.active, false, 'reasonCode 0 (kicked by the server) is not the server going down');
 });
 
 t('the header carries it, so a page can show it', async () => {

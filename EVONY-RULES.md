@@ -324,6 +324,19 @@ file (see the end).
   payload before, so whether ss71 actually fills `reasonCode` is only known from the
   friend's bot, which relies on 3. **Check the first drop's log line after the restart.**
   If it says `reasonCode none`, nothing has changed.
+  **Maintenance does not reach us as a code, because we leave first (2026-09-29).** The
+  whole fleet ran this code through that morning's maintenance and no console logged a
+  single ConnectionLost. a23 read the chat notice at 08:45 ("…daily security
+  maintenance on 02:00…", 02:00 CDT = 09:00 SAST), the Director passed it to every
+  account (the holiday ones included, which get no notice), all 30 stood down at 08:54
+  and closed their own sockets, and all were back in at 09:19, a minute after the port
+  reopened. So codes 2 and 4 are only the **backstop** for a window nobody announced:
+  since 2026-09-29 a console that receives either counts the server as down (the same
+  verdict as a refused port), declares the fleet-wide window so every account stands
+  down, and clears it on its next good connection (`serverSaidDown`, test-kick-hold.js).
+  **That maintenance ran 09:00 to about 09:19** (the port refused connections until
+  09:19:03), longer than the 09:00–09:15 the user had seen before. Don't plan logins
+  for 09:16.
   **NEAT is not what re-kicks an account** (the user, 2026-09-22 23:05): *"neat waits 30
   minutes after kicking something off"*, and its own log says `Pausing jobs for 31m59s`.
   So a second kick inside half an hour is never NEAT — it is **our own fleet**. Read a
@@ -3628,10 +3641,17 @@ and 11 minutes for the last 8 once their marches were home.
   right and the map state was wrong. Our §4 "furlough read false" was the account
   snapshot's player-bean flag, which may not be the same thing as the `furlough` field on
   a map castle (`mapscan.js` and `script-functions.js` read it off each castle; the
-  Monitor stores only `state`). *Unsettled.* To settle it, read the map castles of our own
-  holiday banks and see whether their `furlough` is true while `state` is 1. If it is,
-  the Monitor should treat `state 5 OR furlough` as holiday. *Until it is
-  understood:* treat a single state reading as a rumour. `monitor.js` now believes a state
+  Monitor stores only `state`). **Checked 2026-09-29 against our own 30 accounts, 15 of
+  them on holiday: map `state` was 5 on every holiday account and 1 on every other one
+  (30 of 30 right)**, including four read at 09:20, one minute after that morning's
+  maintenance ended. The player-bean `furlough` was `false` on all 15. The map
+  castle's own `furlough` field was also false wherever we have it: the 2026-09-13 map
+  cache holds 879 castles with both fields, the one castle on holiday (`state 5`) had
+  `furlough = false`, and none had `true`. So **`furlough` does not mark holiday, in
+  either place, and the friend's rule would have missed all 15 of ours. Keep `state
+  5`.** The 2026-09-23 disagreement stays unexplained (it was 10 minutes after
+  maintenance; today's reads 1 minute after were right). *Still:* treat a single state
+  reading as a rumour. `monitor.js` now believes a state
   only when **two sweeps in a row agree**, which is what stops it announcing a holiday
   ending that has not happened. Where we own the account, the console's live
   `protection` (the 2-minute buff watch) beats the map.

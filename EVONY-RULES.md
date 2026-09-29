@@ -5125,3 +5125,42 @@ is lost throughput.
 On 2026-09-29 a switch script that did not wait for the stop simply fell out having done
 nothing but the stop, leaving the fleet idle mid-day — the log's last line was
 `waiting for the stop to drain`. `vps-cycle.js` does the whole cycle with both waits.
+
+### WRONG ANALYSIS, 2026-09-29: 0.01 captured as well as 1 — and the tell was volume, not price
+
+I switched a working stone buy-back from 0.01 to 1 on a conclusion that was wrong twice over.
+The user: *"Honestly I think you rushed it... remember the buyer waits 30minutes to receive the
+stone... you always forget this... even at 0.1 it seems our ratios were good... selling at 1
+keeps it roughly the same (slightly worse now, probably less volume). So just document this
+your analysis was wrong."*
+
+The Director's own readings, 10 minutes each, across BOTH prices:
+
+| 13:10 | 13:20 | 13:30 | 13:40 | 13:50 | 14:00 | 14:10 |
+|---|---|---|---|---|---|---|
+| 97% | 94% | 93% | 94% | 90% | 88% | 88% |
+
+`since stone started 13:07: holiday sold 104.80t, ours bought 96.40t — 92%`. The price change
+at 13:39 is invisible in that series. **0.01 captured as well as 1.**
+
+**The two mistakes, both mine, both avoidable:**
+
+1. **Judged on our RESOURCE TOTAL after 30 minutes.** Bought goods take ~30 minutes to travel,
+   so at the moment I looked, essentially nothing had landed yet — the +1.6t I measured was the
+   leading edge, not the rate. I had written the 40-minute rule into this file that morning
+   after doing the same thing to the food pass, said I would not judge before 40 minutes, and
+   then judged at 30.
+2. **Read FULL BUY SLOTS as "we are being outbid".** Our side has more buyer cities than the
+   banks have seller cities, so our bids naturally queue up and sit. Full slots on the buying
+   side are the normal shape of this play, not evidence of sniping. The banks' slots being
+   empty means their asks are crossing — which they were, to us, at 88-97%.
+
+**Measure a pass by the Director's RETURN figure** (Trading tab: holiday orders against ours,
+per 10-minute reading). It is computed from the consoles' own logs, it is not confounded by
+travel time or by escrow, and it needs no waiting. Reach for city totals only to confirm it.
+
+**What actually deserved attention was VOLUME.** The order counts fell steadily —
+219,560 -> 174,545 -> 143,511 -> 112,272 per 10 minutes — while the return held. A falling
+volume at a steady return is the fleet's throughput decaying (reports, order books, the
+per-account cap), not a price problem. Price moves the RETURN; nothing about price moves the
+VOLUME.

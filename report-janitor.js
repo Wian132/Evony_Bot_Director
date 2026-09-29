@@ -102,9 +102,25 @@ const turn = {};                       // account -> which city index to hand ov
         } catch { /* busy - try again */ }
       }
       if (!cities.length) { skipped++; return; }
-      const i = (turn[acct] = (turn[acct] || 0) % cities.length);
-      turn[acct] = (i + 1) % cities.length;          // rotate, so no city carries it twice running
-      const city = cities[i];
+      // NEVER TOUCH A CITY RUNNING A HAND-STARTED SCRIPT. script_runs marks a run either
+      // "(autorun <file>)" — the play, ours to manage — or "(console)", which is the user or
+      // another session working in that city. On 2026-09-29 the user had four of Lord13's
+      // cities running a 100-round `transport … s:*` into Lord26's new towns; handing one of
+      // those to a clean would have killed the run and it would have looked like it simply
+      // stopped. The play's own cities are plentiful, so skipping a busy one costs nothing.
+      let manual = new Set();
+      try {
+        const runs = String(await mcp('script_runs', { account: acct }));
+        for (const line of runs.split('\n')) {
+          const m = /^\s*(\d+)\s+\S+\s+since\b.*\(console\)/.exec(line);
+          if (m) manual.add(m[1]);
+        }
+      } catch { /* if we cannot tell, fall through and pick by rotation */ }
+      const free = cities.filter((c) => !manual.has(c));
+      if (!free.length) { skipped++; return; }        // every city is busy by hand - leave it
+      const i = (turn[acct] = (turn[acct] || 0) % free.length);
+      turn[acct] = (i + 1) % free.length;            // rotate, so no city carries it twice running
+      const city = free[i];
       const text = fs.readFileSync(path.join(DIR, `clean-inline-${side}.txt`), 'utf8');
       let ok = false;
       for (let t = 0; t < 3 && !ok; t++) {

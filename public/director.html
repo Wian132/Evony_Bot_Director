@@ -1455,8 +1455,8 @@ const COLS = [
       if (x.idlePopulation === undefined) return '<span style="color:var(--dim)" title="not reported yet: the console of this account predates the column and needs a restart">—</span>';
       const hi = idleHigh(a);
       const tip = `idle ${fmt(Math.round(x.idlePopulation))} · population ${fmt(Math.round(x.population))} of ${fmt(Math.round(x.maxPopulation))}`
-        + (hi.length ? '\nidle at its maximum (not training?):\n'
-          + hi.map((c) => `${c.name}: ${fmt(Math.round(c.idle))} of ${fmt(Math.round(c.maxPopulation))}`).join('\n') : '');
+        + (hi.length ? '\npopulation full, idle + production = maximum (not training?):\n'
+          + hi.map((c) => `${c.name}: idle ${fmt(Math.round(c.idle))} + production ${fmt(Math.round(c.population - c.idle))} = ${fmt(Math.round(c.maxPopulation))}`).join('\n') : '');
       return `<span ${hi.length ? 'style="color:var(--warn)"' : ''} title="${escq(tip)}">${short(x.idlePopulation)}${hi.length ? ` · ${hi.length} high` : ''}</span>`;
     },
     sort: (a) => Number(t(a).idlePopulation || 0) },
@@ -1561,12 +1561,13 @@ function capText(list) {
   for (const c of list) { if (!by.has(c.city)) by.set(c.city, []); by.get(c.city).push(`${c.name} L${c.level}`); }
   return [...by].map(([city, who]) => `${city}: ${who.join(', ')}`).join(' · ');
 }
-// Cities whose idle population has reached their maximum: the barracks is not
-// drawing on it at all, so troops are not training there. Half was too eager
-// (the user, 2026-09-29): a city that trains still sits well above half.
+// Cities whose population is full — idle plus the workers in production make up
+// the whole maximum, so the barracks has drawn none of it: troops are not
+// training there. Idle at half the maximum was too eager (the user, 2026-09-29):
+// a city that trains still sits well above half.
 function idleHigh(a) {
   const list = (a.snapshot && a.snapshot.cityList) || [];
-  return list.filter((c) => c.idle !== undefined && Number(c.maxPopulation) > 0 && Math.round(c.idle) >= Math.round(c.maxPopulation))
+  return list.filter((c) => c.idle !== undefined && Number(c.maxPopulation) > 0 && Math.round(c.population) >= Math.round(c.maxPopulation))
     .sort((x, y) => y.idle - x.idle);
 }
 

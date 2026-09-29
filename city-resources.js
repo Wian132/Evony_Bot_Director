@@ -19,6 +19,11 @@ D.run('CREATE INDEX IF NOT EXISTS city_resources_org_at ON city_resources (orgId
 // (2026-09-20).
 try { D.run('ALTER TABLE city_resources ADD COLUMN kind TEXT'); } catch { /* already there */ }
 D.run('CREATE INDEX IF NOT EXISTS city_resources_org_kind ON city_resources (orgId, kind)');
+// Whether the account was on holiday when the row was filed (1, 0, or null for not
+// known), so the chart can split each record into the two sides as they were THEN —
+// the banks rotate, and today's sides laid over last week would misplace it
+// (the user, 2026-09-29: one line on holiday, one not, one the total).
+try { D.run('ALTER TABLE city_resources ADD COLUMN holiday INTEGER'); } catch { /* already there */ }
 
 const RES = ['food', 'wood', 'stone', 'iron', 'gold'];
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -26,7 +31,9 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 // File one record of every city of every account (of one org, or all). A snapshot
 // older than maxAgeMs, or one from a console not yet carrying per-city figures, is left
 // out and named in `skipped`. `kind` marks a record that is not the hourly one.
-function record({ orgId = null, now = Date.now(), maxAgeMs = 3 * 3600000, kind = null, label = null } = {}) {
+// `holidayOf(accountId)` gives true / false / null (not known) for each account.
+const holFlag = (h) => (h === true ? 1 : h === false ? 0 : null);
+function record({ orgId = null, now = Date.now(), maxAgeMs = 3 * 3600000, kind = null, label = null, holidayOf = null } = {}) {
   // `label` was the old name of this argument and was never stored; keep taking it.
   kind = kind || label || null;
   const accs = orgId ? D.all('SELECT id, label, orgId FROM accounts WHERE orgId = ?', orgId)
@@ -42,10 +49,11 @@ function record({ orgId = null, now = Date.now(), maxAgeMs = 3 * 3600000, kind =
     const list = (j.cityList || []).filter((c) => c.food !== undefined);
     if (!list.length) { skipped.push(`${a.label}: no per-city figures yet (its console predates them)`); continue; }
     if (now - snapAt > maxAgeMs) { skipped.push(`${a.label}: snapshot ${Math.round((now - snapAt) / 60000)} min old`); continue; }
+    const hol = holidayOf ? holFlag(holidayOf(a.id)) : null;
     for (const c of list) {
-      D.run(`INSERT INTO city_resources (orgId,accountId,label,at,snapAt,cityId,city,x,y,food,wood,stone,iron,gold,kind)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.orgId, a.id, a.label, now, snapAt, String(c.id != null ? c.id : `${c.x},${c.y}`),
-      String(c.name || ''), num(c.x), num(c.y), num(c.food), num(c.wood), num(c.stone), num(c.iron), num(c.gold), kind);
+      D.run(`INSERT INTO city_resources (orgId,accountId,label,at,snapAt,cityId,city,x,y,food,wood,stone,iron,gold,kind,holiday)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.orgId, a.id, a.label, now, snapAt, String(c.id != null ? c.id : `${c.x},${c.y}`),
+      String(c.name || ''), num(c.x), num(c.y), num(c.food), num(c.wood), num(c.stone), num(c.iron), num(c.gold), kind, hol);
       rows++;
     }
   }
@@ -60,8 +68,10 @@ function lastAt(orgId) {
 
 // The chart's data: per record time, each resource summed over the cities that match;
 // and each matching city's latest figures. Filters: accounts (ids), q (text in the
-// account, city name or x,y), hours back.
-function series({ orgId, hours = 168, accounts = null, q = '' } = {}) {
+// account, city name or x,y), hours back. Each point also carries `hol` and `out`, the
+// same sums over the accounts on holiday and off it at that record; a row filed before
+// the side was stored (before 2026-09-29) takes `holidayOf(accountId)`, today's side.
+function series({ orgId, hours = 168, accounts = null, q = '', holidayOf = null } = {}) {
   const since = Date.now() - hours * 3600000;
   const rows = D.all('SELECT * FROM city_resources WHERE orgId = ? AND at >= ? ORDER BY at', orgId, since);
   const want = accounts && accounts.length ? new Set(accounts) : null;
@@ -75,9 +85,17 @@ function series({ orgId, hours = 168, accounts = null, q = '' } = {}) {
     allAccounts.set(r.accountId, r.label);
     if (!match(r)) continue;
     let p = byAt.get(r.at);
-    if (!p) { p = { at: r.at, cities: 0, ...Object.fromEntries(RES.map((k) => [k, 0])) }; byAt.set(r.at, p); }
+    if (!p) {
+      const zero = () => Object.fromEntries(RES.map((k) => [k, 0]));
+      p = { at: r.at, cities: 0, ...zero(), hol: { cities: 0, ...zero() }, out: { cities: 0, ...zero() }, guessed: false };
+      byAt.set(r.at, p);
+    }
     p.cities++;
     for (const k of RES) p[k] += num(r[k]);
+    let h = r.holiday == null ? null : r.holiday === 1;
+    if (h === null && holidayOf) { h = holidayOf(r.accountId); if (h != null) p.guessed = true; }
+    const side = h === true ? p.hol : h === false ? p.out : null;
+    if (side) { side.cities++; for (const k of RES) side[k] += num(r[k]); }
     latest.set(`${r.accountId}|${r.cityId}`, r);
   }
   const points = [...byAt.values()];

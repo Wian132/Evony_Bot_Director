@@ -19,6 +19,9 @@
     --on-accent:#ffffff;
     --shadow:0 1px 2px rgba(20,30,45,.06), 0 6px 18px rgba(20,30,45,.06);
     --rs-food:#2a78d6; --rs-wood:#eb6834; --rs-stone:#1baf7a; --rs-iron:#eda100; --rs-gold:#e87ba4;
+    /* the two holiday sides on every resource chart, the total in the resource's own
+       colour: violet and slate clash with none of the five */
+    --rs-hol:#7c3aed; --rs-out:#475569;
 
     /* ---- one type and spacing scale for the whole page ----
        Everything below is written in these, so the console can be made bigger
@@ -60,6 +63,7 @@
     --on-accent:#0d1219;
     --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
     --rs-food:#3987e5; --rs-wood:#d95926; --rs-stone:#199e70; --rs-iron:#c98500; --rs-gold:#d55181;
+    --rs-hol:#a78bfa; --rs-out:#cbd5e1;
   }
   * { box-sizing:border-box; }
   /* One column: the header and the strip at the top, then whichever page is on,
@@ -468,8 +472,8 @@
   .rs-split-part { display:flex; align-items:center; gap:5px; }
   .rs-split-part b { margin-left:auto; font-weight:600; color:var(--ink); }
   .rs-dot { display:inline-block; width:7px; height:7px; border-radius:50%; flex:none; }
-  .rs-dot.hol { background:var(--warn); }
-  .rs-dot.out { background:var(--acc); }
+  .rs-dot.hol { background:var(--rs-hol); }
+  .rs-dot.out { background:var(--rs-out); }
   .rs-dot.unk { background:var(--faint); }
   /* the 08:30 record */
   #rsMornTbl .num { text-align:right; }
@@ -3395,6 +3399,8 @@ function rsSplitLine(split, k) {
     const g = split[s.key], pct = total ? Math.round(g[k] / total * 100) : 0;
     return `<span class="rs-split-part" title="${esc(s.name)}: ${esc([...g.labels].sort().join(', '))}"><span class="rs-dot ${s.cls}"></span>${s.name} <b>${rsAmt(g[k])}</b> <span class="tr-muted">${pct}%</span></span>`;
   });
+  // the chart's legend too: the total is the line in the resource's own colour
+  if (parts.length) parts.unshift(`<span class="rs-split-part"><span class="rs-dot" style="background:var(--rs-${k})"></span>total <b>${rsAmt(total)}</b> <span class="tr-muted">100%</span></span>`);
   return parts.length ? `<div class="rs-split">${parts.join('')}</div>` : '';
 }
 $('#rsTable').onclick = (e) => {
@@ -3458,8 +3464,16 @@ function drawResChart(el, k, pts) {
   const max = Math.max(1, ...pts.map((p) => p[k]));
   const x = (t) => L + (pts.length === 1 ? (W - L - R) / 2 : (t - t0) / (t1 - t0) * (W - L - R));
   const y = (v) => T + (1 - v / max) * (H - T - B);
-  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(p[k]).toFixed(1)}`).join('');
+  const path = (get) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(get(p)).toFixed(1)}`).join('');
+  const line = path((p) => p[k]);
   const area = `${line}L${x(pts[pts.length - 1].at).toFixed(1)},${y(0)}L${x(pts[0].at).toFixed(1)},${y(0)}Z`;
+  // the two holiday sides under the total (the user, 2026-09-29), drawn only when a
+  // side has cities at all, so a filter down to one side leaves just the total
+  const sides = [{ s: 'hol', name: 'on holiday' }, { s: 'out', name: 'not on holiday' }]
+    .filter((d) => pts.some((p) => p[d.s] && p[d.s].cities));
+  const sideVal = (p, s) => (p[s] ? p[s][k] : 0);
+  const sideLines = sides.map((d) => `<path d="${path((p) => sideVal(p, d.s))}" fill="none" stroke="var(--rs-${d.s})" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+  const sideDots = sides.map((d) => `<circle class="rs-sdot" data-s="${d.s}" r="3.5" fill="var(--rs-${d.s})" stroke="var(--panel)" stroke-width="2" visibility="hidden"/>`).join('');
   const ax = cssNum('--fs-xs', 12.5);   // the label size, so they sit right whatever the scale
   const grid = [0, 0.5, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${y(max * f)}" y2="${y(max * f)}" class="rs-grid"/>
     <text x="${L - 8}" y="${(y(max * f) + ax * 0.35).toFixed(1)}" text-anchor="end" class="rs-ax">${rsAmt(max * f)}</text>`).join('');
@@ -3467,14 +3481,17 @@ function drawResChart(el, k, pts) {
   el.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="${k} over time">
     ${grid}
     <path d="${area}" fill="var(--rs-${k})" fill-opacity="0.18"/>
+    ${sideLines}
     <path d="${line}" fill="none" stroke="var(--rs-${k})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     ${pts.length === 1 ? `<circle cx="${x(pts[0].at)}" cy="${y(pts[0][k])}" r="4" fill="var(--rs-${k})" stroke="var(--panel)" stroke-width="2"/>` : ''}
     ${ticks}
     <line class="rs-cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+    ${sideDots}
     <circle class="rs-dot" r="4" fill="var(--rs-${k})" stroke="var(--panel)" stroke-width="2" visibility="hidden"/>
     <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" class="rs-hit"/>
   </svg>`;
   const svg = el.querySelector('svg'), cross = svg.querySelector('.rs-cross'), dot = svg.querySelector('.rs-dot');
+  const sdots = [...svg.querySelectorAll('.rs-sdot')];
   const tip = $('#bandTip');
   svg.querySelector('.rs-hit').onmousemove = (ev) => {
     const bx = svg.getBoundingClientRect();
@@ -3483,12 +3500,20 @@ function drawResChart(el, k, pts) {
     for (const p of pts) if (Math.abs(x(p.at) - mx) < Math.abs(x(best.at) - mx)) best = p;
     cross.setAttribute('x1', x(best.at)); cross.setAttribute('x2', x(best.at)); cross.setAttribute('visibility', 'visible');
     dot.setAttribute('cx', x(best.at)); dot.setAttribute('cy', y(best[k])); dot.setAttribute('visibility', 'visible');
-    tip.innerHTML = `<b>${rsWhen(best.at)}</b><br>${k}: <b>${rsAmt(best[k])}</b><br><span style="color:var(--dim)">${best.cities} cities</span>`;
+    for (const s of sdots) { s.setAttribute('cx', x(best.at)); s.setAttribute('cy', y(sideVal(best, s.dataset.s))); s.setAttribute('visibility', 'visible'); }
+    const sw = (c) => `<span class="rs-dot" style="background:${c};margin-right:5px"></span>`;
+    tip.innerHTML = `<b>${rsWhen(best.at)}</b><br>${sw(`var(--rs-${k})`)}total ${k}: <b>${rsAmt(best[k])}</b>`
+      + sides.map((d) => `<br>${sw(`var(--rs-${d.s})`)}${d.name}: <b>${rsAmt(sideVal(best, d.s))}</b>`).join('')
+      + `<br><span style="color:var(--dim)">${best.cities} cities${best.guessed ? ' · sides as they are now (this record predates them)' : ''}</span>`;
     tip.style.display = 'block';
     tip.style.left = Math.min(window.innerWidth - 200, ev.clientX + 14) + 'px';
     tip.style.top = (ev.clientY + 14) + 'px';
   };
-  svg.querySelector('.rs-hit').onmouseleave = () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; };
+  svg.querySelector('.rs-hit').onmouseleave = () => {
+    cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden');
+    for (const s of sdots) s.setAttribute('visibility', 'hidden');
+    tip.style.display = 'none';
+  };
 }
 window.addEventListener('resize', () => { if (PAGE === 'resources' && RS) paintResources(); });
 

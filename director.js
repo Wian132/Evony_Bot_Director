@@ -224,10 +224,27 @@ setTimeout(() => { keepMonitorOn(); setInterval(keepMonitorOn, 60000); }, 20000)
 // The Resources tab: every city's food, wood, stone, iron and gold, recorded once an hour
 // on the hour (city-resources.js), from the snapshots the consoles publish.
 const CITY_RES = require('./city-resources');
+// Each account's holiday state, for the holiday / not-holiday split: the live badge,
+// else the last badge seen at any age (nobody logs in or out of a holiday while the
+// consoles are down for maintenance), else unknown. accountId -> { holiday, seen }
+function holidaySides(org) {
+  return new Map(tradingAccounts(org).map((a) => {
+    let h = a.holiday, seen = false;
+    if (h == null && HOLI_SEEN.has(a.id)) { h = HOLI_SEEN.get(a.id).holiday; seen = true; }
+    const live = liveByAccount.get(a.id);
+    if (h == null && live && live.holidayRun) { h = true; seen = true; }
+    return [a.id, { holiday: h, seen }];
+  }));
+}
+const holidayOfOrg = (orgId) => {
+  let hol = null;
+  try { hol = holidaySides(D.org(orgId)); } catch { /* the record comes first */ }
+  return (id) => (hol && hol.has(id) ? hol.get(id).holiday : null);
+};
 function recordCityResources(why) {
   for (const o of D.orgs.all().filter((x) => !x.disabled)) {
     try {
-      const r = CITY_RES.record({ orgId: o.id });
+      const r = CITY_RES.record({ orgId: o.id, holidayOf: holidayOfOrg(o.id) });
       note(`resource record (${why}): ${r.rows} cities${r.skipped.length ? ` — skipped ${r.skipped.join('; ')}` : ''}`);
     } catch (e) { note('resource record failed: ' + e.message); }
   }
@@ -1275,23 +1292,15 @@ http.createServer(async (req, res) => {
     const hours = Math.min(24 * 90, Math.max(1, Number(url.searchParams.get('hours')) || 168));
     const accounts = (url.searchParams.get('accounts') || '').split(',').map((x) => x.trim()).filter(Boolean);
     try {
-      const out = CITY_RES.series({ orgId: req.org.id, hours, accounts, q: url.searchParams.get('q') || '' });
-      // each account's holiday state, for the holiday / not-holiday split: the live badge,
-      // else the last badge seen at any age (nobody logs in or out of a holiday while the
-      // consoles are down for maintenance), else unknown
-      const hol = new Map(tradingAccounts(ORG).map((a) => {
-        let h = a.holiday, seen = false;
-        if (h == null && HOLI_SEEN.has(a.id)) { h = HOLI_SEEN.get(a.id).holiday; seen = true; }
-        const live = liveByAccount.get(a.id);
-        if (h == null && live && live.holidayRun) { h = true; seen = true; }
-        return [a.id, { holiday: h, seen }];
-      }));
+      const hol = holidaySides(ORG);
+      const out = CITY_RES.series({ orgId: req.org.id, hours, accounts, q: url.searchParams.get('q') || '',
+        holidayOf: (id) => (hol.has(id) ? hol.get(id).holiday : null) });
       for (const a of out.accounts) Object.assign(a, hol.get(a.id) || { holiday: null, seen: false });
       return send(200, 'application/json', JSON.stringify(out));
     } catch (e) { return send(200, 'application/json', JSON.stringify({ error: e.message })); }
   }
   if (url.pathname === '/api/resources/record' && req.method === 'POST') {
-    try { return send(200, 'application/json', JSON.stringify({ ok: true, ...CITY_RES.record({ orgId: req.org.id }) })); }
+    try { return send(200, 'application/json', JSON.stringify({ ok: true, ...CITY_RES.record({ orgId: req.org.id, holidayOf: holidayOfOrg(req.org.id) }) })); }
     catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, error: e.message })); }
   }
   // the daily 08:30 records, town by town

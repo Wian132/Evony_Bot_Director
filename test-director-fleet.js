@@ -665,8 +665,8 @@ t('the Resources tab draws a chart per resource, the filters and the city table'
   assert.deepStrictEqual(v.now, ['260b', '520b', '780b', '1.04t', '26.0t']);
   assert.strictEqual(v.rows, 6, 'header, two cities, the total, and the total on each side of the holiday');
   assert.deepStrictEqual(v.sides, ['not on holiday — 1 accounts, 1 cities', 'holiday unknown — 1 accounts, 1 cities']);
-  assert.deepStrictEqual(v.split, ['not on holiday 60b 23%', 'holiday unknown 200b 77%'], 'each card splits its figure by holiday');
-  assert.strictEqual(v.paths, 10, 'a filled area and a line for each resource');
+  assert.deepStrictEqual(v.split, ['total 260b 100%', 'not on holiday 60b 23%', 'holiday unknown 200b 77%'], 'each card splits its figure by holiday, the total first');
+  assert.strictEqual(v.paths, 15, 'a filled area and a total line for each resource, and a line for the side not on holiday (none is on holiday)');
   await ev(`document.querySelector('#rsTypes [data-r="gold"]').click()`);
   assert.strictEqual(await ev(`document.querySelectorAll('#rsCharts .rs-panel').length`), 1, 'one resource on its own');
   await ev(`document.querySelector('#rsTypes [data-r="all"]').click()`);

@@ -263,6 +263,13 @@ file (see the end).
   fastest of all at ~10 ms (a10's and a27's). The fleet was switched to the US list that
   day, the user's choice: the list became those 50 lines, and every account
   but a23 became `random` with its pick kept.
+  **Measured after the wood Start (16:32, buys/min over 16:37–16:42) against the stone pass
+  before (15:18–15:33):** the moved buyers a30 1,114 → 2,184, a11 1,449 → 2,154, a31
+  1,470 → 2,146, a13 1,531 → 2,144, a14 1,662 → 1,988, a27 1,955 → 2,217. The buyers
+  already on near lines rose only ~5–15% (a4 1,783 → 1,977, a29 1,973 → 2,257), which is the
+  fresh-reports effect of the switch. So the move itself was worth roughly +40–95% on
+  the far ones. Different resource and a short window, so the figures are rough. All
+  29 proxied consoles logged in on their US line at the Start with no line refusing.
 - **A running console does not see a change to its account's Proxy field — only an
   override** (2026-09-29, read from session.js). The console reads its `accounts` row once
   at start (`this.account`), so a pin changed in the database takes effect only at the

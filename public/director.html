@@ -75,9 +75,22 @@
   :focus-visible { outline:2px solid var(--blue); outline-offset:1px; border-radius:4px; }
   /* The header carries a lot at this size; let it take a second line on a
      narrow screen rather than pushing the buttons off the edge. */
-  header { display:flex; align-items:center; gap:14px; row-gap:8px; flex-wrap:wrap;
-           padding:12px var(--pad); background:var(--panel);
+  /* One line (the user, 2026-09-29): the rarely used buttons live under ⋯, and the
+     header only wraps on a screen too narrow to hold even that. */
+  header { display:flex; align-items:center; gap:12px; row-gap:6px; flex-wrap:nowrap;
+           padding:6px var(--pad); background:var(--panel); white-space:nowrap;
            border-bottom:1px solid var(--line); box-shadow:var(--shadow); position:relative; z-index:5; }
+  @media (max-width: 1250px) { header { flex-wrap:wrap; } }
+  header .tab { padding:5px 12px; }
+  header > button, .more > button { padding:5px 12px; }
+  .more { position:relative; }
+  .more > button { font-size:var(--fs-lg, 1.1em); line-height:1; }
+  .moreMenu { display:none; position:absolute; right:0; top:calc(100% + 6px); flex-direction:column; gap:6px;
+              padding:8px; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+              box-shadow:var(--shadow); z-index:30; min-width:160px; }
+  .moreMenu button { text-align:left; }
+  .more.open .moreMenu { display:flex; }
+  .logBtn { padding:2px 10px; font-size:var(--fs-sm); }
   h1 { font-size:var(--fs-xl); margin:0; font-weight:600; letter-spacing:-.01em; }
   .badge { background:var(--acc); color:#0c1410; font-size:var(--fs-xs); font-weight:700; letter-spacing:.9px; padding:4px 9px; border-radius:5px; }
   header .sp { flex:1; }
@@ -95,9 +108,9 @@
   /* Every tick box grows with the scale. !important because several of them
      carry an inline width:auto, put there only to undo `dialog input`. */
   input[type=checkbox] { width:var(--icon) !important; height:var(--icon); accent-color:var(--acc); }
-  .views { display:flex; gap:7px; padding:9px var(--pad); background:var(--panel);
+  .views { display:flex; gap:6px; padding:5px var(--pad); background:var(--panel);
            border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap; }
-  .views .v { padding:6px 15px; border-radius:99px; border:1px solid var(--line); background:var(--panel);
+  .views .v { padding:3px 12px; border-radius:99px; border:1px solid var(--line); background:var(--panel);
               color:var(--dim); cursor:pointer; font-size:var(--fs-sm); }
   .views .v:hover { color:var(--ink); border-color:var(--faint); }
   .views .v.active { background:var(--blue); color:var(--on-accent); border-color:var(--blue); font-weight:600; }
@@ -168,7 +181,7 @@
      both ways inside this pane instead of stretching the page out of shape.
      min-height:0 is what lets a flex child actually shrink and scroll. */
   .wrap { flex:1; min-height:0; overflow:auto; }
-  .foot { display:flex; gap:18px; padding:10px var(--pad); border-top:1px solid var(--line);
+  .foot { display:flex; gap:18px; align-items:center; padding:5px var(--pad); border-top:1px solid var(--line);
           background:var(--panel); font-size:var(--fs-sm); color:var(--dim); }
   pre { margin:0; padding:10px var(--pad); font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;
         font-size:var(--fs-sm); line-height:1.6;
@@ -481,14 +494,21 @@
     <div class="tab" data-p="monitor" title="One watcher over the whole server: the map, the rankings, and who has stopped moving">Monitor</div>
     <div class="tab" data-p="claude" title="What Claude may do to each account by itself, waking it on an attack, and what it did">Claude</div>
   </div>
-  <input id="q" placeholder="filter…" style="width:170px">
-  <button id="colsBtn">Columns</button>
-  <button id="proxyBtn">Proxies</button>
-  <button id="startupBtn" title="NEAT's start-up parameters for every account: autorun scripts, -runscript, …">Start-up</button>
-  <button id="add">Add account</button>
-  <button id="dirOff" class="danger" title="Stop the Director. It is the only thing that keeps it down — anything else and director-keep.js brings it straight back.">Turn off</button>
-  <button id="themeBtn" title="Switch between light and dark">Dark</button>
+  <input id="q" placeholder="filter…" style="width:140px">
   <button id="pollAll" class="primary">Poll all</button>
+  <!-- The buttons used now and then, kept off the header line (the user, 2026-09-29:
+       the header took two lines and the table lost the room). -->
+  <div class="more" id="more">
+    <button id="moreBtn" title="Columns, proxies, start-up parameters, add an account, theme, turn off" aria-haspopup="true">&#8943;</button>
+    <div class="moreMenu" role="menu">
+      <button id="colsBtn">Columns</button>
+      <button id="proxyBtn">Proxies</button>
+      <button id="startupBtn" title="NEAT's start-up parameters for every account: autorun scripts, -runscript, …">Start-up</button>
+      <button id="add">Add account</button>
+      <button id="themeBtn" title="Switch between light and dark">Dark</button>
+      <button id="dirOff" class="danger" title="Stop the Director. It is the only thing that keeps it down — anything else and director-keep.js brings it straight back.">Turn off</button>
+    </div>
+  </div>
 </header>
 
 <div id="maintStrip" hidden style="display:flex;align-items:center;gap:10px;padding:6px 16px;
@@ -511,8 +531,9 @@
 </div>
 
 <div class="wrap"><table id="tbl"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
-<div class="foot"><span id="status">—</span></div>
-<pre id="log"></pre>
+<div class="foot"><span id="status">—</span><span style="flex:1"></span>
+  <button id="logBtn" class="logBtn" title="The Director's own log: consoles started, polls, the trading watchdog">Log &#9656;</button></div>
+<pre id="log" hidden></pre>
 </div>
 
 <div id="pageAccounts" hidden>
@@ -1263,6 +1284,30 @@ const CONSOLE_URL = localStorage.getItem('consoleUrl') || 'http://localhost:8711
 // console goes through the Director instead: /console/<id>/ (console-proxy.js).
 const REMOTE = !['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname);
 const consoleHref = (a) => (REMOTE ? '/console/' + encodeURIComponent(a.id) : a.consoleUrl);
+
+// The ⋯ menu in the header: open on its button, shut on a pick, a click elsewhere or Esc.
+(() => {
+  const more = document.getElementById('more');
+  document.getElementById('moreBtn').addEventListener('click', (e) => { e.stopPropagation(); more.classList.toggle('open'); });
+  more.querySelector('.moreMenu').addEventListener('click', (e) => { if (e.target.closest('button')) more.classList.remove('open'); });
+  document.addEventListener('click', (e) => { if (!more.contains(e.target)) more.classList.remove('open'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') more.classList.remove('open'); });
+})();
+
+// The log stays folded away until asked for, so the table has the page; the choice
+// is remembered in this browser.
+(() => {
+  const btn = document.getElementById('logBtn'), log = document.getElementById('log');
+  const set = (open) => {
+    log.hidden = !open;
+    btn.innerHTML = open ? 'Log &#9662;' : 'Log &#9656;';
+    try { localStorage.setItem('director_log_open', open ? '1' : '0'); } catch { /* no storage */ }
+  };
+  let open = false;
+  try { open = localStorage.getItem('director_log_open') === '1'; } catch { /* no storage */ }
+  set(open);
+  btn.addEventListener('click', () => set(log.hidden));
+})();
 // Item ids come from the client's own <itemEum> table.
 const ITEM_COLS = [
   { key: 'i_stone',    head: 'Stone of Finding', id: 'player.item.stoneoffinding' },

@@ -55,12 +55,37 @@ const portFree = (port) => new Promise((res) => {
   s.on('error', () => res(true));
   setTimeout(() => { s.destroy(); res(true); }, 1500);
 });
+// Which process is LISTENING on a port, or 0.
+//
+// This used to shell out to `netstat -ano -p TCP` unconditionally, which is a Windows tool:
+// on the Linux VPS the fleet moved to (2026-09-29) every call threw `netstat: not found`, so
+// `glitch-run.js start` failed outright — and with it the Director's Trading tab Start, which
+// runs this. The play still ran when its scripts were dispatched to the cities by hand, but
+// the Director recorded no run, so the Trading results tab showed zeros for a pass that was
+// moving ~12,000t of gold an hour.
 function pidOn(port) {
-  for (const l of execSync('netstat -ano -p TCP').toString().split(/\r?\n/)) {
-    const m = l.match(/^\s*TCP\s+\S*:(\d+)\s+\S+\s+LISTENING\s+(\d+)/);
-    if (m && Number(m[1]) === port) return Number(m[2]);
-  }
-  return 0;
+  const first = (out, re) => {
+    for (const l of String(out).split(/\r?\n/)) {
+      const m = l.match(re);
+      if (m && Number(m[1]) === port) return Number(m[2]);
+    }
+    return 0;
+  };
+  try {
+    if (process.platform === 'win32') {
+      return first(execSync('netstat -ano -p TCP'), /^\s*TCP\s+\S*:(\d+)\s+\S+\s+LISTENING\s+(\d+)/);
+    }
+    // Linux/macOS: iproute2's `ss` prints  users:(("node",pid=1234,fd=20))
+    try {
+      const n = first(execSync('ss -ltnp 2>/dev/null'), /:(\d+)\s+\S+\s+users:\(\("[^"]*",pid=(\d+)/);
+      if (n) return n;
+    } catch { /* no ss: fall through to lsof */ }
+    try {
+      const pid = Number(String(execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null`)).trim().split(/\s+/)[0]);
+      if (Number.isFinite(pid) && pid > 0) return pid;
+    } catch { /* not installed either */ }
+    return 0;
+  } catch { return 0; }
 }
 
 async function start(o) {

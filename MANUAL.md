@@ -1815,6 +1815,12 @@ is no longer "this machine only", just "whoever holds the key". The keys stay
 secret in the database, so this is safe as long as they are never copied off the
 server.
 
+A second thing: `tailscale serve` is a Go reverse proxy, and Go drops any query
+parameter with a raw `;` in it. A page that puts a list in a query must encode it
+(`encodeURIComponent`, so `;` travels as `%3B`). Found 2026-09-29 when the Map tab
+stayed grey over Tailscale, although the console served the same
+`/api/mapblocks?blocks=700,120;680,120` fine when asked on the server itself.
+
 ## Storage
 
 One SQLite file, `evony.db` (see `STORAGE.md`). It holds accounts, **snapshot history**,

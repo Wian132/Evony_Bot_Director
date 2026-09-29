@@ -3729,7 +3729,10 @@ async function mapLoad() {
   const world = MAP.world;
   MAP.inflight = new Set(batch);
   mapPaint();
-  const r = await getJSON('/api/mapblocks?blocks=' + batch.join(';') + (fresh.length ? '&fresh=1' : ''));
+  // Encoded, so the ';' between blocks travels as %3B (2026-09-29): through
+  // `tailscale serve` (a Go reverse proxy) a raw ';' in a query makes Go drop that
+  // parameter, so the console got no blocks and the map stayed grey on the VPS.
+  const r = await getJSON('/api/mapblocks?blocks=' + encodeURIComponent(batch.join(';')) + (fresh.length ? '&fresh=1' : ''));
   MAP.inflight = null;
   if (world === MAP.world) {              // not if the account changed under the request
     const now = Date.now();

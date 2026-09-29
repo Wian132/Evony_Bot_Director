@@ -612,6 +612,13 @@ comes back too.
   appends 5-minute buckets to `glitch-ledger.csv`; then add the run's events and anything
   new about the competition to `GLITCH-LEDGER.md` (its "What the data shows" and
   "Questions" sections). Over 100% return means other players traded into our orders too.
+- **A slow buyer? Check its proxy's round trip before anything else** (2026-09-29).
+  The order rate falls as the proxy gets farther away: with enough cities trading,
+  buyers on proxies 5–20 ms from the VPS and a23 with no proxy ran at ~1,960/min, and a
+  proxy ~230 ms away (a30) at ~1,110/min. Per-socket round trip on the VPS:
+  `ss -tnpi state established` (the `rtt:` field), matched to accounts via
+  `ACCOUNT_ID` in `/proc/<pid>/environ`. See EVONY-RULES §1, "Proxies". Rule out fewer
+  cities trading and rate limiting first (a20, a26, a25 were slow for those reasons).
 
 ## The Glitch log (Trading → Glitch log, 2026-09-23)
 

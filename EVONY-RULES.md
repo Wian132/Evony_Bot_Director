@@ -232,6 +232,46 @@ file (see the end).
   authorised, and SOCKS5 says "no acceptable auth method" for the same reasons. Through a
   good proxy the round trip to ss71 was 237–300 ms, about the same as direct from South
   Africa. (2026-09-18: the first 10 ran out of bandwidth; 100 new ones all worked.)
+- **The proxy plan's BANDWIDTH is a fleet-wide cliff, and trading is what eats it**
+  (measured 2026-09-29 on the VPS with `ss -tnpi`, per-socket bytes). Nearly every byte
+  the fleet moves goes through the Webshare proxies, all under one monthly quota
+  (250 GB/month then). A console running the glitch play pulled **~220 MB/hour
+  through its proxy** (almost all download; the ~450 MB each of 16 trading consoles had
+  after 2¼ h), about **3.4 GB/hour for a 16-account play**. An idle console pulled
+  ~10–20 MB/hour. So the fleet uses ~10–15 GB/day idle, plus ~3.4 GB for every hour
+  of trading: 250 GB lasts a few days of trading, not a month. When the quota runs out,
+  every proxy answers 402 and **every account loses its login at once**, possibly
+  mid-play with gold on the market. Check the Webshare dashboard before a long play.
+  *Unverified:* where those bytes come from (market lists, trade reports, city updates
+  after each order).
+- **A far-away proxy costs order rate** (measured 2026-09-29 15:18–15:33, 16 buyers in
+  a stone pass, order counts from the console logs, round trips from `ss -tnpi` on the
+  VPS). With enough cities trading, the rate followed the round trip to the proxy:
+  a23 (no proxy, 9 ms straight to ss71) ~1,960/min; proxies 5–16 ms away ~1,960/min
+  too; ~40 ms ~1,780–1,850; ~80–100 ms ~1,530–1,730; ~120–135 ms ~1,450–1,470; a30's
+  proxy at ~230 ms ~1,110/min (−43%). So **no proxy is not faster than a NEARBY
+  proxy**; a far one is what hurts. `ss` measures only the VPS→proxy leg; the
+  proxy→ss71 leg is not measured. The "Random" picker does not look at latency.
+  Accounts slow for other reasons, not the proxy: a20 and a26 had fewer cities trading, and
+  a25 was rate-limited ("no reply to report.receiveReportList").
+- **Measure a proxy END TO END with `testProxy`, not with `ss`** (2026-09-29). `proxy.js`
+  `testProxy(p, host, port)` sends only the policy-file request through the tunnel, with no
+  login, and its `ms` is the full round trip VPS → proxy → ss71. `ss` shows only the first
+  leg: a24's proxy looked 79 ms by `ss` and was 134 ms end to end. From the VPS, the 50 US
+  Webshare lines fell into three groups: 16 at 22–44 ms, 15 at 67–89 ms, 19 at 109–164 ms,
+  all passing. The non-US lines the fleet was on were mostly 170–460 ms, but two were the
+  fastest of all at ~10 ms (a10's and a27's). The fleet was switched to the US list that
+  day, the user's choice: the list became those 50 lines, and every account
+  but a23 became `random` with its pick kept.
+- **A running console does not see a change to its account's Proxy field — only an
+  override** (2026-09-29, read from session.js). The console reads its `accounts` row once
+  at start (`this.account`), so a pin changed in the database takes effect only at the
+  console's next START. `proxyOverride:<id>` is read from the org's settings at every
+  login, so it is the one lever that moves a running console, at its next login (a
+  relog or a reconnect). A relog kills every running script, including trading
+  runs (claude-guard.js). So in the middle of a play, set the override and let the
+  account pick it up at its next login (a play switch, or maintenance), rather than
+  relogging it on the spot.
 - **Rate limiting is per ACCOUNT, not per IP.** Lord06 kept being ignored while trading hard
   even on its own proxy IP (2026-09-18).
 - **Two accounts on ONE proxy both lost their logins** (2026-09-22). Lord14 (a14) and

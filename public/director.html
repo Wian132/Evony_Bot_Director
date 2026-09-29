@@ -1650,7 +1650,19 @@ function glitchCell(a) {
 // The prisoner and empty/full-city info has its own columns (Prisoners,
 // Empty / full cities) further along the row, so Status itself stays just
 // the connection/attack/holiday state.
-function statusPill(a) { return statusPillFor(a); }
+function statusPill(a) { return dupPill(a) + statusPillFor(a); }
+
+// Two console processes on one account kick each other out on every retry, and the
+// row then only says "someone else logged in" (a23 and a27, 2026-09-29, an hour of it).
+// The Director's sweep finds every console on the machine (botctl sweep), so say it.
+function dupPill(a) {
+  const d = a.dupConsoles;
+  if (!Array.isArray(d) || d.length < 2) return '';
+  const where = d.map((c) => `${c.port ? ':' + c.port : 'no port'} (pid ${c.pid || '?'})${c.onRecord ? ' — on record' : ''}`).join(', ');
+  return `<span class="pill err" title="${escq(`${d.length} console processes hold this account: ${where}. `
+    + 'They log in over each other, which looks like someone else logging in. End the one that is not on record.')}">`
+    + `${d.length} consoles!</span> `;
+}
 
 function statusPillFor(a) {
   const sn = s(a);

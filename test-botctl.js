@@ -8,6 +8,7 @@
 // console which dies on startup is reported rather than silently forgotten.
 const path = require('path'), os = require('os'), fs = require('fs'), assert = require('assert');
 const http = require('http');
+const { spawn } = require('child_process');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ev-bot-'));
 process.env.EVONY_DB = path.join(TMP, 't.db');
@@ -48,6 +49,24 @@ const DYING = path.join(TMP, 'dying-console.js');
 fs.writeFileSync(DYING, `
 console.error('REFUSING TO START: something is already running this account');
 process.exit(1);
+`);
+
+// A console that holds its account the way server.js does (account-lock.js): it
+// takes the lock (after LOCK_AFTER_MS), exits 3 if another console has it, and
+// answers /api/session after ANSWER_AFTER_MS, as a console that is still logging in.
+const LOCKING = path.join(TMP, 'locking-console.js');
+fs.writeFileSync(LOCKING, `
+const L = require(${JSON.stringify(path.join(__dirname, 'account-lock'))});
+const port = Number(process.env.CONSOLE_PORT);
+setTimeout(async () => {
+  const r = await L.take(process.env.ACCOUNT_ID, { port, waitMs: 0 });
+  if (!r.ok) { console.error('REFUSING TO START: held by the console on port ' + r.holder.port); process.exit(3); }
+  setTimeout(() => require('http').createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ account: { id: process.env.ACCOUNT_ID, label: 'locking stub' }, connected: true, proc: { pid: process.pid } }));
+  }).listen(port, '127.0.0.1'), Number(process.env.ANSWER_AFTER_MS || 0));
+}, Number(process.env.LOCK_AFTER_MS || 0));
+setInterval(() => {}, 1 << 30);
 `);
 
 const started = [];   // pids to clean up, whatever happens
@@ -211,6 +230,72 @@ async function main() {
     assert.strictEqual(h.paused, true, '-autorun 0 starts the engine paused, goals or not');
     assert.deepStrictEqual(BOTS.bots(org)[other.id].args, h.argv, 'kept, so the Director can tell a console on old parameters');
     await BOTS.stop(org, other);
+  })();
+
+  section('two consoles in the same second (a23 and a27, 2026-09-29)');
+
+  const LOCK = require('./account-lock');
+  const spawnStub = (script, env) => {
+    const c = spawn(process.execPath, [script], { env: { ...process.env, ...env }, stdio: 'ignore' });
+    started.push(c.pid);
+    return c;
+  };
+  const waitFor = async (fn, ms = 5000) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((x) => setTimeout(x, 100))) {
+      const v = await fn(); if (v) return v;
+    }
+    return null;
+  };
+
+  await t('a console still starting (lock taken, not answering yet) counts as running', async () => {
+    const slow = org.accounts.upsert({ label: 'Slow', email: 's@x.com', password: 'pw' });
+    org.settings.set('probes', []);
+    spawnStub(LOCKING, { ACCOUNT_ID: slow.id, CONSOLE_PORT: '18851', ANSWER_AFTER_MS: '60000' });
+    assert.ok(await waitFor(() => LOCK.who(slow.id)), 'the stub never took the lock');
+    const held = await BOTS.running(org, slow);
+    assert.ok(held, 'keep-on would have started a second console here');
+    assert.strictEqual(held.port, 18851);
+    assert.strictEqual(held.starting, true);
+  })();
+
+  await t('a console refused by the lock is not a failure: the holder is adopted and written down', async () => {
+    const race = org.accounts.upsert({ label: 'Race', email: 'x@x.com', password: 'pw' });
+    org.settings.set('probes', []);
+    // The holder takes the lock only after start() has looked (the glitch-run restart
+    // that nothing could see yet); the console start() spawns then meets it.
+    spawnStub(LOCKING, { ACCOUNT_ID: race.id, CONSOLE_PORT: '18853', LOCK_AFTER_MS: '300' });
+    process.env.LOCK_AFTER_MS = '1500';          // the console start() spawns gets there second
+    const r = await BOTS.start(org, race, { script: LOCKING, readyMs: 8000 });
+    delete process.env.LOCK_AFTER_MS;
+    if (r.pid && r.port !== 18853) started.push(r.pid);
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.adopted, true, 'a second console was left running');
+    assert.strictEqual(r.port, 18853);
+    assert.strictEqual(BOTS.bots(org)[race.id].port, 18853, 'the record names the holder');
+    assert.deepStrictEqual(BOTS.storedProbes(org).map((p) => p.url), ['http://localhost:18853'], 'the probe names the holder');
+  })();
+
+  await t('the lock is free again once its holder is gone, and taking it twice in one process is fine', async () => {
+    const who = org.accounts.upsert({ label: 'Gone', email: 'g@x.com', password: 'pw' });
+    const c = spawnStub(LOCKING, { ACCOUNT_ID: who.id, CONSOLE_PORT: '18855' });
+    assert.ok(await waitFor(() => LOCK.who(who.id)), 'the stub never took the lock');
+    const busy = await LOCK.take(who.id, { port: 1, waitMs: 0 });
+    assert.strictEqual(busy.ok, false);
+    assert.strictEqual(busy.holder.port, 18855);
+    c.kill('SIGKILL');                           // no clean-up of its own: the OS lets go
+    assert.ok(await waitFor(async () => (await LOCK.take(who.id, { port: 2, waitMs: 0 })).ok), 'the lock outlived its holder');
+    assert.strictEqual((await LOCK.take(who.id, { port: 2, waitMs: 0 })).ok, true);
+  })();
+
+  await t('the sweep finds an account held by two consoles, which the probe list cannot show', async () => {
+    const two = org.accounts.upsert({ label: 'Twice', email: 't@x.com', password: 'pw' });
+    spawnStub(STUB, { ACCOUNT_ID: two.id, CONSOLE_PORT: '18861' });
+    spawnStub(STUB, { ACCOUNT_ID: two.id, CONSOLE_PORT: '18863' });
+    const d = await waitFor(async () => (await BOTS.sweep()).dupes.find((x) => x.accountId === two.id));
+    assert.ok(d, 'the two consoles were not found');
+    assert.deepStrictEqual(d.consoles.map((c) => c.port), [18861, 18863]);
+    const { dupes } = await BOTS.sweep();
+    assert.ok(!dupes.some((x) => x.accountId === acc.id), 'an account with one console is not a duplicate');
   })();
 
   for (const pid of started) { try { process.kill(pid); } catch {} }

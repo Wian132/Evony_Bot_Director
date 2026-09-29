@@ -118,8 +118,16 @@ A second login for the same account gets kicked, and the two supervisors then fi
 trip the server's rate limiter. Three guards enforce this, all learned the hard way:
 
 - a console started with `ACCOUNT_ID` is **pinned** — `/?account=<other>` cannot switch it
-- a second console for an account already running **refuses to start**
-- the Director asks every console who it holds and skips those accounts
+- a second console for an account already running **refuses to start**. Before it logs
+  in, a console takes an OS-held lock for its account (`account-lock.js`: an abstract
+  socket on Linux, a named pipe on Windows, gone the moment the process dies). Then it
+  asks every console port who they hold (on Linux it also reads /proc). A loser exits 3
+  and botctl adopts the console that holds the account
+- the Director asks every console who it holds and skips those accounts, and counts a
+  console that holds the lock but is still starting as running
+- the Director sweeps for consoles nobody wrote down (`botctl sweep`). An account held
+  by two gets a red **N consoles!** pill on its Fleet row and a line in the log.
+  `fleet()` and `botctl list` say it too
 
 ### Proxies
 
@@ -392,8 +400,16 @@ A second login for the same account gets kicked, and the two supervisors then fi
 trip the server's rate limiter. Three guards enforce this, all learned the hard way:
 
 - a console started with `ACCOUNT_ID` is **pinned** — `/?account=<other>` cannot switch it
-- a second console for an account already running **refuses to start**
-- the Director asks every console who it holds and skips those accounts
+- a second console for an account already running **refuses to start**. Before it logs
+  in, a console takes an OS-held lock for its account (`account-lock.js`: an abstract
+  socket on Linux, a named pipe on Windows, gone the moment the process dies). Then it
+  asks every console port who they hold (on Linux it also reads /proc). A loser exits 3
+  and botctl adopts the console that holds the account
+- the Director asks every console who it holds and skips those accounts, and counts a
+  console that holds the lock but is still starting as running
+- the Director sweeps for consoles nobody wrote down (`botctl sweep`). An account held
+  by two gets a red **N consoles!** pill on its Fleet row and a line in the log.
+  `fleet()` and `botctl list` say it too
 
 ### Proxies
 

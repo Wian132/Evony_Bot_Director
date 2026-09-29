@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const AUTH = require('./auth');
+const LOCK = require('./account-lock');
 
 // Consoles take the odd ports from 8711 up, which leaves the Director's 8712
 // where it has always been.
@@ -43,6 +44,8 @@ const HEAP_MB = Number(process.env.BOT_HEAP_MB ?? 512);
 // A console log over this size is moved to console-<id>.log.1 (replacing the old
 // one) when the console starts: a trading console writes hundreds of MB a day.
 const LOG_ROTATE_BYTES = Number(process.env.BOT_LOG_ROTATE_MB ?? 50) * 1048576;
+// A console's exit code when another console already holds its account (server.js).
+const REFUSED_HELD = 3;
 
 function rotateLog(file) {
   try {
@@ -129,7 +132,80 @@ async function running(org, acc) {
     const h = await ask(url);
     if (h && h.account && h.account.id === acc.id) return { url, port: portOf(url), session: h };
   }
+  // A console that is still starting answers nobody yet, but it took the account's
+  // lock first thing (account-lock.js). Without this the Director's keep-on round
+  // saw "no console" in the seconds between glitch-run.js killing a console and its
+  // replacement answering, and started a second one (a23 and a27, 2026-09-29).
+  const w = await LOCK.who(acc.id);
+  if (w && w.pid !== process.pid) {
+    const url = w.port ? `http://localhost:${w.port}` : null;
+    return { url, port: w.port || null, pid: w.pid || null, session: null, starting: true };
+  }
   return null;
+}
+
+// ----------------------------------------------------- who holds which account
+// Every console on this machine and the account it holds, whether or not anything
+// wrote it down. The probe list holds one URL per account, so a second console for
+// an account is invisible to everything that walks it: the Fleet page and fleet()
+// showed a23 and a27 as merely "kicked" for an hour on 2026-09-29 while each had
+// two consoles fighting. On Linux the processes themselves are read (/proc), which
+// also finds a console that never got its HTTP port. Everywhere, every console
+// port in the range is asked who it holds. `known` is { port, pid, accountId }
+// rows the caller has already asked, so their ports are not asked again.
+function consoleProcs() {
+  if (process.platform !== 'linux') return [];
+  const out = [];
+  const script = path.basename(SCRIPT);
+  let pids = [];
+  try { pids = fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d)); } catch { return out; }
+  for (const d of pids) {
+    try {
+      const argv = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0');
+      if (!argv.some((a) => path.basename(a) === script)) continue;
+      if (fs.readlinkSync(`/proc/${d}/cwd`) !== __dirname) continue;       // another install
+      const env = Object.fromEntries(fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0')
+        .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+      if (!env.ACCOUNT_ID) continue;
+      out.push({ pid: Number(d), port: Number(env.CONSOLE_PORT) || null, accountId: env.ACCOUNT_ID, via: 'process' });
+    } catch { /* gone, or not ours to read */ }
+  }
+  return out;
+}
+
+function listening(port, timeout = 400) {
+  return new Promise((resolve) => {
+    const s = net.connect({ port, host: '127.0.0.1' });
+    const done = (v) => { s.destroy(); resolve(v); };
+    s.setTimeout(timeout, () => done(false));
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+  });
+}
+
+async function sweep({ known = [] } = {}) {
+  const found = [...consoleProcs()];
+  for (const k of known) if (k && k.accountId && !found.some((f) => (k.pid && f.pid === k.pid) || (k.port && f.port === k.port))) found.push({ ...k, via: 'probe' });
+  const seen = new Set(found.map((f) => f.port).filter(Boolean));
+  const ports = [];
+  for (let i = 0; i < SPAN; i++) {
+    const p = BASE + i * STEP;
+    if (p !== DIRECTOR_PORT && !seen.has(p)) ports.push(p);
+  }
+  await Promise.all(ports.map(async (port) => {
+    if (!(await listening(port))) return;
+    const h = await ask(`http://localhost:${port}`, 3000);
+    if (h && h.account && h.account.id) found.push({ pid: (h.proc && h.proc.pid) || null, port, accountId: h.account.id, via: 'port' });
+  }));
+  const by = new Map();
+  for (const f of found) {
+    const list = by.get(f.accountId) || [];
+    if (!list.some((x) => (f.pid && x.pid === f.pid) || (!f.pid && f.port && x.port === f.port))) list.push(f);
+    by.set(f.accountId, list);
+  }
+  const dupes = [...by].filter(([, l]) => l.length > 1)
+    .map(([accountId, l]) => ({ accountId, consoles: l.sort((a, b) => (a.port || 0) - (b.port || 0)) }));
+  return { consoles: found, dupes };
 }
 
 // The probe list is how the Director finds a console at all: the uptime sampler
@@ -231,6 +307,9 @@ async function startNow(org, acc, opts = {}) {
   }
 
   const held = await running(org, acc);
+  if (held && !held.url) {
+    return { ok: false, error: `${acc.label || acc.id} is already held by a console (pid ${held.pid || '?'}) that does not say its port yet — not starting a second` };
+  }
   if (held) {
     // Adopt it: the process is there, it may just never have been written down.
     const probe = registerProbe(org, acc, held.url);
@@ -282,6 +361,17 @@ async function startNow(org, acc, opts = {}) {
       remember(org, acc.id, null);
       dropProbe(org, url);
       fs.closeSync(out); fs.closeSync(err);
+      // Exit 3: another console took the account's lock first (server.js). That one
+      // is the console for the account now; write it down, or the probe list we
+      // just cleared leaves it invisible and the next keep-on round tries again.
+      const w = exited === REFUSED_HELD ? await LOCK.who(acc.id) : null;
+      if (w && w.port) {
+        const hurl = `http://localhost:${w.port}`;
+        const hprobe = registerProbe(org, acc, hurl);
+        remember(org, acc.id, { pid: w.pid || null, port: w.port, url: hurl, probe: hprobe, at: Date.now() });
+        note(`${acc.label}: another console already holds it on ${hurl} (pid ${w.pid || '?'}) — adopted that one, no second console`);
+        return { ok: true, adopted: true, url: hurl, port: w.port, pid: w.pid || null, probe: hprobe, ready: false };
+      }
       const why = tail(path.join(LOG_DIR, `console-${acc.id}.err.log`)) || `exit ${exited}`;
       note(`${acc.label}: the console stopped straight away — ${why}`);
       return { ok: false, error: why, port, url };
@@ -323,7 +413,7 @@ async function stopNow(org, acc, opts = {}) {
 
 module.exports = {
   start, stop, restart, busy, running, bots, pickPort, hasGoals, startupParms, PARMS_KEY,
-  probeList, storedProbes, registerProbe, dropProbe, alive,
+  probeList, storedProbes, registerProbe, dropProbe, alive, sweep, portOf, REFUSED_HELD,
   BASE, STEP, DIRECTOR_PORT,
 };
 
@@ -351,6 +441,12 @@ if (require.main === module) {
             + (held ? `console ${held.url}` : 'no console')
             + (rec ? `  (ours: pid ${rec.pid || '?'}${alive(rec.pid) ? '' : ' — gone'})` : ''));
         }
+      }
+      const { dupes } = await sweep();
+      for (const d of dupes) {
+        console.log(`\n  TWO CONSOLES HOLD ${d.accountId} — they kick each other: `
+          + d.consoles.map((c) => `${c.port ? ':' + c.port : 'no port'} pid ${c.pid || '?'}`).join(', ')
+          + '. End the one the list above does not name.');
       }
       return;
     }

@@ -193,9 +193,17 @@ function attackLine(ua) {
 
 async function toolFleet() {
   const list = accounts();
+  // Every console process on the machine, not only the one each account has on
+  // record: a second console on an account shows here as nothing but "kicked"
+  // (a23 and a27, 2026-09-29), so name it.
+  let dupes = [];
+  try { ({ dupes } = await require('./botctl').sweep()); } catch { /* the rows still stand */ }
+  const dupOf = new Map(dupes.map((d) => [d.accountId,
+    `${d.consoles.length} CONSOLES: ${d.consoles.map((c) => `${c.port ? ':' + c.port : 'no port'} pid ${c.pid || '?'}`).join(', ')}`]));
   const rows = await Promise.all(list.map(async (a) => {
     const name = `${a.id.padEnd(4)} ${String(a.label).slice(0, 16).padEnd(16)}${a.alias ? ' ' + a.alias.padEnd(7) : ''} ${a.port ? ':' + a.port : '     '}`;
-    if (!a.url) return `${name} no console${a.enabled ? '' : ' (switched off)'}`;
+    const dup = dupOf.has(a.id) ? ` | ${dupOf.get(a.id)} — they kick each other, end the one not on :${a.port || '?'}` : '';
+    if (!a.url) return `${name} no console${a.enabled ? '' : ' (switched off)'}${dup}`;
     try {
       const [s, runs] = await Promise.all([
         api(a, 'GET', '/api/session', null, { timeoutMs: 4000 }),
@@ -210,11 +218,12 @@ async function toolFleet() {
       if (runs) bits.push(`scripts ${runs.runs.length}`);
       const atk = attackLine(s.underAttack);
       if (atk) bits.push(`ATTACK ${atk}`);
-      return `${name} ${bits.join(' | ')}`;
-    } catch (e) { return `${name} ${e.message}`; }
+      return `${name} ${bits.join(' | ')}${dup}`;
+    } catch (e) { return `${name} ${e.message}${dup}`; }
   }));
   const up = rows.filter((r) => / up( |$)/.test(r)).length;
-  return `${list.length} accounts, ${up} up (mode ${MODE})\n${rows.join('\n')}`;
+  const warn = dupes.length ? `\nWARNING: ${dupes.length} account(s) held by more than one console: ${dupes.map((d) => d.accountId).join(', ')}` : '';
+  return `${list.length} accounts, ${up} up (mode ${MODE})${warn}\n${rows.join('\n')}`;
 }
 
 async function toolState(args) {

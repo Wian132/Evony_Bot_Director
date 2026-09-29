@@ -633,6 +633,8 @@ async function sampleUptime() {
   // restart (see registerProbe in botctl.js), not the account being down.
   const answered = new Set();
   const dead = [];
+  const known = [];               // { port, pid, accountId } of every probe that answered, for sweepConsoles
+
   // What this sweep says about each server, for the fleet-wide maintenance
   // record (maintenanceFromFleet below).
   const servers = new Map();      // `${orgId}|${server}` -> { orgId, server, dropped, saysDown, back }
@@ -656,6 +658,7 @@ async function sampleUptime() {
     }
     const h = r.json || {};
     if (h.account && h.account.id) answered.add(pr.orgId + '|' + h.account.id);
+    if (h.account && h.account.id) known.push({ port: BOTS.portOf(pr.url), pid: (h.proc && h.proc.pid) || null, accountId: h.account.id });
     // A console-held account is never polled by pollCycle (a second login would
     // kick it), so without this its snapshot history would stay empty — exactly
     // for the accounts that are actually being run. The console publishes one
@@ -778,7 +781,48 @@ async function sampleUptime() {
       latencyMs: r.ms, activity: false });
   }
 
+  await sweepConsoles(known);
   await maintenanceFromFleet(servers, at);
+}
+
+// Every console on this machine, not just the ones on the probe list (botctl sweep).
+// An account held by two consoles is one the two are kicking out of the game in
+// turn, and the probe list only ever names one of them: a23 and a27 sat as
+// "someone else logged in" for an hour on 2026-09-29 while each had a second
+// console that nothing listed. accountId -> [{ port, pid, onRecord }]; the Fleet row
+// and fleet() show it, and the log says it once when it starts and when it ends.
+const DUP_CONSOLES = new Map();
+function orgOfAccount(id) {
+  for (const o of D.orgs.all()) {
+    if (o.disabled) continue;
+    const org = D.org(o.id);
+    if (org.accounts.get(id)) return org;
+  }
+  return null;
+}
+async function sweepConsoles(known) {
+  let dupes;
+  try { ({ dupes } = await BOTS.sweep({ known })); } catch (e) { note('console sweep: ' + e.message); return; }
+  const now = new Map();
+  for (const d of dupes) {
+    const org = orgOfAccount(d.accountId);
+    const rec = org ? BOTS.bots(org)[d.accountId] : null;
+    now.set(d.accountId, d.consoles.map((c) => ({ port: c.port, pid: c.pid, onRecord: !!rec && ((rec.pid && rec.pid === c.pid) || (!!rec.port && rec.port === c.port)) })));
+  }
+  for (const [id, list] of now) {
+    if (DUP_CONSOLES.has(id)) continue;
+    const org = orgOfAccount(id), acc = org && org.accounts.get(id);
+    note(`${(acc && acc.label) || id}: ${list.length} CONSOLES hold this account — `
+      + list.map((c) => `${c.port ? ':' + c.port : 'no port'} pid ${c.pid || '?'}${c.onRecord ? ' (on record)' : ''}`).join(', ')
+      + ' — they kick each other out; end the one that is not on record');
+  }
+  for (const id of DUP_CONSOLES.keys()) {
+    if (now.has(id)) continue;
+    const org = orgOfAccount(id), acc = org && org.accounts.get(id);
+    note(`${(acc && acc.label) || id}: one console again`);
+  }
+  DUP_CONSOLES.clear();
+  for (const [id, list] of now) DUP_CONSOLES.set(id, list);
 }
 
 // A TCP handshake with the game server from this machine, and nothing more — no
@@ -964,6 +1008,8 @@ http.createServer(async (req, res) => {
         startupParms: BOTS.startupParms(ORG, a.id).text.account,
         autoscripts: autoscriptsOf(ORG, a),
         live: liveByAccount.get(a.id) || null,
+        // two or more console processes on this account (sweepConsoles), else null
+        dupConsoles: DUP_CONSOLES.get(a.id) || null,
         // Which console process is running this account. Consoles are pinned to
         // one account each, so this is how the UI knows where to send you.
         consoleUrl: (liveByAccount.get(a.id) || {}).url || null,

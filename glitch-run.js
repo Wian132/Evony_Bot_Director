@@ -112,7 +112,13 @@ async function start(o) {
     if (pid) { try { process.kill(pid); } catch { /* gone already */ } }
     for (let i = 0; i < 20 && !(await portFree(port)); i++) await sleep(250);
     const r = await BC.start(org, acc, { port, note: () => {} });
-    console.log(`${new Date().toTimeString().slice(0, 8)} ${acc.label.padEnd(12)} ${file.padEnd(22)} ${r.ok ? 'console up, pid ' + r.pid : 'FAILED ' + r.error}`);
+    // Adopted: another console took the account while this one was starting (the
+    // Director's keep-on, say), so it is NOT on this script. Not "console up": the
+    // trading watchdog reads that as done, and would leave the account idle.
+    const said = !r.ok ? 'FAILED ' + r.error
+      : r.adopted ? `NOT restarted — another console already holds it on ${r.url} (pid ${r.pid || '?'}), without this script`
+        : 'console up, pid ' + r.pid;
+    console.log(`${new Date().toTimeString().slice(0, 8)} ${acc.label.padEnd(12)} ${file.padEnd(22)} ${said}`);
     await sleep(1500);
   }
   console.log('each city starts its script once the console is logged in — watch it with: node glitch-run.js flow');

@@ -47,35 +47,33 @@ for (const kind of ['unhandledRejection', 'uncaughtException']) {
 
 // ONE CONSOLE PER ACCOUNT. Two logins for the same account make the server kick
 // one of them, and the two supervisors then fight and trip the rate limiter.
-// Ask every other configured console who it holds before starting; if one of
-// them already owns this account, refuse rather than start the fight.
-(async () => {
+// Nothing logs in until this has passed.
+//
+// First the account's lock (account-lock.js), which the OS holds for exactly as
+// long as this process lives. Two consoles started in the same second both used
+// to pass the HTTP check below, because neither answered yet (a23 and a27,
+// 2026-09-29: the trading watchdog's restart and the Director's keep-on). Only one
+// can take the lock. Then the other consoles are asked who they hold. That catches
+// a console started before the lock existed, which holds none.
+// Exit 3 (botctl REFUSED_HELD) tells botctl to adopt the holder instead.
+async function oneConsolePerAccount() {
   const mine = SESSION.account && SESSION.account.id;
   if (!mine) return;
-  const probes = (SESSION.org ? SESSION.org.settings : D.settings)
-    .get('probes', [{ probe: 'console', url: 'http://localhost:8711' }]);
-  for (const pr of probes) {
-    const url = String(pr.url || '').replace(/\/$/, '');
-    if (!url || url.endsWith(':' + PORT)) continue;            // that is us
-    const held = await new Promise((resolve) => {
-      const req = http.get(url + '/api/session', { timeout: 1500 }, (res) => {
-        let b = ''; res.on('data', (c) => (b += c));
-        res.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve(null); } });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    });
-    if (held && held.account && held.account.id === mine) {
-      console.error(`
-  REFUSING TO START: ${url} is already running account `
-        + `${mine} (${SESSION.account.label}).
-  One console per account — `
-        + `start this one with a different ACCOUNT_ID, or stop that one first.
+  const refuse = (where, pid) => {
+    console.error(`
+  REFUSING TO START: account ${mine} (${SESSION.account.label}) is already held by the console on ${where}`
+      + `${pid ? ` (pid ${pid})` : ''}.
+  One console per account — use that one, or stop it first.
 `);
-      process.exit(1);
-    }
-  }
-})();
+    process.exit(3);
+  };
+  const lock = await require('./account-lock').take(mine, { port: PORT });
+  if (!lock.ok) return refuse(lock.holder.port ? `port ${lock.holder.port}` : 'an unknown port', lock.holder.pid);
+  if (lock.skipped) console.error(`  the account lock is unavailable here (${lock.skipped}) — relying on the port check alone`);
+  const { consoles } = await require('./botctl').sweep();
+  const other = consoles.find((c) => c.accountId === mine && c.pid !== process.pid && c.port !== PORT);
+  if (other) refuse(other.port ? `port ${other.port}` : 'no port', other.pid);
+}
 
 console.log(`  account: ${SESSION.account ? SESSION.account.id + ' ' + SESSION.account.label : '(from .env)'}`
   + `   port: ${PORT}   engine: ${SESSION.userPaused ? 'PAUSED (ENGINE_PAUSED=1 or -autorun 0) — press Resume' : 'live'}`);
@@ -88,8 +86,10 @@ if (typeof SESSION.switchedOff === 'function' && SESSION.switchedOff()) {
     + 'until it is switched back on there');
 }
 
-SESSION.startSupervisor();     // heartbeat + auto-reconnect for the console session
-SESSION.startEngine();         // ticks the goal engine, live, unless paused from the console
+oneConsolePerAccount().catch((e) => console.error('  one-console check failed: ' + e.message)).then(() => {
+  SESSION.startSupervisor();     // heartbeat + auto-reconnect for the console session
+  SESSION.startEngine();         // ticks the goal engine, live, unless paused from the console
+});
 
 function loadEnv() {
   const out = {};

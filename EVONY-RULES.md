@@ -4473,6 +4473,33 @@ standing in for** — test the contract between the two files, not the stub.
     Lord21 on THREE ports (8729, 8775, 8781). `botctl list` and `fleet()` showed every
     account healthy with one port each — only the `/api/session` port map showed them.
     Restarting the fleet does not clear orphans; it adds a fresh console beside each one.
+- **The trading watchdog's restart races keep-on and makes the duplicate** (2026-09-29, on
+  the VPS). Lord23 (a23) and Lord27 (a27) were kicked on every retry from 11:41 (a23 up to
+  10 kicks in a row by 12:29). Each had two consoles born in the same second. The trading
+  watchdog ("putting it back on glitch-res-buy.txt") runs `glitch-run.js start` as a
+  **separate process**. It kills the console, waits for the port and starts a new one
+  through its own botctl, on the old port (:8753 / :8761, with `RUNSCRIPT` set). The
+  Director's keep-on ran in that gap. Its `BOTS.busy()` only knows about starts inside the
+  Director, and the new console was not answering yet, so keep-on started a second one on a
+  fresh port (:8771 / :8773, no script). keep-on's copy is the one on the probe list.
+  Lord20 (a20) went through the same race at 11:41:35 and survived only because its
+  console was already answering.
+  - **How it shows:** the console log has every line twice, about 2 s apart: "the kick
+    hold is over" x2, "logged in as" x2, then the kick. On Linux,
+    `pgrep -f "node .*server\.js"` gives more pids than accounts, and
+    `/proc/<pid>/environ` holds `ACCOUNT_ID`. The Director-spawned copy has the Director
+    as its parent. A copy started by glitch-run or botctl has ppid 1.
+  - **Which copy to end:** the one the probe list does NOT name (`botctl bots(org)[id].port`).
+    Ending the recorded one makes keep-on start a third.
+  - **Fixed the same day:** a console takes an OS lock for its account before it logs
+    in (`account-lock.js`: an abstract socket on Linux, a named pipe on Windows,
+    released by the OS when the process dies). A second console exits 3 without
+    logging in, and botctl adopts the holder. keep-on's `running()` also sees a console
+    that holds the lock but is not answering yet. The Director's uptime sweep, `fleet()`
+    and `botctl list` now name an account held by two consoles (`botctl sweep`).
+    Consoles started before the fix hold no lock. A new console still refuses to run
+    beside one of them, because it asks every console port (and on Linux reads /proc)
+    before logging in.
 - **"It doesn't open" — a bot tab was stuck on a dead port** (the user, 2026-09-26,
   Lord19). `openBotTab` in director.html only navigated the named tab when it could
   READ its location and found it blank; a console is on another PORT, so reading it throws

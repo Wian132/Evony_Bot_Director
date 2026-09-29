@@ -115,7 +115,20 @@ const DENY_COMMANDS = [
   { re: /fire/, why: 'fire dismisses a hero for good (EVONY-RULES §5c: one of the five irreversible acts)' },
   { re: /disband/, why: 'disband dismisses troops for good (EVONY-RULES §5c)' },
   { re: /resetplayer/, why: 'resetplayer restarts the whole account (EVONY-RULES §5c)' },
-  { re: /abandon(?:town)?/, why: 'abandoning a city cannot be undone (EVONY-RULES §5d)' },
+  // `abandontown <city>` gives up a CITY and cannot be undone — always refused here, and it
+  // needs OTTO_ALLOW_ABANDON_TOWN=1 on the console as well (EVONY-RULES §5d), so a city stays
+  // doubly protected.
+  //
+  // `abandon <x,y>` is a different command: it releases a VALLEY OR FLAT the city occupies
+  // (SCRIPTS.md "abandon <x,y> (a valley or flat of yours)"), and it is reversible — the tile
+  // can simply be occupied again. Blocking it as well cost a real job on 2026-09-29: a26's
+  // far-flung city could not be teleported to the hub because a city that occupies a valley
+  // refuses to teleport (`ok=-84 Unable to teleport city to a preoccupied valley` — the
+  // message names the SOURCE's valley, not the destination), and releasing that valley was
+  // the fix the user had asked for ("capture and abandon a flat so the city can come closer").
+  // So: refuse `abandon` unless it names a tile as x,y.
+  { re: /abandontown/, why: 'abandoning a city cannot be undone (EVONY-RULES §5d)' },
+  { re: /abandon\b(?!\s*\d+\s*,\s*\d+)/, why: 'abandon without x,y would give up a city, which cannot be undone (EVONY-RULES §5d); `abandon <x,y>` releases a valley or flat and is allowed' },
   { re: /allowabandon/, why: 'allowabandon adopts a city for abandoning, which cannot be undone (EVONY-RULES §5d)' },
   { re: /holiday\s+(?:\/?exit|\/end|off)\b/, why: 'never end a holiday — holiday in and out is the user\'s alone (EVONY-RULES §1)' },
   { re: /logout/, why: LOGIN_WHY },

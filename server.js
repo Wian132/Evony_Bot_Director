@@ -957,6 +957,41 @@ const server = http.createServer(async (req, res) => {
       return send(200, 'application/json', JSON.stringify({ ok, lines, error: res.error || null }));
     } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, lines, error: e.message })); }
   }
+  // The Buildings tab's + on "Actively building": uses a held speed-up item on
+  // that plot, `count` times, exactly as the buildingspeedup script line does
+  // (only held items go out — a missing one would be bought with cents — and it
+  // stops once the job is finished). Coins and the free speed-up are not taken here.
+  if (url.pathname === '/api/building/speedup' && req.method === 'POST') {
+    const b = await body(req);
+    const lines = [];
+    try {
+      const C = require('./script-cmd-city');
+      const g = await SESSION.connect();
+      const castle = b.city ? g.castles.find((c) => g.castleId(c) === Number(b.city)) || g.castle() : g.castle();
+      const pos = Number(b.pos);
+      if (!Number.isInteger(pos) || pos < 0) throw new Error('which plot?');
+      const it = C.speedupItem(String(b.itemId || ''), 'buildingspeedup');
+      if (it.kind !== 'item') throw new Error('only a held speed-up item is used from here');
+      const count = Math.max(1, Math.min(Math.floor(Number(b.count) || 1), 100));
+      const flags = {};
+      const verdict = (x) => (x && x.ok === 1 ? 'ok' : `FAILED (ok=${x && x.ok})${x && x.errorMsg ? ' - ' + x.errorMsg : ''}`);
+      const env = {
+        game: g, castle, cid: g.castleId(castle), dryRun: false, opts: {}, state: {},
+        log: (m) => lines.push(String(m).trim()),
+        say: (x) => { if (!x || x.ok !== 1) flags.refused = true; return verdict(x); },
+        verdict,
+        refused: () => !!flags.refused,
+        stopped: () => false,
+        pause: (ms) => new Promise((r) => setTimeout(r, ms)),
+      };
+      const a = { cmd: 'buildingspeedup', at: pos, items: Array.from({ length: count }, () => it) };
+      const res = await C.commands.buildingspeedup.run(a, env) || {};
+      const ok = !!res.ok;
+      SESSION.note(`manual: buildingspeedup ${count} x ${it.name} on plot ${pos} -> ${ok ? `ok (${res.done} used)` : res.error || 'failed'}`,
+        { city: castle.name, kind: 'act' });
+      return send(200, 'application/json', JSON.stringify({ ok, lines, error: res.error || null }));
+    } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, lines, error: e.message })); }
+  }
   // The Statistics tab: the game's rankings (players, alliances, heroes, cities),
   // statistics.js. Browsing reads a page at a time from the server (and a few ahead);
   // a search runs in the database over what has been read, and a lookup asks the

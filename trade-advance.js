@@ -19,7 +19,7 @@
 // tab's own check refuses the start (it will not let a non-holiday account sell under 50).
 
 const http = require('http');
-const D = require('C:/EvonyTool/db');
+const D = require('./db');
 
 // name      what the control file says      who buys
 // GOLD RUNS LAST (the user, 2026-09-26: "clear up stone food and wood and then repass
@@ -130,7 +130,7 @@ const roomFor = (ids, res) => {
 };
 
 function sid() {
-  const A = require('C:/EvonyTool/auth');
+  const A = require('./auth');
   const org = D.all('SELECT id FROM orgs LIMIT 1')[0];
   const u = D.all('SELECT id FROM users LIMIT 1')[0];
   const s = A.newSession(u.id, org.id, '127.0.0.1', 'trade-advance');
@@ -164,7 +164,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // the port a console is really on, from its own log header (ports move on every restart)
 function portOf(id) {
   try {
-    const log = require('fs').readFileSync('C:/EvonyTool/console-' + id + '.log', 'utf8');
+    const log = require('fs').readFileSync(__dirname + '/console-' + id + '.log', 'utf8');
     const m = [...log.matchAll(/port:\s*(\d+)/g)];
     return m.length ? m[m.length - 1][1] : null;
   } catch { return null; }

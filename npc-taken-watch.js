@@ -5,8 +5,8 @@
 // Adds every target a taker reports TAKEN to scripts/glitch-done.txt, so the drainers
 // stop hitting it and move on. Prints each change.
 const fs = require('fs');
-const DONE = 'C:/EvonyTool/scripts/glitch-done.txt';
-const LOGS = (process.argv[2] || 'a8,a9,a10').split(',').map((id) => `C:/EvonyTool/console-${id}.log`);
+const DONE = __dirname + '/scripts/glitch-done.txt';
+const LOGS = (process.argv[2] || 'a8,a9,a10').split(',').map((id) => `${__dirname}/console-${id}.log`);
 const off = new Map(LOGS.map((f) => [f, fs.existsSync(f) ? fs.statSync(f).size : 0]));
 setInterval(() => {
   for (const f of LOGS) {

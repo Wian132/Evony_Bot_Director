@@ -19,7 +19,7 @@
 
 const http = require('http');
 const fs = require('fs');
-const D = require('C:/EvonyTool/db');
+const D = require('./db');
 
 // the banks by account id; their names come from the accounts table, never from the repo
 // 2026-09-27: the rotation — the nine older banks came out of holiday and are receivers
@@ -32,7 +32,7 @@ const T = 1e12;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sid() {
-  const A = require('C:/EvonyTool/auth');
+  const A = require('./auth');
   const org = D.all('SELECT id FROM orgs LIMIT 1')[0];
   const u = D.all('SELECT id FROM users LIMIT 1')[0];
   const s = A.newSession(u.id, org.id, '127.0.0.1', 'bank-truth');
@@ -42,7 +42,7 @@ function sid() {
 // the port a console is really on, from its own log header (ports move on every restart)
 function portOf(id) {
   try {
-    const log = fs.readFileSync('C:/EvonyTool/console-' + id + '.log', 'utf8');
+    const log = fs.readFileSync(__dirname + '/console-' + id + '.log', 'utf8');
     const m = [...log.matchAll(/port:\s*(\d+)/g)];
     return m.length ? m[m.length - 1][1] : null;
   } catch { return null; }

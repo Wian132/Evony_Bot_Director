@@ -5,7 +5,10 @@ README.md is the overview and setup, MANUAL.md explains the apps in depth, SCRIP
 script language, STORAGE.md the database.
 
 **If a `CLAUDE.local.md` exists, read it too** — it is this install's own notes (its
-fleet, its machine, its habits) and is kept out of git.
+fleet, its machine, its habits) and is kept out of git. **Read it before touching the
+fleet:** the live fleet may run on another machine (a server reached over SSH), in which
+case this folder's `evony.db`, `scripts/` and goal files are stale copies and nothing
+fleet-related may be started here.
 
 ## Setup, if it is not done yet
 
